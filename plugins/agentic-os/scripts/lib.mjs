@@ -46,7 +46,16 @@ export function copyTree(from, to) {
   }
 }
 
-export const hashFile = (f) => { try { return crypto.createHash("sha1").update(fs.readFileSync(f)).digest("hex"); } catch { return null; } };
+/**
+ * A file's content hash, ignoring line endings for text files: a Windows checkout
+ * (git autocrlf) has CRLF where the plugin's copy has LF, and that isn't an edit.
+ */
+export const hashFile = (f) => {
+  let buf;
+  try { buf = fs.readFileSync(f); } catch { return null; }
+  const text = !buf.subarray(0, 8000).includes(0);
+  return crypto.createHash("sha1").update(text ? buf.toString("utf-8").replace(/\r\n/g, "\n") : buf).digest("hex");
+};
 
 /**
  * An earlier engine version, as the merge base for upgrades: the plugin's own

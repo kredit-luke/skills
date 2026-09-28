@@ -63,10 +63,10 @@ Start it any time with `node dashboard/bin/dashboard.mjs start --open` (default 
 The engine is developed in a real workspace (its `dashboard/` folder) and synced here:
 
 ```bash
-node tools/sync-engine.mjs ../your-workspace/dashboard --version 0.2.0
+node tools/sync-engine.mjs ../your-workspace/dashboard
 ```
 
-It copies the git-tracked files into `plugins/agentic-os/engine/` and **refuses** if any file names something team-specific (`tools/denylist.txt`): the engine stays generic, and team specifics live in each workspace's `.claude/dashboard/`. Then run the tests (`node --test plugins/agentic-os/scripts/test/*.test.mjs`, and the engine's own in the source workspace: `npm test` in its `dashboard/`), bump `plugins/agentic-os/.claude-plugin/plugin.json` `version` to match, `claude plugin validate .`, commit, and tag the release:
+The engine version is the source's `dashboard/package.json` `version`: bump it there (and in that workspace's `.claude/dashboard/engine.json`, since it runs the engine too) before syncing. `--version X.Y.Z` overrides it for the copy only. It copies the git-tracked files into `plugins/agentic-os/engine/` and **refuses** if any file names something team-specific (`tools/denylist.txt`): the engine stays generic, and team specifics live in each workspace's `.claude/dashboard/`. Then run the tests (`node --test plugins/agentic-os/scripts/test/*.test.mjs`, and the engine's own in the source workspace: `npm test` in its `dashboard/`), bump `plugins/agentic-os/.claude-plugin/plugin.json` `version` (it can run ahead of the engine for script-only fixes; engine releases set both), `claude plugin validate .`, commit, and tag the release:
 
 ```bash
 git tag agentic-os-v0.2.0 && git push origin main --tags

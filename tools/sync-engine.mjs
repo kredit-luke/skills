@@ -61,7 +61,11 @@ fs.rmSync(DEST, { recursive: true, force: true });
 for (const rel of files) {
   const to = path.join(DEST, rel);
   fs.mkdirSync(path.dirname(to), { recursive: true });
-  fs.copyFileSync(path.join(SRC, rel), to);
+  const buf = fs.readFileSync(path.join(SRC, rel));
+  // Text files go in with LF endings, whatever the source checkout uses (a Windows
+  // checkout is CRLF), so a sync from any machine produces the same files.
+  const isText = !buf.subarray(0, 8000).includes(0);
+  fs.writeFileSync(to, isText ? buf.toString("utf-8").replace(/\r\n/g, "\n") : buf);
 }
 
 const pkgFile = path.join(DEST, "package.json");
