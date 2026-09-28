@@ -85,7 +85,10 @@ test("stop kills an app that ignores SIGTERM, and only then forgets it", async (
 
   const stop = await finished(launcher.stopApp(ws, "stubborn"));
   assert.equal(stop.status, "succeeded", stop.error);
-  assert.match(fs.readFileSync(stop._log, "utf-8"), /Still running after 1s; killing it\./);
+  // Windows stops with taskkill /F straight away, so there is no grace period to outlast.
+  if (process.platform !== "win32") {
+    assert.match(fs.readFileSync(stop._log, "utf-8"), /Still running after 1s; killing it\./);
+  }
   assert.equal(treeAlive(pid), false);
   assert.equal(launcher.runningPid(ws, "stubborn"), null);
 });

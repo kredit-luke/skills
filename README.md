@@ -60,16 +60,18 @@ Start it any time with `node dashboard/bin/dashboard.mjs start --open` (default 
 
 ## Maintaining
 
-The engine is developed in a real workspace (its `dashboard/` folder) and synced here:
+This repo is the source of truth for the engine: `plugins/agentic-os/engine/`. Change it here (directly, or by a PR from a fork; `/agentic-os:contribute` prepares one from a workspace's edits), and workspaces, including the ones it's developed from, pick releases up with `/agentic-os:upgrade`.
+
+To release:
+
+1. Run the tests: `node --test plugins/agentic-os/scripts/test/*.test.mjs`, and the engine's own: `cd plugins/agentic-os/engine && npm ci && npm test`.
+2. Bump the engine version in `plugins/agentic-os/engine/package.json` and `engine/ENGINE.json`, and the plugin's in `plugins/agentic-os/.claude-plugin/plugin.json` (it can run ahead of the engine for script-only fixes; engine releases set both).
+3. `claude plugin validate .`, commit, and tag **the commit that bumps the version**:
 
 ```bash
-node tools/sync-engine.mjs ../your-workspace/dashboard
+git tag agentic-os-v0.2.2 && git push origin main --tags
 ```
 
-The engine version is the source's `dashboard/package.json` `version`: bump it there (and in that workspace's `.claude/dashboard/engine.json`, since it runs the engine too) before syncing. `--version X.Y.Z` overrides it for the copy only. It copies the git-tracked files into `plugins/agentic-os/engine/` and **refuses** if any file names something team-specific (`tools/denylist.txt`): the engine stays generic, and team specifics live in each workspace's `.claude/dashboard/`. Then run the tests (`node --test plugins/agentic-os/scripts/test/*.test.mjs`, and the engine's own in the source workspace: `npm test` in its `dashboard/`), bump `plugins/agentic-os/.claude-plugin/plugin.json` `version` (it can run ahead of the engine for script-only fixes; engine releases set both), `claude plugin validate .`, commit, and tag the release:
+The tag matters: a workspace's `upgrade` fetches the version it installed (by tag) as the merge base, so a tag on an earlier commit makes the version files look like local edits.
 
-```bash
-git tag agentic-os-v0.2.0 && git push origin main --tags
-```
-
-The tag matters: a workspace's `upgrade` fetches the version it installed (by tag) as the merge base.
+`tools/sync-engine.mjs <workspace>/dashboard` still copies a workspace's whole engine over `plugins/agentic-os/engine/` (it **refuses** if any file names something team-specific, `tools/denylist.txt`). It overwrites anything merged here that the workspace doesn't have, so upgrade that workspace to the latest release first, or use `/agentic-os:contribute` instead.
