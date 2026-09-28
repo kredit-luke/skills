@@ -91,7 +91,6 @@ export function validate(root) {
       else if (!dirExists(a.dir)) warn("apps.json", `apps.${id}.dir "${a.dir}" isn't in the workspace (not cloned yet?)`);
       if (!a.launch || (!a.launch.cmd && !a.launch.launcher)) err("apps.json", `apps.${id} needs launch.cmd (or launch.launcher)`);
       if (a.launch && a.launch.launcher && !(apps.launcher && apps.launcher.script)) err("apps.json", `apps.${id} uses a launcher but there's no launcher.script`);
-      if (!a.port) warn("apps.json", `apps.${id} has no port: the dashboard can't tell when it's up`);
       if (a.port) {
         if (ports.has(a.port)) err("apps.json", `apps.${id} and apps.${ports.get(a.port)} both use port ${a.port}`);
         ports.set(a.port, id);

@@ -96,4 +96,6 @@ export function args(argv = process.argv.slice(2)) {
   return out;
 }
 
-export const isMain = (meta) => process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(meta.url);
+// realpath both sides: a symlinked path (macOS /tmp -> /private/tmp) would otherwise never match.
+const real = (p) => { try { return fs.realpathSync(p); } catch { return path.resolve(p); } };
+export const isMain = (meta) => !!process.argv[1] && real(process.argv[1]) === real(fileURLToPath(meta.url));
