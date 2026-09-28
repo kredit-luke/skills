@@ -1,0 +1,126 @@
+<dash-page-header eyebrow="Home" title="What's happening" sub="Runs in flight, what needs you, and one-click skills." />
+
+@if (machineBanner(); as b) {
+  <a class="machine-banner" [class.warn]="!b.problems" routerLink="/machine">
+    @if (b.problems) {
+      <b>{{ b.problems }} thing{{ b.problems === 1 ? '' : 's' }} missing on this machine:</b> {{ b.missing }}<span class="go">Fix →</span>
+    } @else {
+      <b>{{ b.warnings }} machine warning{{ b.warnings === 1 ? '' : 's' }}</b> worth a look<span class="go">Details →</span>
+    }
+  </a>
+}
+
+<div class="stats">
+  <div class="stat-card"><div class="k">Running</div><div class="v" [class.accent]="ov()?.stats?.running">{{ ov()?.stats?.running ?? 0 }}<small>/ {{ ov()?.stats?.maxConcurrentRuns ?? '—' }} slots</small></div>
+    @if (data.waitingCount()) { <div class="extra"><b>{{ data.waitingCount() }}</b> waiting for your answer</div> }</div>
+  <div class="stat-card"><div class="k">Runs · 7 days</div><div class="v">{{ ov()?.stats?.weekRuns ?? 0 }}<small>{{ weekLine() }}</small></div></div>
+  <div class="stat-card"><div class="k">Apps up</div><div class="v" [class.green]="apps().up">{{ apps().up }}<small>/ {{ apps().total }}</small></div></div>
+</div>
+
+<div class="grid3">
+  <div class="col">
+    <div class="panel allow-overflow">
+      <div class="panel-h"><h2>Skills deck</h2><a class="btn ghost sm" routerLink="/skills">All skills</a></div>
+      @if (data.deckError() && !data.deck()) { <div class="empty">{{ data.deckError() }}</div> }
+      <div class="deck">
+        @for (p of data.deck()?.presets || []; track p.id) {
+          <button class="card" type="button" (click)="openPreset(p)" [title]="p.description || p.prompt">
+            <div class="top"><span class="ico"><dash-icon [name]="p.icon || 'terminal'" style="width:15px;height:15px" /></span><span class="play">▶</span></div>
+            <div class="name">{{ p.label }}</div>
+            <div class="meta">{{ presetMeta(p) }}</div>
+            <div class="trust" [innerHTML]="presetStats(p.id) | trustedHtml"></div>
+          </button>
+        } @empty { <div class="empty">No presets in deck.json.</div> }
+      </div>
+      <form class="adhoc" (submit)="$event.preventDefault(); runAdhoc()">
+        <dash-slash-input [value]="adhoc()" (valueChange)="adhoc.set($event)" (submitted)="runAdhoc()" placeholder="Ask anything, or type / for skills…" />
+        <button class="btn" type="submit">Run</button>
+      </form>
+    </div>
+    <div class="panel">
+      <div class="panel-h"><h2>Routines</h2></div>
+      <div class="panel-b">
+        @for (x of routines(); track x.r.id) {
+          @if (x.runId) {
+            <a class="routine" [class.off]="!x.r.enabled" [class.next]="x.status === 'next'" [routerLink]="['/runs', x.runId]">
+              <span class="time">{{ x.r.at }}</span><div><div class="t">{{ x.label }}</div><div class="d">{{ x.detail }}</div></div><span class="st">{{ x.when }}</span>
+            </a>
+          } @else {
+            <div class="routine" [class.off]="!x.r.enabled" [class.next]="x.status === 'next'">
+              <span class="time">{{ x.r.at }}</span><div><div class="t">{{ x.label }}</div><div class="d">{{ x.detail }}</div></div><span class="st">{{ x.when }}</span>
+            </div>
+          }
+        }
+        @for (t of ov()?.desktopTasks || []; track t.name) {
+          <div class="routine off" [title]="t.description"><span class="time">—</span><div><div class="t">{{ t.name }}</div><div class="d">Claude Desktop scheduled task</div></div><span class="st">desktop</span></div>
+        }
+        @if (!routines().length && !(ov()?.desktopTasks || []).length) { <div class="empty">No routines configured.</div> }
+      </div>
+      <div class="hint">Edit schedules in <code>.claude/dashboard/deck.json</code>. They fire only while this dashboard is running.</div>
+    </div>
+  </div>
+
+  <div class="col col-center">
+    <div class="panel">
+      <div class="panel-h"><h2>Active <span class="n">{{ active().length + sessions().length }}</span></h2></div>
+      <div class="panel-b">
+        @for (r of active(); track r.id) { <dash-run-row [run]="r" /> }
+        @for (s of sessions(); track s.sessionId) {
+          <div class="row" [title]="s.cwd" style="cursor:default">
+            <span class="sdot" [class]="'sdot ' + s.status"></span>
+            <div class="main"><div class="title">{{ s.name || s.sessionId }} <span class="tag">{{ s.kind }}</span></div><div class="sub mono">{{ cwdTail(s.cwd) }}</div></div>
+            <div class="right">{{ s.status }}<br>{{ rel(s.startedAt) }}</div>
+          </div>
+        }
+        @if (!active().length && !sessions().length) { <div class="empty">Nothing running. Launch something from the deck.</div> }
+      </div>
+    </div>
+    <div class="panel">
+      <div class="panel-h"><h2>Recent runs</h2><a class="btn ghost sm" routerLink="/runs">History →</a></div>
+      <div class="panel-b">
+        @for (r of recent(); track r.id) { <dash-run-row [run]="r" /> } @empty { <div class="empty">No runs yet.</div> }
+      </div>
+    </div>
+  </div>
+
+  <div class="col">
+    <div class="panel">
+      <div class="panel-h"><h2>Needs you <span class="n">{{ inboxCount() }}</span></h2>
+        <button class="btn ghost sm" (click)="refreshInbox()" [disabled]="inboxBusy()">{{ inboxBusy() ? 'Checking…' : 'Refresh' }}</button></div>
+      <div class="panel-b">
+        @if (data.inboxError() && !data.inbox()) { <div class="empty">{{ data.inboxError() }}</div> }
+        @else if (!data.inbox()) { <div class="empty">Checking GitHub…</div> }
+        @for (i of inboxItems(); track $index) {
+          @if (i.url) {
+            <a class="inbox-item" [class]="'inbox-item ' + i.severity" [href]="i.url" target="_blank" rel="noopener">
+              <span class="bar"></span><div><div class="t">{{ i.title }}</div><div class="d">{{ i.detail }}{{ i.at ? ' · ' + rel(i.at) : '' }}</div></div></a>
+          } @else {
+            <a class="inbox-item" [class]="'inbox-item ' + i.severity" [routerLink]="['/runs', i.runId]">
+              <span class="bar"></span><div><div class="t">{{ i.title }}</div><div class="d">{{ i.detail }}{{ i.at ? ' · ' + rel(i.at) : '' }}</div></div></a>
+          }
+        }
+        @if (data.inbox() && !inboxItems().length) { <div class="empty">All clear.</div> }
+        @if (data.inbox()?.errors?.length) { <div class="hint">GitHub: {{ data.inbox()!.errors!.join('; ') }}</div> }
+      </div>
+      @if (data.inbox()?.ciHealth?.length) {
+        <div class="ci">
+          @for (h of data.inbox()!.ciHealth; track h.repo) {
+            <a [href]="h.url" target="_blank" rel="noopener" [title]="h.title || ''"><span class="sdot" [class]="'sdot ' + h.state"></span>{{ h.repo.split('/')[1] }} <span class="muted">main</span></a>
+          }
+        </div>
+      }
+    </div>
+    <div class="panel">
+      <div class="panel-h"><h2>Workspaces</h2><a class="btn ghost sm" routerLink="/workspaces">Details →</a></div>
+      <div class="panel-b">
+        @for (w of wsDots(); track w.name) {
+          <a class="row" routerLink="/workspaces">
+            <div class="main"><div class="title">{{ w.name }}@if (w.ticketId) { <span class="tag">{{ w.ticketId }}</span> }</div>
+              <div class="sub dots">@for (d of w.dots; track $index) { <span class="sdot" [class]="'sdot ' + d.cls" [title]="d.title"></span> }</div></div>
+            <div class="right">{{ w.up }}/{{ w.total }} up</div>
+          </a>
+        }
+      </div>
+    </div>
+  </div>
+</div>

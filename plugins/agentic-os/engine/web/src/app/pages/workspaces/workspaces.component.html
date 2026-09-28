@@ -1,0 +1,110 @@
+<dash-page-header eyebrow="Workspaces" title="Workspaces" sub="The main workspace and every worktree: apps and ports, git changes and diffs, and QA screenshots." />
+
+<div class="summary">
+  <div class="stat"><span class="number green">{{ summary().running }}</span><span class="label">running</span></div>
+  <div class="stat"><span class="number red">{{ summary().stopped }}</span><span class="label">stopped</span></div>
+  <div class="stat"><span class="number muted">{{ summary().wt }}</span><span class="label">worktrees</span></div>
+</div>
+
+@if (!data.status()) { <div class="loading">Loading…</div> }
+
+@for (ws of workspaces(); track ws.slug) {
+  <div class="workspace">
+    <div class="workspace-header" (click)="toggleWs(ws.slug)">
+      <div style="min-width:0">
+        <h2><span class="arrow" [class.open]="openWs().has(ws.slug)">&#9654;</span>{{ ws.name }}
+          @if (ws._ticketId) {
+            @if (api.issueUrl(ws._ticketId); as u) { <a class="badge badge-issue" [href]="u" target="_blank" rel="noopener" (click)="$event.stopPropagation()">{{ ws._ticketId }} ↗</a> }
+            @else { <span class="badge badge-issue">{{ ws._ticketId }}</span> }
+          }
+        </h2>
+        <div class="path">{{ ws.path }}</div>
+      </div>
+      <div class="ws-right" (click)="$event.stopPropagation()">
+        <div class="app-actions">
+          @if (avail(ws).length) {
+            @if (anyBusy(ws)) { <span class="busy-label"><span class="spin"></span>working…</span> }
+            @else {
+              @if (platformDown(ws)) { <button class="btn primary sm" (click)="startStack(ws.slug)" [title]="stack()?.hint || stack()?.description || ''">Start stack</button> }
+              @if (anyUp(ws)) { <button class="btn danger sm" (click)="stopAll(ws.slug)">Stop all</button> }
+            }
+          }
+        </div>
+        <a class="badge badge-vscode" [href]="vscode(ws.path)" title="Open in VS Code">VS Code</a>
+        <div class="count">{{ countLabel(ws) }}</div>
+      </div>
+    </div>
+
+    <dash-workspace-apps [workspace]="ws" />
+
+    @if (openWs().has(ws.slug)) {
+      <div class="ws-details">
+        @let g = git()[ws.slug];
+        @if (g === 'loading') { <div class="ws-details-loading">Loading git info…</div> }
+        @else if (!asGit(g)) { <div class="ws-details-loading">No git repos found.</div> }
+        @else {
+          @let info = asGit(g)!;
+          @for (dir of repoDirs(info); track dir) {
+            @let repo = info.repos[dir];
+            @let rk = ws.slug + '/' + dir;
+            <div class="repo">
+              <div class="repo-header" (click)="toggleRepo(rk)">
+                <div class="repo-left"><span class="arrow" [class.open]="openRepos().has(rk)">&#9654;</span><span class="repo-name">{{ dir }}</span><span class="repo-branch">{{ repo.branch }}</span></div>
+                <div class="repo-right">
+                  @if (repo.ahead > 0) { <span class="repo-ahead">{{ repo.ahead }} ahead</span> }
+                  @if (repo.behind > 0) { <span class="repo-behind">{{ repo.behind }} behind</span> }
+                  @if (repo.changedFiles.length) { <span class="repo-changes">{{ repo.changedFiles.length }} changed</span> } @else { <span class="repo-clean">clean</span> }
+                  <a class="badge badge-vscode" [href]="vscode(info._paths?.[dir])" title="Open in VS Code" (click)="$event.stopPropagation()">VS Code</a>
+                </div>
+              </div>
+              @if (openRepos().has(rk)) {
+                <div class="file-list">
+                  @for (f of repo.changedFiles; track f.file) {
+                    @let dk = diffKey(ws.slug, dir, f.file);
+                    <div class="file-row" (click)="toggleDiff(ws.slug, dir, f.file)">
+                      <span class="file-status" [class]="'file-status ' + f.status.charAt(0)">{{ f.status }}</span>
+                      <span class="file-path">{{ f.file }}</span>
+                      <span class="file-source" [class]="'file-source src-' + (f.source || 'uncommitted')">{{ srcLabel(f.source) }}</span>
+                    </div>
+                    @if (hasDiff(dk)) { <dash-diff [diff]="diffs()[dk]" /> }
+                  } @empty { <div class="diff-empty">{{ repo.mainRef ? 'No changes vs ' + repo.mainRef + '.' : 'No changes.' }}</div> }
+                </div>
+                @if (repo.recentCommits.length) {
+                  <div class="commits"><div class="commits-title">Recent commits</div>
+                    @for (c of repo.recentCommits; track c.hash) { <div class="commit"><span class="commit-hash">{{ c.hash }}</span><span class="commit-msg">{{ c.message }}</span></div> }
+                  </div>
+                }
+              }
+            </div>
+          }
+        }
+      </div>
+    }
+
+    @if (ws.screenshots) {
+      <div class="screenshots">
+        <div class="screenshots-header"><h3>QA screenshots</h3><div class="count">{{ ws.screenshots.length }} file{{ ws.screenshots.length === 1 ? '' : 's' }}</div></div>
+        @if (!ws.screenshots.length) { <div class="screenshots-empty">No screenshots captured yet.</div> }
+        @else {
+          <div class="screenshot-grid">
+            @for (s of shots(ws.slug); track s.name; let i = $index) {
+              <div class="screenshot" (click)="shot.set({ slug: ws.slug, i: i })">
+                <img [src]="shotUrl(ws.slug, s.name)" loading="lazy" [alt]="s.name">
+                <div class="smeta"><div class="filename">{{ s.name }}</div><div>{{ rel(s.mtime) }}</div></div>
+              </div>
+            }
+          </div>
+        }
+      </div>
+    }
+  </div>
+}
+
+@if (current(); as c) {
+  <div class="shot-modal" (click)="closeShotOnBackdrop($event)">
+    <button class="shot-close" (click)="shot.set(null)" title="Close (Esc)">&times;</button>
+    <button class="shot-nav" (click)="step(-1)" title="Previous (←)">&#8249;</button>
+    <div class="shot-stage"><img [src]="c.url" [alt]="c.name"><div class="shot-caption"><span>{{ c.name }}</span><span>{{ c.pos }}</span></div></div>
+    <button class="shot-nav" (click)="step(1)" title="Next (→)">&#8250;</button>
+  </div>
+}

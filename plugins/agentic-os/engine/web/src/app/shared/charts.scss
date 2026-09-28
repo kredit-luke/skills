@@ -1,0 +1,20 @@
+:host { display: block; }
+.chart { position: relative; }
+svg { width: 100%; display: block; overflow: visible; }
+.grid { stroke: var(--line-soft, #E8EAF2); stroke-width: 1; }
+.axis { font-family: var(--font-mono); font-size: 10px; fill: var(--ink-faint); }
+.hit { fill: transparent; }
+.hit.on { fill: rgba(11, 29, 111, .05); }
+.line { fill: none; stroke-width: 2; vector-effect: non-scaling-stroke; }
+.threshold { stroke: #D64545; stroke-dasharray: 4 4; stroke-width: 1; vector-effect: non-scaling-stroke; }
+.thr { fill: #B23A3A; }
+.tip {
+  position: absolute; top: 4px; min-width: 150px; pointer-events: none; z-index: 5;
+  background: var(--brand-900); color: var(--on-brand); border-radius: 8px; padding: 8px 10px; font-size: 12px;
+  box-shadow: var(--shadow-lg);
+}
+.tip b { display: block; margin-bottom: 4px; font-weight: 600; }
+.tip div { display: flex; align-items: center; gap: 6px; line-height: 1.6; }
+.tip i { width: 9px; height: 9px; border-radius: 2px; flex: none; }
+.tip span { margin-left: auto; padding-left: 12px; font-family: var(--font-mono); }
+.tip .tot { border-top: 1px solid rgba(255,255,255,.15); margin-top: 3px; padding-top: 3px; }

@@ -1,0 +1,28 @@
+.changes { padding: 10px 14px 18px; }
+.ch-h { display: flex; align-items: center; gap: 8px; font-size: 13px; color: var(--ink-soft); padding: 2px 2px 10px; }
+.ch-h b { color: var(--ink); }
+.live { font-size: 12px; color: var(--text-muted); display: inline-flex; align-items: center; gap: 6px; }
+.grow { flex: 1; }
+.scope { border: 1px solid var(--border); border-radius: 10px; margin-bottom: 12px; overflow: hidden; background: var(--surface); }
+.sc-h { display: flex; align-items: center; gap: 8px; padding: 9px 12px; background: var(--paper-2); border-bottom: 1px solid var(--border); flex-wrap: wrap; }
+.sc-h .repo { font-family: var(--font-mono); font-size: 13px; }
+.sc-h .base { font-size: 12px; color: var(--text-muted); cursor: help; }
+.sc-h a.btn { text-decoration: none; }
+.tot { font-family: var(--font-mono); font-size: 12px; }
+.add { color: #1E7F46; font-family: var(--font-mono); font-size: 12px; }
+.del { color: #B23A3A; font-family: var(--font-mono); font-size: 12px; }
+.commits { padding: 6px 12px; border-bottom: 1px solid var(--line-soft); font-size: 12.5px; color: var(--ink-soft); }
+.commits code { font-family: var(--font-mono); font-size: 11.5px; color: var(--brand-700); margin-right: 6px; }
+.file { display: flex; align-items: center; gap: 8px; padding: 6px 12px; cursor: pointer; border-top: 1px solid var(--line-soft); font-size: 12.5px; }
+.file:first-of-type { border-top: 0; }
+.file:hover { background: var(--paper-2); }
+.file.open { background: var(--blue-bg); }
+.fp { font-family: var(--font-mono); font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+.st { font-family: var(--font-mono); font-size: 10.5px; font-weight: 700; width: 22px; text-align: center; border-radius: 4px; padding: 1px 0; flex: none; }
+.s-m { background: #FDF3E1; color: #9A6412; }
+.s-a, .s-new { background: #E4F5EA; color: #1E7F46; }
+.s-d { background: #FDECEC; color: #B23A3A; }
+.s-r, .s-c { background: var(--blue-bg); color: var(--brand-700); }
+.vs { color: var(--text-faint); text-decoration: none; padding: 0 2px; }
+.vs:hover { color: var(--brand-700); }
+dash-diff { display: block; border-top: 1px solid var(--line-soft); max-height: 520px; overflow: auto; }

@@ -1,0 +1,13 @@
+.panel { margin-bottom: 16px; max-width: 900px; }
+.rows { display: flex; flex-direction: column; }
+.row { display: grid; grid-template-columns: 1fr 260px; gap: 8px 24px; padding: 14px 16px; border-bottom: 1px solid var(--line-soft); align-items: start; }
+.row:last-child { border-bottom: 0; }
+@media (max-width: 700px) { .row { grid-template-columns: 1fr; } }
+.t { font-weight: 600; font-size: 14px; color: var(--ink); }
+.h { font-size: 12.5px; color: var(--ink-soft); line-height: 1.45; margin-top: 3px; }
+.ctl { display: flex; flex-direction: column; gap: 6px; align-items: flex-start; }
+.ctl select { min-width: 160px; }
+.numw { display: inline-flex; align-items: center; gap: 6px; }
+.numw input { width: 90px; }
+.unit { font-size: 12.5px; color: var(--ink-soft); }
+.team { font-size: 11.5px; color: var(--ink-faint); }

@@ -1,0 +1,28 @@
+.stats { margin-bottom: 14px; }
+.panel { margin-bottom: 14px; }
+.chart-b { padding: 12px 16px 10px; }
+.grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
+.grid2 > .panel { margin-bottom: 14px; }
+.seg { display: inline-flex; border: 1px solid var(--border); border-radius: var(--r-pill); padding: 2px; background: var(--surface); }
+.seg button { border: 0; background: transparent; padding: 3px 10px; border-radius: var(--r-pill); font-size: 12px; cursor: pointer; color: var(--ink-soft); }
+.seg button.on { background: var(--brand-800); color: #fff; }
+.ty { font-size: 12px; color: var(--text-muted); }
+.legend { display: flex; flex-wrap: wrap; gap: 6px 14px; margin-top: 8px; font-size: 12px; color: var(--ink-soft); }
+.legend i, .dot { display: inline-block; width: 10px; height: 10px; border-radius: 2px; margin-right: 6px; vertical-align: -1px; }
+.tbl { width: 100%; border-collapse: collapse; font-size: 13px; }
+.tbl th { text-align: left; font-family: var(--font-mono); font-size: 10.5px; letter-spacing: .1em; text-transform: uppercase; color: var(--ink-soft); font-weight: 500; padding: 8px 16px 6px; }
+.tbl td { padding: 7px 16px; border-top: 1px solid var(--line-soft); }
+.tbl .num { text-align: right; font-family: var(--font-mono); font-size: 12px; white-space: nowrap; }
+.tbl .proj { font-family: var(--font-mono); font-size: 12px; max-width: 220px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.bar-col { width: 32%; }
+.bar-col.wide { width: 50%; }
+.share { display: inline-flex; width: calc(100% - 40px); height: 8px; background: var(--paper-2); border-radius: 99px; overflow: hidden; vertical-align: middle; }
+.bar-col.wide .share { width: 100%; }
+.share i { display: block; height: 100%; }
+.pct { display: inline-block; width: 36px; text-align: right; font-family: var(--font-mono); font-size: 11px; color: var(--text-muted); }
+.usage-block { padding: 6px 4px; }
+.usage-block .t { font-size: 12.5px; font-weight: 650; margin-bottom: 4px; }
+.usage-block ul { list-style: none; display: flex; flex-direction: column; gap: 3px; }
+.usage-block li { font-size: 12.5px; color: var(--text-muted); line-height: 1.4; }
+.foot { padding: 0 2px 20px; }
+@media (max-width: 1000px) { .grid2 { grid-template-columns: 1fr; } }

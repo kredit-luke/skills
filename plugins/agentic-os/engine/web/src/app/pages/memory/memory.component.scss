@@ -1,0 +1,12 @@
+.mem { border-bottom: 1px solid var(--line-soft); }
+.mem:last-child { border-bottom: 0; }
+.mem-h { display: flex; gap: 10px; align-items: flex-start; padding: 9px 8px; cursor: pointer; border-radius: 8px; }
+.mem-h:hover { background: var(--paper-2); }
+.mem-h .arrow { margin-top: 4px; }
+.mem-h .main { flex: 1; min-width: 0; }
+.mem-h .title { font-size: 13.5px; font-weight: 600; display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.mem-h .sub { font-size: 12.5px; color: var(--text-muted); margin-top: 2px; line-height: 1.4; }
+.mem-h .right { font-size: 12px; color: var(--text-faint); white-space: nowrap; }
+.mem-issues { margin: 0 8px 8px 30px; font-size: 12px; color: var(--yellow); background: var(--yellow-bg); border-radius: 7px; padding: 6px 9px; }
+.mem-body { margin: 0 8px 12px 30px; padding: 12px 14px; border: 1px solid var(--border); border-radius: 8px; background: var(--bg); }
+.mem-acts { display: flex; gap: 6px; justify-content: flex-end; margin-top: 12px; }

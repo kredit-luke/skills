@@ -1,0 +1,59 @@
+/* ============================================================
+   Workspace dashboard: brand token contract + neutral defaults.
+
+   These are ALL the brand-level tokens the dashboard reads. A team's brand
+   (.claude/dashboard/brand/theme.css, served at /ds/theme.css and loaded
+   after this file) overrides any of them; anything it leaves out keeps the
+   neutral value here. styles.scss maps these onto the dashboard's own
+   vocabulary (--bg, --text, --green, --purple, ...), so the pages never
+   name a brand color directly.
+   ============================================================ */
+:root {
+  /* ---- neutrals: page, surfaces, text, borders ---- */
+  --paper:      #F8FAFC;   /* page background */
+  --paper-2:    #F1F5F9;   /* subtle raised surface */
+  --paper-3:    #E2E8F0;   /* deeper tint */
+  --ink:        #0F172A;   /* primary text */
+  --ink-soft:   #475569;   /* secondary text */
+  --ink-faint:  #94A3B8;   /* captions */
+  --line:       #E2E8F0;   /* default border */
+  --line-soft:  #F1F5F9;   /* faint divider */
+  --link:       #3730A3;
+
+  /* ---- brand ramp: sidebar (900), primary actions (800), accents (700) ---- */
+  --brand-900:     #1E1B4B;
+  --brand-800:     #3730A3;
+  --brand-700:     #4338CA;
+  --brand-line:    #312E81;   /* borders on brand-900 surfaces */
+  --on-brand:      #EEF2FF;   /* text on brand-900 */
+  --on-brand-soft: #A5B4FC;   /* secondary text on brand-900 */
+
+  /* ---- status ---- */
+  --ok:        #22C55E;   /* bright: dots, decoration, on dark */
+  --ok-strong: #15803D;   /* AA text/icons on light */
+  --ok-soft:   #DCFCE7;   /* tint surface */
+  --risk:      #DC2626;
+  --warn:      #D97706;
+
+  /* ---- type ---- */
+  --font-body:    ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  --font-display: var(--font-body);
+  --font-mono:    ui-monospace, SFMono-Regular, "Cascadia Mono", Menlo, Consolas, monospace;
+  --ls-display:   -0.02em;
+
+  /* ---- shape, depth, motion ---- */
+  --r:      10px;
+  --r-sm:   6px;
+  --r-lg:   16px;
+  --r-pill: 999px;
+  --shadow-sm:        0 1px 2px rgba(15, 23, 42, .06);
+  --shadow:           0 2px 8px rgba(15, 23, 42, .08);
+  --shadow-md:        0 6px 16px rgba(15, 23, 42, .10);
+  --shadow-lg:        0 16px 40px rgba(15, 23, 42, .16);
+  --shadow-btn:       0 1px 2px rgba(15, 23, 42, .12);
+  --shadow-btn-hover: 0 4px 10px rgba(55, 48, 163, .22);
+  --ring:     0 0 0 4px rgba(67, 56, 202, .25);
+  --ease:     cubic-bezier(.22, .61, .36, 1);
+  --dur:      200ms;
+  --dur-fast: 120ms;
+}

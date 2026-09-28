@@ -1,0 +1,15 @@
+.apps-layout { display: grid; grid-template-columns: minmax(0, 1fr) minmax(280px, 360px); gap: 1rem; align-items: start; }
+@media (max-width: 1100px) { .apps-layout { grid-template-columns: 1fr; } }
+.stacks { display: grid; grid-template-columns: repeat(auto-fill, minmax(230px, 1fr)); gap: 0.6rem; padding: 0.7rem; }
+.stack { background: var(--paper); border: 1px solid var(--line); border-radius: 12px; padding: 0.8rem; display: flex; flex-direction: column; gap: 0.5rem; }
+.stack .t { font-family: var(--font-display); font-weight: 700; font-size: 16px; display: flex; align-items: center; justify-content: space-between; gap: 0.4rem; }
+.stack .d { font-size: 0.72rem; color: var(--text-muted); }
+.stack .dots { display: flex; gap: 4px; }
+.job { padding: 0.55rem 0.6rem; border-radius: 8px; cursor: pointer; }
+.job:hover { background: var(--surface-hover); }
+.job .t { display: flex; align-items: center; gap: 0.5rem; font-size: 0.8rem; font-weight: 550; }
+.job .d { font-size: 0.68rem; color: var(--text-muted); margin-top: 0.15rem; }
+.job ol { list-style: none; margin-top: 0.35rem; display: flex; flex-direction: column; gap: 0.15rem; }
+.job li { font-size: 0.7rem; color: var(--text-muted); display: flex; gap: 0.4rem; align-items: baseline; }
+.job li.failed { color: var(--red); }
+.job li .m { width: 0.9rem; text-align: center; flex-shrink: 0; }

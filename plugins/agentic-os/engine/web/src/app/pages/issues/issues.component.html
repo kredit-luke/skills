@@ -1,0 +1,114 @@
+<dash-page-header [eyebrow]="api.trackerLabel()" title="Issues" [sub]="api.copy('issuesSub', 'Issues in flight. Implement the ones ready for work, or ask Claude to explain any issue (read-only).')">
+  <span class="ty">{{ meta() }}</span>
+  <button class="btn ghost sm" (click)="load(true)" [disabled]="loading()">{{ loading() ? 'Refreshing…' : 'Refresh' }}</button>
+</dash-page-header>
+
+@if (error() && !resp()) {
+  <div class="empty">{{ error() }}</div>
+} @else if (resp() && !resp()!.tracker.configured) {
+  <div class="panel connect-card">
+    <div class="panel-h"><h2>No issue tracker configured</h2></div>
+    <div class="cc-b md tight">
+      <p>Set <code>issues.kind</code> in <code>.claude/dashboard/workspace.json</code> to your tracker (for example <code>"linear"</code>) with its settings, then reload. Ask Claude to set it up if you're not sure what goes there.</p>
+    </div>
+  </div>
+} @else if (resp() && !resp()!.tracker.supported) {
+  <div class="panel connect-card">
+    <div class="panel-h"><h2>{{ resp()!.tracker.label }} isn't supported yet</h2></div>
+    <div class="cc-b md tight">
+      <p>This dashboard has no adapter for <code>{{ resp()!.tracker.kind }}</code>. Adding one is a single file in <code>dashboard/server/src/issues/</code> (see <code>index.ts</code> there); Claude can write it.</p>
+    </div>
+  </div>
+} @else if (resp() && !resp()!.connected && resp()!.connect; as help) {
+  <div class="panel connect-card">
+    <div class="panel-h"><h2>{{ help.title }}</h2></div>
+    <div class="cc-b">
+      <ol>
+        @for (s of help.steps; track $index) { <li class="md tight" [innerHTML]="s | md | trustedHtml"></li> }
+      </ol>
+      @if (help.needsKey) {
+        <form class="row-in" (submit)="$event.preventDefault(); connect()">
+          <input type="password" [value]="key()" (input)="key.set($any($event.target).value)" [placeholder]="help.placeholder" autocomplete="off" spellcheck="false">
+          <button class="btn primary" type="submit">Connect</button>
+        </form>
+        <div class="form-err">{{ connectErr() }}</div>
+      } @else {
+        <button class="btn sm" type="button" (click)="load(true)">Check again</button>
+      }
+    </div>
+  </div>
+} @else if (resp() && !resp()!.connected) {
+  <div class="empty">{{ resp()!.tracker.label }} isn't connected.</div>
+} @else if (resp()) {
+  <div class="issues-bar">
+    <div class="seg">
+      @for (t of teams(); track t) { <button type="button" [class.on]="t === team()" (click)="setTeam(t)">{{ t }}</button> }
+    </div>
+    <input class="search" [value]="q()" (input)="setQ($any($event.target).value)" placeholder="Search id, title, label, assignee…" autocomplete="off">
+    <label class="chk"><input type="checkbox" [checked]="mine()" (change)="setMine($any($event.target).checked)"> Assigned to me</label>
+    @if (filtersActive()) { <button class="btn ghost sm" (click)="resetFilters()">Reset filters</button> }
+  </div>
+  @if (resp()!.error) { <div class="warn-note" style="margin-bottom:12px">{{ resp()!.tracker.label }}: {{ resp()!.error }} (showing the last list that loaded)</div> }
+  <div class="board" [style.--cols]="lanes().length">
+    @for (lane of lanes(); track lane.state) {
+      <div class="col-lane">
+        <div class="lane-h"><span class="lane-dot" [style.background]="lane.color"></span><span class="nm">{{ lane.state }}</span><span class="ct">{{ lane.items.length }}</span></div>
+        @for (i of lane.items; track i.id) {
+          <div class="issue" [class.sel]="detailId() === i.id">
+            <div class="top"><a class="idl" [href]="i.url" target="_blank" rel="noopener">{{ i.id }}</a><span class="team">{{ i.team }}</span>
+              @if (i.hasWorktree) { <span class="tag routine" title="A worktree for this ticket exists">worktree</span> }
+              @if (i.priority) { <span [class]="priCls(i)" title="Priority">{{ i.priorityLabel }}</span> }</div>
+            <a class="ttl" href="#" (click)="openDetail(i, $event)">{{ i.title }}</a>
+            @if (i.labels.length) {
+              <div class="labels">@for (l of i.labels; track l.name) { <span class="lbl"><i [style.background]="l.color"></i>{{ l.name }}</span> }</div>
+            }
+            <div class="meta"><span class="who">{{ i.assignee || 'Unassigned' }}</span>@if (i.project) { · {{ i.project }} } · {{ rel(i.updatedAt) }}</div>
+            <div class="acts">
+              @if (i.canImplement) {
+                @if (running(i)) {
+                  <a class="btn sm" [routerLink]="['/runs', i.lastRun!.id]"><span class="spin"></span> Implementing… view run</a>
+                } @else {
+                  <button class="btn primary sm" (click)="implementAuto(i)" title="Runs /implement here. Its questions come to you as Needs your answer, unless you tick “decide on its own” in the dialog">Implement</button>
+                  <button class="btn sm" (click)="implementTerminal(i)" title="Opens an interactive claude session in a terminal so it can ask you questions">In terminal</button>
+                }
+              }
+              <button class="btn ghost sm" (click)="explain(i)" [disabled]="busyTicket() === i.id" title="A read-only Claude run that explains the issue and the code it touches">{{ busyTicket() === i.id ? 'Starting…' : 'Explain' }}</button>
+            </div>
+            @if (i.canImplement) {
+              @if (claudeQueued(i) && !running(i)) { <div class="note warn">Has the Claude label: the scheduled routine may also pick this up.</div> }
+              @if (i.hasWorktree) { <div class="note">A worktree for this ticket already exists; /implement will reuse it.</div> }
+              @if (i.lastRun && !running(i)) { <div class="note">Last dashboard run: <a [routerLink]="['/runs', i.lastRun.id]">{{ i.lastRun.status }}</a> · {{ rel(i.lastRun.startedAt) }}</div> }
+            }
+          </div>
+        } @empty { <div class="lane-empty">Nothing here.</div> }
+      </div>
+    }
+  </div>
+} @else {
+  <div class="empty">Loading…</div>
+}
+
+@if (detailId()) {
+  <div class="side-scrim" (click)="closeDetail()"></div>
+  <aside class="side-panel" role="dialog" aria-label="Issue detail" (keydown.escape)="closeDetail()">
+    <div class="sp-h">
+      <a class="idl" [href]="detail()?.url || detailIssue()?.url" target="_blank" rel="noopener">{{ detailId() }} ↗</a>
+      <span class="grow"></span>
+      <button class="btn ghost sm" (click)="closeDetail()">Close</button>
+    </div>
+    @if (detailErr()) {
+      <div class="err-note">{{ detailErr() }}</div>
+      @if (detailIssue(); as i) { <h2>{{ i.title }}</h2> }
+    } @else if (detail(); as d) {
+      <dash-issue-summary [detail]="d" [worktree]="!!detailIssue()?.hasWorktree" [clamp]="descClamp" />
+      @if (detailIssue(); as i) {
+        <div class="sp-acts">
+          <button class="btn sm" (click)="explain(i)">Explain</button>
+          @if (i.canImplement && !running(i)) { <button class="btn primary sm" (click)="implementAuto(i)">Implement</button> }
+        </div>
+      }
+    } @else {
+      <div class="empty">Loading…</div>
+    }
+  </aside>
+}

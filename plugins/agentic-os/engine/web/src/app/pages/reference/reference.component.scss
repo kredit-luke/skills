@@ -1,0 +1,15 @@
+/* Columns, not a grid: the groups differ a lot in height. */
+.facts { columns: 360px; column-gap: 12px; margin-bottom: 2px; }
+.fact { break-inside: avoid; margin-bottom: 12px; }
+.fact table { width: 100%; border-collapse: collapse; }
+.fact th { text-align: left; font-weight: 600; font-size: 12.5px; color: var(--ink-soft); padding: 7px 10px 7px 16px; vertical-align: top; width: 38%; }
+.fact td { padding: 7px 16px 7px 0; vertical-align: top; }
+.fact tr + tr th, .fact tr + tr td { border-top: 1px solid var(--line-soft); }
+.val { font-family: var(--mono); font-size: 12px; background: var(--paper-2); padding: 1px 6px; border-radius: 4px; cursor: copy; word-break: break-all; }
+.val:hover { background: var(--green-bg); }
+.note { font-size: 11.5px; color: var(--text-muted); margin-top: 3px; }
+.doc .toc { display: flex; flex-wrap: wrap; gap: 4px; padding: 10px 16px; border-bottom: 1px solid var(--line-soft); }
+.doc .toc button { border: 1px solid var(--border); background: var(--surface); border-radius: var(--r-pill); font-size: 11.5px; padding: 2px 9px; cursor: pointer; color: var(--ink-soft); }
+.doc .toc button:hover { border-color: var(--border-strong); color: var(--ink); }
+.doc .body { padding: 16px 20px 40px; }
+.ty { font-size: 12px; color: var(--text-muted); }

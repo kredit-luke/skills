@@ -1,0 +1,14 @@
+{
+  "name": "lhoezee-skills",
+  "description": "Claude Code plugins by Luke Hoezee",
+  "owner": {
+    "name": "Luke Hoezee"
+  },
+  "plugins": [
+    {
+      "name": "agentic-os",
+      "source": "./plugins/agentic-os",
+      "description": "Set up an agentic OS for your team: a multi-repo Claude Code workspace with a local dashboard (runs, issues, apps, machine setup, docs, links) tailored to your stack, tools and brand."
+    }
+  ]
+}

@@ -1,0 +1,192 @@
+@if (loadError()) {
+  <div class="panel"><div class="empty" style="padding:3rem">{{ loadError() }}</div></div>
+} @else if (run(); as r) {
+  <div class="panel detail">
+    <div class="detail-h">
+      <div class="ttl">
+        <span class="status-badge" [class]="'status-badge ' + st()!.cls">@if (r.status === 'running') { <span class="spin"></span> }{{ st()!.label }}</span>
+        @if (titleDraft() !== null) {
+          <form class="rename" (submit)="$event.preventDefault(); saveTitle()">
+            <input #titleInput [value]="titleDraft()" (input)="titleDraft.set($any($event.target).value)" (keydown.escape)="cancelTitle()"
+              maxlength="120" aria-label="Run title" autocomplete="off">
+            <button class="btn primary sm" type="submit" [disabled]="renaming() || !titleDraft()!.trim()">Save</button>
+            <button class="btn ghost sm" type="button" (click)="cancelTitle()">Cancel</button>
+          </form>
+        } @else {
+          <span class="name" (dblclick)="editTitle()">{{ r.label }}</span>
+          <button class="btn ghost sm rename-btn" type="button" (click)="editTitle()" title="Rename this run" aria-label="Rename this run">✎</button>
+        }
+      </div>
+      <div class="kv">
+        <span>workspace <b>{{ r.workspace }}</b>@if (workWs(); as w) { @if (w.slug !== r.workspace) { <b title="Started here, then worked in this worktree"> → {{ w.slug }}</b> } }</span>
+        <span title="The model the CLI actually used">model <b>{{ r.resolvedModel || r.model || 'default' }}</b></span>
+        <span>effort <b>{{ r.effort || 'default' }}</b></span>
+        <span>permissions <b>{{ r.planMode ? 'plan (read-only)' : r.permissionMode }}</b>
+          @if (ranAs()) { <span class="tag bad" title="The CLI ran this session in a different mode than requested">ran as {{ ranAs() }}</span> }</span>
+        <span>turns <b>{{ r.turns || 1 }}</b></span>
+        <span>time <b>{{ elapsed() }}</b></span>
+        <span title="What this run would cost on the API. On a subscription it draws on your usage limits instead; the cap only stops runaways.">api-equiv <b>{{ money(r.costUsd) }}{{ r.budgetUsd ? ' / ' + money(r.budgetUsd) + ' cap' : '' }}</b></span>
+        <span>tools <b>{{ r.toolCalls || 0 }}</b></span>
+        <span>started <b>{{ started(r) }}</b></span>
+        <span>updated <b>{{ rel(r.endedAt || r.turnStartedAt || r.startedAt) }}</b></span>
+        @if (r.trigger && r.trigger !== 'manual') { <span>trigger <b>{{ r.trigger }}</b></span> }
+      </div>
+      <div class="prompt-box">{{ r.prompt }}</div>
+      <dash-attachment-list [runId]="r.id" [files]="r.attachments || []" [removed]="!!r.attachmentsRemovedAt" />
+      @if (r.warning) {
+        <div class="warn-note"><b>Background work stopped.</b> {{ r.warning }} Headless runs end when Claude's turn ends; for long or ongoing work, continue in a terminal.</div>
+      }
+      @if (r.status === 'failed' && r.error) { <div class="err-note">{{ r.error }}</div> }
+      <div class="actions">
+        @if (r.status === 'running' || r.status === 'waiting') { <button class="btn danger" (click)="cancel()">{{ r.status === 'waiting' ? 'Cancel run' : 'Cancel turn' }}</button> }
+        @if (r.status !== 'handedOff') {
+          <button class="btn" (click)="terminal()" title="Open this conversation in a terminal and keep going interactively. The dashboard stops driving it.">Continue in terminal</button>
+        }
+        <button class="btn ghost" (click)="copyResume()" [title]="resumeCmd()">Copy resume cmd</button>
+        <span class="grow"></span>
+        <button class="btn" [class.flag-on]="r.flagged" [attr.aria-pressed]="!!r.flagged" (click)="toggleFlag()"
+          title="Keep this run in Focus until you clear the flag or rate it">{{ r.flagged ? '⚑ Needs me' : '⚐ Needs me' }}</button>
+        @if (r.status !== 'running' && r.status !== 'waiting') {
+          <div class="rate" [class.pending]="review()" role="group" aria-label="Rate this run"
+            title="Rating clears it from Focus and builds each preset's track record. Click again to undo.">
+            <span class="lbl">{{ r.verdict === 'good' ? 'Rated good' : r.verdict === 'needed-fix' ? 'Rated needed fix' : 'Rate this run' }}</span>
+            <button class="btn sm" [class.primary]="r.verdict === 'good'" [attr.aria-pressed]="r.verdict === 'good'" (click)="verdict('good')">✓ Good</button>
+            <button class="btn sm" [class.danger]="r.verdict === 'needed-fix'" [attr.aria-pressed]="r.verdict === 'needed-fix'" (click)="verdict('needed-fix')">✕ Needed fix</button>
+          </div>
+        }
+      </div>
+      @if (terminalCmd()) { <div class="hint cmd">Terminal command: <code>{{ terminalCmd() }}</code></div> }
+    </div>
+
+    @if (thread().agents.length) {
+      <div class="agent-strip" aria-label="Subagents">
+        <span class="strip-lbl">Subagents <b>{{ thread().agents.length }}</b></span>
+        @for (a of thread().agents; track a.id; let last = $last) {
+          <button type="button" class="chip" [class]="'chip ' + a.status" (click)="jumpTo(a)" [title]="a.description">
+            {{ a.agentType || 'agent' }} <span class="ic">{{ agentIcon(a) }}</span>
+          </button>
+          @if (!last) { <span class="arrow-sep">→</span> }
+        }
+      </div>
+    }
+
+    @if (issue(); as iss) {
+      <div class="ticket-strip">
+        @if (iss.url) { <a class="badge badge-issue" [href]="iss.url" target="_blank" rel="noopener">{{ iss.id }} ↗</a> } @else { <span class="badge badge-issue">{{ iss.id }}</span> }
+        @if (iss.detail; as d) {
+          <button type="button" class="t" (click)="tab.set('issue')" title="Show the issue">{{ d.title }}</button>
+          <span class="f">{{ d.state }}</span><span class="f">{{ d.assignee || 'Unassigned' }}</span>
+        } @else if (iss.error) { <span class="f">{{ iss.error }}</span> }
+        @else { <span class="f">Loading…</span> }
+      </div>
+    }
+
+    <div class="tabs" role="tablist">
+      @if (issue()) {
+        <button type="button" role="tab" [class.on]="view() === 'issue'" [attr.aria-selected]="view() === 'issue'" (click)="tab.set('issue')">Issue</button>
+      }
+      <button type="button" role="tab" [class.on]="view() === 'transcript'" [attr.aria-selected]="view() === 'transcript'" (click)="tab.set('transcript')">Transcript</button>
+      <button type="button" role="tab" [class.on]="view() === 'changes'" [attr.aria-selected]="view() === 'changes'" (click)="tab.set('changes')">Changes @if (changedFiles()) { <span class="n">{{ changedFiles() }}</span> }</button>
+      @if (workWs()) {
+        <button type="button" role="tab" [class.on]="view() === 'apps'" [attr.aria-selected]="view() === 'apps'" (click)="tab.set('apps')">Apps @if (appsBadge(); as b) { <span class="n" [class.up]="b.up">{{ b.text }}</span> }</button>
+      }
+    </div>
+    @if (view() === 'issue' && issue(); as iss) {
+      <div class="tab-body issue-tab">
+        @if (iss.detail; as d) {
+          <dash-issue-summary [detail]="d" [worktree]="!!workWs()?._ticketId" />
+          @if (iss.url) { <div><a class="btn sm" [href]="iss.url" target="_blank" rel="noopener">Open in {{ api.trackerLabel() }} ↗</a></div> }
+        } @else if (iss.error) { <div class="err-note">{{ iss.error }}</div> }
+        @else { <div class="empty">Loading…</div> }
+      </div>
+    }
+    @if (view() === 'apps' && workWs(); as w) {
+      <dash-workspace-apps class="tab-body apps-tab" [workspace]="w" [toolbar]="true" />
+    }
+    <div class="transcript" #transcript (scroll)="onScroll()" [hidden]="view() !== 'transcript'">
+      <ng-container *ngTemplateOutlet="itemsTpl; context: { $implicit: thread().items }" />
+      @if (!thread().items.length) {
+        <div class="empty">{{ r.status === 'running' ? 'Starting…' : 'No transcript recorded.' }}</div>
+      }
+      @if (review()) {
+        <div class="rate-bar" role="group" aria-label="Rate this run">
+          <span class="q"><b>Finished.</b> Did it do what you asked?</span>
+          <button class="btn primary sm" (click)="verdict('good')">✓ Good</button>
+          <button class="btn sm" (click)="verdict('needed-fix')">✕ Needed fix</button>
+          <span class="hint">Rating clears it from Focus (unrated runs drop out after a day). Or reply below to keep going.</span>
+        </div>
+      }
+    </div>
+    <!-- Always mounted (hidden when not selected) so the tab label can show the file count. -->
+    <dash-run-changes [hidden]="view() !== 'changes'" [runId]="r.id" [running]="r.status === 'running'" (count)="changedFiles.set($event)" />
+
+    <dash-run-composer [run]="r" (changed)="onRunChanged($event)" />
+  </div>
+} @else {
+  <div class="panel"><div class="empty" style="padding:3rem">Loading…</div></div>
+}
+
+<ng-template #itemsTpl let-items>
+  @for (it of items; track it.key) {
+    @switch (it.kind) {
+      @case ('text') { <div class="ev text md tight" [innerHTML]="it.text | md | trustedHtml"></div> }
+      @case ('sys') { <div class="ev sys">{{ it.text }}</div> }
+      @case ('turn') { <div class="ev turn-h">Turn {{ it.turn }}{{ it.planMode ? ' · plan mode' : '' }}</div> }
+      @case ('divider') { <div class="ev turn-h cont">{{ it.text }}</div> }
+      @case ('human') {
+        <div class="ev human"><span class="who">You{{ it.from === 'terminal' ? ' · in terminal' : '' }}</span>{{ it.text }}
+          @if (it.attachments.length) { <dash-attachment-list [runId]="run()!.id" [files]="it.attachments" [removed]="!!run()!.attachmentsRemovedAt" [dark]="true" /> }
+        </div>
+      }
+      @case ('result') {
+        @if (it.ok && !it.text) {
+          <div class="ev sys">Turn ended{{ it.durationMs != null ? ' · ' + d(it.durationMs) : '' }}</div>
+        } @else {
+        <div class="ev result" [class.bad]="!it.ok">
+          <div class="h">{{ it.ok ? 'Result' : 'Failed · ' + (it.subtype || 'error') }}{{ it.durationMs != null ? ' · ' + d(it.durationMs) : '' }}{{ it.numTurns ? ' · ' + it.numTurns + ' turns' : '' }}</div>
+          <div class="md tight" [innerHTML]="it.text | md | trustedHtml"></div>
+        </div>
+        }
+      }
+      @case ('tool') {
+        <div class="ev tool" [class.err]="it.isError" [class.open]="isOpen(it.key)" (click)="toggle(it.key)">
+          <div class="tl"><span class="mk">{{ !it.done ? (active() ? '…' : '·') : it.isError ? '✕' : '✓' }}</span><b>{{ it.name }}</b> <span class="lb">{{ it.label }}</span>
+            @if (toolStat(it.name, it.input); as s) { <span class="es">{{ s }}</span> }
+            @if (it.bgStatus) { <span class="tag" [class.amber]="it.bgStatus === 'killed' || it.bgStatus === 'failed'">bg {{ it.bgStatus }}</span> }</div>
+          @if (isOpen(it.key)) {
+            @if (toolDiff(it.name, it.input); as d) {
+              <div class="edit-diff" (click)="$event.stopPropagation()"><dash-diff [diff]="d" /></div>
+              @if (it.isError || !it.done) { <div class="out" (click)="$event.stopPropagation()">{{ it.output ?? '(not applied yet)' }}</div> }
+            } @else {
+              <div class="out" (click)="$event.stopPropagation()">{{ it.output ?? '(no output yet)' }}</div>
+            }
+          }
+        </div>
+      }
+      @case ('agent') {
+        @let c = it.card;
+        <div class="agent" [class]="'agent ' + c.status" [attr.data-agent]="c.id">
+          <div class="agent-h" (click)="toggle(it.key)">
+            <span class="arrow" [class.open]="isOpen(it.key)">&#9654;</span>
+            <span class="ic">{{ agentIcon(c) }}</span>
+            <b class="type">{{ c.agentType || 'agent' }}</b>
+            <span class="desc">{{ c.description }}</span>
+            <span class="grow"></span>
+            <span class="meta">{{ agentStatus(c) }} · {{ steps(c) }} step{{ steps(c) === 1 ? '' : 's' }}{{ c.tokens ? ' · ' + tok(c.tokens) + ' tokens' : '' }}{{ c.durationMs ? ' · ' + d(c.durationMs) : '' }}</span>
+          </div>
+          @if ((c.status === 'running' || c.status === 'starting') && c.activity) { <div class="activity"><span class="spin"></span> {{ c.activity }}</div> }
+          @if (c.summary && (c.status === 'completed' || c.status === 'failed')) {
+            <div class="report md tight" [class.clamp]="!isOpen(it.key)" [innerHTML]="c.summary | md | trustedHtml"></div>
+          }
+          @if (isOpen(it.key)) {
+            <div class="agent-b">
+              @if (c.prompt) { <details class="instr"><summary>Instructions</summary><div class="prompt-box">{{ c.prompt }}</div></details> }
+              <ng-container *ngTemplateOutlet="itemsTpl; context: { $implicit: c.items }" />
+              @if (!c.items.length) { <div class="empty">No steps recorded{{ c.status === 'running' ? ' yet' : '' }}.</div> }
+            </div>
+          }
+        </div>
+      }
+    }
+  }
+</ng-template>

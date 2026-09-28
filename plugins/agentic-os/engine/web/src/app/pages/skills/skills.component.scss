@@ -1,0 +1,18 @@
+.presets { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 0.6rem; }
+.preset { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: 12px 14px; box-shadow: var(--shadow-sm); display: flex; flex-direction: column; gap: 8px; }
+.p-h { display: flex; align-items: center; gap: 10px; }
+.ico { width: 30px; height: 30px; border-radius: var(--r-sm); background: var(--purple-bg); color: var(--brand-700); display: grid; place-items: center; flex: none; }
+.n { font-family: var(--font-display); font-weight: 700; font-size: 15px; }
+.m { font-family: var(--mono); font-size: 11px; color: var(--text-muted); }
+.d { font-size: 12.5px; color: var(--ink-soft); line-height: 1.4; }
+.pr { font-family: var(--mono); font-size: 11.5px; background: var(--paper-2); border-radius: 6px; padding: 5px 8px; color: var(--brand-800); white-space: pre-wrap; overflow-wrap: anywhere; }
+.st { font-size: 11.5px; color: var(--ink-faint); }
+.group-title .ty { margin-left: 6px; letter-spacing: 0; text-transform: none; }
+.filter { width: 320px; max-width: 100%; margin-bottom: 10px; }
+.skill { display: flex; align-items: center; gap: 12px; padding: 9px 10px; border-radius: 8px; }
+.skill + .skill { border-top: 1px solid var(--line-soft); }
+.skill:hover { background: var(--paper); }
+.skill .main { flex: 1; min-width: 0; }
+.skill .t { font-family: var(--mono); font-weight: 600; font-size: 13px; color: var(--brand-800); }
+.skill .ah { font-weight: 400; color: var(--ink-faint); font-size: 11.5px; margin-left: 6px; }
+.skill .sub { font-size: 12.5px; color: var(--ink-soft); margin-top: 2px; line-height: 1.4; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }

@@ -1,0 +1,63 @@
+.summary { display: flex; gap: 2rem; margin-bottom: 1.25rem; }
+.summary .stat { display: flex; align-items: baseline; gap: 0.4rem; }
+.summary .number { font-family: var(--font-display); font-size: 28px; font-weight: 800; letter-spacing: var(--ls-display); }
+.summary .label { font-size: 0.8rem; color: var(--text-muted); }
+.summary .number.green { color: var(--green); } .summary .number.red { color: var(--red); } .summary .number.muted { color: var(--text-muted); }
+
+.workspace { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); margin-bottom: 1.25rem; overflow: hidden; box-shadow: var(--shadow-sm); }
+.workspace-header { display: flex; align-items: center; justify-content: space-between; gap: 1rem; padding: 1rem 1.25rem; border-bottom: 1px solid var(--border); cursor: pointer; user-select: none; flex-wrap: wrap; }
+.workspace-header:hover { background: var(--surface-hover); }
+.workspace-header h2 { font-family: var(--font-display); font-size: 18px; font-weight: 700; letter-spacing: -.01em; display: flex; align-items: center; gap: 0.5rem; }
+.workspace-header .path { font-size: 0.75rem; color: var(--text-muted); font-family: var(--mono); overflow-wrap: anywhere; }
+.ws-right { display: flex; align-items: center; gap: 0.75rem; cursor: default; }
+.count { font-size: 0.75rem; color: var(--text-muted); }
+
+.ws-details { border-top: 1px solid var(--border); }
+.ws-details-loading { padding: 1.5rem; text-align: center; color: var(--text-muted); font-size: 0.8rem; }
+.repo { border-top: 1px solid var(--border); }
+.repo:first-child { border-top: none; }
+.repo-header { display: flex; align-items: center; justify-content: space-between; padding: 0.75rem 1.25rem; cursor: pointer; user-select: none; }
+.repo-header:hover { background: var(--surface-hover); }
+.repo-left { display: flex; align-items: center; gap: 0.6rem; }
+.repo-name { font-size: 0.85rem; font-weight: 500; }
+.repo-branch { font-family: var(--mono); font-size: 0.7rem; color: var(--brand-700); background: var(--purple-bg); padding: 0.1rem 0.4rem; border-radius: 4px; }
+.repo-right { display: flex; align-items: center; gap: 0.6rem; font-size: 0.7rem; }
+.repo-ahead { color: var(--green); } .repo-behind, .repo-changes { color: var(--yellow); } .repo-changes { font-weight: 500; } .repo-clean { color: var(--text-muted); }
+.file-list { padding: 0 1.25rem 0.5rem 2.5rem; }
+.file-row { display: flex; align-items: center; gap: 0.5rem; padding: 0.3rem 0.5rem; border-radius: 4px; cursor: pointer; font-size: 0.75rem; font-family: var(--mono); }
+.file-row:hover { background: var(--surface-hover); }
+.file-status { font-weight: 700; width: 1.5em; text-align: center; flex-shrink: 0; }
+.file-status.M { color: var(--yellow); } .file-status.A { color: var(--green); } .file-status.D { color: var(--red); } .file-status.U { color: var(--blue); }
+.file-path { color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1; }
+.file-source { font-size: 0.6rem; padding: 0.1rem 0.4rem; border-radius: 3px; flex-shrink: 0; text-transform: uppercase; letter-spacing: 0.04em; }
+.src-committed { background: rgba(96, 165, 250, 0.15); color: var(--blue); }
+.src-uncommitted { background: rgba(250, 204, 21, 0.15); color: var(--yellow); }
+.src-modified { background: #F3EEFF; color: #7C3AED; }
+.src-untracked { background: rgba(148, 163, 184, 0.15); color: var(--text-muted); }
+.diff-empty { font-size: 0.75rem; color: var(--text-muted); padding: 0.5rem; }
+dash-diff { display: block; padding: 0.5rem 0 0.75rem; }
+.commits { padding: 0.5rem 1.25rem 0.75rem 2.5rem; }
+.commits-title { font-size: 0.7rem; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.04em; margin-bottom: 0.35rem; }
+.commit { display: flex; gap: 0.5rem; padding: 0.2rem 0; font-size: 0.75rem; }
+.commit-hash { font-family: var(--mono); color: var(--brand-700); flex-shrink: 0; }
+.commit-msg { color: var(--text-muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+.screenshots { border-top: 1px solid var(--border); padding: 1rem 1.25rem 1.25rem; }
+.screenshots-header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 0.75rem; }
+.screenshots-header h3 { font-size: 0.8rem; font-weight: 600; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.05em; }
+.screenshot-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)); gap: 0.75rem; }
+.screenshot { background: var(--bg); border: 1px solid var(--border); border-radius: 8px; overflow: hidden; display: flex; flex-direction: column; cursor: pointer; transition: border-color 0.15s, transform 0.15s; }
+.screenshot:hover { border-color: var(--purple); transform: translateY(-1px); }
+.screenshot img { width: 100%; aspect-ratio: 16 / 10; object-fit: cover; background: var(--surface); display: block; }
+.smeta { padding: 0.5rem 0.6rem; font-size: 0.7rem; color: var(--text-muted); display: flex; flex-direction: column; gap: 0.15rem; }
+.filename { color: var(--text); font-family: var(--mono); font-size: 0.7rem; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.screenshots-empty { font-size: 0.75rem; color: var(--text-muted); padding: 0.25rem 0; }
+
+.shot-modal { position: fixed; inset: 0; z-index: 1000; background: rgba(7,14,54,.9); display: flex; align-items: center; justify-content: center; gap: 0.5rem; padding: 2rem; }
+.shot-stage { display: flex; flex-direction: column; align-items: center; max-width: 90vw; max-height: 90vh; }
+.shot-stage img { max-width: 86vw; max-height: 82vh; object-fit: contain; border-radius: 8px; background: var(--surface); }
+.shot-caption { margin-top: 0.6rem; display: flex; gap: 1rem; font-size: 0.75rem; color: #ddd; font-family: var(--mono); }
+.shot-nav, .shot-close { background: rgba(255,255,255,0.08); border: 1px solid rgba(255,255,255,0.15); color: #fff; cursor: pointer; border-radius: 8px; }
+.shot-nav { width: 3rem; height: 3rem; font-size: 1.8rem; line-height: 1; flex: none; }
+.shot-nav:hover, .shot-close:hover { background: rgba(255,255,255,0.2); }
+.shot-close { position: absolute; top: 1.25rem; right: 1.25rem; width: 2.4rem; height: 2.4rem; font-size: 1.4rem; line-height: 1; }

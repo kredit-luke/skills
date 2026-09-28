@@ -1,0 +1,4 @@
+/* No brand configured: the neutral defaults in tokens.css apply.
+   A team's brand lives in .claude/dashboard/brand/theme.css, which the server
+   serves here instead: @import its own token files, then set any of the
+   tokens.css variables (e.g. --brand-800: var(--their-primary);). */

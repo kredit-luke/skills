@@ -1,0 +1,69 @@
+<dash-page-header eyebrow="Apps" title="Apps" sub="Start, stop and restart the workspace's apps and stacks in the main workspace. Worktree stacks start from Workspaces." />
+
+@if (data.appsError()) { <div class="warn-note" style="margin-bottom:12px">{{ data.appsError() }}</div> }
+@if (data.appsConfigured() === false) {
+  <div class="panel" style="margin-bottom:14px"><div class="empty md tight" style="padding:2rem">
+    <p>No apps are set up. Describe the workspace's apps in <code>.claude/dashboard/apps.json</code>: each one's folder, port and how it starts (a shell command, or your own launcher script), and optional stacks that start several in order. Ask Claude to write it from your repos.</p>
+  </div></div>
+}
+<div class="apps-layout">
+  <div class="col">
+    <div class="panel">
+      <div class="panel-h"><h2>Stacks · main workspace</h2></div>
+      <div class="stacks">
+        @for (x of stacks(); track x.id) {
+          <div class="stack">
+            <div class="t">{{ x.s.label }}<span class="ty">{{ x.up }}/{{ x.avail.length }} up</span></div>
+            <div class="d">{{ x.s.description }}</div>
+            <div class="dots">@for (a of x.apps; track a.key) { <span [class]="'status-dot ' + dotClass(a)" [title]="a.name"></span> }</div>
+            <div class="app-actions">
+              @if (!x.avail.length) { <span class="ty">not cloned</span> }
+              @else if (x.busy) { <span class="busy-label"><span class="spin"></span>working…</span> }
+              @else {
+                @if (x.up < x.avail.length) { <button class="btn primary sm" (click)="stackAction('start', x.id)">Start{{ x.up ? ' rest' : '' }}</button> }
+                @if (x.up) { <button class="btn danger sm" (click)="stackAction('stop', x.id)">Stop</button> }
+              }
+            </div>
+          </div>
+        } @empty { <div class="empty">{{ data.appsConfigured() === null ? 'Loading…' : 'No stacks in apps.json.' }}</div> }
+      </div>
+    </div>
+
+    @for (g of groups(); track g.g) {
+      <div class="group-title">{{ g.label }}</div>
+      <div class="app-grid">
+        @for (a of g.apps; track a.key) {
+          <div class="app-card" [class.off]="!a.available">
+            <div class="top"><span [class]="'status-dot ' + dotClass(a)"></span>
+              <div class="grow" style="min-width:0"><div class="n">{{ a.name }}</div><div class="ty">{{ a.type }}</div></div>
+              @if (a.url) { <a class="app-url" [class.running]="a.running" [class.stopped]="!a.running" [href]="a.url" target="_blank" rel="noopener">:{{ a.port }}</a> }
+            </div>
+            <dash-app-buttons [app]="a" workspace="main" />
+          </div>
+        }
+      </div>
+    }
+
+  </div>
+
+  <div class="panel">
+    <div class="panel-h"><h2>Activity</h2></div>
+    <div class="panel-b">
+      @for (j of jobs(); track j.id) {
+        <div class="job" (click)="openJob(j)">
+          <div class="t"><span [class]="'sdot ' + jobDot(j)"></span>{{ j.label }}</div>
+          <div class="d">{{ jobMeta(j) }}</div>
+          @for (n of j.notes || []; track $index) { <div class="d">{{ n }}</div> }
+          @if (j.status !== 'succeeded') {
+            <ol>
+              @for (s of j.steps; track $index) {
+                <li [class.failed]="s.status === 'failed'"><span class="m">@if (s.status === 'done') { ✓ } @else if (s.status === 'failed') { ✕ } @else { <span class="spin"></span> }</span>{{ s.label }}{{ s.error ? ': ' + s.error : '' }}</li>
+              }
+            </ol>
+          }
+        </div>
+      } @empty { <div class="empty">Nothing started from here yet.</div> }
+    </div>
+    <div class="hint">Apps keep running after you close this page or restart the dashboard. Click an entry for its log.</div>
+  </div>
+</div>
