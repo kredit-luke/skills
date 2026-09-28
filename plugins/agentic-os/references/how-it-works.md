@@ -20,7 +20,7 @@ A run is a conversation; **each turn is a new `claude -p` process**:
 - **Background work dies with the turn**: anything started with `run_in_background`, cron/loop schedules or monitors is killed when the process exits. The rules forbid it; the server flags runs that tried (`Background work stopped`).
 - **Plan mode** is a per-run switch applied each turn.
 - **Limits**: concurrent runs, and new runs pause when `/usage` says the session or weekly window is past the threshold; optional per-run cap (`--max-budget-usd`). `total_cost_usd` in results is cumulative across resumed turns (don't sum it).
-- **Environment**: runs get the user's environment minus Claude session markers and minus `ANTHROPIC_API_KEY` (so they use the subscription, never silent per-token billing).
+- **Environment**: runs get the user's environment minus Claude session markers. `ANTHROPIC_API_KEY` is also removed when this machine is signed in to a Claude subscription (so a stray key can't silently switch runs to per-token billing), and kept when it isn't (teams on an API key, Bedrock or Vertex). Sign-in state comes from `claude auth status` (`server/src/claude.ts`, cached a minute); runs refuse to start with a clear message while Claude is missing or signed out.
 - **Changes tab**: each turn snapshots every repo's HEAD + `git stash create` + untracked list; the tab diffs against the first snapshot.
 - Restarting the dashboard kills in-flight turns (marked `interrupted`; replying resumes). Apps it started keep running.
 

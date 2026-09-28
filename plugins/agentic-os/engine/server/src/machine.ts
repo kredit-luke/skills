@@ -25,6 +25,7 @@ import path from "node:path";
 import { execFile, spawn } from "node:child_process";
 import { readConfigFile } from "./config.ts";
 import { CATALOG } from "./machine-catalog.ts";
+import { claudeAuth } from "./claude.ts";
 
 const IS_WIN = process.platform === "win32";
 const IS_MAC = process.platform === "darwin";
@@ -376,6 +377,23 @@ class Machine {
             : detail.ok || "",
           install: !ok || tooOld ? installFor(s.install, vars) : signedOut ? installFor(s.auth.signIn, vars, "Sign in") : undefined,
           fix: fixOf(),
+        };
+      }
+
+      case "claude-code": {
+        // Every dashboard run, the usage meters and autocomplete need it installed and signed in.
+        const [v, auth] = await Promise.all([p.probe("claude", ["--version"]), claudeAuth(true)]);
+        const ver = v.ok ? fmtVer(v.out) : null;
+        if (!v.ok || !auth.installed) {
+          return { ...base, label, version: null, status: "missing", detail: detail.missing || "", install: installFor(s.install, vars), fix: fixOf() };
+        }
+        const how = auth.subscription ? "your Claude subscription" : /api.?key/i.test(auth.authMethod || "") ? "an API key" : auth.apiProvider && auth.apiProvider !== "firstParty" ? auth.apiProvider : auth.authMethod || "your account";
+        return {
+          ...base, label, version: ver,
+          status: auth.loggedIn ? "ok" : "missing",
+          detail: auth.loggedIn ? `Signed in with ${how}.` : "Installed but not signed in, so dashboard runs can't start. Sign in opens a terminal; finish in the browser, then Re-check.",
+          install: auth.loggedIn ? undefined : installFor({ label: "Sign in", win: "claude auth login", mac: "claude auth login", linux: "claude auth login" }),
+          fix: auth.loggedIn ? fixOf() : "claude auth login",
         };
       }
 

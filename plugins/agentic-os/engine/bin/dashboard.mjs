@@ -203,6 +203,35 @@ function openBrowser(url) {
   } catch {}
 }
 
+/**
+ * Runs, usage meters and autocomplete all need Claude Code installed and signed in.
+ * Say so now (the dashboard still starts: its Machine page walks through the fix).
+ */
+function warnIfClaudeNotReady() {
+  let out = null;
+  try {
+    out = execFileSync(IS_WIN ? "claude.exe" : "claude", ["auth", "status"], { encoding: "utf-8", stdio: ["ignore", "pipe", "ignore"], timeout: 20000, env: cleanEnv("") });
+  } catch (e) {
+    // Non-zero exit (e.g. signed out) still prints the status JSON; no output at all = not installed.
+    out = e && e.stdout ? String(e.stdout) : null;
+    if (out === null && IS_WIN) {
+      try { out = execFileSync("claude auth status", { encoding: "utf-8", stdio: ["ignore", "pipe", "ignore"], timeout: 20000, shell: true, env: cleanEnv("") }); } catch (e2) { out = e2 && e2.stdout ? String(e2.stdout) : null; }
+    }
+  }
+  if (!out) {
+    console.log("\nHeads up: Claude Code isn't installed (or isn't on PATH). Runs won't work until it is:");
+    console.log(IS_WIN ? "  irm https://claude.ai/install.ps1 | iex" : "  curl -fsSL https://claude.ai/install.sh | bash");
+    console.log("  then sign in: claude auth login   (the Machine page has buttons for both)");
+    return;
+  }
+  let status = null;
+  try { status = JSON.parse(out.slice(out.indexOf("{"))); } catch {}
+  if (status && status.loggedIn === false) {
+    console.log("\nHeads up: Claude Code isn't signed in, so dashboard runs can't start. Sign in with:");
+    console.log("  claude auth login   (or the Sign in button on the Machine page)");
+  }
+}
+
 // ------------------------------------------------------------------ commands
 
 async function start() {
@@ -248,6 +277,7 @@ async function start() {
     process.exit(1);
   }
   console.log(`Dashboard running at ${URL_} (pid ${child.pid}). It keeps running after you close this terminal.`);
+  warnIfClaudeNotReady();
   if (flags.open) openBrowser(URL_);
 }
 

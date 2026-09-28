@@ -12,6 +12,7 @@
 
 import fs from "node:fs";
 import { execFile } from "node:child_process";
+import { claudeEnv } from "./claude.ts";
 
 const USAGE_TTL_MS = 2 * 60 * 1000;
 // Built-in commands that drive the interactive terminal (model pickers, context
@@ -105,7 +106,7 @@ class Usage {
       execFile(
         "claude",
         ["-p", "/usage", "--output-format", "stream-json", "--verbose", "--no-session-persistence"],
-        { timeout: 60000, windowsHide: true, maxBuffer: 16 * 1024 * 1024 },
+        { timeout: 60000, windowsHide: true, maxBuffer: 16 * 1024 * 1024, env: claudeEnv() },
         (err, stdout) => {
           let text = "";
           let commands = null;

@@ -42,7 +42,7 @@ import { Machine, openTerminal } from "./machine.ts";
 import { DocSites } from "./docs.ts";
 import { Memory } from "./memory.ts";
 import { Search } from "./search.ts";
-import { claudeEnv } from "./claude.ts";
+import { claudeAuth, claudeAuthCached, claudeEnv } from "./claude.ts";
 import { reference } from "./reference.ts";
 import { RunChanges } from "./run-changes.ts";
 import { Attachments, MAX_ATTACHMENT_BYTES, contentTypeOf } from "./attachments.ts";
@@ -358,6 +358,7 @@ const launcher = new AppLauncher({
   portOf,
   isUp: checkPort,
 });
+claudeAuth().catch(() => {}); // sign-in state: runs check it before starting
 machine.get().catch(() => {}); // warm caches so the first page load has them
 usage.get().catch(() => {});
 Promise.resolve().then(() => trackers.get().issues(deck.config().issues)).catch(() => {});
@@ -385,6 +386,11 @@ function startOfToday() {
 
 /** Shared guard for manual and scheduled launches (and replies). Returns an error string or null. */
 function launchBlocker(): string | null {
+  // Claude Code itself: a clear message now beats a run that fails on its first turn.
+  const auth = claudeAuthCached();
+  if (!auth || Date.now() - auth.checkedAt > 60000) claudeAuth().catch(() => {}); // refresh for next time
+  if (auth && !auth.installed) return "Claude Code isn't installed on this machine. Open the Machine page to install it.";
+  if (auth && !auth.loggedIn) return "Claude Code isn't signed in. Open the Machine page and click Sign in (it opens a terminal for the browser sign-in), then try again.";
   const { limits } = deck.config();
   if (runs.runningCount() >= limits.maxConcurrentRuns) {
     return `Already ${runs.runningCount()} runs in flight (limit ${limits.maxConcurrentRuns}).`;

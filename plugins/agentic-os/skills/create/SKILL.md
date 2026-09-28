@@ -78,7 +78,7 @@ The dashboard works on its own. Teams usually also want the workflow skills the 
 
 ## 7. Hand over
 
-Tell the user, briefly: the URL, how to start it (`/dashboard` or `node dashboard/bin/dashboard.mjs start`), what to commit (`dashboard/`, `.claude/dashboard/`, `.claude/skills/`, CLAUDE.md, repos.json, .gitignore; never `.claude/ledger/`), what teammates do after pulling (start the dashboard; the Issues page walks them through their own tracker key), and anything left open (a tracker without an adapter, missing tools the Machine page shows). Offer to commit.
+Tell the user, briefly: the URL, how to start it (`/dashboard` or `node dashboard/bin/dashboard.mjs start`), what to commit (`dashboard/`, `.claude/dashboard/`, `.claude/skills/`, CLAUDE.md, repos.json, .gitignore; never `.claude/ledger/`), what teammates do after pulling (install Claude Code and sign in: the Machine page checks both and has buttons for them; start the dashboard; the Issues page walks them through their own tracker key), and anything left open (a tracker without an adapter, missing tools the Machine page shows). Offer to commit.
 
 ## Adding what the engine doesn't have
 

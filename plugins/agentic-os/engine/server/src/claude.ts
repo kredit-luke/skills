@@ -31,15 +31,90 @@ export const CLAUDE_SESSION_ENV = [
  *  - no markers of a Claude Code session the dashboard may have been launched
  *    from (CLAUDE_CODE_CHILD_SESSION alone turns transcript saving off, which
  *    breaks resume);
- *  - no ANTHROPIC_API_KEY, so a stray key in the shell can't silently switch runs
- *    from the subscription to per-token billing.
+ *  - no ANTHROPIC_API_KEY when this machine is signed in to a Claude subscription,
+ *    so a stray key in the shell can't silently switch runs to per-token billing.
+ *    When there's no subscription sign-in (the team uses an API key, Bedrock or
+ *    Vertex), the key stays: it's how Claude authenticates.
  * User-level config such as CLAUDE_CONFIG_DIR is kept.
  */
 export function claudeEnv(base: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv {
   const env = { ...base };
   for (const key of CLAUDE_SESSION_ENV) delete env[key];
-  delete env.ANTHROPIC_API_KEY;
+  if (!authCache || authCache.subscription) delete env.ANTHROPIC_API_KEY;
   return env;
+}
+
+// ------------------------------------------------------------------ sign-in state
+
+export interface ClaudeAuth {
+  /** `claude` runs on this machine. */
+  installed: boolean;
+  /** Signed in some way (subscription, API key, cloud provider). */
+  loggedIn: boolean;
+  /** Signed in to a Claude subscription (claude.ai), not counting an API key in the env. */
+  subscription: boolean;
+  /** e.g. "claude.ai", "api_key": what `claude auth status` reports. */
+  authMethod: string | null;
+  apiProvider: string | null;
+  checkedAt: number;
+}
+
+let authCache: ClaudeAuth | null = null;
+let authInflight: Promise<ClaudeAuth> | null = null;
+const AUTH_TTL_MS = 60 * 1000;
+
+function authStatus(env: NodeJS.ProcessEnv): Promise<{ installed: boolean; data: any }> {
+  return new Promise((resolve) => {
+    const child = spawnClaude(["auth", "status"], { env, windowsHide: true, stdio: ["ignore", "pipe", "pipe"] });
+    let out = "";
+    const timer = setTimeout(() => child.kill(), 20000);
+    child.stdout?.on("data", (d) => (out += d));
+    child.on("error", () => { clearTimeout(timer); resolve({ installed: false, data: null }); });
+    child.on("close", (code) => {
+      clearTimeout(timer);
+      let data = null;
+      try { data = JSON.parse(out.slice(out.indexOf("{"))); } catch {}
+      // A shim that can't find claude exits non-zero with no JSON: not installed.
+      resolve({ installed: data !== null || code === 0, data });
+    });
+  });
+}
+
+/**
+ * Is Claude Code installed and signed in? `claude auth status` (no model call),
+ * cached for a minute. `subscription` is checked with ANTHROPIC_API_KEY removed,
+ * so a key in the environment doesn't hide (or fake) a subscription sign-in.
+ */
+export function claudeAuth(force = false): Promise<ClaudeAuth> {
+  if (authCache && !force && Date.now() - authCache.checkedAt < AUTH_TTL_MS) return Promise.resolve(authCache);
+  if (!authInflight) {
+    const base: NodeJS.ProcessEnv = { ...process.env };
+    for (const key of CLAUDE_SESSION_ENV) delete base[key];
+    const withoutKey = { ...base };
+    delete withoutKey.ANTHROPIC_API_KEY;
+    const asRunP = authStatus(base);
+    authInflight = Promise.all([asRunP, base.ANTHROPIC_API_KEY ? authStatus(withoutKey) : asRunP])
+      .then(([asRun, noKey]) => {
+        const d = asRun.data || {};
+        const nk = noKey.data || {};
+        authCache = {
+          installed: asRun.installed,
+          loggedIn: !!d.loggedIn,
+          subscription: !!nk.loggedIn && nk.authMethod === "claude.ai",
+          authMethod: d.authMethod || null,
+          apiProvider: d.apiProvider || null,
+          checkedAt: Date.now(),
+        };
+        return authCache;
+      })
+      .finally(() => { authInflight = null; });
+  }
+  return authInflight;
+}
+
+/** The last known sign-in state (null until the first check finishes). */
+export function claudeAuthCached(): ClaudeAuth | null {
+  return authCache;
 }
 
 let resolved: { file: string; shim: boolean } | null = null;

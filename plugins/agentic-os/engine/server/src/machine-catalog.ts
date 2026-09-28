@@ -18,6 +18,8 @@
  *   env-var            an environment variable is set
  *   port               something answers on a local port
  *   package-manager    winget (Windows) / Homebrew (macOS), which the Install buttons use
+ *   claude-code        Claude Code installed and signed in (`claude auth status`); Sign in
+ *                      opens a terminal running `claude auth login`
  *
  * Install commands are per OS ({ win, mac, linux }; null = nothing to run there).
  * In a command, {required} is the required version and {major} its major number.
@@ -80,7 +82,7 @@ export const CATALOG: Record<string, CatalogEntry> = {
     auth: { cmd: "glab", args: ["auth", "status"], detail: "Installed but not signed in.", signIn: { label: "Sign in", win: "glab auth login", mac: "glab auth login", linux: "glab auth login" } },
   },
   claude: {
-    kind: "command", label: "Claude Code", probe: cmd("claude", ["--version"]),
+    kind: "claude-code", label: "Claude Code", probe: cmd("claude", ["--version"]),
     detail: { missing: "The dashboard's runs, usage meters and autocomplete all use it. Sign in once it's installed." },
     install: { win: "irm https://claude.ai/install.ps1 | iex", mac: "curl -fsSL https://claude.ai/install.sh | bash", linux: "curl -fsSL https://claude.ai/install.sh | bash" },
   },
