@@ -126,18 +126,24 @@ class AppLauncher {
   pidFile: string;
   portOf: (ws, key: string) => number | null;
   isUp: (port: number) => Promise<boolean>;
+  settleMs: number;
+  stopGraceMs: number;
   jobs: any[];
 
   /**
-   * @param o.logDir  where job logs go
-   * @param o.portOf  current port for an app in a workspace
-   * @param o.isUp    TCP check
+   * @param o.logDir    where job logs go
+   * @param o.portOf    current port for an app in a workspace
+   * @param o.isUp      TCP check
+   * @param o.settleMs     how long a port-less app must stay alive to count as started
+   * @param o.stopGraceMs  how long Stop waits after SIGTERM before SIGKILL
    */
-  constructor({ logDir, portOf, isUp }) {
+  constructor({ logDir, portOf, isUp, settleMs = 5000, stopGraceMs = 10000 }) {
     this.logDir = logDir;
     this.pidFile = path.join(logDir, "pids.json");
     this.portOf = portOf;
     this.isUp = isUp;
+    this.settleMs = settleMs;
+    this.stopGraceMs = stopGraceMs;
     this.jobs = [];
     fs.mkdirSync(logDir, { recursive: true });
     this._load();
@@ -178,6 +184,12 @@ class AppLauncher {
     if (!app) return false;
     if (app.mainOnly && ws.slug !== "main") return false;
     return fs.existsSync(path.join(ws.path, app.dir));
+  }
+
+  /** Pid of the process tree this dashboard started for an app, if it's still alive. */
+  runningPid(ws, key): number | null {
+    const pid = this._pids()[`${ws.slug}:${key}`];
+    return pid && treeAlive(pid) ? pid : null;
   }
 
   busy(wsSlug, key) {
@@ -259,7 +271,8 @@ class AppLauncher {
           keys.forEach((k) => started.add(k));
           await Promise.all(keys.map((k) => this._startOne(ws, k, step)));
         } else if (s.wait) {
-          const keys = s.wait === "all" ? apps : s.wait.filter((k) => apps.includes(k));
+          // "all" means everything started so far: apps a later `start` step launches aren't running yet.
+          const keys = s.wait === "all" ? apps.filter((k) => started.has(k)) : s.wait.filter((k) => apps.includes(k));
           await Promise.all(keys.map((k) => this._waitUp(ws, k, step)));
         } else if (s.launcher || s.cmd) {
           // A step for an app that isn't cloned here (e.g. "ping api") is skipped with it.
@@ -323,6 +336,16 @@ class AppLauncher {
       await step(`${app.name} already running on :${port}`, async () => {});
       return;
     }
+    const pid = this.runningPid(ws, key);
+    if (pid && !app.port) {
+      await step(`${app.name} already running (pid ${pid})`, async () => {});
+      return;
+    }
+    if (pid) {
+      // An earlier launch that never answered (crashed and waiting on a file watcher, or hung).
+      // Launching over it would overwrite its pid and leave it running with nothing to stop it.
+      await step(`Stop the earlier ${app.name} (pid ${pid}), which isn't answering`, this._stopOne(ws, key));
+    }
     await step(`Launch ${app.name}`, async (log) => {
       if (app.launch.cmd) this._launchCmd(ws, app, log);
       else if (app.launch.detached) this._launchDetached(this._launcherArgs(app.launch.launcher!), ws, key, log);
@@ -341,9 +364,11 @@ class AppLauncher {
         const pid = pids[id];
         if (!pid) { log(`${app.name}: nothing started from here to stop.`); return; }
         log(`Stopping process tree ${pid}`);
-        killTree(pid);
-        delete pids[id];
-        this._savePids(pids);
+        // Forget the pid only once the tree is gone, so a failed stop can be retried.
+        await stopTree(pid, this.stopGraceMs, log);
+        const now = this._pids();
+        delete now[id];
+        this._savePids(now);
       };
     }
     const launcher = this.cfg.launcher;
@@ -353,6 +378,14 @@ class AppLauncher {
 
   _waitUp(ws, key, step) {
     const app = this.cfg.apps[key];
+    if (!app.port) {
+      // Nothing to probe (a queue worker, a watcher): started means it didn't exit straight away.
+      return step(`Check ${app.name} started`, async (log) => {
+        await sleep(this.settleMs);
+        if (this._exited(log.file, key)) throw new Error(`${app.name} exited right after starting. See the log.`);
+        log(`${app.name} is running (no port to check).`);
+      });
+    }
     return step(`Wait for ${app.name} to listen`, async (log) => {
       const deadline = Date.now() + app.bootMs;
       while (Date.now() < deadline) {
@@ -518,14 +551,38 @@ export function twoHop(p: { file: string; args: string[]; cwd: string; env: Reco
 }
 
 /** Kill a process and everything under it. Best effort. */
-export function killTree(pid: number) {
+export function killTree(pid: number, signal: NodeJS.Signals = "SIGTERM") {
   try {
     if (process.platform === "win32") {
       execFile("taskkill", ["/PID", String(pid), "/T", "/F"], { windowsHide: true }, () => {});
     } else {
-      try { process.kill(-pid, "SIGTERM"); } catch { process.kill(pid, "SIGTERM"); }
+      try { process.kill(-pid, signal); } catch { process.kill(pid, signal); }
     }
   } catch {}
+}
+
+/**
+ * Is anything in the tree still alive? The tree is the process group led by `pid`, so this
+ * stays true when the launcher at the root has died but the app under it hasn't.
+ */
+export function treeAlive(pid: number): boolean {
+  const probe = (p: number) => { try { process.kill(p, 0); return true; } catch (e) { return e.code === "EPERM"; } };
+  return (process.platform !== "win32" && probe(-pid)) || probe(pid);
+}
+
+/**
+ * SIGTERM the tree, then SIGKILL whatever is left after `graceMs`. Needed because some apps
+ * treat the first SIGTERM as "shut down gracefully" and can sit in that state indefinitely.
+ */
+async function stopTree(pid: number, graceMs: number, log): Promise<void> {
+  killTree(pid);
+  const deadline = Date.now() + graceMs;
+  while (treeAlive(pid) && Date.now() < deadline) await sleep(250);
+  if (!treeAlive(pid)) return;
+  log(`Still running after ${Math.round(graceMs / 1000)}s; killing it.`);
+  killTree(pid, "SIGKILL");
+  await sleep(500);
+  if (treeAlive(pid)) throw new Error(`Process tree ${pid} survived SIGKILL.`);
 }
 
 /** {{port}}, {{port:<appId>}} and {{workspace}} in a launch cmd or env value. */

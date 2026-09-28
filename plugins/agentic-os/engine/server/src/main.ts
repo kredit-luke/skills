@@ -282,7 +282,8 @@ function workspaceBySlug(slug: unknown): Ws | null {
 async function appStatus(ws: Ws, key: string) {
   const meta = appsConfig().apps[key];
   const port = portOf(ws, key);
-  const running = port ? await checkPort(port) : false;
+  // An app with no port in apps.json (a worker) counts as running while the process we started is alive.
+  const running = port ? await checkPort(port) : !meta.port && !!launcher.runningPid(ws, key);
   const job = launcher.busy(ws.slug, key);
   return {
     key,
