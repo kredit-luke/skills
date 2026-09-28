@@ -165,24 +165,30 @@ function ensureBuilt(env) {
   }
 }
 
+// dashboard.pid: the pid on the first line, the port it serves on the second (older
+// files have only the pid). The port is how a start after a port change finds the old one.
 const pidFile = path.join(LEDGER, "dashboard.pid");
-function readPid() {
-  try { return Number(fs.readFileSync(pidFile, "utf-8").trim()) || null; } catch { return null; }
+function readRecord() {
+  try {
+    const [pid, port] = fs.readFileSync(pidFile, "utf-8").trim().split(/\s+/).map((s) => parseInt(s, 10));
+    return { pid: pid > 0 ? pid : null, port: port > 0 ? port : null };
+  } catch { return { pid: null, port: null }; }
 }
+const readPid = () => readRecord().pid;
 
 /** Kill the dashboard: the pid it recorded, and whatever still holds its port. */
-function killDashboard() {
+function killDashboard(port = PORT) {
   const pids = new Set();
   const recorded = readPid();
   if (recorded) pids.add(recorded);
   try {
     if (IS_WIN) {
       const out = execFileSync("powershell.exe", ["-NoProfile", "-NonInteractive", "-Command",
-        `Get-NetTCPConnection -LocalPort ${PORT} -State Listen -ErrorAction SilentlyContinue | Select-Object -ExpandProperty OwningProcess -Unique`],
+        `Get-NetTCPConnection -LocalPort ${port} -State Listen -ErrorAction SilentlyContinue | Select-Object -ExpandProperty OwningProcess -Unique`],
         { encoding: "utf-8", stdio: ["ignore", "pipe", "ignore"] });
       for (const s of out.split(/\r?\n/)) if (Number(s.trim())) pids.add(Number(s.trim()));
     } else {
-      const out = execFileSync("lsof", ["-ti", `tcp:${PORT}`, "-sTCP:LISTEN"], { encoding: "utf-8", stdio: ["ignore", "pipe", "ignore"] });
+      const out = execFileSync("lsof", ["-ti", `tcp:${port}`, "-sTCP:LISTEN"], { encoding: "utf-8", stdio: ["ignore", "pipe", "ignore"] });
       for (const s of out.split(/\s+/)) if (Number(s)) pids.add(Number(s));
     }
   } catch {}
@@ -246,6 +252,19 @@ async function start() {
     console.log("Stopped the running dashboard.");
   }
 
+  // The port changed (workspace.json, DASHBOARD_PORT or --port) while this workspace's
+  // dashboard was up on the old one. Starting a second would orphan the first.
+  const was = readRecord();
+  if (was.port && was.port !== PORT && (await listening(was.port))) {
+    if (!flags.restart) {
+      console.log(`The dashboard is running on its previous port, http://localhost:${was.port}. Use restart to move it to ${PORT}.`);
+      return;
+    }
+    killDashboard(was.port);
+    await sleep(1000);
+    console.log(`Stopped the dashboard on its previous port, ${was.port}.`);
+  }
+
   const floor = nodeFloor();
   const dir = nodeDir(floor);
   if (dir === null) {
@@ -269,7 +288,7 @@ async function start() {
     env,
   });
   child.unref();
-  fs.writeFileSync(pidFile, String(child.pid));
+  fs.writeFileSync(pidFile, `${child.pid}\n${PORT}\n`);
 
   for (let i = 0; i < 40 && !(await listening(PORT)); i++) await sleep(250);
   if (!(await listening(PORT))) {
@@ -282,8 +301,10 @@ async function start() {
 }
 
 async function stop() {
-  if (!(await listening(PORT)) && !readPid()) { console.log(`No dashboard running on :${PORT}.`); return; }
+  const was = readRecord();
+  if (!(await listening(PORT)) && !was.pid) { console.log(`No dashboard running on :${PORT}.`); return; }
   killDashboard();
+  if (was.port && was.port !== PORT) killDashboard(was.port); // started before a port change
   console.log("Dashboard stopped. Runs that were in progress show as interrupted; reply to one to carry on.");
 }
 
