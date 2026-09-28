@@ -160,3 +160,26 @@ test("links: add team + personal, move between them, edit in place, delete", () 
   assert.equal(team.$comment, "keep me");
   assert.deepEqual(team.categories, [{ title: "Apps", tiles: [{ title: "Admin", url: "https://admin.example" }] }]);
 });
+
+test("worktrees.ports and the fallback / slotOffset app fields", () => {
+  write("workspace.json", { worktrees: { ports: { base: 24000, slotSize: 1000 } } });
+  assert.deepEqual(workspaceConfig().worktrees.ports, { base: 24000, slotSize: 1000 });
+  for (const bad of [{ base: 0, slotSize: 10 }, { base: 24000 }, { base: 65000, slotSize: 1000 }, "x"]) {
+    write("workspace.json", { worktrees: { ports: bad } });
+    assert.equal(workspaceConfig().worktrees.ports, null, JSON.stringify(bad));
+  }
+  write("workspace.json", {});
+  assert.equal(workspaceConfig().worktrees.ports, null, "off by default: the team's tooling allocates");
+
+  write("apps.json", { apps: {
+    api: { name: "API", dir: "api", fallback: "main", slotOffset: 3, launch: { cmd: "x" } },
+    web: { name: "Web", dir: "web", fallback: "yes", launch: { cmd: "x" } },
+  } });
+  const cfg = appsConfig();
+  assert.equal(cfg.apps.api.fallback, "main");
+  assert.equal(cfg.apps.api.slotOffset, 3);
+  assert.equal(cfg.apps.web.fallback, null);
+  assert.equal(cfg.apps.web.slotOffset, null);
+  assert.match(cfg.error, /fallback can only be "main"/);
+  write("apps.json", {});
+});

@@ -31,6 +31,10 @@ export interface AppLaunch { launcher?: string; detached?: boolean; cmd?: string
 export interface AppDef {
   key: string; name: string; type: string; dir: string; workDir?: string; group: string;
   port: number | null; https: boolean; mainOnly: boolean; bootMs: number; launch: AppLaunch; logFile?: string;
+  /** "main": in a worktree that isn't running (or hasn't cloned) this app, its dependents use main's instance. */
+  fallback: "main" | null;
+  /** Offset inside a worktree port slot (workspace.json worktrees.ports); default: position in apps.json. */
+  slotOffset: number | null;
 }
 export type StackStep = {
   setup?: boolean; start?: string[] | "rest"; wait?: string[] | "all";
@@ -80,7 +84,10 @@ export function appsConfig(): AppsConfig {
       bootMs: (Number(a.bootSeconds) || 120) * 1000,
       launch,
       logFile: typeof a.logFile === "string" ? a.logFile : undefined,
+      fallback: a.fallback === "main" ? "main" : null,
+      slotOffset: Number.isInteger(a.slotOffset) && a.slotOffset >= 0 ? a.slotOffset : null,
     };
+    if (a.fallback !== undefined && a.fallback !== "main") problems.push(`app "${key}": fallback can only be "main"`);
   }
   const groups: { id: string; label: string }[] = (Array.isArray(raw.groups) ? raw.groups : [])
     .filter((g: any) => g && typeof g.id === "string")
@@ -128,22 +135,40 @@ class AppLauncher {
   isUp: (port: number) => Promise<boolean>;
   settleMs: number;
   stopGraceMs: number;
+  mainWs: any;
+  resolvePort: ((ws, key: string, starting: Set<string>) => Promise<number | null>) | null;
+  ensurePorts: ((ws) => void) | null;
   jobs: any[];
 
   /**
    * @param o.logDir    where job logs go
-   * @param o.portOf    current port for an app in a workspace
+   * @param o.portOf    current port for an app in a workspace (its own instance)
    * @param o.isUp      TCP check
    * @param o.settleMs     how long a port-less app must stay alive to count as started
    * @param o.stopGraceMs  how long Stop waits after SIGTERM before SIGKILL
+   * @param o.mainWs       the main workspace, where "fallback": "main" apps a worktree hasn't cloned run
+   * @param o.resolvePort  the port `{{port:<id>}}` should name (fallback-aware); default portOf
+   * @param o.ensurePorts  allocate a worktree's port slot before its first start (workspace.json worktrees.ports)
    */
-  constructor({ logDir, portOf, isUp, settleMs = 5000, stopGraceMs = 10000 }) {
+  constructor({ logDir, portOf, isUp, settleMs = 5000, stopGraceMs = 10000, mainWs = null, resolvePort = null, ensurePorts = null }: {
+    logDir: string;
+    portOf: (ws, key: string) => number | null;
+    isUp: (port: number) => Promise<boolean>;
+    settleMs?: number;
+    stopGraceMs?: number;
+    mainWs?: any;
+    resolvePort?: ((ws, key: string, starting: Set<string>) => Promise<number | null>) | null;
+    ensurePorts?: ((ws) => void) | null;
+  }) {
     this.logDir = logDir;
     this.pidFile = path.join(logDir, "pids.json");
     this.portOf = portOf;
     this.isUp = isUp;
     this.settleMs = settleMs;
     this.stopGraceMs = stopGraceMs;
+    this.mainWs = mainWs;
+    this.resolvePort = resolvePort;
+    this.ensurePorts = ensurePorts;
     this.jobs = [];
     fs.mkdirSync(logDir, { recursive: true });
     this._load();
@@ -184,6 +209,12 @@ class AppLauncher {
     if (!app) return false;
     if (app.mainOnly && ws.slug !== "main") return false;
     return fs.existsSync(path.join(ws.path, app.dir));
+  }
+
+  /** A "fallback": "main" app this worktree hasn't cloned: a stack uses (and if need be starts) main's instance. */
+  fromMain(ws, key) {
+    const app = this.cfg.apps[key];
+    return !!app && app.fallback === "main" && ws.slug !== "main" && !!this.mainWs && !this.available(ws, key) && this.available(this.mainWs, key);
   }
 
   /** Pid of the process tree this dashboard started for an app, if it's still alive. */
@@ -254,13 +285,18 @@ class AppLauncher {
     const stack = cfg.stacks[stackId];
     if (!stack) throw new Error(`Unknown stack ${stackId}`);
     if (stack.mainOnly && ws.slug !== "main") throw new Error(`${stack.label} only runs from the main workspace.`);
-    const apps = stack.apps.filter((k) => this.available(ws, k));
-    if (!apps.length) throw new Error(`None of the ${stack.label} repos are cloned in ${ws.name}.`);
+    // Apps this worktree hasn't cloned but that fall back to main run (or are already running) there.
+    const fromMain = stack.apps.filter((k) => this.fromMain(ws, k));
+    const apps = stack.apps.filter((k) => this.available(ws, k) || fromMain.includes(k));
+    if (!apps.some((k) => !fromMain.includes(k))) throw new Error(`None of the ${stack.label} repos are cloned in ${ws.name}.`);
     const skipped = stack.apps.filter((k) => !apps.includes(k));
     const steps: StackStep[] = stack.steps && stack.steps.length ? stack.steps : [{ start: "rest" }];
+    const wsOf = (k) => (fromMain.includes(k) ? this.mainWs : ws);
+    const starting = new Set(apps.filter((k) => !fromMain.includes(k)));
 
     return this._job(ws, `Start ${stack.label}`, apps, async (step, note) => {
       if (skipped.length) note(`Skipping (not cloned here): ${skipped.map((k) => cfg.apps[k].name).join(", ")}`);
+      if (fromMain.length) note(`Using the main workspace's ${fromMain.map((k) => cfg.apps[k].name).join(", ")} (not cloned here)`);
       const started = new Set<string>();
       for (const s of steps) {
         if (s.setup) {
@@ -269,11 +305,11 @@ class AppLauncher {
         } else if (s.start) {
           const keys = (s.start === "rest" ? apps.filter((k) => !started.has(k)) : s.start.filter((k) => apps.includes(k)));
           keys.forEach((k) => started.add(k));
-          await Promise.all(keys.map((k) => this._startOne(ws, k, step)));
+          await Promise.all(keys.map((k) => this._startOne(wsOf(k), k, step, starting)));
         } else if (s.wait) {
           // "all" means everything started so far: apps a later `start` step launches aren't running yet.
           const keys = s.wait === "all" ? apps.filter((k) => started.has(k)) : s.wait.filter((k) => apps.includes(k));
-          await Promise.all(keys.map((k) => this._waitUp(ws, k, step)));
+          await Promise.all(keys.map((k) => this._waitUp(wsOf(k), k, step)));
         } else if (s.launcher || s.cmd) {
           // A step for an app that isn't cloned here (e.g. "ping api") is skipped with it.
           const target = s.launcher ? s.launcher.trim().split(/\s+/)[1] : null;
@@ -329,8 +365,15 @@ class AppLauncher {
     return app;
   }
 
-  async _startOne(ws, key, step) {
+  async _startOne(ws, key, step, starting: Set<string> = new Set([key])) {
     const app = this.cfg.apps[key];
+    // A worktree with no ports yet gets its slot now (when the dashboard allocates them).
+    if (ws.slug !== "main" && !app.mainOnly && this.ensurePorts && !this.portOf(ws, key)) {
+      await step(`Allocate ports for ${ws.name}`, async (log) => {
+        this.ensurePorts(ws);
+        log(`${app.name} gets :${this.portOf(ws, key)}`);
+      });
+    }
     const port = this.portOf(ws, key);
     if (port && (await this.isUp(port))) {
       await step(`${app.name} already running on :${port}`, async () => {});
@@ -347,7 +390,7 @@ class AppLauncher {
       await step(`Stop the earlier ${app.name} (pid ${pid}), which isn't answering`, this._stopOne(ws, key));
     }
     await step(`Launch ${app.name}`, async (log) => {
-      if (app.launch.cmd) this._launchCmd(ws, app, log);
+      if (app.launch.cmd) await this._launchCmd(ws, app, log, starting);
       else if (app.launch.detached) this._launchDetached(this._launcherArgs(app.launch.launcher!), ws, key, log);
       else await this._command({ launcher: app.launch.launcher }, ws, 10 * 60000)(log);
     });
@@ -449,12 +492,23 @@ class AppLauncher {
   }
 
   /** A { cmd } app, long-running, via the two-hop launcher; its pid is kept for Stop. */
-  _launchCmd(ws, app: AppDef, log) {
+  async _launchCmd(ws, app: AppDef, log, starting: Set<string> = new Set([app.key])) {
     const cwd = path.resolve(ws.path, app.launch.cwd ? path.join(app.dir, app.launch.cwd) : app.workDir || app.dir);
     if (!cwd.startsWith(path.resolve(ws.path) + path.sep)) throw new Error(`${app.name}: launch.cwd must stay inside the workspace.`);
-    const cmd = expand(app.launch.cmd!, ws, app.key, this.portOf);
+    // Resolve every {{port:<id>}} up front: a "fallback": "main" app not running here names main's port.
+    const texts = [app.launch.cmd!, ...Object.values(app.launch.env || {}).map(String)];
+    const ids = new Set<string>();
+    for (const t of texts) for (const m of t.matchAll(/\{\{\s*port:\s*([\w-]+)\s*\}\}/g)) if (m[1] !== app.key) ids.add(m[1]);
+    const resolved: Record<string, number | null> = {};
+    for (const id of ids) {
+      resolved[id] = this.resolvePort ? await this.resolvePort(ws, id, starting) : this.portOf(ws, id);
+      const own = this.portOf(ws, id);
+      if (ws.slug !== "main" && resolved[id] && resolved[id] !== own) log(`{{port:${id}}} → :${resolved[id]} (the main workspace's, not running here)`);
+    }
+    const portFor = (w, id) => (id in resolved ? resolved[id] : this.portOf(w, id));
+    const cmd = expand(app.launch.cmd!, ws, app.key, portFor);
     const env: Record<string, string> = {};
-    for (const [k, v] of Object.entries(app.launch.env || {})) if (/^[A-Za-z_][A-Za-z0-9_]*$/.test(k)) env[k] = expand(String(v), ws, app.key, this.portOf);
+    for (const [k, v] of Object.entries(app.launch.env || {})) if (/^[A-Za-z_][A-Za-z0-9_]*$/.test(k)) env[k] = expand(String(v), ws, app.key, portFor);
     const pid = twoHop({ file: cmd, args: [], cwd, env, shell: true }, log.file, app.key);
     const pids = this._pids();
     pids[`${ws.slug}:${app.key}`] = pid;

@@ -22,8 +22,10 @@ import type { Boot, LaunchRequest, RunMeta } from "../../shared/api.ts";
 import { CLAUDE_SESSION_ENV } from "./claude.ts";
 import {
   BRAND_DIR, DASHBOARD_DIR, LEDGER_DIR, WORKSPACE_ROOT,
-  dashboardPort, portsFile, ticketRe, workspaceConfig, worktreeRoot,
+  dashboardPort, portsFile, ticketInTextRe, ticketRe, workspaceConfig, worktreeRoot,
 } from "./config.ts";
+import * as workspaces from "./workspaces.ts";
+import type { Ws } from "./workspaces.ts";
 
 // The dashboard outlives whatever launched it. If that was a Claude Code session,
 // its per-session markers are in our env and would leak into every process we
@@ -61,10 +63,6 @@ const screenshotsSubdir = () => workspaceConfig().worktrees.screenshots;
 const IMAGE_CONTENT_TYPES: Record<string, string> = {
   ".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".gif": "image/gif", ".webp": "image/webp",
 };
-
-function slugifyWorkspace(name: string) {
-  return name.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/(^-|-$)/g, "");
-}
 
 function listScreenshots(workspacePath: string) {
   const dir = path.join(workspacePath, screenshotsSubdir());
@@ -104,26 +102,15 @@ async function execGitCached(args: string[], cwd: string) {
   return data;
 }
 
+/** Git repos in a workspace (see workspaces.ts): .worktree.json repos, the apps' repos, or "." for a monorepo. */
 function listRepos(workspacePath: string): string[] {
-  const metaFile = path.join(workspacePath, ".worktree.json");
-  if (fs.existsSync(metaFile)) {
-    try {
-      const meta = JSON.parse(fs.readFileSync(metaFile, "utf-8"));
-      return (meta.repos || []).filter((d: string) => fs.existsSync(path.join(workspacePath, d, ".git")));
-    } catch {}
-  }
-  return [...new Set(Object.values(appsConfig().apps).map((m) => m.dir.split("/")[0]))]
-    .filter((d) => fs.existsSync(path.join(workspacePath, d, ".git")));
+  return workspaces.listRepos(workspacePath, appsConfig().apps);
 }
 
-/** The worktree's ticket (.worktree.json ticketId; linearId from older worktrees). */
+/** The worktree's ticket: .worktree.json ticketId, else from its branch (native git worktrees). */
 function readTicketId(workspacePath: string): string | null {
-  try {
-    const meta = JSON.parse(fs.readFileSync(path.join(workspacePath, ".worktree.json"), "utf-8"));
-    return meta.ticketId || meta.linearId || null;
-  } catch {
-    return null;
-  }
+  const ws = listWorkspaces().find((w) => path.resolve(w.path) === path.resolve(workspacePath));
+  return ws && ws.ticketId !== undefined ? ws.ticketId || null : workspaces.ticketOf(workspacePath, null, ticketInTextRe());
 }
 
 async function resolveMainRef(repoPath: string) {
@@ -214,27 +201,26 @@ async function getFileDiff(workspacePath: string, repoDir: string, filePath: str
 
 // ------------------------------------------------------------------ apps / workspaces
 
-interface Ws { slug: string; name: string; path: string; ticketId?: string | null }
-
-function readPortsFile() {
-  try { return JSON.parse(fs.readFileSync(portsFile(), "utf-8")); } catch { return {}; }
-}
-
 /**
- * Port an app uses in a workspace, or null if the worktree hasn't been allocated ports yet.
- * Main (and mainOnly apps everywhere) use apps.json's port; worktrees read theirs from the
- * ports file (workspace.json worktrees.portsFile), which the worktree tooling maintains.
+ * Port an app's own instance uses in a workspace, or null if the worktree hasn't been
+ * allocated ports yet. Main (and mainOnly apps everywhere) use apps.json's port; worktrees
+ * read theirs from the ports file (workspace.json worktrees.portsFile).
  */
 function portOf(ws: Ws, key: string): number | null {
-  const app = appsConfig().apps[key];
-  if (!app) return null;
-  if (ws.slug === "main" || app.mainOnly) return app.port;
-  const data = readPortsFile();
-  for (const [wtName, wtData] of Object.entries<any>(data.worktrees || {})) {
-    const wtPath = wtData.workspace || path.join(worktreeRoot(), wtName);
-    if (path.resolve(wtPath) === path.resolve(ws.path)) return (wtData.ports || {})[key] || null;
-  }
-  return null;
+  return workspaces.ownPort(ws, key, appsConfig().apps, workspaces.readPortsData(portsFile()), worktreeRoot());
+}
+
+/** The port a workspace's apps should use to reach `key` ("fallback": "main" aware). */
+function resolvePort(ws: Ws, key: string, starting: Set<string> = new Set()) {
+  return workspaces.resolvePort(ws, key, appsConfig().apps, {
+    own: portOf, isUp: checkPort, starting, cloned: (w, k) => launcher.available(w, k),
+  });
+}
+
+/** Give a worktree its port slot (only when workspace.json worktrees.ports is set). */
+function ensurePorts(ws: Ws) {
+  const rule = workspaceConfig().worktrees.ports;
+  if (rule && ws.slug !== "main") workspaces.ensureSlot(portsFile(), ws, appsConfig().apps, rule, worktreeRoot());
 }
 
 /** TCP probe on IPv4 and IPv6 loopback (some dev servers bind only ::1). */
@@ -250,29 +236,15 @@ function checkPort(port: number): Promise<boolean> {
   return probe("127.0.0.1").then((up) => up || probe("::1"));
 }
 
-/** Main workspace + every known worktree (ports file and worktrees/ dir). */
+/** Main workspace + every worktree: ports file, worktrees/<name>/.worktree.json, native git worktrees. */
 function listWorkspaces(): Ws[] {
-  const out: Ws[] = [{ slug: "main", name: "Main Workspace", path: MAIN_WORKSPACE_PATH }];
-  const seen = new Set<string>();
-  const wtRoot = worktreeRoot();
-  try {
-    const data = JSON.parse(fs.readFileSync(portsFile(), "utf-8"));
-    for (const [wtName, wtData] of Object.entries<any>(data.worktrees || {})) {
-      const wtPath = wtData.workspace || path.join(wtRoot, wtName);
-      if (!fs.existsSync(wtPath)) continue;
-      seen.add(path.resolve(wtPath));
-      out.push({ slug: slugifyWorkspace(wtName), name: wtName, path: wtPath, ticketId: readTicketId(wtPath) });
-    }
-  } catch {}
-  try {
-    for (const e of fs.readdirSync(wtRoot, { withFileTypes: true })) {
-      const wtPath = path.join(wtRoot, e.name);
-      if (!e.isDirectory() || seen.has(path.resolve(wtPath))) continue;
-      if (!fs.existsSync(path.join(wtPath, ".worktree.json"))) continue;
-      out.push({ slug: slugifyWorkspace(e.name), name: e.name, path: wtPath, ticketId: readTicketId(wtPath) });
-    }
-  } catch {}
-  return out;
+  return workspaces.listWorkspaces({
+    root: MAIN_WORKSPACE_PATH,
+    wtRoot: worktreeRoot(),
+    portsData: workspaces.readPortsData(portsFile()),
+    apps: appsConfig().apps,
+    ticketInText: ticketInTextRe(),
+  });
 }
 
 function workspaceBySlug(slug: unknown): Ws | null {
@@ -285,7 +257,15 @@ async function appStatus(ws: Ws, key: string) {
   // An app with no port in apps.json (a worker) counts as running while the process we started is alive.
   const running = port ? await checkPort(port) : !meta.port && !!launcher.runningPid(ws, key);
   const job = launcher.busy(ws.slug, key);
+  // A worktree app that falls back to main and isn't running here: its dependents use main's.
+  // Shown when main's is up (it's what they use) or the app isn't cloned here (it's the only one).
+  let fallback = null;
+  if (ws.slug !== "main" && meta.fallback === "main" && !running && meta.port) {
+    const mainUp = await checkPort(meta.port);
+    if (mainUp || !launcher.available(ws, key)) fallback = { port: meta.port, running: mainUp };
+  }
   return {
+    fallback,
     key,
     name: meta.name,
     type: meta.type,
@@ -300,13 +280,18 @@ async function appStatus(ws: Ws, key: string) {
   };
 }
 
+/** A main-workspace app this worktree relies on: it shares a stack with an app cloned here. */
+function borrowed(ws: Ws, key: string): boolean {
+  return Object.values(appsConfig().stacks).some((s) => s.apps.includes(key) && s.apps.some((k) => k !== key && launcher.available(ws, k)));
+}
+
 async function getStatus() {
   const apps = appsConfig().apps;
   const workspaces = await Promise.all(listWorkspaces().map(async (ws) => {
     // Main shows every app (unavailable ones as "not cloned"); a worktree only its cloned, non-mainOnly apps.
     const keys = ws.slug === "main"
       ? Object.keys(apps)
-      : Object.keys(apps).filter((k) => !apps[k].mainOnly && launcher.available(ws, k));
+      : Object.keys(apps).filter((k) => !apps[k].mainOnly && (launcher.available(ws, k) || (launcher.fromMain(ws, k) && borrowed(ws, k))));
     return {
       name: ws.name, slug: ws.slug, path: ws.path,
       apps: await Promise.all(keys.map((k) => appStatus(ws, k))),
@@ -358,6 +343,9 @@ const launcher = new AppLauncher({
   logDir: path.join(LEDGER_DIR, "apps"),
   portOf,
   isUp: checkPort,
+  mainWs: { slug: "main", name: "Main Workspace", path: MAIN_WORKSPACE_PATH },
+  resolvePort: async (ws, key, starting) => (await resolvePort(ws, key, starting)).port,
+  ensurePorts,
 });
 claudeAuth().catch(() => {}); // sign-in state: runs check it before starting
 machine.get().catch(() => {}); // warm caches so the first page load has them

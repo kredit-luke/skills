@@ -322,6 +322,8 @@ export interface AppStatus {
   key: string; name: string; type: string; group: string;
   port: number | null; url: string | null; running: boolean; repo: string;
   available: boolean; busy: string | null; blockedBy: string[];
+  /** In a worktree, a "fallback": "main" app that isn't running here: its dependents use main's instance on this port. */
+  fallback?: { port: number; running: boolean } | null;
 }
 export interface WorkspaceStatus {
   name: string; slug: string; path: string; apps: AppStatus[];

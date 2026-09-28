@@ -28,6 +28,10 @@ A run is a conversation; **each turn is a new `claude -p` process**:
 
 `apps.ts` runs `launch.cmd` (or the team's launcher) through a **two-hop launcher**: a detached `node -e` that starts the app non-detached with `windowsHide`, so the app gets a hidden console its children inherit (no terminal windows popping up on Windows) and survives dashboard restarts. "Up" = something answers on the app's port (IPv4 or IPv6). Each start/stop is a job with steps and a log.
 
+## Workspaces
+
+`workspaces.ts` finds them (ports file, `worktrees/*/.worktree.json`, and `git worktree list` on the root repo and each app's repo, cached 10s), their repos, and ports. A worktree's own port for an app comes from the ports file; with `worktrees.ports` set, `ensureSlot` allocates one on the first start, under `<portsFile>.lock`. `"fallback": "main"` is resolved when a command is launched: `{{port:<id>}}` names the worktree's instance if it answers on its port or is in the stack being started, else main's. A worktree stack starts (or reuses) main's instance of a fallback app it hasn't cloned; stopping that stack leaves main's alone.
+
 ## Security
 
 The server can start processes as the user, so no other origin may reach it: it binds 127.0.0.1 only; the `Host` header must be `localhost`/`127.0.0.1` on its port (DNS rebinding); foreign `Origin`s get 403; every POST needs the per-install token from `/api/boot` (same-origin only). Install buttons and app commands come only from config files, never from the browser (it sends an id). Explore and brand/file serving refuse paths outside their roots and `.git`. Tracker keys never go to the browser.

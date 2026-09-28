@@ -1,0 +1,16 @@
+# LF everywhere, whatever a contributor's core.autocrlf says. The dashboard engine is
+# copied into workspaces and compared byte-for-byte with release tags by upgrade and
+# contribute; a CRLF checkout on Windows would make every file look edited.
+* text=auto eol=lf
+
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.webp binary
+*.ico binary
+*.woff binary
+*.woff2 binary
+*.ttf binary
+*.otf binary
+*.pdf binary

@@ -22,6 +22,8 @@ import { AppButtonsComponent } from './app-buttons.component';
     .app-info { flex: 1; min-width: 0; }
     .app-name { font-size: 0.875rem; font-weight: 500; margin-bottom: 0.15rem; }
     .app-type { font-size: 0.7rem; color: var(--text-muted); }
+    .fallback { font-size: 0.7rem; color: var(--text-muted); margin-top: 0.15rem; }
+    .fallback.down { color: var(--red); }
   `],
   template: `
     @let ws = workspace();
@@ -43,11 +45,16 @@ import { AppButtonsComponent } from './app-buttons.component';
     }
     <div class="apps">
       @for (app of ws.apps; track app.key) {
-        <div class="app" [class.off]="!app.available">
+        <div class="app" [class.off]="!app.available && !app.fallback">
           <span [class]="'status-dot ' + dotClass(app)"></span>
           <div class="app-info"><div class="app-name">{{ app.name }}</div><div class="app-type">{{ app.type }}</div>
-            <dash-app-buttons [app]="app" [workspace]="ws.slug" style="margin-top:0.4rem" /></div>
-          @if (app.port) { <a class="app-url" [class.running]="app.running" [class.stopped]="!app.running" [href]="app.url" target="_blank" rel="noopener">:{{ app.port }}</a> }
+            @if (app.fallback; as fb) {
+              <div class="fallback" [class.down]="!fb.running" [title]="'Apps in this worktree reach the main workspace\\'s ' + app.name + ' on :' + fb.port">
+                {{ app.available ? 'Using main\\'s' : 'Not cloned: using main\\'s' }}{{ fb.running ? '' : ' (down)' }}</div>
+            }
+            @if (app.available) { <dash-app-buttons [app]="app" [workspace]="ws.slug" style="margin-top:0.4rem" /> }</div>
+          @if (!app.available && app.fallback; as fb) { <a class="app-url" [class.running]="fb.running" [class.stopped]="!fb.running" [href]="'http://localhost:' + fb.port" target="_blank" rel="noopener">:{{ fb.port }}</a> }
+          @else if (app.port) { <a class="app-url" [class.running]="app.running" [class.stopped]="!app.running" [href]="app.url" target="_blank" rel="noopener">:{{ app.port }}</a> }
           @else { <span class="app-type" title="Ports are allocated on first start">no port yet</span> }
         </div>
       }
@@ -72,7 +79,7 @@ export class WorkspaceAppsComponent {
   });
   readonly countLabel = computed(() => this.avail().filter((a) => a.running).length + '/' + this.avail().length + ' running');
 
-  dotClass(a: AppStatus): string { if (!a.available) return 'na'; if (a.busy && !a.running) return 'starting'; return a.running ? 'running' : 'stopped'; }
+  dotClass(a: AppStatus): string { if (!a.available) return a.fallback ? (a.fallback.running ? 'running' : 'stopped') : 'na'; if (a.busy && !a.running) return 'starting'; return a.running ? 'running' : 'stopped'; }
   startStack(): void { const s = this.stack(); if (s) this.data.appAction({ action: 'start', workspace: this.workspace().slug, stack: s.id }); }
   stopAll(): void { this.data.appAction({ action: 'stop-all', workspace: this.workspace().slug }); }
 }

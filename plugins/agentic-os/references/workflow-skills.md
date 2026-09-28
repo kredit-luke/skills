@@ -30,15 +30,21 @@ For every repo with commits on the ticket branch, in dependency order: push, ope
 
 ## /worktree <TICKET | name> | --list | --remove <name>
 
-Parallel work without touching the main checkout: **independent clones** (not `git worktree`, which ties the repos together) of the affected repos into `worktrees/<name>/<repo>/`, each on the ticket branch, plus `worktrees/<name>/.worktree.json`:
+Parallel work without touching the main checkout, with the affected repos in `worktrees/<name>/<repo>/`, each on the ticket branch. Two ways to put them there; the dashboard handles both:
+- **Independent clones**: fully separate (delete the folder freely), but each fetches from the remote and has its own `.git`.
+- **Native `git worktree add`** (`git -C <repo> worktree add worktrees/<name>/<repo> -b feature/<TICKET>`): seconds, no network, shares the main clone's objects; the branch can't be checked out in main at the same time, and a folder deleted by hand needs `git worktree prune`. For a monorepo this is one command.
+
+Write `worktrees/<name>/.worktree.json` either way (for git worktrees it's optional: the dashboard finds them with `git worktree list` and reads the ticket from the branch):
 ```json
 { "name": "ENG-123", "ticketId": "ENG-123", "tracker": "linear", "branch": "feature/ENG-123", "repos": ["api", "web"], "created": "…" }
 ```
-The dashboard's Workspaces page lists every folder under `worktrees/` with a `.worktree.json` (its `repos` are the git repos it shows) and runs that worktree's apps. For apps to run side by side with main, allocate each worktree a port set (base port + slot × 10, skipping ports in use) and record it in the per-user ports file (`workspace.json` `worktrees.portsFile`):
+The dashboard's Workspaces page shows the worktree's repos and runs its apps. For apps to run side by side with main, each worktree needs its own ports. Simplest: set `workspace.json` `worktrees.ports` (`{ "base": 24000, "slotSize": 100 }`) and the dashboard allocates a slot on first start. If the team's own scripts start apps too, have them allocate the same way and record it in the per-user ports file (`workspace.json` `worktrees.portsFile`), holding `<portsFile>.lock` while writing:
 ```json
-{ "worktrees": { "ENG-123": { "slot": 1, "workspace": "/abs/path/worktrees/ENG-123", "ports": { "api": 8090, "web": 5183 } } } }
+{ "worktrees": { "ENG-123": { "slot": 1, "workspace": "/abs/path/worktrees/ENG-123", "ports": { "api": 24101, "web": 24102 } } } }
 ```
-`--remove` refuses when a repo has uncommitted or unpushed work unless forced, and frees the slot.
+Give shared services a worktree rarely changes `"fallback": "main"` in apps.json: worktrees then use main's instance unless they run their own.
+
+`--remove` refuses when a repo has uncommitted or unpushed work unless forced (`git worktree remove` for native ones), and frees the slot.
 
 ## /pull [all]
 

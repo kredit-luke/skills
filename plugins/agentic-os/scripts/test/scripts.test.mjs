@@ -107,4 +107,23 @@ test("scaffold + validate on a scratch workspace", () => {
   const errs = validate(root).errors.join("\n");
   assert.match(errs, /port 3399, which is the dashboard's/);
   assert.match(errs, /"nope" isn't in the catalog/);
+
+  // Worktree slots and fallback: bad values, duplicate/oversized offsets, a slot port on main's.
+  const cfg = path.join(root, ".claude", "dashboard");
+  fs.writeFileSync(path.join(cfg, "machine.json"), JSON.stringify({ checks: [] }));
+  fs.writeFileSync(path.join(cfg, "workspace.json"), JSON.stringify({ name: "Test", dashboard: { port: 3399 }, worktrees: { ports: { base: 8000, slotSize: 50 } } }));
+  fs.writeFileSync(path.join(cfg, "apps.json"), JSON.stringify({ apps: {
+    api: { name: "API", dir: "api", port: 8051, fallback: "main", slotOffset: 1, launch: { cmd: "x" } },
+    web: { name: "Web", dir: "api", port: 5173, fallback: "yes", slotOffset: 1, launch: { cmd: "x" } },
+    job: { name: "Job", dir: "api", fallback: "main", slotOffset: 80, launch: { cmd: "x" } },
+  } }));
+  let r2 = validate(root);
+  const e2 = r2.errors.join("\n"), w2 = r2.warnings.join("\n");
+  assert.match(e2, /apps\.web\.fallback can only be "main"/);
+  assert.match(e2, /apps\.web and apps\.api both get slot offset 1/);
+  assert.match(e2, /apps\.job: slot offset 80 is past worktrees\.ports\.slotSize \(50\)/);
+  assert.match(w2, /apps\.job: fallback needs a port/);
+  assert.match(w2, /apps\.api in worktree slot 1 would get port 8051, which apps\.api uses in main/);
+  fs.writeFileSync(path.join(cfg, "workspace.json"), JSON.stringify({ name: "Test", worktrees: { ports: { base: "x" } } }));
+  assert.match(validate(root).errors.join("\n"), /worktrees\.ports needs \{ base, slotSize \}/);
 });
