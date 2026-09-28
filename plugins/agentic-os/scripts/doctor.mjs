@@ -16,11 +16,9 @@ import net from "node:net";
 import path from "node:path";
 import http from "node:http";
 import { execFileSync } from "node:child_process";
-import { args, engineVersion, isMain, readJson } from "./lib.mjs";
+import { TAG_PREFIX, args, compareVersions as cmp, engineVersion, isMain, latestRelease, readJson, releaseCheck } from "./lib.mjs";
 import { validate } from "./validate.mjs";
 
-const ver = (v) => (/(\d+)\.(\d+)\.(\d+)/.exec(String(v || "")) || []).slice(1).map(Number);
-const cmp = (a, b) => { const x = ver(a), y = ver(b); for (let i = 0; i < 3; i++) if ((x[i] || 0) !== (y[i] || 0)) return (x[i] || 0) - (y[i] || 0); return 0; };
 const listening = (port) => new Promise((res) => { const s = new net.Socket(); s.setTimeout(800); s.once("connect", () => { s.destroy(); res(true); }); s.once("timeout", () => { s.destroy(); res(false); }); s.once("error", () => res(false)); s.connect(port, "127.0.0.1"); });
 const getJson = (port, p) => new Promise((res) => {
   const req = http.get({ host: "127.0.0.1", port, path: p, headers: { Host: `localhost:${port}` }, timeout: 20000 }, (r) => {
@@ -47,8 +45,14 @@ export async function doctor(root) {
     node && cmp(node, floor) >= 0 ? "" : "Install a newer Node (winget install OpenJS.NodeJS.LTS / brew install node), or nvm install; the start script also picks up a newer nvm version by itself.");
 
   const lock = readJson(path.join(root, ".claude", "dashboard", "engine.json"));
+  const release = releaseCheck(latestRelease((lock && lock.sourceRepo) || undefined));
+  if (release.stale) add("warn", "plugin", `this plugin is ${release.current}, ${TAG_PREFIX}${release.latest} is out`, `${release.update.join(" && ")}, then restart Claude Code (upgrade and doctor otherwise compare against the old copy).`);
+  else if (release.latest) add("ok", "plugin", `${release.current} (latest release)`);
+  else add("warn", "plugin", `${release.current}; couldn't reach the source repo to check for a newer release`);
+
   const shipped = engineVersion();
   if (lock && lock.version && shipped && cmp(shipped, lock.version) > 0) add("warn", "engine", `installed ${lock.version}, plugin has ${shipped}`, "Run the agentic-os upgrade skill to merge it in.");
+  else if (lock && lock.version && shipped && cmp(shipped, lock.version) < 0) add("warn", "engine", `installed ${lock.version}, newer than this plugin's ${shipped}`, "Update the plugin before upgrading; upgrading from this copy would downgrade.");
   else if (lock) add("ok", "engine", `version ${lock.version}`);
 
   const installed = fs.existsSync(path.join(dash, "node_modules", ".package-lock.json"));

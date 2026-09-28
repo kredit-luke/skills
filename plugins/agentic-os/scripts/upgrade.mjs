@@ -5,7 +5,12 @@
  * they installed (the base, from .claude/dashboard/engine.json), their copy, and
  * the new engine.
  *
- *   node upgrade.mjs <workspace> [--base <engine folder>] [--dry]
+ *   node upgrade.mjs <workspace> [--base <engine folder>] [--dry] [--allow-stale]
+ *
+ * First it checks the source repo for a newer release than this plugin copy and
+ * stops if there is one (Claude Code doesn't refresh cached plugins, so an old
+ * copy would upgrade to an old engine); --allow-stale goes ahead anyway. It also
+ * refuses to downgrade a workspace that runs a newer engine than this plugin's.
  *
  * Per file: untouched locally -> take the new one; unchanged upstream -> keep
  * theirs; changed on both sides -> `git merge-file`, and anything that doesn't
@@ -19,22 +24,37 @@
 
 import fs from "node:fs";
 import path from "node:path";
-import { ENGINE_DIR, TAG_PREFIX, args, engineVersion, fetchEngine, gitMergeFile, hashFile, isMain, listFiles, readJson, writeJson } from "./lib.mjs";
+import { ENGINE_DIR, TAG_PREFIX, args, compareVersions, engineVersion, fetchEngine, gitMergeFile, hashFile, isMain, latestRelease, listFiles, readJson, releaseCheck, writeJson } from "./lib.mjs";
 
-export function upgrade(root, { base: baseArg, dry = false } = {}) {
+/**
+ * @param o.latest      newest release version; left out, it's looked up on the source repo
+ *                      (tests pass it, or null to skip the check)
+ * @param o.allowStale  go ahead even though a newer release than this plugin is out
+ */
+export function upgrade(root, { base: baseArg, dry = false, latest, allowStale = false } = {}) {
   root = path.resolve(root);
   const dash = path.join(root, "dashboard");
   const lockFile = path.join(root, ".claude", "dashboard", "engine.json");
   const lock = readJson(lockFile);
   const to = engineVersion();
   if (!lock || !lock.version) return { ok: false, error: "No .claude/dashboard/engine.json: this workspace wasn't set up by the agentic-os skill (or the file was removed). Reinstall with scaffold.mjs --force, or pass --base with the engine it started from." };
-  if (lock.version === to && !baseArg) return { ok: true, upToDate: true, version: to };
+
+  const release = releaseCheck(latest === undefined ? latestRelease(lock.sourceRepo) : latest);
+  const { update, newRoot } = release;
+  if (release.stale && !allowStale) {
+    return { ok: false, stale: true, error: `This plugin is ${release.current}, but ${TAG_PREFIX}${release.latest} is out. Update the plugin, then run upgrade again from the updated copy.`, update, newRoot };
+  }
+  if (compareVersions(lock.version, to) > 0 && !baseArg) {
+    return { ok: false, downgrade: true, error: `The workspace runs engine ${lock.version}, newer than this plugin's ${to}: upgrading would downgrade it. Update the plugin.`, update, newRoot };
+  }
+  const releaseNote = release.latest ? { latestRelease: release.latest } : { latestRelease: null, note: "Couldn't reach the source repo to check for a newer release; upgrading to this plugin's engine." };
+  if (lock.version === to && !baseArg) return { ok: true, upToDate: true, version: to, ...releaseNote };
 
   const baseDir = baseArg ? path.resolve(baseArg) : fetchEngine(lock.version, lock.sourceRepo);
   if (!baseDir) return { ok: false, error: `Couldn't get engine ${lock.version} (tag ${TAG_PREFIX}${lock.version}) to merge from. Check the network, or pass --base <folder with that engine>.` };
 
   const files = new Set([...listFiles(baseDir), ...listFiles(ENGINE_DIR), ...listFiles(dash)]);
-  const r = { ok: true, from: lock.version, to, updated: [], added: [], deleted: [], keptLocal: [], merged: [], conflicts: [], localOnly: [] };
+  const r = { ok: true, from: lock.version, to, ...releaseNote, updated: [], added: [], deleted: [], keptLocal: [], merged: [], conflicts: [], localOnly: [] };
   for (const rel of [...files].sort()) {
     if (rel === "ENGINE.json") continue;
     const b = path.join(baseDir, rel), n = path.join(ENGINE_DIR, rel), l = path.join(dash, rel);
@@ -73,8 +93,8 @@ export function upgrade(root, { base: baseArg, dry = false } = {}) {
 
 if (isMain(import.meta)) {
   const a = args();
-  if (!a._[0]) { console.error("Usage: node upgrade.mjs <workspace> [--base <engine folder>] [--dry]"); process.exit(2); }
-  const r = upgrade(a._[0], { base: a.base, dry: !!a.dry });
+  if (!a._[0]) { console.error("Usage: node upgrade.mjs <workspace> [--base <engine folder>] [--dry] [--allow-stale]"); process.exit(2); }
+  const r = upgrade(a._[0], { base: a.base, dry: !!a.dry, allowStale: !!a["allow-stale"] });
   console.log(JSON.stringify(r, null, 2));
   process.exitCode = r.ok ? (r.conflicts && r.conflicts.length ? 3 : 0) : 1;
 }

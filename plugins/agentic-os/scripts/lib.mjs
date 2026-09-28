@@ -14,6 +14,10 @@ export const ENGINE_DIR = path.join(PLUGIN_DIR, "engine");
 export const TEMPLATES_DIR = path.join(PLUGIN_DIR, "templates");
 export const SOURCE_REPO = "https://github.com/lhoezee/skills";
 export const TAG_PREFIX = "agentic-os-v";
+export const PLUGIN_NAME = "agentic-os";
+// Installed plugins live at <plugins>/cache/<marketplace>/agentic-os/<version>; a checkout of the repo doesn't.
+const INSTALLED = path.basename(path.dirname(PLUGIN_DIR)) === PLUGIN_NAME;
+export const MARKETPLACE = INSTALLED ? path.basename(path.dirname(path.dirname(PLUGIN_DIR))) : "lhoezee-skills";
 
 /** Folders never copied, compared or merged: installs, builds, caches. */
 export const IGNORE = new Set(["node_modules", "dist", ".angular", "out-tsc", ".git"]);
@@ -23,6 +27,46 @@ export const writeJson = (f, data) => { fs.mkdirSync(path.dirname(f), { recursiv
 
 export function engineVersion(dir = ENGINE_DIR) {
   return (readJson(path.join(dir, "ENGINE.json")) || readJson(path.join(dir, "package.json")) || {}).version || null;
+}
+
+export const pluginVersion = () => (readJson(path.join(PLUGIN_DIR, ".claude-plugin", "plugin.json")) || {}).version || null;
+
+const semver = (v) => (/(\d+)\.(\d+)\.(\d+)/.exec(String(v || "")) || []).slice(1).map(Number);
+/** Sort-style comparison of x.y.z versions (a leading "v" is fine): <0, 0 or >0. */
+export function compareVersions(a, b) {
+  const x = semver(a), y = semver(b);
+  for (let i = 0; i < 3; i++) if ((x[i] || 0) !== (y[i] || 0)) return (x[i] || 0) - (y[i] || 0);
+  return 0;
+}
+
+/** The newest agentic-os-v<x.y.z> tag on the source repo, or null (offline, or no tags). */
+export function latestRelease(repo = SOURCE_REPO) {
+  try {
+    const out = execFileSync("git", ["ls-remote", "--tags", "--refs", repo, `${TAG_PREFIX}*`], { encoding: "utf-8", stdio: ["ignore", "pipe", "ignore"], timeout: 20000 });
+    const tag = new RegExp(`refs/tags/${TAG_PREFIX}(\\d+\\.\\d+\\.\\d+)$`);
+    return out.split("\n").map((l) => (tag.exec(l.trim()) || [])[1]).filter(Boolean).sort(compareVersions).pop() || null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Is this copy of the plugin the newest release? Claude Code caches plugins and
+ * doesn't refresh them by itself, so an old copy would "upgrade" to an old engine.
+ * `latest` is null when the check couldn't run (offline). `update` is what to run;
+ * `newRoot` is where the updated plugin lands, since a running skill keeps its
+ * old folder.
+ */
+export function releaseCheck(latest) {
+  const current = pluginVersion();
+  const stale = !!(latest && current && compareVersions(latest, current) > 0);
+  return {
+    current,
+    latest,
+    stale,
+    update: [`claude plugin marketplace update ${MARKETPLACE}`, `claude plugin update ${PLUGIN_NAME}@${MARKETPLACE}`],
+    newRoot: stale && INSTALLED ? path.join(path.dirname(PLUGIN_DIR), latest) : null,
+  };
 }
 
 /** Relative paths of every file under dir (forward slashes), skipping IGNORE folders. */

@@ -5,8 +5,45 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { contrast, mapToContract, parseColor, themeCss, tokensOnly } from "../extract-brand.mjs";
+import { compareVersions, engineVersion, pluginVersion, releaseCheck } from "../lib.mjs";
 import { scaffold } from "../scaffold.mjs";
+import { upgrade } from "../upgrade.mjs";
 import { validate } from "../validate.mjs";
+
+test("compareVersions orders x.y.z numerically, a leading v is fine", () => {
+  assert.ok(compareVersions("0.2.10", "0.2.9") > 0);
+  assert.ok(compareVersions("v24.11.0", "24.15.0") < 0);
+  assert.equal(compareVersions("1.0.0", "1.0.0"), 0);
+  assert.deepEqual(["0.2.1", "0.10.0", "0.2.0"].sort(compareVersions), ["0.2.0", "0.2.1", "0.10.0"]);
+});
+
+test("releaseCheck: stale only when a newer release is out; unknown when offline", () => {
+  const current = pluginVersion();
+  assert.equal(releaseCheck("999.0.0").stale, true);
+  assert.equal(releaseCheck(current).stale, false);
+  assert.equal(releaseCheck(null).stale, false);
+  assert.match(releaseCheck("999.0.0").update.join(" "), /claude plugin update agentic-os@/);
+});
+
+test("upgrade stops on a stale plugin or a downgrade instead of merging", () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "aos-upgrade-"));
+  const lock = (version) => {
+    fs.mkdirSync(path.join(root, ".claude", "dashboard"), { recursive: true });
+    fs.writeFileSync(path.join(root, ".claude", "dashboard", "engine.json"), JSON.stringify({ version }));
+  };
+
+  lock(engineVersion());
+  const stale = upgrade(root, { latest: "999.0.0", dry: true });
+  assert.equal(stale.ok, false);
+  assert.equal(stale.stale, true);
+  assert.equal(upgrade(root, { latest: "999.0.0", allowStale: true, dry: true }).upToDate, true);
+  assert.equal(upgrade(root, { latest: pluginVersion(), dry: true }).upToDate, true);
+
+  lock("999.0.0");
+  const down = upgrade(root, { latest: null, dry: true });
+  assert.equal(down.ok, false);
+  assert.equal(down.downgrade, true);
+});
 
 test("colors: parse hex/rgb/hsl, WCAG contrast", () => {
   assert.deepEqual(parseColor("#fff"), [255, 255, 255]);
