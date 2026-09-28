@@ -29,7 +29,7 @@ import { AppButtonsComponent } from './app-buttons.component';
       <div class="toolbar">
         <span class="count">{{ countLabel() }}</span>
         @if (running().length) {
-          <span class="links">@for (a of running(); track a.key) { <a class="app-url running" [href]="a.url" target="_blank" rel="noopener" [title]="a.name">{{ a.name }} :{{ a.port }}</a> }</span>
+          <span class="links">@for (a of running(); track a.key) { @if (a.url) { <a class="app-url running" [href]="a.url" target="_blank" rel="noopener" [title]="a.name">{{ a.name }} :{{ a.port }}</a> } @else { <span class="app-url running" [title]="a.name">{{ a.name }}</span> } }</span>
         }
         <span class="grow"></span>
         @if (avail().length) {

@@ -126,18 +126,21 @@ class AppLauncher {
   pidFile: string;
   portOf: (ws, key: string) => number | null;
   isUp: (port: number) => Promise<boolean>;
+  settleMs: number;
   jobs: any[];
 
   /**
-   * @param o.logDir  where job logs go
-   * @param o.portOf  current port for an app in a workspace
-   * @param o.isUp    TCP check
+   * @param o.logDir    where job logs go
+   * @param o.portOf    current port for an app in a workspace
+   * @param o.isUp      TCP check
+   * @param o.settleMs  how long a port-less app must stay alive to count as started
    */
-  constructor({ logDir, portOf, isUp }) {
+  constructor({ logDir, portOf, isUp, settleMs = 5000 }) {
     this.logDir = logDir;
     this.pidFile = path.join(logDir, "pids.json");
     this.portOf = portOf;
     this.isUp = isUp;
+    this.settleMs = settleMs;
     this.jobs = [];
     fs.mkdirSync(logDir, { recursive: true });
     this._load();
@@ -178,6 +181,13 @@ class AppLauncher {
     if (!app) return false;
     if (app.mainOnly && ws.slug !== "main") return false;
     return fs.existsSync(path.join(ws.path, app.dir));
+  }
+
+  /** Pid of the process tree this dashboard started for an app, if it's still alive. */
+  runningPid(ws, key): number | null {
+    const pid = this._pids()[`${ws.slug}:${key}`];
+    if (!pid) return null;
+    try { process.kill(pid, 0); return pid; } catch { return null; }
   }
 
   busy(wsSlug, key) {
@@ -259,7 +269,8 @@ class AppLauncher {
           keys.forEach((k) => started.add(k));
           await Promise.all(keys.map((k) => this._startOne(ws, k, step)));
         } else if (s.wait) {
-          const keys = s.wait === "all" ? apps : s.wait.filter((k) => apps.includes(k));
+          // "all" means everything started so far: apps a later `start` step launches aren't running yet.
+          const keys = s.wait === "all" ? apps.filter((k) => started.has(k)) : s.wait.filter((k) => apps.includes(k));
           await Promise.all(keys.map((k) => this._waitUp(ws, k, step)));
         } else if (s.launcher || s.cmd) {
           // A step for an app that isn't cloned here (e.g. "ping api") is skipped with it.
@@ -323,6 +334,11 @@ class AppLauncher {
       await step(`${app.name} already running on :${port}`, async () => {});
       return;
     }
+    const pid = app.port ? null : this.runningPid(ws, key);
+    if (pid) {
+      await step(`${app.name} already running (pid ${pid})`, async () => {});
+      return;
+    }
     await step(`Launch ${app.name}`, async (log) => {
       if (app.launch.cmd) this._launchCmd(ws, app, log);
       else if (app.launch.detached) this._launchDetached(this._launcherArgs(app.launch.launcher!), ws, key, log);
@@ -353,6 +369,14 @@ class AppLauncher {
 
   _waitUp(ws, key, step) {
     const app = this.cfg.apps[key];
+    if (!app.port) {
+      // Nothing to probe (a queue worker, a watcher): started means it didn't exit straight away.
+      return step(`Check ${app.name} started`, async (log) => {
+        await sleep(this.settleMs);
+        if (this._exited(log.file, key)) throw new Error(`${app.name} exited right after starting. See the log.`);
+        log(`${app.name} is running (no port to check).`);
+      });
+    }
     return step(`Wait for ${app.name} to listen`, async (log) => {
       const deadline = Date.now() + app.bootMs;
       while (Date.now() < deadline) {

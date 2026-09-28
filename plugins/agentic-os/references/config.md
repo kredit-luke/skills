@@ -73,7 +73,7 @@ Personal/local state is in `<workspace>/.claude/ledger/` (gitignored): run histo
 }
 ```
 
-**App fields:** `name`, `type` (label), `dir` (workspace-relative folder; the app is "not cloned" when missing), `workDir` (a sub-folder, e.g. in a monorepo; also where the command runs), `group`, `port` (main-workspace port; the dashboard marks the app up when it answers), `https`, `mainOnly` (never runs in worktrees; always its fixed port), `bootSeconds` (how long to wait before calling a start failed, default 120), `logFile` (an extra log the app writes; `{tmp}` and `{workspace}` expand).
+**App fields:** `name`, `type` (label), `dir` (workspace-relative folder; the app is "not cloned" when missing), `workDir` (a sub-folder, e.g. in a monorepo; also where the command runs), `group`, `port` (main-workspace port; the dashboard marks the app up when it answers. Leave it out for an app that never listens, like a queue worker: it counts as started once its process has stayed alive for a few seconds, and as running while that process is alive), `https`, `mainOnly` (never runs in worktrees; always its fixed port), `bootSeconds` (how long to wait before calling a start failed, default 120), `logFile` (an extra log the app writes; `{tmp}` and `{workspace}` expand).
 
 **launch** is one of:
 - `{ "cmd": "...", "cwd"?: "sub/folder", "env"?: { ... } }`: a shell command, run detached (it outlives the dashboard) in `workDir`/`dir` (+`cwd`). `{{port}}` (this app's port), `{{port:<appId>}}` and `{{workspace}}` expand in `cmd` and `env`. Stop kills its process tree.
@@ -81,7 +81,7 @@ Personal/local state is in `<workspace>/.claude/ledger/` (gitignored): run histo
 
 **Top level:** `launcher: { script, stop: "stop {app}", workspaceArg: "--workspace" | null }`; `setup: { label, cmd | launcher, timeoutMin }` (a one-time setup step: stacks can run it, and the Machine page's "Run setup" button uses it); `groups` (display order and labels); `defaultStack` (what a workspace's "Start stack" button starts).
 
-**Stack steps**, in order: `{ "setup": true }` · `{ "start": ["id", …] }` or `{ "start": "rest" }` (the ones not started yet, in parallel) · `{ "wait": "all" | ["id"] }` · `{ "cmd": "...", "label", "timeoutMin" }` · `{ "launcher": "...", "label", "timeoutMin" }`. No `steps` = start every app at once.
+**Stack steps**, in order: `{ "setup": true }` · `{ "start": ["id", …] }` or `{ "start": "rest" }` (the ones not started yet, in parallel) · `{ "wait": "all" | ["id"] }` (`"all"` = every app started so far) · `{ "cmd": "...", "label", "timeoutMin" }` · `{ "launcher": "...", "label", "timeoutMin" }`. No `steps` = start every app at once.
 
 Port rules: unique across apps, not the dashboard's, and not a database's host port. Frameworks' defaults (Vite 5173, Next 3000, Angular 4200, Laravel/Django 8000, Rails 3000, Spring 8080) are fine when they don't clash.
 
