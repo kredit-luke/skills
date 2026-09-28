@@ -31,14 +31,16 @@ Personal/local state is in `<workspace>/.claude/ledger/` (gitignored): run histo
 | `dashboard.port` | 3333 | `DASHBOARD_PORT` env var overrides it per machine; `--port` per start. Must not clash with an app port. |
 | `dashboard.devPort` | 4339 | The UI dev server (`npm run dev` in dashboard/) allowed to call the server. Keep in step with `angular.json`'s serve port. |
 | `dashboard.legacyRedirects` | none | Old tools' ports that should redirect into the dashboard. |
-| `worktrees.dir` | `worktrees` | Where per-ticket worktrees live (Workspaces page lists `<dir>/*` with a `.worktree.json`). |
-| `worktrees.portsFile` | `~/.agentic-workspace-ports.json` | Per-user file the team's worktree tooling writes: `{ worktrees: { <name>: { workspace, ports: { <appId>: port } } } }`. Worktree app ports come from here. |
+| `worktrees.dir` | `worktrees` | Where per-ticket worktrees live (Workspaces page lists `<dir>/*` with a `.worktree.json`). Native `git worktree`s are found too, wherever they are: see "Worktrees" below. |
+| `worktrees.portsFile` | `~/.agentic-workspace-ports.json` | Per-user file of worktree ports: `{ worktrees: { <name>: { slot, workspace, ports: { <appId>: port } } } }`. Written by the team's worktree tooling, or by the dashboard when `worktrees.ports` is set. |
+| `worktrees.ports` | none | `{ "base": 24000, "slotSize": 100 }`: the dashboard gives each worktree a port slot on its first start, `base + slot × slotSize + slotOffset` per app, and records it in the ports file. Leave it out when the team's tooling allocates. |
 | `worktrees.screenshots` | `.claude/qa-artifacts/screenshots` | QA screenshots shown per workspace. |
 | `issues.kind` | `none` | `linear` \| `jira` \| `github` \| `none` (or any adapter you add). |
 | `issues.label` | per kind | Shown in the UI. |
 | `issues.implementStates` | Linear `Todo`, Jira `To Do`, GitHub `Open` | Issues in these states get the Implement button (with `deck.json` `issues.implementTeams`). |
 | `issues.ticketPattern` | `^[A-Z][A-Z0-9]*-\d+$` (GitHub: `^[\w.-]+#\d+$`) | Anchored regex for a ticket id. |
 | `issues.urlTemplate` | from the adapter | Issue URL with `{id}`, if the adapter can't build one. |
+| (per person) | none | Each person can narrow their own board with "My filter" on the Issues page: JQL for Jira (ANDed in), search qualifiers for GitHub. Saved in their `.claude/ledger/settings.json`, never in the team config. Linear has no query language, so no field. |
 | Linear | `org` | The workspace slug in `linear.app/<org>/...`. Key: pasted on the Issues page (`lin_api_…`) or `LINEAR_API_KEY`. |
 | Jira | `site`, `projects` | `acme.atlassian.net`; project keys or names. Key: `email:api-token` pasted on the Issues page, or `JIRA_EMAIL` + `JIRA_API_TOKEN`. |
 | GitHub Issues | `repos` (or `repo`), `states` | `["owner/name", …]`; `states` maps board columns to labels, e.g. `{ "In progress": ["in progress"] }` (open issues with none = "Open"). Ids are `<repo>#<n>`. Uses `gh` login. |
@@ -73,7 +75,7 @@ Personal/local state is in `<workspace>/.claude/ledger/` (gitignored): run histo
 }
 ```
 
-**App fields:** `name`, `type` (label), `dir` (workspace-relative folder; the app is "not cloned" when missing), `workDir` (a sub-folder, e.g. in a monorepo; also where the command runs), `group`, `port` (main-workspace port; the dashboard marks the app up when it answers. Leave it out for an app that never listens, like a queue worker: it counts as started once its process has stayed alive for a few seconds, and as running while that process is alive), `https`, `mainOnly` (never runs in worktrees; always its fixed port), `bootSeconds` (how long to wait before calling a start failed, default 120), `logFile` (an extra log the app writes; `{tmp}` and `{workspace}` expand).
+**App fields:** `name`, `type` (label), `dir` (workspace-relative folder; the app is "not cloned" when missing), `workDir` (a sub-folder, e.g. in a monorepo; also where the command runs), `group`, `port` (main-workspace port; the dashboard marks the app up when it answers. Leave it out for an app that never listens, like a queue worker: it counts as started once its process has stayed alive for a few seconds, and as running while that process is alive), `https`, `mainOnly` (never runs in worktrees; always its fixed port), `fallback: "main"` (in a worktree that isn't running this app, or hasn't cloned it, its dependents use main's instance: `{{port:<id>}}` names main's port, and a worktree stack that includes it starts or reuses main's; for shared backends and services a worktree usually doesn't change), `slotOffset` (its offset inside a worktree port slot; default its 1-based position in `apps`), `bootSeconds` (how long to wait before calling a start failed, default 120), `logFile` (an extra log the app writes; `{tmp}` and `{workspace}` expand).
 
 **launch** is one of:
 - `{ "cmd": "...", "cwd"?: "sub/folder", "env"?: { ... } }`: a shell command, run detached (it outlives the dashboard) in `workDir`/`dir` (+`cwd`). `{{port}}` (this app's port), `{{port:<appId>}}` and `{{workspace}}` expand in `cmd` and `env`. Stop sends its process tree SIGTERM, then SIGKILL after 10s if anything is left. Starting an app whose earlier launch is still alive but not answering stops that one first.
@@ -82,6 +84,10 @@ Personal/local state is in `<workspace>/.claude/ledger/` (gitignored): run histo
 **Top level:** `launcher: { script, stop: "stop {app}", workspaceArg: "--workspace" | null }`; `setup: { label, cmd | launcher, timeoutMin }` (a one-time setup step: stacks can run it, and the Machine page's "Run setup" button uses it); `groups` (display order and labels); `defaultStack` (what a workspace's "Start stack" button starts).
 
 **Stack steps**, in order: `{ "setup": true }` · `{ "start": ["id", …] }` or `{ "start": "rest" }` (the ones not started yet, in parallel) · `{ "wait": "all" | ["id"] }` (`"all"` = every app started so far) · `{ "cmd": "...", "label", "timeoutMin" }` · `{ "launcher": "...", "label", "timeoutMin" }`. No `steps` = start every app at once.
+
+**Worktrees.** The Workspaces page lists main plus every worktree it finds: entries in the ports file, `worktrees.dir/*` folders with a `.worktree.json`, and native `git worktree`s of the workspace's repos. A git worktree of the root repo (a monorepo, or a workspace that is itself a repo) is a workspace; a git worktree of an app's repo counts when it sits at `<workspace>/<repo folder>`, so `git -C api worktree add ../trees/ENG-7/api` and `git -C web worktree add ../trees/ENG-7/web` make one workspace, `trees/ENG-7`. Its ticket comes from `.worktree.json` `ticketId`, else from the branch name (`issues.ticketPattern`). Repos shown per workspace: `.worktree.json` `repos`, else the repo holding each app's `dir`, else the root itself (`.`). A worktree gets a Start button for each stack it has an app of, not just `defaultStack`.
+
+**Ports in a worktree** come from the ports file. Kept by the team's tooling, or, with `worktrees.ports`, allocated by the dashboard on first start (locked with `<portsFile>.lock`, created exclusively and broken after 10s, so a team script writing the same file can take the same lock). Validate checks offsets are unique, fit in a slot, and that the first ten slots don't land on main's ports or the dashboard's.
 
 Port rules: unique across apps, not the dashboard's, and not a database's host port. Frameworks' defaults (Vite 5173, Next 3000, Angular 4200, Laravel/Django 8000, Rails 3000, Spring 8080) are fine when they don't clash.
 
@@ -119,12 +125,15 @@ Always include: `package-manager`, `node` (the dashboard itself needs it; floor 
   "sources": [
     { "key": "handbook", "name": "Engineering handbook", "kind": "notes", "dir": "handbook" },
     { "key": "site", "name": "Docs site", "kind": "site", "dir": "docs-site", "live": "https://docs.acme.com/", "port": 4335 },
-    { "key": "wiki", "name": "Confluence", "kind": "external", "url": "https://acme.atlassian.net/wiki/spaces/ENG", "provider": "confluence", "description": "Runbooks and specs" }
+    { "key": "wiki", "name": "Confluence", "kind": "external", "url": "https://acme.atlassian.net/wiki", "provider": "confluence", "spaces": ["ENG"], "description": "Runbooks and specs" }
   ]
 }
 ```
 
 `notes` = a folder of Markdown, rendered in the page. `site` = a static-site repo (HTML); `port` serves the working copy locally for the Page view (pick unused ports), `live` links the published site. `external` = docs elsewhere (Confluence, Notion, Google Drive, SharePoint, a wiki): a card that opens `url`, and "Ask Claude" starts a read-only run that uses that service's MCP connector (the user connects it in Claude). Local sources are also indexed by search.
+
+With a `provider` that has an adapter (`dashboard/server/src/docs-providers/`: `confluence` so far), an external source is also **searchable**: the Docs page searches it and shows its pages, global search (Ctrl+K) lists its matches, and Ask and the launch dialog get a **Use <name>** checkbox that tells the run to search it through the MCP connector and cite pages. Each person reads it with their own key, pasted on the Docs page (kept in `.claude/ledger/`), so they only see what their account can.
+- **Confluence**: `"provider": "confluence"`, `url` = `https://<site>.atlassian.net/wiki`, optional `spaces` (space keys; empty = every non-personal space). Key: `CONFLUENCE_EMAIL` + `CONFLUENCE_API_TOKEN`, the pasted `email:api-token`, or, when `issues.kind` is `jira` on the same site, the Jira key (nothing more to paste).
 
 ## reference.json: the Reference page
 

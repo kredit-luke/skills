@@ -14,6 +14,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { frontmatter } from "./memory.ts";
 import { localDocSources } from "./docs.ts";
+import { skillFile } from "./config.ts";
 
 const REBUILD_MS = 30000;
 const MAX_FILE_BYTES = 2 * 1024 * 1024;
@@ -203,7 +204,7 @@ class Search {
   _skills() {
     const dir = path.join(this.root, ".claude", "skills");
     return readdir(dir).filter((e) => e.isDirectory() && !e.name.startsWith("_")).map((e) => {
-      const file = path.join(dir, e.name, "SKILL.md");
+      const file = skillFile(path.join(dir, e.name));
       const text = read(file);
       if (text == null) return null;
       const { fm, body } = frontmatter(text);

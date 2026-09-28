@@ -86,6 +86,10 @@ export interface RunMeta {
   planMode: boolean;
   budgetUsd: number | null;
   trigger: string;             // "manual" | "routine:<id>" | "issues" | "ask" | ...
+  /** docs.json sources the run was told to use ("Use <source>"). */
+  docSources?: string[];
+  /** Appended to the system prompt every turn (the docs sources' notes). */
+  extraPrompt?: string | null;
   status: RunStatus;
   startedAt: string;
   endedAt: string | null;      // end of the latest turn
@@ -181,6 +185,10 @@ export interface LaunchRequest {
   planMode?: boolean;          // start read-only (Ask/Explain); can be switched off later
   budgetUsd?: number;          // runaway cap, 0 < x <= 100; ignored unless limits.runBudget is on
   trigger?: string;            // "ask" | "explain" | ... (default "manual"); informational only
+  /** docs.json external sources (with a provider) this run should use: Claude is told to search them via their MCP connector. */
+  docSources?: string[];
+  /** With one docSource: the page the question is about. */
+  docPage?: string;
   attachments?: string[];      // ids from POST /api/attachments
 }
 
@@ -322,6 +330,8 @@ export interface AppStatus {
   key: string; name: string; type: string; group: string;
   port: number | null; url: string | null; running: boolean; repo: string;
   available: boolean; busy: string | null; blockedBy: string[];
+  /** In a worktree, a "fallback": "main" app that isn't running here: its dependents use main's instance on this port. */
+  fallback?: { port: number; running: boolean } | null;
 }
 export interface WorkspaceStatus {
   name: string; slug: string; path: string; apps: AppStatus[];
@@ -374,8 +384,35 @@ export interface DocSite {
   key: string; name: string; repo: string | null; kind: 'site' | 'notes' | 'external'; type: string;
   live: string | null; url: string | null; provider: string | null; description: string | null;
   available: boolean; previewUrl: string | null; docs: number;
+  /** An external source whose provider has an adapter: the Docs page can search and read it. */
+  searchable?: boolean;
 }
 /** GET /api/docs → { sites } ;  POST /api/docs/preview { site } → { url } */
+
+/**
+ * External docs with a provider adapter (Confluence, …), read with each person's own key.
+ *   GET  /api/docs/external?site=<key>                      → ExternalDocsStatus
+ *   GET  /api/docs/external/search?site=&q=&spaces=a,b      → { hits: ExternalDocHit[] }
+ *   GET  /api/docs/external/page?site=&id=                  → ExternalDocPage
+ *   GET  /api/docs/external/search-all?q=                   → { groups: { site, name, hits }[] }   (connected sources only)
+ *   POST /api/docs/external/connect { site, key }           → ExternalDocsStatus
+ *   POST /api/docs/external/disconnect { site }             → ExternalDocsStatus
+ */
+export interface ExternalDocsStatus {
+  site: string; name: string; provider: string; label: string; url: string | null;
+  connected: boolean; source: 'env' | 'file' | 'tracker' | null; viewer: string | null;
+  help: { title: string; steps: string[]; placeholder: string; needsKey: boolean } | null;
+  spaces: { key: string; name: string; url: string }[];
+  error: string | null;
+}
+export interface ExternalDocHit {
+  id: string; title: string; url: string; space: string; spaceName: string;
+  excerpt: { text: string; hl: boolean }[]; updatedAt?: string | null;
+}
+export interface ExternalDocPage {
+  id: string; title: string; url: string; space: string; spaceName: string; html: string;
+  updatedAt?: string | null; updatedBy?: string | null; labels: string[]; ancestors: { id: string; title: string }[];
+}
 
 /** One page of a docs site. Read it with GET /api/search/doc?id= (content is markdown). */
 export interface DocPage { id: string; title: string; rel: string; pagePath: string; format: 'md' | 'html'; live: string | null; sections: string[] }
@@ -470,6 +507,11 @@ export interface IssuesResponse {
   tracker: { kind: string; label: string; configured: boolean; supported: boolean };
   /** Set when not connected and the tracker takes a key. */
   connect: ConnectHelp | null;
+  /**
+   * Your own board filter in the tracker's query language (Jira JQL, GitHub search), and how to
+   * write it; null when the tracker has none (Linear). Saved with POST /api/settings { issues: { query } }.
+   */
+  query?: { value: string; label: string; placeholder: string; help: string } | null;
 }
 /** GET /api/issues/issue?id=ENG-123 → IssueDetail (description is markdown) */
 export interface IssueDetail { id: string; title: string; url: string; team: string; state: string; priorityLabel: string; assignee: string | null; project: string | null; cycle: string | null; labels: IssueLabel[]; description: string; branchName: string | null; updatedAt: string }

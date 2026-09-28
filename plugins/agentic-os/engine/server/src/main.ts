@@ -22,8 +22,10 @@ import type { Boot, LaunchRequest, RunMeta } from "../../shared/api.ts";
 import { CLAUDE_SESSION_ENV } from "./claude.ts";
 import {
   BRAND_DIR, DASHBOARD_DIR, LEDGER_DIR, WORKSPACE_ROOT,
-  dashboardPort, portsFile, ticketRe, workspaceConfig, worktreeRoot,
+  dashboardPort, portsFile, ticketInTextRe, ticketRe, workspaceConfig, worktreeRoot,
 } from "./config.ts";
+import * as workspaces from "./workspaces.ts";
+import type { Ws } from "./workspaces.ts";
 
 // The dashboard outlives whatever launched it. If that was a Claude Code session,
 // its per-session markers are in our env and would leak into every process we
@@ -39,7 +41,8 @@ import { AppLauncher, appsConfig } from "./apps.ts";
 import { Trackers } from "./issues/index.ts";
 import { readLinks, saveLink, deleteLink, readRepoReadme } from "./links.ts";
 import { Machine, openTerminal } from "./machine.ts";
-import { DocSites } from "./docs.ts";
+import { DocSites, docSources } from "./docs.ts";
+import { DocsProviders } from "./docs-providers/index.ts";
 import { Memory } from "./memory.ts";
 import { Search } from "./search.ts";
 import { claudeAuth, claudeAuthCached, claudeEnv } from "./claude.ts";
@@ -61,10 +64,6 @@ const screenshotsSubdir = () => workspaceConfig().worktrees.screenshots;
 const IMAGE_CONTENT_TYPES: Record<string, string> = {
   ".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".gif": "image/gif", ".webp": "image/webp",
 };
-
-function slugifyWorkspace(name: string) {
-  return name.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/(^-|-$)/g, "");
-}
 
 function listScreenshots(workspacePath: string) {
   const dir = path.join(workspacePath, screenshotsSubdir());
@@ -104,26 +103,15 @@ async function execGitCached(args: string[], cwd: string) {
   return data;
 }
 
+/** Git repos in a workspace (see workspaces.ts): .worktree.json repos, the apps' repos, or "." for a monorepo. */
 function listRepos(workspacePath: string): string[] {
-  const metaFile = path.join(workspacePath, ".worktree.json");
-  if (fs.existsSync(metaFile)) {
-    try {
-      const meta = JSON.parse(fs.readFileSync(metaFile, "utf-8"));
-      return (meta.repos || []).filter((d: string) => fs.existsSync(path.join(workspacePath, d, ".git")));
-    } catch {}
-  }
-  return [...new Set(Object.values(appsConfig().apps).map((m) => m.dir.split("/")[0]))]
-    .filter((d) => fs.existsSync(path.join(workspacePath, d, ".git")));
+  return workspaces.listRepos(workspacePath, appsConfig().apps);
 }
 
-/** The worktree's ticket (.worktree.json ticketId; linearId from older worktrees). */
+/** The worktree's ticket: .worktree.json ticketId, else from its branch (native git worktrees). */
 function readTicketId(workspacePath: string): string | null {
-  try {
-    const meta = JSON.parse(fs.readFileSync(path.join(workspacePath, ".worktree.json"), "utf-8"));
-    return meta.ticketId || meta.linearId || null;
-  } catch {
-    return null;
-  }
+  const ws = listWorkspaces().find((w) => path.resolve(w.path) === path.resolve(workspacePath));
+  return ws && ws.ticketId !== undefined ? ws.ticketId || null : workspaces.ticketOf(workspacePath, null, ticketInTextRe());
 }
 
 async function resolveMainRef(repoPath: string) {
@@ -214,27 +202,26 @@ async function getFileDiff(workspacePath: string, repoDir: string, filePath: str
 
 // ------------------------------------------------------------------ apps / workspaces
 
-interface Ws { slug: string; name: string; path: string; ticketId?: string | null }
-
-function readPortsFile() {
-  try { return JSON.parse(fs.readFileSync(portsFile(), "utf-8")); } catch { return {}; }
-}
-
 /**
- * Port an app uses in a workspace, or null if the worktree hasn't been allocated ports yet.
- * Main (and mainOnly apps everywhere) use apps.json's port; worktrees read theirs from the
- * ports file (workspace.json worktrees.portsFile), which the worktree tooling maintains.
+ * Port an app's own instance uses in a workspace, or null if the worktree hasn't been
+ * allocated ports yet. Main (and mainOnly apps everywhere) use apps.json's port; worktrees
+ * read theirs from the ports file (workspace.json worktrees.portsFile).
  */
 function portOf(ws: Ws, key: string): number | null {
-  const app = appsConfig().apps[key];
-  if (!app) return null;
-  if (ws.slug === "main" || app.mainOnly) return app.port;
-  const data = readPortsFile();
-  for (const [wtName, wtData] of Object.entries<any>(data.worktrees || {})) {
-    const wtPath = wtData.workspace || path.join(worktreeRoot(), wtName);
-    if (path.resolve(wtPath) === path.resolve(ws.path)) return (wtData.ports || {})[key] || null;
-  }
-  return null;
+  return workspaces.ownPort(ws, key, appsConfig().apps, workspaces.readPortsData(portsFile()), worktreeRoot());
+}
+
+/** The port a workspace's apps should use to reach `key` ("fallback": "main" aware). */
+function resolvePort(ws: Ws, key: string, starting: Set<string> = new Set()) {
+  return workspaces.resolvePort(ws, key, appsConfig().apps, {
+    own: portOf, isUp: checkPort, starting, cloned: (w, k) => launcher.available(w, k),
+  });
+}
+
+/** Give a worktree its port slot (only when workspace.json worktrees.ports is set). */
+function ensurePorts(ws: Ws) {
+  const rule = workspaceConfig().worktrees.ports;
+  if (rule && ws.slug !== "main") workspaces.ensureSlot(portsFile(), ws, appsConfig().apps, rule, worktreeRoot());
 }
 
 /** TCP probe on IPv4 and IPv6 loopback (some dev servers bind only ::1). */
@@ -250,29 +237,15 @@ function checkPort(port: number): Promise<boolean> {
   return probe("127.0.0.1").then((up) => up || probe("::1"));
 }
 
-/** Main workspace + every known worktree (ports file and worktrees/ dir). */
+/** Main workspace + every worktree: ports file, worktrees/<name>/.worktree.json, native git worktrees. */
 function listWorkspaces(): Ws[] {
-  const out: Ws[] = [{ slug: "main", name: "Main Workspace", path: MAIN_WORKSPACE_PATH }];
-  const seen = new Set<string>();
-  const wtRoot = worktreeRoot();
-  try {
-    const data = JSON.parse(fs.readFileSync(portsFile(), "utf-8"));
-    for (const [wtName, wtData] of Object.entries<any>(data.worktrees || {})) {
-      const wtPath = wtData.workspace || path.join(wtRoot, wtName);
-      if (!fs.existsSync(wtPath)) continue;
-      seen.add(path.resolve(wtPath));
-      out.push({ slug: slugifyWorkspace(wtName), name: wtName, path: wtPath, ticketId: readTicketId(wtPath) });
-    }
-  } catch {}
-  try {
-    for (const e of fs.readdirSync(wtRoot, { withFileTypes: true })) {
-      const wtPath = path.join(wtRoot, e.name);
-      if (!e.isDirectory() || seen.has(path.resolve(wtPath))) continue;
-      if (!fs.existsSync(path.join(wtPath, ".worktree.json"))) continue;
-      out.push({ slug: slugifyWorkspace(e.name), name: e.name, path: wtPath, ticketId: readTicketId(wtPath) });
-    }
-  } catch {}
-  return out;
+  return workspaces.listWorkspaces({
+    root: MAIN_WORKSPACE_PATH,
+    wtRoot: worktreeRoot(),
+    portsData: workspaces.readPortsData(portsFile()),
+    apps: appsConfig().apps,
+    ticketInText: ticketInTextRe(),
+  });
 }
 
 function workspaceBySlug(slug: unknown): Ws | null {
@@ -285,7 +258,15 @@ async function appStatus(ws: Ws, key: string) {
   // An app with no port in apps.json (a worker) counts as running while the process we started is alive.
   const running = port ? await checkPort(port) : !meta.port && !!launcher.runningPid(ws, key);
   const job = launcher.busy(ws.slug, key);
+  // A worktree app that falls back to main and isn't running here: its dependents use main's.
+  // Shown when main's is up (it's what they use) or the app isn't cloned here (it's the only one).
+  let fallback = null;
+  if (ws.slug !== "main" && meta.fallback === "main" && !running && meta.port) {
+    const mainUp = await checkPort(meta.port);
+    if (mainUp || !launcher.available(ws, key)) fallback = { port: meta.port, running: mainUp };
+  }
   return {
+    fallback,
     key,
     name: meta.name,
     type: meta.type,
@@ -300,13 +281,18 @@ async function appStatus(ws: Ws, key: string) {
   };
 }
 
+/** A main-workspace app this worktree relies on: it shares a stack with an app cloned here. */
+function borrowed(ws: Ws, key: string): boolean {
+  return Object.values(appsConfig().stacks).some((s) => s.apps.includes(key) && s.apps.some((k) => k !== key && launcher.available(ws, k)));
+}
+
 async function getStatus() {
   const apps = appsConfig().apps;
   const workspaces = await Promise.all(listWorkspaces().map(async (ws) => {
     // Main shows every app (unavailable ones as "not cloned"); a worktree only its cloned, non-mainOnly apps.
     const keys = ws.slug === "main"
       ? Object.keys(apps)
-      : Object.keys(apps).filter((k) => !apps[k].mainOnly && launcher.available(ws, k));
+      : Object.keys(apps).filter((k) => !apps[k].mainOnly && (launcher.available(ws, k) || (launcher.fromMain(ws, k) && borrowed(ws, k))));
     return {
       name: ws.name, slug: ws.slug, path: ws.path,
       apps: await Promise.all(keys.map((k) => appStatus(ws, k))),
@@ -345,6 +331,44 @@ const inbox = new Inbox(runs);
 const trackers = new Trackers(LEDGER_DIR);
 const machine = new Machine(MAIN_WORKSPACE_PATH);
 const docSites = new DocSites(MAIN_WORKSPACE_PATH);
+const docsProviders = new DocsProviders(() => ({ ledgerDir: LEDGER_DIR, issues: workspaceConfig().issues }));
+
+/** An external docs source and its provider, or a 404 (unknown source / no adapter for its provider). */
+function externalDocs(key: unknown) {
+  const source = docSources().sources.find((s) => s.key === String(key || ""));
+  const provider = docsProviders.get(source);
+  if (!source || !provider) throw httpError(404, `No searchable docs source ${String(key || "")}`);
+  return { source, provider };
+}
+
+/** Provider failures reach the browser as 502 (the service), except bad input (400) and "connect first" (409). */
+async function viaProvider<T>(fn: () => Promise<T>): Promise<T> {
+  try { return await fn(); } catch (e) {
+    if (e && e.status === 400) throw httpError(400, e.message);
+    if (e && (e.status === 401 || e.status === 403)) throw httpError(409, e.message);
+    throw httpError(502, (e && e.message) || "The docs service failed.");
+  }
+}
+
+async function externalDocsStatus(key: unknown) {
+  const { source, provider } = externalDocs(key);
+  const st = provider.status();
+  let spaces = [], error = null;
+  if (st.connected) {
+    try { spaces = await provider.spaces(); } catch (e) { error = e.message; }
+  }
+  return {
+    site: source.key, name: source.name, provider: provider.kind, label: provider.label, url: source.url || null,
+    ...st, help: st.connected ? null : provider.connectHelp(), spaces, error,
+  };
+}
+
+/** The system-prompt note for a run that should use these docs sources (unknown ones are refused). */
+function docsRunNote(keys: unknown, page: unknown): { keys: string[]; note: string | null } {
+  const list = Array.isArray(keys) ? [...new Set(keys.map(String))].slice(0, 5) : [];
+  const notes = list.map((k) => externalDocs(k).provider.runNote(list.length === 1 && page ? String(page) : null));
+  return { keys: list, note: notes.length ? notes.join("\n\n") : null };
+}
 const memory = new Memory(MAIN_WORKSPACE_PATH);
 const explore = new Explore(MAIN_WORKSPACE_PATH);
 const search = new Search({
@@ -358,6 +382,9 @@ const launcher = new AppLauncher({
   logDir: path.join(LEDGER_DIR, "apps"),
   portOf,
   isUp: checkPort,
+  mainWs: { slug: "main", name: "Main Workspace", path: MAIN_WORKSPACE_PATH },
+  resolvePort: async (ws, key, starting) => (await resolvePort(ws, key, starting)).port,
+  ensurePorts,
 });
 claudeAuth().catch(() => {}); // sign-in state: runs check it before starting
 machine.get().catch(() => {}); // warm caches so the first page load has them
@@ -438,8 +465,11 @@ function launchRun(body: LaunchRequest, trigger: string): RunMeta {
   if (!ws) throw httpError(400, `Unknown workspace ${body.workspace}`);
   const args = body.args || {};
   const argText = Object.values(args).filter(Boolean).join(" ");
+  const docs = docsRunNote(body.docSources, body.docPage);
 
   return runs.start({
+    docSources: docs.keys,
+    extraPrompt: docs.note,
     presetId: preset ? preset.id : null,
     label: preset ? `${preset.label}${argText ? ` · ${argText}` : ""}` : prompt.split("\n")[0].slice(0, 60),
     prompt,
@@ -563,7 +593,12 @@ async function getIssues(force: boolean) {
   const cfg = deck.config().issues;
   const tracker = trackers.get();
   const tcfg = trackers.config();
-  const data = await tracker.issues(cfg, force);
+  // Your own board filter (Settings → issues.query), when the tracker has a query language.
+  const queryHelp = tracker.queryHelp();
+  const query = queryHelp ? deck.personal().issues.query || "" : "";
+  let data;
+  try { data = await tracker.issues({ ...cfg, query }, force); }
+  catch (e) { data = { connected: true, issues: [], error: `Your filter: ${e.message}` }; }
   const list = data.issues || [];
   const worktrees = new Set(listWorkspaces().map((w) => (w.ticketId || w.name || "").toUpperCase()));
   const lastRuns = new Map<string, any>();
@@ -582,6 +617,7 @@ async function getIssues(force: boolean) {
     states: cfg.states && cfg.states.length ? cfg.states : seen("state"),
     teams: cfg.teams && cfg.teams.length ? cfg.teams : seen("team"),
     viewer: tracker.status().viewer,
+    query: queryHelp ? { value: query, ...queryHelp } : null,
     issues: list.map((i) => ({
       ...i,
       canImplement: tcfg.implementStates.includes(i.state) && (!implementTeams.length || implementTeams.includes(i.team)),
@@ -862,7 +898,33 @@ async function handleApi(req: http.IncomingMessage, res: http.ServerResponse, ur
       const files = job ? launcher.log(job) : launcher.appLog(q("workspace"), q("app"));
       return files ? sendJson(res, { files }) : sendError(res, 404, "No log");
     }
-    if (p === "/api/docs") return sendJson(res, { sites: docSites.list() });
+    if (p === "/api/docs") {
+      const defs = docSources().sources;
+      return sendJson(res, { sites: docSites.list().map((s) => ({ ...s, searchable: !!docsProviders.get(defs.find((d) => d.key === s.key)) })) });
+    }
+    if (p === "/api/docs/external") return sendJson(res, await externalDocsStatus(q("site")));
+    if (p === "/api/docs/external/search") {
+      const { provider } = externalDocs(q("site"));
+      const spaces = String(q("spaces") || "").split(",").map((s) => s.trim()).filter(Boolean);
+      const limit = Math.min(50, Math.max(1, parseInt(q("limit") || "", 10) || 25));
+      return sendJson(res, { hits: await viaProvider(() => provider.search(String(q("q") || "").slice(0, 200), spaces, limit)) });
+    }
+    if (p === "/api/docs/external/page") {
+      const { provider } = externalDocs(q("site"));
+      return sendJson(res, await viaProvider(() => provider.page(String(q("id") || ""))));
+    }
+    if (p === "/api/docs/external/search-all") {
+      // Global search: every connected source, a few hits each; a failing source is left out.
+      const text = String(q("q") || "").trim().slice(0, 200);
+      if (text.length < 3) return sendJson(res, { groups: [] });
+      const groups = [];
+      await Promise.all(docSources().sources.map(async (s) => {
+        const provider = docsProviders.get(s);
+        if (!provider || !provider.status().connected) return;
+        try { groups.push({ site: s.key, name: s.name, hits: await provider.search(text, [], 5) }); } catch {}
+      }));
+      return sendJson(res, { groups: groups.filter((g) => g.hits.length) });
+    }
     if (p === "/api/docs/pages") {
       const site = String(q("site") || "");
       const info = docSites.list().find((s) => s.key === site);
@@ -970,7 +1032,7 @@ async function handleApi(req: http.IncomingMessage, res: http.ServerResponse, ur
   if (runMatch && runMatch[2] === "rename") return sendJson(res, { run: runs.rename(runMatch[1], body.label) });
   if (p === "/api/settings") {
     try {
-      deck.savePersonal({ limits: body.limits, defaults: body.defaults }, { models: (m) => MODEL_RE.test(m), efforts: EFFORTS });
+      deck.savePersonal({ limits: body.limits, defaults: body.defaults, issues: body.issues }, { models: (m) => MODEL_RE.test(m), efforts: EFFORTS });
     } catch (e) {
       return sendError(res, 400, e.message);
     }
@@ -1028,6 +1090,15 @@ async function handleApi(req: http.IncomingMessage, res: http.ServerResponse, ur
   }
   if (p === "/api/machine/install") return sendJson(res, await machine.install(String(body.id || ""))); // only the id crosses the wire
   if (p === "/api/docs/preview") return sendJson(res, { url: await docSites.preview(String(body.site || "")) });
+  if (p === "/api/docs/external/connect") {
+    const { provider } = externalDocs(body.site);
+    try { await provider.connect(String(body.key || "")); } catch (e) { return sendError(res, 400, e.message); }
+    return sendJson(res, await externalDocsStatus(body.site));
+  }
+  if (p === "/api/docs/external/disconnect") {
+    externalDocs(body.site).provider.disconnect();
+    return sendJson(res, await externalDocsStatus(body.site));
+  }
   if (p === "/api/links/save") return sendJson(res, saveLink(MAIN_WORKSPACE_PATH, body));
   if (p === "/api/links/delete") return sendJson(res, deleteLink(MAIN_WORKSPACE_PATH, body));
   if (p === "/api/memory/delete") {

@@ -55,6 +55,7 @@ export function validate(root) {
   const engine = path.join(root, "dashboard");
   if (!fs.existsSync(path.join(engine, "server", "src", "main.ts"))) err("dashboard/", "the engine isn't installed (run scaffold.mjs)");
   const catalog = literalKeys(path.join(engine, "server", "src", "machine-catalog.ts"), "CATALOG");
+  const docProviders = literalKeys(path.join(engine, "server", "src", "docs-providers", "index.ts"), "const PROVIDERS");
   const trackers = literalKeys(path.join(engine, "server", "src", "issues", "index.ts"), "ADAPTERS");
 
   // ---- workspace.json
@@ -72,7 +73,13 @@ export function validate(root) {
     const brand = ws.brand || {};
     for (const key of ["logo", "favicon"]) if (brand[key] && !fs.existsSync(path.join(cfgDir, "brand", brand[key]))) err("workspace.json", `brand.${key} "${brand[key]}" isn't in .claude/dashboard/brand/`);
     if (ws.codeHost && ws.codeHost.kind && !["github", "none"].includes(ws.codeHost.kind)) warn("workspace.json", `codeHost.kind "${ws.codeHost.kind}": the Needs-you inbox only reads GitHub so far`);
+    const rule = ws.worktrees && ws.worktrees.ports;
+    if (rule !== undefined && rule !== null) {
+      const good = rule && Number.isInteger(rule.base) && rule.base > 0 && Number.isInteger(rule.slotSize) && rule.slotSize > 0 && rule.base + rule.slotSize < 65535;
+      if (!good) err("workspace.json", "worktrees.ports needs { base, slotSize } as whole numbers (e.g. { \"base\": 24000, \"slotSize\": 100 }), below port 65535; the dashboard ignores it as written");
+    }
   }
+  const slotRule = ws && ws.worktrees && ws.worktrees.ports && Number.isInteger(ws.worktrees.ports.base) && Number.isInteger(ws.worktrees.ports.slotSize) && ws.worktrees.ports.slotSize > 0 ? ws.worktrees.ports : null;
   if (fs.existsSync(path.join(cfgDir, "brand")) && !fs.existsSync(path.join(cfgDir, "brand", "theme.css"))) warn("brand/", "no theme.css, so the brand files aren't applied (the neutral theme shows)");
   const theme = read(path.join(cfgDir, "brand", "theme.css"));
   if (theme) {
@@ -95,6 +102,33 @@ export function validate(root) {
         if (ports.has(a.port)) err("apps.json", `apps.${id} and apps.${ports.get(a.port)} both use port ${a.port}`);
         ports.set(a.port, id);
         if (a.port === port) err("apps.json", `apps.${id} uses port ${a.port}, which is the dashboard's`);
+      }
+      if (a.fallback !== undefined) {
+        if (a.fallback !== "main") err("apps.json", `apps.${id}.fallback can only be "main"`);
+        else if (a.mainOnly) warn("apps.json", `apps.${id}: fallback has no effect on a mainOnly app (worktrees always use main's)`);
+        else if (!a.port) warn("apps.json", `apps.${id}: fallback needs a port, so worktrees know where main's instance is`);
+      }
+      if (a.slotOffset !== undefined && !(Number.isInteger(a.slotOffset) && a.slotOffset >= 0)) err("apps.json", `apps.${id}.slotOffset must be a whole number (0 or more)`);
+    }
+    // Worktree port slots (workspace.json worktrees.ports): offsets unique and inside a slot,
+    // and the first ten slots clear of main's ports and the dashboard's.
+    if (slotRule) {
+      const offsets = new Map();
+      Object.entries(apps.apps || {}).forEach(([id, a], i) => {
+        if (a.mainOnly) return;
+        const off = Number.isInteger(a.slotOffset) ? a.slotOffset : i + 1;
+        if (off >= slotRule.slotSize) err("apps.json", `apps.${id}: slot offset ${off} is past worktrees.ports.slotSize (${slotRule.slotSize}), so it lands in the next worktree's slot`);
+        if (offsets.has(off)) err("apps.json", `apps.${id} and apps.${offsets.get(off)} both get slot offset ${off}; set slotOffset on one of them`);
+        else offsets.set(off, id);
+      });
+      const clashes = new Set();
+      for (let slot = 1; slot <= 10; slot++) {
+        for (const [off, id] of offsets) {
+          const p = slotRule.base + slot * slotRule.slotSize + off;
+          if (p > 65535) { err("apps.json", `apps.${id} in worktree slot ${slot} would get port ${p}, past 65535; lower worktrees.ports.base or slotSize`); break; }
+          if (p === port) err("apps.json", `apps.${id} in worktree slot ${slot} would get port ${p}, the dashboard's; change worktrees.ports.base`);
+          else if (ports.has(p) && !clashes.has(p)) { clashes.add(p); warn("apps.json", `apps.${id} in worktree slot ${slot} would get port ${p}, which apps.${ports.get(p)} uses in main; change worktrees.ports.base`); }
+        }
       }
     }
     for (const [sid, s] of Object.entries(apps.stacks || {})) {
@@ -125,7 +159,12 @@ export function validate(root) {
       if (!s.key || !s.name) err("docs.json", `a source needs key and name (${JSON.stringify(s).slice(0, 60)})`);
       if (keys.has(s.key)) err("docs.json", `key "${s.key}" is used twice`);
       keys.add(s.key);
-      if (s.kind === "external") { if (!/^https?:\/\//.test(s.url || "")) err("docs.json", `${s.key}: external sources need an https url`); }
+      if (s.kind === "external") {
+        if (!/^https?:\/\//.test(s.url || "")) err("docs.json", `${s.key}: external sources need an https url`);
+        if (s.provider && docProviders.length && !docProviders.includes(s.provider)) warn("docs.json", `${s.key}: provider "${s.provider}" has no adapter (known: ${docProviders.join(", ")}), so it's a link card only; add one to search it from the Docs page`);
+        if (s.provider === "confluence" && s.url && !/^https:\/\/[\w.-]+\/wiki\/?/.test(s.url)) warn("docs.json", `${s.key}: a Confluence url looks like https://<site>.atlassian.net/wiki`);
+        if (s.spaces !== undefined && !(Array.isArray(s.spaces) && s.spaces.every((k) => typeof k === "string" && /^[A-Za-z0-9_~-]+$/.test(k)))) err("docs.json", `${s.key}: spaces must be a list of space keys, e.g. ["ENG"]`);
+      }
       else if (!s.dir) err("docs.json", `${s.key}: needs dir (or kind "external" with a url)`);
       else if (!dirExists(s.dir)) warn("docs.json", `${s.key}: "${s.dir}" isn't in the workspace`);
       if (s.kind === "site" && !s.port) warn("docs.json", `${s.key}: no preview port, so Page view is off`);

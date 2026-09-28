@@ -82,8 +82,11 @@ export async function doctor(root) {
   }
 
   const repos = (readJson(path.join(root, "repos.json")) || {}).repos || [];
-  const missingRepos = repos.filter((r) => !fs.existsSync(path.join(root, r.directory || r.name, ".git")));
-  if (repos.length) add(missingRepos.length ? "warn" : "ok", "repos", missingRepos.length ? `not cloned: ${missingRepos.map((r) => r.directory || r.name).join(", ")}` : `${repos.length} cloned`, missingRepos.length ? "Clone them (see repos.json) or remove them from it." : "");
+  // Where a repo lives: `directory` (what scaffold writes), or `relativePath` / `path` (common in
+  // hand-written repos.json files), else its name.
+  const repoDir = (r) => r.directory || r.relativePath || r.path || r.name;
+  const missingRepos = repos.filter((r) => !fs.existsSync(path.join(root, repoDir(r), ".git")));
+  if (repos.length) add(missingRepos.length ? "warn" : "ok", "repos", missingRepos.length ? `not cloned: ${missingRepos.map(repoDir).join(", ")}` : `${repos.length} cloned`, missingRepos.length ? "Clone them (see repos.json) or remove them from it." : "");
 
   const host = (ws.codeHost && ws.codeHost.kind) || "github";
   if (host === "github") {

@@ -67,6 +67,11 @@ const PERM_LABELS: Record<string, string> = {
             <label class="chk full" title="Claude can read and answer but not change anything. You can switch it off from the run page later.">
               <input type="checkbox" [checked]="planMode()" (change)="planMode.set($any($event.target).checked)"> Plan mode (read-only) — switch off later from the run if it needs to make changes
             </label>
+            @for (s of docSources(); track s.key) {
+              <label class="chk full" [title]="'Tells Claude to search ' + s.name + ' through its connector and cite the pages it uses'">
+                <input type="checkbox" [checked]="useDocs().has(s.key)" (change)="toggleDocs(s.key, $any($event.target).checked)"> Use {{ s.name }}
+              </label>
+            }
             <label class="full">Prompt
               <dash-slash-input #promptBox [multiline]="true" [rows]="5" [readonly]="!!preset()" [value]="promptText()" (valueChange)="prompt.set($event)" />
             </label>
@@ -111,6 +116,9 @@ export class LaunchDialogComponent {
   readonly perm = signal('auto');
   readonly budget = signal(5);
   readonly planMode = signal(false);
+  /** Searchable docs sources (Confluence, …) a run can be told to use. */
+  readonly docSources = computed(() => this.data.docSites().filter((s) => s.searchable));
+  readonly useDocs = signal<ReadonlySet<string>>(new Set());
   readonly prompt = signal('');
   readonly touched = signal(false);
   readonly error = signal('');
@@ -148,6 +156,8 @@ export class LaunchDialogComponent {
       this.perm.set((p && p.permissionMode) || 'auto');
       this.budget.set((p && p.budgetUsd) || 5);
       this.planMode.set(!!r.planMode);
+      this.useDocs.set(new Set(r.docSources || []));
+      if (!this.data.docSites().length) this.data.loadDocs();
       this.prompt.set(r.prompt || '');
       this.touched.set(false);
       this.error.set('');
@@ -165,6 +175,7 @@ export class LaunchDialogComponent {
   permLabel(p: string): string { return PERM_LABELS[p] || p; }
   setArg(name: string, v: string): void { this.args.set({ ...this.args(), [name]: v }); }
   setOpt(name: string, on: boolean): void { this.opts.set({ ...this.opts(), [name]: on }); }
+  toggleDocs(key: string, on: boolean): void { const s = new Set(this.useDocs()); if (on) s.add(key); else s.delete(key); this.useDocs.set(s); }
 /** Close on a press on the backdrop itself. Returns nothing: a `false` from a template handler would preventDefault every press inside the dialog. */
   onBackdrop(e: MouseEvent): void { if (e.target === e.currentTarget) this.close(); }
   close(): void { this.launch.close(); }
@@ -182,6 +193,8 @@ export class LaunchDialogComponent {
       trigger: r.trigger,
       attachments: this.att()?.ids() || [],
     };
+    const docs = [...this.useDocs()].filter((k) => this.docSources().some((s) => s.key === k));
+    if (docs.length) { body.docSources = docs; if (r.docPage && docs.length === 1) body.docPage = r.docPage; }
     if (this.capOn()) body.budgetUsd = Number(this.budget()) || 5;
     if (this.att()?.uploading()) { this.error.set('Wait for the files to finish uploading.'); return; }
     if (p) {

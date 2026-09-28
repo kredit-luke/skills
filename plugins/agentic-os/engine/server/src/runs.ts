@@ -76,6 +76,9 @@ export interface StartSpec {
   trigger?: string;
   /** Staged attachment ids (checked by the caller); moved into the run's folder. */
   attachments?: string[];
+  /** Docs sources this run should use (docs.json keys), and the note that tells Claude how (appended every turn). */
+  docSources?: string[];
+  extraPrompt?: string | null;
 }
 
 export interface ReplyOptions {
@@ -199,6 +202,8 @@ export class RunManager {
       planMode: !!spec.planMode,
       budgetUsd: spec.budgetUsd || null,
       trigger: spec.trigger || "manual",
+      docSources: spec.docSources && spec.docSources.length ? spec.docSources : undefined,
+      extraPrompt: spec.extraPrompt || null,
       status: "running",
       startedAt: new Date().toISOString(),
       endedAt: null,
@@ -400,7 +405,7 @@ export class RunManager {
       "--permission-mode", mode,
       // Headless: nobody can answer a permission prompt, so anything that would ask is denied.
       "--permission-prompts", "none",
-      "--append-system-prompt", meta.planMode ? `${HEADLESS_RULES}\n\n${PLAN_MODE_RULE}` : HEADLESS_RULES,
+      "--append-system-prompt", [HEADLESS_RULES, meta.planMode ? PLAN_MODE_RULE : null, meta.extraPrompt || null].filter(Boolean).join("\n\n"),
     ];
     if (meta.model) args.push("--model", meta.model);
     if (meta.effort) args.push("--effort", meta.effort);

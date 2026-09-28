@@ -12,6 +12,7 @@ import { ToastService } from '../../core/toast.service';
 import { TrustedHtmlPipe } from '../../core/trusted-html.pipe';
 import { vscodeUrl } from '../../core/util';
 import { PageHeaderComponent } from '../../shared/page-header.component';
+import { ExternalDocsComponent } from './external-docs.component';
 
 type View = 'page' | 'text';
 
@@ -23,7 +24,7 @@ type View = 'page' | 'text';
  */
 @Component({
   selector: 'dash-docs',
-  imports: [PageHeaderComponent, RouterLink, TrustedHtmlPipe],
+  imports: [PageHeaderComponent, RouterLink, TrustedHtmlPipe, ExternalDocsComponent],
   changeDetection: ChangeDetectionStrategy.OnPush,
   styleUrl: './docs.component.scss',
   template: `
@@ -34,8 +35,9 @@ type View = 'page' | 'text';
         @for (s of data.docSites(); track s.key) {
           @if (s.kind === 'external') {
             <div class="site-card ext">
-              <a class="n" [href]="s.url" target="_blank" rel="noopener">{{ s.name }} ↗</a>
-              <span class="ty">{{ s.type }} · {{ host(s.url) }}</span>
+              @if (s.searchable) { <a class="n" [routerLink]="['/docs', s.key]">{{ s.name }}</a> }
+              @else { <a class="n" [href]="s.url" target="_blank" rel="noopener">{{ s.name }} ↗</a> }
+              <span class="ty">{{ s.type }} · {{ host(s.url) }}@if (s.searchable) { · <a [href]="s.url" target="_blank" rel="noopener">open ↗</a> }</span>
               @if (s.description) { <span class="ty">{{ s.description }}</span> }
               <button class="btn ghost sm" type="button" (click)="askExternal(s)" title="A read-only Claude run that looks this up through the {{ s.type }} connector">Ask Claude</button>
             </div>
@@ -52,6 +54,9 @@ type View = 'page' | 'text';
           } @else { <div class="empty">Loading…</div> }
         }
       </div>
+    } @else if (site()?.kind === 'external') {
+      @if (site()!.searchable) { <dash-external-docs [site]="site()!" /> }
+      @else { <div class="empty">{{ site()!.name }} can't be searched from here yet. <a [href]="site()!.url" target="_blank" rel="noopener">Open it ↗</a></div> }
     } @else {
       <div class="docs-layout">
         <aside class="panel side">
@@ -150,7 +155,8 @@ export class DocsComponent implements OnInit {
       this.pages.set(null);
       this.pagesError.set(null);
       this.q.set('');
-      if (!key) return;
+      // External sources have no local page list (the external view searches them).
+      if (!key || this.data.docSites().find((s) => s.key === key)?.kind === 'external') return;
       this.api.get<DocPagesResponse>('/api/docs/pages?site=' + encodeURIComponent(key))
         .then((r) => { if (this.siteKey() === key) this.pages.set(r); })
         .catch((e) => this.pagesError.set((e as Error).message));
@@ -224,7 +230,8 @@ export class DocsComponent implements OnInit {
       planMode: true,
       focusPrompt: true,
       trigger: 'ask',
-      prompt: `Using the ${s.type} connector, look in ${s.name} (${s.url}): `,
+      // A searchable source: "Use <source>" is ticked, which tells Claude how to reach it.
+      ...(s.searchable ? { docSources: [s.key], prompt: '' } : { prompt: `Using the ${s.type} connector, look in ${s.name} (${s.url}): ` }),
     });
   }
 

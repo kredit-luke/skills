@@ -4,7 +4,7 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { contrast, mapToContract, parseColor, themeCss, tokensOnly } from "../extract-brand.mjs";
+import { brandCandidates, contrast, isHashedBuild, mapToContract, parseColor, themeCss, tokensOnly, withoutVendorVars } from "../extract-brand.mjs";
 import { compareVersions, engineVersion, pluginVersion, releaseCheck } from "../lib.mjs";
 import { scaffold } from "../scaffold.mjs";
 import { upgrade } from "../upgrade.mjs";
@@ -107,4 +107,71 @@ test("scaffold + validate on a scratch workspace", () => {
   const errs = validate(root).errors.join("\n");
   assert.match(errs, /port 3399, which is the dashboard's/);
   assert.match(errs, /"nope" isn't in the catalog/);
+
+  // Worktree slots and fallback: bad values, duplicate/oversized offsets, a slot port on main's.
+  const cfg = path.join(root, ".claude", "dashboard");
+  fs.writeFileSync(path.join(cfg, "machine.json"), JSON.stringify({ checks: [] }));
+  fs.writeFileSync(path.join(cfg, "workspace.json"), JSON.stringify({ name: "Test", dashboard: { port: 3399 }, worktrees: { ports: { base: 8000, slotSize: 50 } } }));
+  fs.writeFileSync(path.join(cfg, "apps.json"), JSON.stringify({ apps: {
+    api: { name: "API", dir: "api", port: 8051, fallback: "main", slotOffset: 1, launch: { cmd: "x" } },
+    web: { name: "Web", dir: "api", port: 5173, fallback: "yes", slotOffset: 1, launch: { cmd: "x" } },
+    job: { name: "Job", dir: "api", fallback: "main", slotOffset: 80, launch: { cmd: "x" } },
+  } }));
+  let r2 = validate(root);
+  const e2 = r2.errors.join("\n"), w2 = r2.warnings.join("\n");
+  assert.match(e2, /apps\.web\.fallback can only be "main"/);
+  assert.match(e2, /apps\.web and apps\.api both get slot offset 1/);
+  assert.match(e2, /apps\.job: slot offset 80 is past worktrees\.ports\.slotSize \(50\)/);
+  assert.match(w2, /apps\.job: fallback needs a port/);
+  assert.match(w2, /apps\.api in worktree slot 1 would get port 8051, which apps\.api uses in main/);
+  fs.writeFileSync(path.join(cfg, "workspace.json"), JSON.stringify({ name: "Test", worktrees: { ports: { base: "x" } } }));
+  assert.match(validate(root).errors.join("\n"), /worktrees\.ports needs \{ base, slotSize \}/);
+});
+
+test("brand candidates: hashed build output and library variables don't outrank the real tokens", () => {
+  assert.equal(isHashedBuild("server/public/styles-4DKUHBMG.css"), true);
+  assert.equal(isHashedBuild("dist/main.3f9a1c2b.css"), true);
+  assert.equal(isHashedBuild("src/styles/design-tokens.css"), false);
+  assert.equal(isHashedBuild("theme/variables-override.css"), false);
+  assert.deepEqual(Object.keys(withoutVendorVars({ "d2h-bg": "#fff", "mat-sys-primary": "#000", "brand-500": "#123456" })), ["brand-500"]);
+
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "aos-brand-"));
+  const lib = Array.from({ length: 40 }, (_, i) => `--d2h-c${i}: #${String(100000 + i)};`).join(" ");
+  fs.mkdirSync(path.join(root, "app", "public"), { recursive: true });
+  fs.writeFileSync(path.join(root, "app", "public", "styles-4DKUHBMG.css"), `:root { ${lib} --x1: #111; --x2: #222; --x3: #333; --x4: #444; }`);
+  fs.mkdirSync(path.join(root, "app", "src", "styles"), { recursive: true });
+  fs.writeFileSync(path.join(root, "app", "src", "styles", "_brand.css"), ":root { --brand-900: #082310; --brand-700: #104620; --cream: #fef6e7; --copper: #f2622a; --ink: #111; }");
+  fs.writeFileSync(path.join(root, "app", "src", "styles", "vendor.css"), `:root { ${lib} }`); // only library variables
+  const files = brandCandidates(root).map((c) => c.file);
+  assert.equal(files[0], "app/src/styles/_brand.css");
+  assert.ok(!files.includes("app/public/styles-4DKUHBMG.css"), files.join(", "));
+  assert.ok(!files.includes("app/src/styles/vendor.css"), files.join(", "));
+});
+
+test("line endings: copyTree writes LF, engine-diff shows only real edits in a CRLF copy", async () => {
+  const { copyTree } = await import("../lib.mjs");
+  const { engineDiff } = await import("../engine-diff.mjs");
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "aos-eol-"));
+  const from = path.join(tmp, "from");
+  fs.mkdirSync(from);
+  fs.writeFileSync(path.join(from, "a.ts"), "one\r\ntwo\r\n");
+  const png = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00, 0x0d, 0x0a]);
+  fs.writeFileSync(path.join(from, "logo.png"), png);
+  copyTree(from, path.join(tmp, "to"));
+  assert.equal(fs.readFileSync(path.join(tmp, "to", "a.ts"), "utf-8"), "one\ntwo\n");
+  assert.deepEqual(fs.readFileSync(path.join(tmp, "to", "logo.png")), png, "binary files are copied as they are");
+
+  // A workspace whose engine copy is CRLF, with one real edit.
+  const base = path.join(tmp, "base");
+  fs.mkdirSync(base);
+  fs.writeFileSync(path.join(base, "x.ts"), "a\nb\nc\n");
+  fs.writeFileSync(path.join(base, "same.ts"), "keep\n");
+  const ws = path.join(tmp, "ws");
+  fs.mkdirSync(path.join(ws, "dashboard"), { recursive: true });
+  fs.writeFileSync(path.join(ws, "dashboard", "x.ts"), "a\r\nB\r\nc\r\n");
+  fs.writeFileSync(path.join(ws, "dashboard", "same.ts"), "keep\r\n");
+  const r = engineDiff(ws, { base });
+  assert.deepEqual(r.changed, ["x.ts"], "same.ts differs only in line endings");
+  const lines = r.patch.split("\n").filter((l) => /^[-+][^-+]/.test(l));
+  assert.deepEqual(lines, ["-b", "+B"]);
 });

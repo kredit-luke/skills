@@ -42,12 +42,19 @@ export class WorkspacesComponent implements OnInit {
   countLabel(w: WorkspaceStatus): string { const a = this.avail(w); return a.filter((x) => x.running).length + '/' + a.length + ' running'; }
   anyBusy(w: WorkspaceStatus): boolean { return this.avail(w).some((a) => !!a.busy); }
   anyUp(w: WorkspaceStatus): boolean { return this.avail(w).some((a) => a.running); }
-  /** The default stack (apps.json defaultStack), for Start stack. */
-  readonly stack = computed(() => { const id = this.data.defaultStack(); return id ? { id, ...this.data.stacks()[id] } : null; });
-  platformDown(w: WorkspaceStatus): boolean {
-    const s = this.stack();
-    const p = s ? this.avail(w).filter((a) => (s.apps || []).includes(a.key)) : [];
-    return p.length > 0 && p.some((a) => !a.running);
+  /**
+   * Stacks to offer a Start button for: in main, the default stack (the Apps page has
+   * the rest); in a worktree, every stack with an app cloned there, so a worktree that
+   * only has another stack's repos still gets its own button. Only while one is down.
+   */
+  stacksFor(w: WorkspaceStatus): { id: string; label: string; hint: string }[] {
+    const all = this.data.stacks();
+    const ids = w.slug === 'main' ? [this.data.defaultStack()].filter((x): x is string => !!x) : Object.keys(all);
+    return ids
+      .map((id) => ({ id, s: all[id] }))
+      .filter(({ s }) => s && !(s.mainOnly && w.slug !== 'main'))
+      .filter(({ s }) => { const here = this.avail(w).filter((a) => (s.apps || []).includes(a.key)); return here.length > 0 && here.some((a) => !a.running); })
+      .map(({ id, s }) => ({ id, label: s.label || id, hint: s.hint || s.description || '' }));
   }
   vscode(p: string | undefined): string { return vscodeUrl(p); }
   rel(t: number): string { return relTime(t); }
@@ -56,7 +63,7 @@ export class WorkspacesComponent implements OnInit {
   shotUrl(slug: string, name: string): string { return '/screenshots/' + encodeURIComponent(slug) + '/' + encodeURIComponent(name); }
   asGit(v: GitInfo | null | 'loading' | undefined): GitInfo | null { return v && v !== 'loading' ? v : null; }
 
-  startStack(slug: string): void { const s = this.stack(); if (s) this.data.appAction({ action: 'start', workspace: slug, stack: s.id }); }
+  startStack(slug: string, id: string): void { this.data.appAction({ action: 'start', workspace: slug, stack: id }); }
   stopAll(slug: string): void { this.data.appAction({ action: 'stop-all', workspace: slug }); }
 
   async toggleWs(slug: string): Promise<void> {

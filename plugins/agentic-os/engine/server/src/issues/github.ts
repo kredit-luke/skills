@@ -18,6 +18,16 @@ import type { ConnectHelp, IssueFilter, IssueTracker, TrackerStatus } from "./in
 
 const CACHE_TTL_MS = 60 * 1000;
 const LIMIT = 200;
+
+/** A personal search (GitHub qualifiers) as gh arguments; throws on one gh would misread. */
+export function searchArgs(query: string | undefined): string[] {
+  const q = String(query || "").trim();
+  if (!q) return [];
+  if (/[\r\n]/.test(q)) throw new Error("Keep your filter on one line.");
+  if (q.length > 256) throw new Error("Your filter is longer than GitHub search allows (256 characters).");
+  return ["--search", q];
+}
+
 const LABEL_COLOR = (hex: string) => (/^[0-9a-f]{6}$/i.test(hex || "") ? `#${hex}` : "#8b949e");
 
 function gh(args: string[]): Promise<any> {
@@ -49,6 +59,8 @@ class GitHubTracker implements IssueTracker {
   cfg: IssuesConfig & Record<string, any>;
   cache: any = null;
   inflight: Promise<void> | null = null;
+  inflightKey = "";
+  cacheKey = "";
   viewer: string | null = null;
   authed: boolean | null = null;
 
@@ -91,11 +103,20 @@ class GitHubTracker implements IssueTracker {
     return repo && m ? `https://github.com/${repo}/issues/${m[2]}` : null;
   }
 
+  queryHelp() {
+    return { label: "Search", placeholder: "assignee:@me label:bug", help: "GitHub issue search qualifiers, for you only (passed to gh issue list --search)." };
+  }
+
   async issues(filter: IssueFilter, force = false) {
     if (!this.repos.length) return { connected: false, issues: [] };
-    const fresh = this.cache && Date.now() - this.cache.fetchedAt < CACHE_TTL_MS;
+    searchArgs(filter.query); // a bad personal filter is the caller's error, not a GitHub outage
+    // Cached per filter: a changed personal query is a different board.
+    const key = JSON.stringify([filter.teams || [], filter.states || [], filter.query || ""]);
+    if (this.inflight && this.inflightKey !== key) await this.inflight;
+    const fresh = this.cache && this.cacheKey === key && Date.now() - this.cache.fetchedAt < CACHE_TTL_MS;
     if (fresh && !force) return this.cache;
     if (!this.inflight) {
+      this.inflightKey = key;
       this.inflight = (async () => {
         try {
           if (!this.viewer) this.viewer = await gh(["api", "user", "--jq", "{login: .login}"]).then((u) => u.login);
@@ -108,13 +129,14 @@ class GitHubTracker implements IssueTracker {
         const repos = filter.teams && filter.teams.length ? this.repos.filter((r) => filter.teams.includes(r.split("/")[1])) : this.repos;
         const errors: string[] = [];
         const lists = await Promise.all(repos.map((repo) =>
-          gh(["issue", "list", "--repo", repo, "--state", "open", "--limit", String(LIMIT),
+          gh(["issue", "list", "--repo", repo, "--state", "open", "--limit", String(LIMIT), ...searchArgs(filter.query),
             "--json", "number,title,url,labels,assignees,updatedAt,milestone"])
             .then((rows) => rows.map((n) => this.toIssue(repo, n)))
             .catch((e) => { errors.push(`${repo}: ${e.message}`); return []; })));
         const all = lists.flat().filter((i) => !filter.states || !filter.states.length || filter.states.includes(i.state));
         all.sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
         this.cache = { connected: true, fetchedAt: Date.now(), error: errors.length ? errors.join("; ") : null, issues: all };
+        this.cacheKey = key;
       })().finally(() => { this.inflight = null; });
     }
     await this.inflight;

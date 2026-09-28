@@ -28,7 +28,11 @@ export interface ConnectHelp {
   needsKey: boolean;
 }
 
-export interface IssueFilter { teams: string[]; states: string[] }
+/** query: this person's own extra filter in the tracker's language (Jira JQL, GitHub search), if it has one. */
+export interface IssueFilter { teams: string[]; states: string[]; query?: string }
+
+/** How the Issues page asks for a personal board query; null = the tracker has no query language. */
+export interface QueryHelp { label: string; placeholder: string; help: string }
 
 export interface IssueTracker {
   kind: string;
@@ -42,6 +46,7 @@ export interface IssueTracker {
   issue(id: string): Promise<any>;
   /** A browser URL for an issue id (when the API didn't give one). */
   issueUrl(id: string): string | null;
+  queryHelp(): QueryHelp | null;
 }
 
 /** No tracker configured: the Issues page explains how to set one up. */
@@ -55,6 +60,7 @@ class NoTracker implements IssueTracker {
   async issues() { return { connected: false, issues: [] }; }
   async issue(id: string): Promise<any> { throw new Error(`No issue tracker is configured, so ${id} can't be looked up.`); }
   issueUrl() { return null; }
+  queryHelp() { return null; }
 }
 
 type Factory = (cfg: IssuesConfig, ledgerDir: string) => IssueTracker;

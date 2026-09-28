@@ -16,6 +16,9 @@ export interface LaunchOptions {
   focusPrompt?: boolean;
   planMode?: boolean;
   trigger?: string;
+  /** Searchable docs sources to tick "Use <source>" for (docs.json keys), and the page the run is about. */
+  docSources?: string[];
+  docPage?: string;
 }
 
 /** Used until deck.json has loaded; the server applies the same when a request names none. */

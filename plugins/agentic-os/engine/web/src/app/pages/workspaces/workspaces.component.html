@@ -25,7 +25,8 @@
           @if (avail(ws).length) {
             @if (anyBusy(ws)) { <span class="busy-label"><span class="spin"></span>working…</span> }
             @else {
-              @if (platformDown(ws)) { <button class="btn primary sm" (click)="startStack(ws.slug)" [title]="stack()?.hint || stack()?.description || ''">Start stack</button> }
+              @let stks = stacksFor(ws);
+              @for (s of stks; track s.id) { <button class="btn primary sm" (click)="startStack(ws.slug, s.id)" [title]="s.hint">{{ stks.length > 1 || ws.slug !== 'main' ? 'Start ' + s.label : 'Start stack' }}</button> }
               @if (anyUp(ws)) { <button class="btn danger sm" (click)="stopAll(ws.slug)">Stop all</button> }
             }
           }

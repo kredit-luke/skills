@@ -63,7 +63,8 @@ export interface IssuesConfig {
 export interface WorkspaceConfig {
   name: string;
   dashboard: { title: string; port: number; devPort: number; legacyRedirects: LegacyRedirect[] };
-  worktrees: { dir: string; portsFile: string; screenshots: string };
+  /** ports: allocate worktree port slots in the ports file (null = the team's tooling does). */
+  worktrees: { dir: string; portsFile: string; screenshots: string; ports: { base: number; slotSize: number } | null };
   issues: IssuesConfig;
   codeHost: { kind: string; ciRepos: string[]; ciBranch: string };
   brand: { logo: string | null; logoAlt: string | null; favicon: string | null };
@@ -119,6 +120,12 @@ export function expandHome(p: string): string {
   return p === "~" || p.startsWith("~/") || p.startsWith("~\\") ? path.join(os.homedir(), p.slice(2)) : p;
 }
 
+/** worktrees.ports: { base, slotSize } with sane numbers, else null. */
+function slotRule(v: any): { base: number; slotSize: number } | null {
+  const base = Number(v && v.base), slotSize = Number(v && v.slotSize);
+  return Number.isInteger(base) && base > 0 && Number.isInteger(slotSize) && slotSize > 0 && base + slotSize < 65535 ? { base, slotSize } : null;
+}
+
 const str = (v: unknown, d: string) => (typeof v === "string" && v.trim() ? v : d);
 const strOrNull = (v: unknown) => (typeof v === "string" && v.trim() ? v : null);
 const strList = (v: unknown, d: string[]) => (Array.isArray(v) ? v.filter((x) => typeof x === "string") : d);
@@ -145,6 +152,7 @@ export function workspaceConfig(): WorkspaceConfig {
       dir: str(wt.dir, "worktrees"),
       portsFile: str(wt.portsFile, "~/.agentic-workspace-ports.json"),
       screenshots: str(wt.screenshots, ".claude/qa-artifacts/screenshots"),
+      ports: slotRule(wt.ports),
     },
     issues: {
       ...DEFAULT_ISSUES,
@@ -192,4 +200,16 @@ export function ticketRe(): RegExp {
 export function ticketInTextRe(): RegExp {
   const src = workspaceConfig().issues.ticketPattern.replace(/^\^/, "").replace(/\$$/, "");
   try { return new RegExp(src); } catch { return /[A-Z][A-Z0-9]*-\d+/; }
+}
+
+/**
+ * A skill folder's SKILL.md, whatever its case (skill.md, Skill.md): Windows and a
+ * default macOS disk don't care, but Linux and case-sensitive volumes do.
+ */
+export function skillFile(skillDir: string): string {
+  try {
+    const hit = fs.readdirSync(skillDir).find((n) => n.toLowerCase() === "skill.md");
+    if (hit) return path.join(skillDir, hit);
+  } catch {}
+  return path.join(skillDir, "SKILL.md");
 }
