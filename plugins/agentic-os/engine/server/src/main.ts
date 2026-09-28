@@ -593,7 +593,12 @@ async function getIssues(force: boolean) {
   const cfg = deck.config().issues;
   const tracker = trackers.get();
   const tcfg = trackers.config();
-  const data = await tracker.issues(cfg, force);
+  // Your own board filter (Settings → issues.query), when the tracker has a query language.
+  const queryHelp = tracker.queryHelp();
+  const query = queryHelp ? deck.personal().issues.query || "" : "";
+  let data;
+  try { data = await tracker.issues({ ...cfg, query }, force); }
+  catch (e) { data = { connected: true, issues: [], error: `Your filter: ${e.message}` }; }
   const list = data.issues || [];
   const worktrees = new Set(listWorkspaces().map((w) => (w.ticketId || w.name || "").toUpperCase()));
   const lastRuns = new Map<string, any>();
@@ -612,6 +617,7 @@ async function getIssues(force: boolean) {
     states: cfg.states && cfg.states.length ? cfg.states : seen("state"),
     teams: cfg.teams && cfg.teams.length ? cfg.teams : seen("team"),
     viewer: tracker.status().viewer,
+    query: queryHelp ? { value: query, ...queryHelp } : null,
     issues: list.map((i) => ({
       ...i,
       canImplement: tcfg.implementStates.includes(i.state) && (!implementTeams.length || implementTeams.includes(i.team)),
@@ -1026,7 +1032,7 @@ async function handleApi(req: http.IncomingMessage, res: http.ServerResponse, ur
   if (runMatch && runMatch[2] === "rename") return sendJson(res, { run: runs.rename(runMatch[1], body.label) });
   if (p === "/api/settings") {
     try {
-      deck.savePersonal({ limits: body.limits, defaults: body.defaults }, { models: (m) => MODEL_RE.test(m), efforts: EFFORTS });
+      deck.savePersonal({ limits: body.limits, defaults: body.defaults, issues: body.issues }, { models: (m) => MODEL_RE.test(m), efforts: EFFORTS });
     } catch (e) {
       return sendError(res, 400, e.message);
     }

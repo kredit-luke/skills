@@ -82,11 +82,26 @@ export function listFiles(dir, base = dir, out = []) {
   return out;
 }
 
+/** A text file (no NUL bytes up front) with CRLF, as LF; null for binary files and LF files. */
+export function lfText(buf) {
+  if (buf.subarray(0, 8000).includes(0)) return null;
+  const s = buf.toString("utf-8");
+  return s.includes("\r\n") ? s.replace(/\r\n/g, "\n") : null;
+}
+
+/**
+ * Copy a folder. Text files are written with LF: a plugin cache checked out on
+ * Windows with autocrlf has CRLF, and the engine (and its release tags) is LF, so
+ * copying CRLF would make every file look edited to upgrade and contribute.
+ */
 export function copyTree(from, to) {
   for (const rel of listFiles(from)) {
     const dest = path.join(to, rel);
     fs.mkdirSync(path.dirname(dest), { recursive: true });
-    fs.copyFileSync(path.join(from, rel), dest);
+    const src = path.join(from, rel);
+    const lf = lfText(fs.readFileSync(src));
+    if (lf !== null) fs.writeFileSync(dest, lf);
+    else fs.copyFileSync(src, dest);
   }
 }
 

@@ -40,6 +40,7 @@ Personal/local state is in `<workspace>/.claude/ledger/` (gitignored): run histo
 | `issues.implementStates` | Linear `Todo`, Jira `To Do`, GitHub `Open` | Issues in these states get the Implement button (with `deck.json` `issues.implementTeams`). |
 | `issues.ticketPattern` | `^[A-Z][A-Z0-9]*-\d+$` (GitHub: `^[\w.-]+#\d+$`) | Anchored regex for a ticket id. |
 | `issues.urlTemplate` | from the adapter | Issue URL with `{id}`, if the adapter can't build one. |
+| (per person) | none | Each person can narrow their own board with "My filter" on the Issues page: JQL for Jira (ANDed in), search qualifiers for GitHub. Saved in their `.claude/ledger/settings.json`, never in the team config. Linear has no query language, so no field. |
 | Linear | `org` | The workspace slug in `linear.app/<org>/...`. Key: pasted on the Issues page (`lin_api_…`) or `LINEAR_API_KEY`. |
 | Jira | `site`, `projects` | `acme.atlassian.net`; project keys or names. Key: `email:api-token` pasted on the Issues page, or `JIRA_EMAIL` + `JIRA_API_TOKEN`. |
 | GitHub Issues | `repos` (or `repo`), `states` | `["owner/name", …]`; `states` maps board columns to labels, e.g. `{ "In progress": ["in progress"] }` (open issues with none = "Open"). Ids are `<repo>#<n>`. Uses `gh` login. |

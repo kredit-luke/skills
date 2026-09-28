@@ -12,9 +12,10 @@
  */
 
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import { execFileSync } from "node:child_process";
-import { args, fetchEngine, hashFile, isMain, listFiles, readJson } from "./lib.mjs";
+import { args, fetchEngine, hashFile, isMain, lfText, listFiles, readJson } from "./lib.mjs";
 
 export function engineDiff(root, { base: baseArg } = {}) {
   root = path.resolve(root);
@@ -25,9 +26,19 @@ export function engineDiff(root, { base: baseArg } = {}) {
   const files = [...new Set([...listFiles(baseDir), ...listFiles(dash)])].filter((f) => f !== "ENGINE.json").sort();
   const changed = files.filter((f) => hashFile(path.join(baseDir, f)) !== hashFile(path.join(dash, f)));
   let patch = "";
+  // CRLF copies are diffed as LF, so a patch shows the real edits, not every line.
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "engine-diff-"));
+  const asLf = (file, side) => {
+    const lf = lfText(fs.readFileSync(file));
+    if (lf === null) return file;
+    const out = path.join(tmp, side, path.basename(file));
+    fs.mkdirSync(path.dirname(out), { recursive: true });
+    fs.writeFileSync(out, lf);
+    return out;
+  };
   for (const rel of changed) {
-    const a = fs.existsSync(path.join(baseDir, rel)) ? path.join(baseDir, rel) : (process.platform === "win32" ? "NUL" : "/dev/null");
-    const b = fs.existsSync(path.join(dash, rel)) ? path.join(dash, rel) : (process.platform === "win32" ? "NUL" : "/dev/null");
+    const a = fs.existsSync(path.join(baseDir, rel)) ? asLf(path.join(baseDir, rel), "a") : (process.platform === "win32" ? "NUL" : "/dev/null");
+    const b = fs.existsSync(path.join(dash, rel)) ? asLf(path.join(dash, rel), "b") : (process.platform === "win32" ? "NUL" : "/dev/null");
     let out = "";
     try { out = execFileSync("git", ["diff", "--no-index", "--no-color", a, b], { encoding: "utf-8" }); }
     catch (e) { out = e.stdout || ""; } // exit 1 = there are differences
@@ -35,6 +46,7 @@ export function engineDiff(root, { base: baseArg } = {}) {
     patch += out.replace(/^(diff --git |--- |\+\+\+ )(?:a\/)?\S+( (?:b\/)?\S+)?$/gm, (line, head) =>
       head === "diff --git " ? `diff --git a/${rel} b/${rel}` : head === "--- " ? (a.endsWith("NUL") || a === "/dev/null" ? "--- /dev/null" : `--- a/${rel}`) : (b.endsWith("NUL") || b === "/dev/null" ? "+++ /dev/null" : `+++ b/${rel}`));
   }
+  fs.rmSync(tmp, { recursive: true, force: true });
   return { ok: true, version: lock && lock.version, changed, patch };
 }
 

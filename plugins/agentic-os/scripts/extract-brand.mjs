@@ -172,11 +172,25 @@ function logosNear(root, dir) {
   };
 }
 
+/** A bundler's hashed output (styles-4DKUHBMG.css, main.3f9a1c2b.css): compiled, not a source of tokens. */
+export function isHashedBuild(file) {
+  return /[.-](?=[A-Za-z0-9]*\d)(?=[A-Za-z0-9]*[A-Za-z])[A-Za-z0-9]{8,20}\.css$/.test(path.basename(file));
+}
+
+// Variables that belong to a library (diff2html, Material, Bootstrap, Tailwind, AG Grid, ...),
+// not the brand: a compiled bundle full of them otherwise outranks the real tokens.
+const VENDOR_VAR = /^(d2h|mat|mdc|bs|tw|ag|swiper|fa|ion|chakra|mantine|cm|hljs|shiki|toastify|plyr|pico|ck|tox|ql)-/;
+export function withoutVendorVars(vars) {
+  return Object.fromEntries(Object.entries(vars).filter(([k]) => !VENDOR_VAR.test(k)));
+}
+
 /** Ranked design-system candidates in a workspace. */
 export function brandCandidates(root) {
   root = path.resolve(root);
   const out = [];
-  const add = (file, kind, vars, bonus, why) => {
+  const add = (file, kind, rawVars, bonus, why) => {
+    if (isHashedBuild(file)) return;
+    const vars = withoutVendorVars(rawVars);
     const s = summarize(vars);
     if (s.colors.length < 4) return;
     const relFile = path.relative(root, file).split(path.sep).join("/");

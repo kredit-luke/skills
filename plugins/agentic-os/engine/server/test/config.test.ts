@@ -183,3 +183,27 @@ test("worktrees.ports and the fallback / slotOffset app fields", () => {
   assert.match(cfg.error, /fallback can only be "main"/);
   write("apps.json", {});
 });
+
+test("skillFile finds SKILL.md whatever its case (case-sensitive disks)", async () => {
+  const { skillFile } = await import("../src/config.ts");
+  const dir = path.join(ROOT, ".claude", "skills", "lower");
+  fs.mkdirSync(dir, { recursive: true });
+  fs.writeFileSync(path.join(dir, "skill.md"), "---\nname: lower\ndescription: A lowercase skill file\n---\nBody");
+  assert.equal(path.basename(skillFile(dir)), "skill.md");
+  assert.equal(path.basename(skillFile(path.join(ROOT, "nope"))), "SKILL.md");
+  const { Deck } = await import("../src/deck.ts");
+  const names = new Deck(ROOT, path.join(ROOT, ".claude", "ledger", "settings.json")).skills().map((s) => s.name);
+  assert.ok(names.includes("lower"), names.join(","));
+});
+
+test("Machine re-runs its checks when machine.json changes (no manual Re-check)", async () => {
+  const { Machine } = await import("../src/machine.ts");
+  write("machine.json", { checks: [{ use: "env-var", id: "a", name: "DASH_TEST_A" }] });
+  const m = new Machine(ROOT);
+  const first = await m.get();
+  assert.deepEqual(first.checks.map((c) => c.id), ["a"]);
+  assert.equal(await m.get(), first, "unchanged config: the cached report");
+  write("machine.json", { checks: [{ use: "env-var", id: "a", name: "DASH_TEST_A" }, { use: "env-var", id: "b", name: "DASH_TEST_B" }] });
+  assert.deepEqual((await m.get()).checks.map((c) => c.id), ["a", "b"]);
+  write("machine.json", { checks: [] });
+});

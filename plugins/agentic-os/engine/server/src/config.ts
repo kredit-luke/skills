@@ -201,3 +201,15 @@ export function ticketInTextRe(): RegExp {
   const src = workspaceConfig().issues.ticketPattern.replace(/^\^/, "").replace(/\$$/, "");
   try { return new RegExp(src); } catch { return /[A-Z][A-Z0-9]*-\d+/; }
 }
+
+/**
+ * A skill folder's SKILL.md, whatever its case (skill.md, Skill.md): Windows and a
+ * default macOS disk don't care, but Linux and case-sensitive volumes do.
+ */
+export function skillFile(skillDir: string): string {
+  try {
+    const hit = fs.readdirSync(skillDir).find((n) => n.toLowerCase() === "skill.md");
+    if (hit) return path.join(skillDir, hit);
+  } catch {}
+  return path.join(skillDir, "SKILL.md");
+}

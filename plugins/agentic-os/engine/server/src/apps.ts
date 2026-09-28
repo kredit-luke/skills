@@ -635,7 +635,9 @@ async function stopTree(pid: number, graceMs: number, log): Promise<void> {
   if (!treeAlive(pid)) return;
   log(`Still running after ${Math.round(graceMs / 1000)}s; killing it.`);
   killTree(pid, "SIGKILL");
-  await sleep(500);
+  // taskkill runs asynchronously and can take a few seconds on a busy machine: poll, don't guess.
+  const killDeadline = Date.now() + 5000;
+  while (treeAlive(pid) && Date.now() < killDeadline) await sleep(100);
   if (treeAlive(pid)) throw new Error(`Process tree ${pid} survived SIGKILL.`);
 }
 

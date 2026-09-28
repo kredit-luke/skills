@@ -223,11 +223,19 @@ class Machine {
     this.inflight = null;
   }
 
+  /** machine.json and apps.json mtimes: an edit to either re-runs the checks on the next request. */
+  _configSig() {
+    return ["machine.json", "apps.json"].map((f) => {
+      try { return fs.statSync(path.join(this.root, ".claude", "dashboard", f)).mtimeMs; } catch { return 0; }
+    }).join(":");
+  }
+
   async get(force = false) {
-    if (this.cache && !force && Date.now() - this.cache.checkedAt < CACHE_TTL_MS) return this.cache;
+    const sig = this._configSig();
+    if (this.cache && !force && this.cache._sig === sig && Date.now() - this.cache.checkedAt < CACHE_TTL_MS) return this.cache;
     if (!this.inflight) {
       this.inflight = this._check()
-        .then((c) => { this.cache = c; })
+        .then((c) => { Object.defineProperty(c, "_sig", { value: sig, enumerable: false }); this.cache = c; })
         .finally(() => { this.inflight = null; });
     }
     await this.inflight;

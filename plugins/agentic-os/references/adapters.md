@@ -12,9 +12,10 @@ interface IssueTracker {
   connectHelp(): { title: string; steps: string[] /* markdown */; placeholder: string; needsKey: boolean } | null;
   connect(key: string): Promise<status>;         // validate with a cheap "who am I" call, then save (mode 600)
   disconnect(): status;
-  issues(filter: { teams: string[]; states: string[] }, force?: boolean): Promise<{ connected: boolean; issues: Issue[]; fetchedAt?: number; error?: string | null }>;
+  issues(filter: { teams: string[]; states: string[]; query?: string }, force?: boolean): Promise<{ connected: boolean; issues: Issue[]; fetchedAt?: number; error?: string | null }>;
   issue(id: string): Promise<IssueDetail>;
   issueUrl(id: string): string | null;
+  queryHelp(): { label: string; placeholder: string; help: string } | null;   // null = no query language
 }
 ```
 
@@ -23,6 +24,8 @@ Normalized shapes (`shared/api.ts`):
 - **IssueDetail**: `id`, `title`, `url`, `team`, `state`, `priorityLabel`, `assignee`, `project`, `cycle` (sprint/cycle/iteration), `labels`, `description` (**markdown**: convert rich text such as Jira's ADF), `branchName`, `updatedAt`.
 
 `filter.teams` / `filter.states` are names from `deck.json` `issues`; empty means all (don't send an empty `IN ()`). The server adds `canImplement`, `hasWorktree` and `lastRun` itself.
+
+`filter.query` is the viewer's own board filter ("My filter" on the Issues page, saved in their `.claude/ledger/settings.json`), in the tracker's own language: Jira ANDs it into the JQL in parentheses, GitHub passes it to `gh issue list --search`. Validate it at the top of `issues()` and throw (the page shows "Your filter: …"); cache per filter, so a changed query refetches. A tracker with no query language returns `null` from `queryHelp()` (Linear) and the field doesn't show.
 
 ## Conventions
 

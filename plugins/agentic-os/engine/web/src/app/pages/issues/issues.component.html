@@ -48,7 +48,15 @@
     <label class="chk"><input type="checkbox" [checked]="mine()" (change)="setMine($any($event.target).checked)"> Assigned to me</label>
     @if (filtersActive()) { <button class="btn ghost sm" (click)="resetFilters()">Reset filters</button> }
   </div>
-  @if (resp()!.error) { <div class="warn-note" style="margin-bottom:12px">{{ resp()!.tracker.label }}: {{ resp()!.error }} (showing the last list that loaded)</div> }
+  @if (resp()!.query; as qh) {
+    <form class="issues-bar my-filter" (submit)="$event.preventDefault(); saveQuery()" [title]="qh.help">
+      <span class="lbl">My filter ({{ qh.label }})</span>
+      <input class="search" [value]="queryDraft()" (input)="queryDraft.set($any($event.target).value)" [placeholder]="qh.placeholder" autocomplete="off" spellcheck="false">
+      @if (queryDraft().trim() !== qh.value) { <button class="btn primary sm" type="submit" [disabled]="loading()">Apply</button> }
+      @if (qh.value) { <button class="btn ghost sm" type="button" (click)="queryDraft.set(''); saveQuery()">Clear</button> }
+    </form>
+  }
+  @if (resp()!.error) { <div class="warn-note" style="margin-bottom:12px">{{ resp()!.tracker.label }}: {{ resp()!.error }}{{ resp()!.error!.startsWith('Your filter') ? '' : ' (showing the last list that loaded)' }}</div> }
   <div class="board" [style.--cols]="lanes().length">
     @for (lane of lanes(); track lane.state) {
       <div class="col-lane">

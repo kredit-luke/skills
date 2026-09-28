@@ -31,7 +31,25 @@ export function jql(filter: IssueFilter, projects: string[]): string {
   if (projects.length) parts.push(`project in (${projects.map(q).join(", ")})`);
   if (filter.states && filter.states.length) parts.push(`status in (${filter.states.map(q).join(", ")})`);
   else parts.push("statusCategory != Done");
+  const extra = cleanQuery(filter.query);
+  if (extra) parts.push(`(${extra})`);
   return `${parts.join(" AND ")} ORDER BY updated DESC`;
+}
+
+/** A personal JQL clause, trimmed; throws on one that would break the board query. */
+export function cleanQuery(query: string | undefined): string {
+  const s = String(query || "").trim();
+  if (!s) return "";
+  if (/\border\s+by\b/i.test(s)) throw new Error("Leave ORDER BY out of your filter: the board is always newest-updated first.");
+  if (/[\r\n]/.test(s)) throw new Error("Keep your filter on one line.");
+  // Unbalanced parentheses would escape the "(...)" it's wrapped in.
+  let depth = 0;
+  for (const ch of s.replace(/"(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*'/g, "")) {
+    if (ch === "(") depth++;
+    if (ch === ")" && --depth < 0) break;
+  }
+  if (depth !== 0) throw new Error("Your filter's parentheses don't balance.");
+  return s;
 }
 
 /** Atlassian Document Format → markdown, for the description panel (common nodes only). */
@@ -72,6 +90,8 @@ class JiraTracker implements IssueTracker {
   keyFile: string;
   cache: any = null;
   inflight: Promise<void> | null = null;
+  inflightKey = "";
+  cacheKey = "";
   viewer: string | null = null;
 
   constructor(ledgerDir: string, cfg: IssuesConfig) {
@@ -161,12 +181,21 @@ class JiraTracker implements IssueTracker {
 
   issueUrl(id: string) { return this.site ? `https://${this.site}/browse/${id}` : null; }
 
+  queryHelp() {
+    return { label: "JQL", placeholder: "assignee = currentUser() AND sprint in openSprints()", help: "Added to the board's query with AND, for you only. Leave out ORDER BY." };
+  }
+
   async issues(filter: IssueFilter, force = false) {
     const cred = this._cred();
     if (!cred || !this.site) return { connected: false, issues: [] };
-    const fresh = this.cache && Date.now() - this.cache.fetchedAt < CACHE_TTL_MS;
+    cleanQuery(filter.query); // a bad personal filter is the caller's error, not a Jira outage
+    // Cached per filter: a changed personal query is a different board.
+    const key = JSON.stringify([filter.teams || [], filter.states || [], filter.query || ""]);
+    if (this.inflight && this.inflightKey !== key) await this.inflight;
+    const fresh = this.cache && this.cacheKey === key && Date.now() - this.cache.fetchedAt < CACHE_TTL_MS;
     if (fresh && !force) return this.cache;
     if (!this.inflight) {
+      this.inflightKey = key;
       this.inflight = (async () => {
         try {
           if (!this.viewer) this.viewer = (await this._get(cred, "/rest/api/3/myself")).displayName || null;
@@ -175,9 +204,11 @@ class JiraTracker implements IssueTracker {
           const res = await this._get(cred, "/rest/api/3/search/jql", { jql: jql({ ...filter, teams: [] }, projects), fields: FIELDS, maxResults: LIMIT });
           this.cache = { connected: true, fetchedAt: Date.now(), error: null, issues: (res.issues || []).map((n) => this.toIssue(n)) };
         } catch (e) {
-          // Keep showing the last good list, flagged with the error.
-          this.cache = { ...(this.cache || { issues: [] }), connected: true, fetchedAt: Date.now(), error: e.message };
+          // Same board: keep showing the last good list, flagged with the error. A new filter that fails shows nothing.
+          const keep = this.cacheKey === key && this.cache ? this.cache : { issues: [] };
+          this.cache = { ...keep, connected: true, fetchedAt: Date.now(), error: e.message };
         }
+        this.cacheKey = key;
       })().finally(() => { this.inflight = null; });
     }
     await this.inflight;

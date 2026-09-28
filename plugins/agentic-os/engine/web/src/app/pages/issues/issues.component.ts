@@ -1,4 +1,4 @@
-import { ChangeDetectionStrategy, Component, OnDestroy, OnInit, computed, inject, signal } from '@angular/core';
+import { ChangeDetectionStrategy, Component, OnDestroy, OnInit, computed, inject, linkedSignal, signal } from '@angular/core';
 import { Router, RouterLink } from '@angular/router';
 import type { Issue, IssueDetail, IssuesResponse, RunMeta } from '../../../../../shared/api';
 import { ApiService } from '../../core/api.service';
@@ -34,6 +34,8 @@ export class IssuesComponent implements OnInit, OnDestroy {
   readonly key = signal('');
   readonly connectErr = signal('');
   readonly busyTicket = signal<string | null>(null);
+  /** Your board filter as typed; follows the saved one whenever the board reloads. */
+  readonly queryDraft = linkedSignal(() => this.resp()?.query?.value || '');
 
   readonly detailId = signal<string | null>(null);
   readonly detail = signal<IssueDetail | null>(null);
@@ -86,6 +88,14 @@ export class IssuesComponent implements OnInit, OnDestroy {
   setQ(v: string): void { this.q.set(v); lsSet('dash.issues.q', v); }
   setMine(v: boolean): void { this.mine.set(v); lsSet('dash.issues.mine', v ? '1' : '0'); }
   resetFilters(): void { this.setTeam('All'); this.setQ(''); this.setMine(false); }
+
+  /** Save your board filter (it's yours: .claude/ledger/settings.json) and refetch the board with it. */
+  async saveQuery(): Promise<void> {
+    try {
+      await this.api.post('/api/settings', { issues: { query: this.queryDraft().trim() || null } });
+      await this.load(true);
+    } catch (e) { this.toast.error((e as Error).message); }
+  }
   rel(t: string): string { return relTime(t); }
   priCls(i: Issue): string { return i.priority === 1 ? 'pri urgent' : i.priority === 2 ? 'pri high' : 'pri'; }
   claudeQueued(i: Issue): boolean { return i.labels.some((l) => l.name.toLowerCase() === 'claude'); }

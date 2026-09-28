@@ -110,6 +110,9 @@ class LinearTracker implements IssueTracker {
     };
   }
 
+  /** Linear's API has no text query language: no personal board query. */
+  queryHelp() { return null; }
+
   issueUrl(id: string) {
     if (this.urlTemplate) return this.urlTemplate.replace(/{id}/g, id);
     return this.org ? `https://linear.app/${this.org}/issue/${id}` : null;

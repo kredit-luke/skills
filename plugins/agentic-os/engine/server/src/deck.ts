@@ -17,6 +17,7 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { skillFile } from "./config.ts";
 
 const DAY_KEYS = ["sun", "mon", "tue", "wed", "thu", "fri", "sat"];
 // Subscription-first: new runs (manual and routine) pause when /usage says a
@@ -93,12 +94,14 @@ class Deck {
   }
 
   /** Your overrides from the Settings page (only the keys you changed). */
-  personal(): { limits: Record<string, any>; defaults: Record<string, any> } {
+  personal(): { limits: Record<string, any>; defaults: Record<string, any>; issues: { query?: string } } {
     try {
       const s = JSON.parse(fs.readFileSync(this.settingsPath, "utf-8"));
-      return { limits: s.limits && typeof s.limits === "object" ? s.limits : {}, defaults: s.defaults && typeof s.defaults === "object" ? s.defaults : {} };
+      const obj = (v) => (v && typeof v === "object" ? v : {});
+      const issues = typeof obj(s.issues).query === "string" ? { query: s.issues.query } : {};
+      return { limits: obj(s.limits), defaults: obj(s.defaults), issues };
     } catch {
-      return { limits: {}, defaults: {} };
+      return { limits: {}, defaults: {}, issues: {} };
     }
   }
 
@@ -106,8 +109,14 @@ class Deck {
    * Save personal overrides. Each key is a new value, or null to go back to the team
    * default. `allowed` holds the valid models and efforts. Throws on a bad value.
    */
-  savePersonal(patch: { limits?: Record<string, any>; defaults?: Record<string, any> }, allowed: { models: (m: string) => boolean; efforts: string[] }) {
+  savePersonal(patch: { limits?: Record<string, any>; defaults?: Record<string, any>; issues?: { query?: string | null } }, allowed: { models: (m: string) => boolean; efforts: string[] }) {
     const cur = this.personal();
+    if (patch.issues && "query" in patch.issues) {
+      const q = patch.issues.query;
+      if (q === null || (typeof q === "string" && !q.trim())) delete cur.issues.query;
+      else if (typeof q !== "string" || q.length > 500 || /[\r\n]/.test(q)) throw new Error("Your board filter must be one line, up to 500 characters.");
+      else cur.issues.query = q.trim();
+    }
     for (const [k, v] of Object.entries(patch.limits || {})) {
       const rule = PERSONAL_LIMITS[k];
       if (!rule) throw new Error(`Unknown setting ${k}`);
@@ -163,7 +172,7 @@ class Deck {
     return entries
       .filter((e) => e.isDirectory() && !e.name.startsWith("_"))
       .map((e) => {
-        const fm = readFrontmatter(path.join(dir, e.name, "SKILL.md"));
+        const fm = readFrontmatter(skillFile(path.join(dir, e.name)));
         return {
           name: fm.name || e.name,
           description: fm.description || "",
@@ -182,7 +191,7 @@ class Deck {
     return entries
       .filter((e) => e.isDirectory())
       .map((e) => {
-        const fm = readFrontmatter(path.join(dir, e.name, "SKILL.md"));
+        const fm = readFrontmatter(skillFile(path.join(dir, e.name)));
         return { id: e.name, name: fm.name || e.name, description: fm.description || "" };
       });
   }

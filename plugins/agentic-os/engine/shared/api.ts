@@ -507,6 +507,11 @@ export interface IssuesResponse {
   tracker: { kind: string; label: string; configured: boolean; supported: boolean };
   /** Set when not connected and the tracker takes a key. */
   connect: ConnectHelp | null;
+  /**
+   * Your own board filter in the tracker's query language (Jira JQL, GitHub search), and how to
+   * write it; null when the tracker has none (Linear). Saved with POST /api/settings { issues: { query } }.
+   */
+  query?: { value: string; label: string; placeholder: string; help: string } | null;
 }
 /** GET /api/issues/issue?id=ENG-123 → IssueDetail (description is markdown) */
 export interface IssueDetail { id: string; title: string; url: string; team: string; state: string; priorityLabel: string; assignee: string | null; project: string | null; cycle: string | null; labels: IssueLabel[]; description: string; branchName: string | null; updatedAt: string }
