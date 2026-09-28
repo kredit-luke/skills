@@ -1,6 +1,6 @@
 import { ChangeDetectionStrategy, Component, ElementRef, computed, effect, inject, signal, untracked, viewChild } from '@angular/core';
 import { Router } from '@angular/router';
-import type { SearchDoc, SearchResponse, SearchResult, SearchStats } from '../../../../shared/api';
+import type { ExternalDocHit, SearchDoc, SearchResponse, SearchResult, SearchStats } from '../../../../shared/api';
 import { ApiService } from '../core/api.service';
 import { DataService } from '../core/data.service';
 import { LaunchService } from '../core/launch.service';
@@ -63,6 +63,15 @@ interface Action { act: string; label: string; href?: string }
                 }
                 @if (data()!.total > data()!.results.length) { <div class="hint">Showing {{ data()!.results.length }} of {{ data()!.total }}.</div> }
               }
+              @for (g of external(); track g.site) {
+                <div class="hint ext-h">In {{ g.name }}</div>
+                @for (h of g.hits; track h.id) {
+                  <div class="sr-item" role="option" (click)="openExternal(g.site, h.id)" [title]="'Open in the Docs page (' + g.name + ')'">
+                    <div class="l1"><span class="src src-doc">{{ g.name }}</span><span class="t">{{ h.title }}</span></div>
+                    <div class="sec">{{ h.spaceName || h.space }}</div>
+                  </div>
+                }
+              }
             </div>
             <div class="search-preview">
               @if (current(); as r) {
@@ -112,8 +121,11 @@ export class SearchPaletteComponent {
   readonly index = signal(0);
   readonly docs = signal<Record<string, SearchDoc | null>>({});
   readonly armed = signal(false);
+  readonly external = signal<{ site: string; name: string; hits: ExternalDocHit[] }[]>([]);
   private seq = 0;
+  private extSeq = 0;
   private timer: ReturnType<typeof setTimeout> | null = null;
+  private extTimer: ReturnType<typeof setTimeout> | null = null;
   private readonly qInput = viewChild<ElementRef<HTMLInputElement>>('q');
   private readonly pv = viewChild<ElementRef<HTMLElement>>('pv');
   private readonly list = viewChild<ElementRef<HTMLElement>>('list');
@@ -190,6 +202,25 @@ export class SearchPaletteComponent {
     this.query.set(v);
     if (this.timer) clearTimeout(this.timer);
     this.timer = setTimeout(() => this.run(), 110);
+    // External docs (Confluence, …) are a network call: wait for a pause in typing.
+    if (this.extTimer) clearTimeout(this.extTimer);
+    this.extTimer = setTimeout(() => this.runExternal(), 450);
+  }
+
+  /** A few hits from each connected external docs source; shown under the local results. */
+  async runExternal(): Promise<void> {
+    const q = this.query().trim();
+    const seq = ++this.extSeq;
+    if (q.length < 3 || this.site()) { this.external.set([]); return; }
+    try {
+      const r = await this.api.get<{ groups: { site: string; name: string; hits: ExternalDocHit[] }[] }>('/api/docs/external/search-all?q=' + encodeURIComponent(q));
+      if (seq === this.extSeq) this.external.set(r.groups);
+    } catch { if (seq === this.extSeq) this.external.set([]); }
+  }
+
+  openExternal(site: string, id: string): void {
+    this.close();
+    this.router.navigate(['/docs', site], { queryParams: { q: this.query().trim() || null, page: id } });
   }
 
   async run(): Promise<void> {

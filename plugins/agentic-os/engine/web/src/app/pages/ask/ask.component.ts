@@ -12,6 +12,11 @@ import { AttachComponent } from '../../shared/attach.component';
 import { PageHeaderComponent } from '../../shared/page-header.component';
 import { RunRowComponent } from '../../shared/run-row.component';
 
+const DOCS_PREF = 'dash.ask.docs';
+function readDocsPref(): string[] {
+  try { const v = JSON.parse(localStorage.getItem(DOCS_PREF) || '[]'); return Array.isArray(v) ? v.filter((x) => typeof x === 'string') : []; } catch { return []; }
+}
+
 /**
  * Ask: a question box that starts a run, in plan mode (read-only) by default. While
  * you type, a free local search shows the files Claude will be pointed at as starting points.
@@ -50,6 +55,11 @@ import { RunRowComponent } from '../../shared/run-row.component';
             <label class="chk" title="Claude can read and answer but not change anything until this is off.">
               <input type="checkbox" [checked]="planMode()" (change)="planMode.set($any($event.target).checked)"> Plan mode (read-only)
             </label>
+            @for (s of docSources(); track s.key) {
+              <label class="chk" [title]="'Claude searches ' + s.name + ' through its connector and cites the pages it uses'">
+                <input type="checkbox" [checked]="useDocs().has(s.key)" (change)="toggleDocs(s.key, $any($event.target).checked)"> Use {{ s.name }}
+              </label>
+            }
             <span class="grow"></span>
             <span class="form-err">{{ error() }}</span>
             <button class="btn primary" type="submit" [disabled]="busy() || att.uploading() || !q().trim()">{{ busy() ? 'Starting…' : 'Ask' }}</button>
@@ -94,6 +104,9 @@ export class AskComponent implements OnInit {
   readonly effort = linkedSignal(() => this.launch.effort());
   readonly useRefs = signal(true);
   readonly planMode = signal(true);
+  /** Searchable docs sources (Confluence, …): ticked ones are remembered in this browser. */
+  readonly docSources = computed(() => this.data.docSites().filter((s) => s.searchable));
+  readonly useDocs = signal<ReadonlySet<string>>(new Set(readDocsPref()));
   readonly search = signal<SearchResponse | null>(null);
   readonly busy = signal(false);
   readonly error = signal('');
@@ -106,6 +119,14 @@ export class AskComponent implements OnInit {
   ngOnInit(): void {
     const q = this.route.snapshot.queryParamMap.get('q');
     if (q) { this.q.set(q); this.runSearch(); }
+    if (!this.data.docSites().length) this.data.loadDocs();
+  }
+
+  toggleDocs(key: string, on: boolean): void {
+    const s = new Set(this.useDocs());
+    if (on) s.add(key); else s.delete(key);
+    this.useDocs.set(s);
+    try { localStorage.setItem(DOCS_PREF, JSON.stringify([...s])); } catch { /* private window */ }
   }
 
   mark(s: string): string { return markTerms(s, this.search()?.terms); }
@@ -141,6 +162,8 @@ export class AskComponent implements OnInit {
     if (att?.uploading()) { this.error.set('Wait for the files to finish uploading.'); return; }
     // No budgetUsd: the server applies a cap only when it's turned on in Settings.
     const body: LaunchRequest = { prompt, workspace: this.ws(), model: this.model(), effort: this.effort() as LaunchRequest['effort'], planMode: this.planMode(), permissionMode: 'auto', trigger: 'ask', attachments: att?.ids() || [] };
+    const docs = [...this.useDocs()].filter((k) => this.docSources().some((s) => s.key === k));
+    if (docs.length) body.docSources = docs;
     this.busy.set(true);
     try {
       const res = await this.api.post<{ run: RunMeta }>('/api/runs', body);

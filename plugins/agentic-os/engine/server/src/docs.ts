@@ -11,7 +11,9 @@
  *   notes     a folder of Markdown; the Docs page renders it.
  *   external  docs that live elsewhere (Confluence, Notion, Google Drive, a wiki):
  *             a card that opens `url`, and "Ask Claude" goes through the matching
- *             MCP connector. Nothing is indexed locally.
+ *             MCP connector. With a `provider` that has an adapter (docs-providers/),
+ *             the Docs page also searches and reads it with each person's own key.
+ *             Nothing is indexed locally.
  */
 
 import fs from "node:fs";
@@ -20,7 +22,7 @@ import path from "node:path";
 import { readConfigFile } from "./config.ts";
 
 export type DocKind = "site" | "notes" | "external";
-export type DocSiteDef = { key: string; name: string; kind: DocKind; dir?: string; live?: string; port?: number; url?: string; provider?: string; description?: string };
+export type DocSiteDef = { key: string; name: string; kind: DocKind; dir?: string; live?: string; port?: number; url?: string; provider?: string; description?: string; spaces?: string[] };
 
 const SAFE_DIR = /^[\w.-]+(\/[\w.-]+)*$/;
 
@@ -46,6 +48,7 @@ export function docSources(): { sources: DocSiteDef[]; error: string | null; con
       url: httpUrl(s.url),
       provider: typeof s.provider === "string" ? s.provider : undefined,
       description: typeof s.description === "string" ? s.description : undefined,
+      spaces: Array.isArray(s.spaces) ? s.spaces.filter((k) => typeof k === "string") : undefined,
     });
   }
   return { sources, error, configured: !!data };

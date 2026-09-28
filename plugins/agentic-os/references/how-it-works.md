@@ -6,7 +6,7 @@ Read this when you need to change the engine, debug it, or explain a behavior. E
 
 - **Server**: `dashboard/server/src/main.ts`, plain `node:http`, TypeScript run directly by Node ≥ 24 (type stripping; no server build, no npm dependencies). JSON API under `/api` (contract: `dashboard/shared/api.ts`), SSE for streaming run output, the built UI from `dashboard/dist/browser` (re-read from disk, so a UI rebuild needs no restart).
 - **UI**: Angular (standalone components, signals, zoneless), no component library; global styles in `web/src/styles.scss`, pages under `web/src/app/pages/`. Built once on first start by `bin/dashboard.mjs`.
-- **Config**: `server/src/config.ts` reads `.claude/dashboard/*.json` (cached by mtime). Each module reads its own file: `apps.ts`, `machine.ts` (+ `machine-catalog.ts`), `docs.ts`, `reference.ts`, `links.ts`, `deck.ts`, `issues/*`.
+- **Config**: `server/src/config.ts` reads `.claude/dashboard/*.json` (cached by mtime). Each module reads its own file: `apps.ts`, `machine.ts` (+ `machine-catalog.ts`), `docs.ts` (+ `docs-providers/*`), `reference.ts`, `links.ts`, `deck.ts`, `issues/*`.
 - **State**: `.claude/ledger/` (gitignored): `runs/<id>.json` + `.events.jsonl`, `apps/` job logs, `attachments/`, `settings.json`, tracker keys, `dashboard-token`, `dashboard.log`, `links.local.json`, `usage-snapshots.jsonl`.
 - **Start/stop**: `bin/dashboard.mjs` (npm ci / ng build when stale, then a detached server; pid in the ledger).
 
@@ -46,3 +46,7 @@ The server can start processes as the user, so no other origin may reach it: it 
 - **Never kill terminal processes** (WindowsTerminal, conhost) to stop something: kill the app's own process tree or whatever listens on its port.
 - **A `.gitignore` that starts with `*`** (allow-list style) hides new top-level folders until `!folder/` and `!folder/**` are added; scaffold adds the dashboard's.
 - **Node version**: the dashboard needs ≥ 24.15 (type stripping, Angular 22). An older default Node shadowing a newer nvm one is common; `bin/dashboard.mjs` picks the nvm one.
+
+## Searchable docs
+
+`docs-providers/` reads external docs (Confluence first) with each person's own key: `/api/docs/external/*` for status, connect, search, a page, and search-all (global search, connected sources only). Page HTML is rendered through Angular's sanitizer, never bypassed. "Use <source>" on a run stores the sources on the run and appends each provider's `runNote` to the system prompt on every turn, which points Claude at that service's MCP tools; the dashboard's own key never reaches Claude.

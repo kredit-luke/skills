@@ -124,12 +124,15 @@ Always include: `package-manager`, `node` (the dashboard itself needs it; floor 
   "sources": [
     { "key": "handbook", "name": "Engineering handbook", "kind": "notes", "dir": "handbook" },
     { "key": "site", "name": "Docs site", "kind": "site", "dir": "docs-site", "live": "https://docs.acme.com/", "port": 4335 },
-    { "key": "wiki", "name": "Confluence", "kind": "external", "url": "https://acme.atlassian.net/wiki/spaces/ENG", "provider": "confluence", "description": "Runbooks and specs" }
+    { "key": "wiki", "name": "Confluence", "kind": "external", "url": "https://acme.atlassian.net/wiki", "provider": "confluence", "spaces": ["ENG"], "description": "Runbooks and specs" }
   ]
 }
 ```
 
 `notes` = a folder of Markdown, rendered in the page. `site` = a static-site repo (HTML); `port` serves the working copy locally for the Page view (pick unused ports), `live` links the published site. `external` = docs elsewhere (Confluence, Notion, Google Drive, SharePoint, a wiki): a card that opens `url`, and "Ask Claude" starts a read-only run that uses that service's MCP connector (the user connects it in Claude). Local sources are also indexed by search.
+
+With a `provider` that has an adapter (`dashboard/server/src/docs-providers/`: `confluence` so far), an external source is also **searchable**: the Docs page searches it and shows its pages, global search (Ctrl+K) lists its matches, and Ask and the launch dialog get a **Use <name>** checkbox that tells the run to search it through the MCP connector and cite pages. Each person reads it with their own key, pasted on the Docs page (kept in `.claude/ledger/`), so they only see what their account can.
+- **Confluence**: `"provider": "confluence"`, `url` = `https://<site>.atlassian.net/wiki`, optional `spaces` (space keys; empty = every non-personal space). Key: `CONFLUENCE_EMAIL` + `CONFLUENCE_API_TOKEN`, the pasted `email:api-token`, or, when `issues.kind` is `jira` on the same site, the Jira key (nothing more to paste).
 
 ## reference.json: the Reference page
 

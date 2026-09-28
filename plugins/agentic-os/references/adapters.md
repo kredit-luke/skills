@@ -46,3 +46,25 @@ Azure Boards (WIQL + work items API, PAT with Basic auth), Shortcut (REST, `Shor
 ## Code hosts (the Needs-you inbox)
 
 `server/src/inbox.ts` reads the code host for "my open PRs (checks, reviews, conflicts)", "reviews requested from me" and "CI on the default branch" of `codeHost.ciRepos`. `github` uses the `gh` CLI. Another host is a branch in `get()` keyed on `workspaceConfig().codeHost.kind` returning the same `{ items, ciHealth, errors }` shape (e.g. `glab mr list --author=@me`, `glab ci status`).
+
+## Docs providers (searchable external docs)
+
+A docs.json source with `"kind": "external", "provider": "<kind>"` becomes searchable when `dashboard/server/src/docs-providers/` has an adapter for it (`confluence.ts` so far): the Docs page searches and reads it, global search lists its matches, and runs can be told to use it ("Use <name>"). The interface (`docs-providers/index.ts`):
+
+```ts
+interface DocsProvider {
+  kind: string; label: string;
+  status(): { connected: boolean; source: "env" | "file" | "tracker" | null; viewer: string | null };
+  connectHelp(): { title; steps: string[] /* markdown */; placeholder; needsKey } | null;
+  connect(key: string): Promise<status>;      // validate with a "who am I" call, then save to <ledger>/<kind>-api-token (mode 600)
+  disconnect(): status;
+  spaces(): Promise<{ key; name; url }[]>;   // whatever the service groups pages by (spaces, teamspaces, drives)
+  search(query: string, spaces: string[], limit?: number): Promise<DocHit[]>;   // empty query = recently updated
+  page(id: string): Promise<DocPage>;         // body as HTML with absolute links; the UI sanitizes it
+  runNote(pageId?: string | null): string;    // appended to a run's system prompt: which MCP tools to use, what to cite
+}
+```
+
+Same conventions as trackers: each person's own key (never a shared one in config, never OAuth), `node:https` only, 20s timeouts, errors with a `status` (400 = bad input, 401/403 = reconnect). If the service shares a login with the issue tracker (Confluence and Jira), reuse the tracker's key when the site matches, so there's nothing more to paste. Register it in `PROVIDERS` in `docs-providers/index.ts`; test the pure parts (query building, result mapping) in `server/test/docs-providers.test.ts`.
+
+Candidates: Notion (`POST /v1/search`, integration token; pages → blocks to HTML), Google Drive (Drive v3 `files.list` with `fullText contains`, export Docs as HTML; needs OAuth, so probably a CLI such as `gcloud` instead), SharePoint/OneDrive (Microsoft Graph search), GitBook, Guru, Slab.
