@@ -14,7 +14,8 @@
  *     "reference": { ...reference.json },
  *     "links":     { ...links.json },
  *     "deck":      { ...deck.json },
- *     "repos":     [{ "name", "url", "directory", "dependencies"? }],   written as repos.json
+ *     "repos":     [{ "name", "relativePath", "remote", "layer"?, "dependencies"? }],   written as repos.json
+ *                  (the older "directory" / "url" are accepted and written under the new names)
  *     "skills":    ["dashboard"],                    template skills to add to .claude/skills/
  *     "claudeMd":  true                              add a "Workspace dashboard" section to CLAUDE.md
  *   }
@@ -30,7 +31,7 @@
 
 import fs from "node:fs";
 import path from "node:path";
-import { ENGINE_DIR, SOURCE_REPO, TAG_PREFIX, TEMPLATES_DIR, args, copyTree, engineVersion, isMain, readJson, writeJson } from "./lib.mjs";
+import { ENGINE_DIR, REPOS_SCHEMA, SOURCE_REPO, TAG_PREFIX, TEMPLATES_DIR, args, copyTree, engineVersion, isMain, normalizeRepo, readJson, writeJson } from "./lib.mjs";
 
 const CONFIG_FILES = { workspace: "workspace.json", apps: "apps.json", machine: "machine.json", docs: "docs.json", reference: "reference.json", links: "links.json", deck: "deck.json" };
 
@@ -82,7 +83,10 @@ export function scaffold(root, plan, { force = false, dry = false } = {}) {
 
   // ---- repos.json
   if (Array.isArray(plan.repos) && plan.repos.length) {
-    write(path.join(root, "repos.json"), () => writeJson(path.join(root, "repos.json"), { repos: plan.repos }));
+    // Standard field names only, and no empty optional fields.
+    const repos = plan.repos.map(normalizeRepo).filter(Boolean).map((r) =>
+      Object.fromEntries(Object.entries(r).filter(([, v]) => v !== null && !(Array.isArray(v) && !v.length))));
+    write(path.join(root, "repos.json"), () => writeJson(path.join(root, "repos.json"), { $schema: REPOS_SCHEMA, repos }));
   }
 
   // ---- .gitignore

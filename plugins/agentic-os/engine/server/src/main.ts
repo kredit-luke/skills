@@ -43,6 +43,7 @@ import { AppLauncher, appsConfig } from "./apps.ts";
 import { Trackers } from "./issues/index.ts";
 import { readLinks, saveLink, deleteLink, readRepoReadme } from "./links.ts";
 import { Machine, openTerminal } from "./machine.ts";
+import { cloneStep, cloneTargets, reposStatus } from "./repos.ts";
 import { DocSites, docSources } from "./docs.ts";
 import { DocsProviders } from "./docs-providers/index.ts";
 import { Memory } from "./memory.ts";
@@ -908,6 +909,7 @@ async function handleApi(req: http.IncomingMessage, res: http.ServerResponse, ur
           : c)),
       });
     }
+    if (p === "/api/repos") return sendJson(res, await reposStatus(MAIN_WORKSPACE_PATH));
     if (p === "/api/apps/jobs") {
       const cfg = appsConfig();
       return sendJson(res, { jobs: launcher.list(), stacks: cfg.stacks, groups: cfg.groups, defaultStack: cfg.defaultStack, hasSetup: !!cfg.setup, configured: cfg.configured, error: cfg.error });
@@ -1110,6 +1112,27 @@ async function handleApi(req: http.IncomingMessage, res: http.ServerResponse, ur
     return sendJson(res, { run }, 201);
   }
   if (p === "/api/machine/install") return sendJson(res, await machine.install(String(body.id || ""))); // only the id crosses the wire
+  if (p === "/api/repos/clone") {
+    // Only names cross the wire; what to clone and from where is repos.json's.
+    const names = Array.isArray(body.names) ? body.names.map(String) : null;
+    const targets = cloneTargets(MAIN_WORKSPACE_PATH, names);
+    if (!targets.length) return sendError(res, 400, "Nothing to clone: every repo in repos.json with a remote is already here.");
+    if (launcher.jobs.some((j) => j.status === "running" && j.workspace === "main" && j.label.startsWith("Clone"))) {
+      return sendError(res, 409, "A clone is already running.");
+    }
+    const main = { slug: "main", name: "Main Workspace", path: MAIN_WORKSPACE_PATH };
+    const label = targets.length === 1 ? `Clone ${targets[0].name}` : `Clone ${targets.length} repos`;
+    const job = launcher.job(main, label, async (step) => {
+      // One failure doesn't stop the rest; the job fails at the end if any did.
+      const failed: string[] = [];
+      for (const r of targets) {
+        try { await step(`Clone ${r.name} into ${r.relativePath}`, cloneStep(MAIN_WORKSPACE_PATH, r)); } catch { failed.push(r.name); }
+      }
+      if (failed.length) throw new Error(`Couldn't clone ${failed.join(", ")}`);
+    });
+    const { _log, ...pub } = job;
+    return sendJson(res, { job: pub }, 202);
+  }
   if (p === "/api/docs/preview") return sendJson(res, { url: await docSites.preview(String(body.site || "")) });
   if (p === "/api/docs/external/connect") {
     const { provider } = externalDocs(body.site);

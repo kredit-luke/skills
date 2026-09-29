@@ -497,7 +497,7 @@ class Machine {
 
       case "path": {
         if (s.repo && !fs.existsSync(path.join(this.root, s.repo))) {
-          return { ...base, label: s.repoLabel || s.repo, status: "info", detail: "Repo not cloned.", fix: s.cloneFix || "Clone it (see repos.json)" };
+          return { ...base, label: s.repoLabel || s.repo, status: "info", detail: "Repo not cloned.", fix: s.cloneFix || "Clone it from the Repos page" };
         }
         const rel = fill(String(s.path || ""), { exe: IS_WIN ? ".exe" : "" });
         const exists = !!rel && fs.existsSync(path.join(this.root, rel));

@@ -5,7 +5,8 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { brandCandidates, contrast, isHashedBuild, mapToContract, parseColor, themeCss, tokensOnly, withoutVendorVars } from "../extract-brand.mjs";
-import { compareVersions, engineVersion, pluginVersion, releaseCheck } from "../lib.mjs";
+import { compareVersions, engineVersion, normalizeRepo, pluginVersion, readRepos, releaseCheck } from "../lib.mjs";
+import { listRepos } from "../discover.mjs";
 import { scaffold } from "../scaffold.mjs";
 import { upgrade } from "../upgrade.mjs";
 import { validate } from "../validate.mjs";
@@ -126,6 +127,58 @@ test("scaffold + validate on a scratch workspace", () => {
   assert.match(w2, /apps\.api in worktree slot 1 would get port 8051, which apps\.api uses in main/);
   fs.writeFileSync(path.join(cfg, "workspace.json"), JSON.stringify({ name: "Test", worktrees: { ports: { base: "x" } } }));
   assert.match(validate(root).errors.join("\n"), /worktrees\.ports needs \{ base, slotSize \}/);
+});
+
+test("repos.json: both field styles read the same; scaffold writes the standard names; validate flags bad entries", () => {
+  // The standard (relativePath / remote), with a nested repo, as most hand-written files have it.
+  assert.deepEqual(normalizeRepo({ name: "admin", layer: "bff", relativePath: "bff\\admin", remote: "https://x/admin.git" }), {
+    name: "admin", relativePath: "bff/admin", remote: "https://x/admin.git", layer: "bff", defaultBranch: null, dependencies: [],
+  });
+  // What scaffold used to write (directory / url).
+  const old = normalizeRepo({ name: "API", url: "https://x/api.git", directory: "api" });
+  assert.equal(old.relativePath, "api");
+  assert.equal(old.remote, "https://x/api.git");
+  assert.equal(normalizeRepo({ name: "x", relativePath: "../out" }), null);
+
+  // discover finds a nested repo at its relativePath (it used to look for <name>/.git).
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "aos-repos-"));
+  fs.mkdirSync(path.join(root, "bff", "admin", ".git"), { recursive: true });
+  fs.writeFileSync(path.join(root, "repos.json"), JSON.stringify({ repos: [
+    { name: "admin", relativePath: "bff/admin", remote: "https://x/admin.git" },
+    { name: "web", directory: "web", url: "https://x/web.git" },
+  ] }));
+  assert.deepEqual(readRepos(root).map((r) => r.relativePath), ["bff/admin", "web"]);
+  const found = listRepos(root);
+  const admin = found.find((r) => r.name === "admin");
+  assert.equal(admin.dir, "bff/admin");
+  assert.equal(admin.cloned, true);
+  assert.equal(found.find((r) => r.name === "web").cloned, false);
+
+  // scaffold normalizes whatever the plan used and points at the engine's schema.
+  const ws = fs.mkdtempSync(path.join(os.tmpdir(), "aos-repos-ws-"));
+  scaffold(ws, { workspace: { name: "T" }, repos: [{ name: "API", url: "https://x/api.git", directory: "api", dependencies: [] }] });
+  const written = JSON.parse(fs.readFileSync(path.join(ws, "repos.json"), "utf-8"));
+  assert.equal(written.$schema, "./dashboard/shared/repos.schema.json");
+  assert.ok(fs.existsSync(path.join(ws, "dashboard", "shared", "repos.schema.json")), "the schema ships with the engine");
+  assert.deepEqual(written.repos, [{ name: "API", relativePath: "api", remote: "https://x/api.git" }]);
+
+  // validate: old names are a warning; a path outside the workspace and a reused path are errors.
+  fs.writeFileSync(path.join(ws, "repos.json"), JSON.stringify({ repos: [
+    { name: "API", directory: "api", url: "https://x/api.git" },
+    { name: "evil", relativePath: "../outside" },
+    { name: "twin", relativePath: "api", remote: "https://x/twin.git" },
+    { name: "API", relativePath: "other", remote: "https://x/o.git" },
+    { name: "local", relativePath: "local" },
+  ] }));
+  const v = validate(ws);
+  const errs = v.errors.join("\n"), warns = v.warnings.join("\n");
+  assert.match(errs, /"evil" needs a name and a relative path/);
+  assert.match(errs, /"twin" and "API" both use api/);
+  assert.match(errs, /the name "API" is used twice/);
+  assert.match(warns, /"API" uses directory, url; the standard names are relativePath and remote/);
+  assert.match(warns, /"local" isn't here and has no remote/);
+  fs.writeFileSync(path.join(ws, "repos.json"), "{}");
+  assert.match(validate(ws).errors.join("\n"), /repos\.json: needs a "repos" array/);
 });
 
 test("brand candidates: hashed build output and library variables don't outrank the real tokens", () => {

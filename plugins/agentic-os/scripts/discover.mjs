@@ -19,6 +19,7 @@ import path from "node:path";
 import { execFileSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { brandCandidates } from "./extract-brand.mjs";
+import { readRepos } from "./lib.mjs";
 
 const SKIP_DIRS = new Set(["node_modules", ".git", "dist", "build", "out", "bin", "obj", "vendor", "target", ".next", ".nuxt", ".angular", ".venv", "venv", "__pycache__", ".turbo", ".cache", "coverage", "worktrees", ".claude"]);
 
@@ -62,14 +63,10 @@ function portFree(port) {
 // ------------------------------------------------------------------ repos
 
 /** The workspace's repos: repos.json if present, else every folder with .git (and the root itself). */
-function listRepos(root) {
+export function listRepos(root) {
   const out = [];
-  const manifest = json(path.join(root, "repos.json"));
-  const declared = manifest && Array.isArray(manifest.repos) ? manifest.repos : [];
-  for (const r of declared) {
-    const dir = r.directory || r.dir || r.name;
-    if (!dir) continue;
-    out.push({ dir, name: r.name || dir, url: r.url || null, declared: true, cloned: exists(path.join(root, dir, ".git")) });
+  for (const r of readRepos(root)) {
+    out.push({ dir: r.relativePath, name: r.name, url: r.remote, declared: true, cloned: exists(path.join(root, r.relativePath, ".git")) });
   }
   let entries = [];
   try { entries = fs.readdirSync(root, { withFileTypes: true }); } catch {}

@@ -330,6 +330,11 @@ class AppLauncher {
     });
   }
 
+  /** Work that isn't an app (the Repos page's Clone), as a job: same steps, log, history and Logs dialog. */
+  job(ws, label: string, body: (step, note) => Promise<void>) {
+    return this._job(ws, label, [], body);
+  }
+
   /** The apps.json setup step on its own (the Machine page's Run setup button). */
   setupWorkspace(ws) {
     const setup = this.cfg.setup;
