@@ -18,7 +18,9 @@ import net from "node:net";
 import path from "node:path";
 import crypto from "node:crypto";
 import { execFile } from "node:child_process";
-import type { Boot, LaunchRequest, RunMeta } from "../../shared/api.ts";
+import type { Boot, LaunchRequest, RunEvent, RunMeta } from "../../shared/api.ts";
+import { runTicket } from "../../shared/run-ticket.ts";
+import { runWorkspace } from "../../shared/run-workspace.ts";
 import { CLAUDE_SESSION_ENV } from "./claude.ts";
 import {
   BRAND_DIR, DASHBOARD_DIR, LEDGER_DIR, WORKSPACE_ROOT,
@@ -48,6 +50,7 @@ import { Search } from "./search.ts";
 import { claudeAuth, claudeAuthCached, claudeEnv } from "./claude.ts";
 import { reference } from "./reference.ts";
 import { RunChanges } from "./run-changes.ts";
+import type { RunWorktree } from "./run-changes.ts";
 import { Attachments, MAX_ATTACHMENT_BYTES, contentTypeOf } from "./attachments.ts";
 import { Explore, MAX_SAVE_BYTES, rawType, resolveSafe } from "./explore.ts";
 
@@ -250,6 +253,15 @@ function listWorkspaces(): Ws[] {
 
 function workspaceBySlug(slug: unknown): Ws | null {
   return listWorkspaces().find((w) => w.slug === slug) || null;
+}
+
+/** The worktree a run worked in (the run page's rule) and its repos, or null for a run that stayed in main. */
+function runWorktree(meta: RunMeta, events: RunEvent[]): RunWorktree | null {
+  const all = listWorkspaces().map((w) => ({ slug: w.slug, path: w.path, _ticketId: w.ticketId || null }));
+  const own = all.find((w) => w.slug === meta.workspace);
+  const ws = runWorkspace(meta, all, events, runTicket(meta, own?._ticketId)?.id);
+  if (!ws || ws.slug === "main") return null;
+  return { path: ws.path, repos: listRepos(ws.path).map((r) => path.join(ws.path, r)) };
 }
 
 async function appStatus(ws: Ws, key: string) {
@@ -968,14 +980,16 @@ async function handleApi(req: http.IncomingMessage, res: http.ServerResponse, ur
     if (runMatch && runMatch[2] === "changes") {
       const meta = runs.get(runMatch[1]);
       if (!meta) return sendError(res, 404, "Unknown run");
-      return sendJson(res, await runChanges.changes(meta, runs.events(meta.id), force));
+      const events = runs.events(meta.id);
+      return sendJson(res, await runChanges.changes(meta, events, force, runWorktree(meta, events)));
     }
     if (runMatch && runMatch[2] === "diff") {
       const meta = runs.get(runMatch[1]);
       if (!meta) return sendError(res, 404, "Unknown run");
       const repo = String(q("repo") || ""), file = String(q("file") || "");
       if (!repo || !file || file.includes("..") || path.isAbsolute(file)) return sendError(res, 400, "Missing or invalid repo/file");
-      return sendJson(res, { diff: await runChanges.fileDiff(meta, runs.events(meta.id), repo, file) });
+      const events = runs.events(meta.id);
+      return sendJson(res, { diff: await runChanges.fileDiff(meta, events, repo, file, runWorktree(meta, events)) });
     }
     if (runMatch && runMatch[2] === "continuation") {
       const cont = runs.continuation(runMatch[1]);

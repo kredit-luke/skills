@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { RunEvent, WorkspaceStatus } from '../../../../shared/api';
-import { runWorkspace } from './run-workspace';
+import { runWorkspace } from '../../../../shared/run-workspace';
 
 const ws = (slug: string, path: string, ticketId: string | null = null): WorkspaceStatus =>
   ({ slug, name: slug, path, apps: [], screenshots: [], _ticketId: ticketId });
