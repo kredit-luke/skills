@@ -1,0 +1,40 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/lhoezee/skills/plugins/agentic-os/engine/shared/repos.schema.json",
+  "title": "repos.json",
+  "description": "The repos that make up an agentic-os workspace, each cloned to <workspace>/<relativePath>. Read by the dashboard's Repos page, discover.mjs, doctor.mjs and the team's own skills.",
+  "type": "object",
+  "required": ["repos"],
+  "properties": {
+    "$schema": { "type": "string" },
+    "repos": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/repo" }
+    }
+  },
+  "$defs": {
+    "repo": {
+      "type": "object",
+      "required": ["name"],
+      "properties": {
+        "name": { "type": "string", "minLength": 1, "description": "Unique within the file." },
+        "relativePath": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": "^(?![/\\\\])(?![A-Za-z]:)(?!.*(^|[/\\\\])\\.\\.([/\\\\]|$)).+$",
+          "description": "Where the repo lives, relative to the workspace root, e.g. \"api\" or \"services/billing\". Defaults to name. No absolute paths, no \"..\"."
+        },
+        "remote": { "type": "string", "description": "What `git clone` is given, e.g. https://github.com/acme/api.git." },
+        "layer": { "type": "string", "description": "Free text for grouping (backend, frontend, infrastructure, ...)." },
+        "defaultBranch": { "type": "string", "description": "Checked out after cloning; the remote's default when omitted." },
+        "dependencies": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "Names of repos this one consumes (for implementation and PR order)."
+        },
+        "directory": { "type": "string", "deprecated": true, "description": "Old name for relativePath; still read." },
+        "url": { "type": "string", "deprecated": true, "description": "Old name for remote; still read." }
+      }
+    }
+  }
+}

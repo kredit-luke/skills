@@ -541,6 +541,28 @@ export interface MachineReport {
   error: string | null;
 }
 
+// ---------------------------------------------------------------- repos
+
+/** One repos.json repo (normalized: relativePath / remote, whatever names the file used) and what's on disk. */
+export interface RepoInfo {
+  name: string; relativePath: string; remote: string | null; layer: string | null;
+  defaultBranch: string | null; dependencies: string[];
+  /** cloned: has .git · missing: absent or an empty folder (Clone can fill it) · not-git: has files but no .git (left alone). */
+  state: 'cloned' | 'missing' | 'not-git';
+  /** For clones: the checked-out branch and how many files have uncommitted changes. */
+  branch: string | null; changes: number | null;
+}
+/**
+ * GET /api/repos ;  POST /api/repos/clone { names?: string[] } → 202 { job } (an apps job:
+ * GET /api/apps/jobs and /api/apps/log show it). Clones only missing repos with a remote.
+ */
+export interface ReposResponse {
+  /** repos.json exists at the workspace root. */
+  configured: boolean;
+  repos: RepoInfo[];
+  error: string | null;
+}
+
 // ---------------------------------------------------------------- explore
 
 /** A file's line-ending style as found on disk. */

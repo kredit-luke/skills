@@ -16,7 +16,7 @@ import net from "node:net";
 import path from "node:path";
 import http from "node:http";
 import { execFileSync } from "node:child_process";
-import { TAG_PREFIX, args, compareVersions as cmp, engineVersion, isMain, latestRelease, readJson, releaseCheck } from "./lib.mjs";
+import { TAG_PREFIX, args, compareVersions as cmp, engineVersion, isMain, latestRelease, readJson, readRepos, releaseCheck } from "./lib.mjs";
 import { validate } from "./validate.mjs";
 
 const listening = (port) => new Promise((res) => { const s = new net.Socket(); s.setTimeout(800); s.once("connect", () => { s.destroy(); res(true); }); s.once("timeout", () => { s.destroy(); res(false); }); s.once("error", () => res(false)); s.connect(port, "127.0.0.1"); });
@@ -81,12 +81,9 @@ export async function doctor(root) {
     }
   }
 
-  const repos = (readJson(path.join(root, "repos.json")) || {}).repos || [];
-  // Where a repo lives: `directory` (what scaffold writes), or `relativePath` / `path` (common in
-  // hand-written repos.json files), else its name.
-  const repoDir = (r) => r.directory || r.relativePath || r.path || r.name;
-  const missingRepos = repos.filter((r) => !fs.existsSync(path.join(root, repoDir(r), ".git")));
-  if (repos.length) add(missingRepos.length ? "warn" : "ok", "repos", missingRepos.length ? `not cloned: ${missingRepos.map(repoDir).join(", ")}` : `${repos.length} cloned`, missingRepos.length ? "Clone them (see repos.json) or remove them from it." : "");
+  const repos = readRepos(root);
+  const missingRepos = repos.filter((r) => !fs.existsSync(path.join(root, r.relativePath, ".git")));
+  if (repos.length) add(missingRepos.length ? "warn" : "ok", "repos", missingRepos.length ? `not cloned: ${missingRepos.map((r) => r.relativePath).join(", ")}` : `${repos.length} cloned`, missingRepos.length ? "Open the dashboard's Repos page and click Clone missing (or remove them from repos.json)." : "");
 
   const host = (ws.codeHost && ws.codeHost.kind) || "github";
   if (host === "github") {

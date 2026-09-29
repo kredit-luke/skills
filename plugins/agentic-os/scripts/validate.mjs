@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * Check a workspace's dashboard config: each .claude/dashboard/*.json against what
+ * Check a workspace's dashboard config: each .claude/dashboard/*.json (and repos.json) against what
  * the engine understands, and against the workspace itself (folders exist, ports
  * don't clash, machine checks name real catalog entries, brand files are there).
  *
@@ -12,7 +12,7 @@
 
 import fs from "node:fs";
 import path from "node:path";
-import { args, isMain, readJson } from "./lib.mjs";
+import { args, isMain, normalizeRepo, readJson } from "./lib.mjs";
 
 const read = (f) => { try { return fs.readFileSync(f, "utf-8"); } catch { return null; } };
 
@@ -191,6 +191,29 @@ export function validate(root) {
     const presetIds = (deck.presets || []).map((p) => p.id);
     for (const r of deck.routines || []) if (!presetIds.includes(r.preset)) err("deck.json", `routine "${r.id}" uses preset "${r.preset}", which doesn't exist`);
     if (deck.issues && deck.issues.implementPreset && !presetIds.includes(deck.issues.implementPreset)) warn("deck.json", `issues.implementPreset "${deck.issues.implementPreset}" isn't a preset, so Implement buttons won't show`);
+  }
+
+  // ---- repos.json (workspace root; optional)
+  const reposFile = path.join(root, "repos.json");
+  if (fs.existsSync(reposFile)) {
+    const manifest = readJson(reposFile);
+    if (!manifest || !Array.isArray(manifest.repos)) err("repos.json", "needs a \"repos\" array");
+    else {
+      ok.push("repos.json");
+      const paths = new Map(), names = new Set();
+      manifest.repos.forEach((raw, i) => {
+        const r = normalizeRepo(raw);
+        const which = raw && raw.name ? `"${raw.name}"` : `entry ${i + 1}`;
+        if (!r) return err("repos.json", `${which} needs a name and a relative path inside the workspace (no absolute paths or "..")`);
+        if (names.has(r.name)) err("repos.json", `the name ${which} is used twice`);
+        names.add(r.name);
+        if (paths.has(r.relativePath)) err("repos.json", `${which} and "${paths.get(r.relativePath)}" both use ${r.relativePath}`);
+        paths.set(r.relativePath, r.name);
+        const old = ["directory", "dir", "path", "url"].filter((k) => raw[k] !== undefined);
+        if (old.length) warn("repos.json", `${which} uses ${old.join(", ")}; the standard names are relativePath and remote (still read)`);
+        if (!r.remote && !fs.existsSync(path.join(root, r.relativePath))) warn("repos.json", `${which} isn't here and has no remote to clone it from`);
+      });
+    }
   }
 
   return { root, ok, errors, warnings };

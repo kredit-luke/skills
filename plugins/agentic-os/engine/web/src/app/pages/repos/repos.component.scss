@@ -1,0 +1,24 @@
+:host { display: flex; flex-direction: column; gap: 16px; }
+.panel-h .ty { margin-left: 6px; font-weight: 400; }
+.repo { display: grid; grid-template-columns: 22px 1fr auto; gap: 4px 10px; padding: 11px 14px; border-bottom: 1px solid var(--line-soft); align-items: center; }
+.repo:last-child { border-bottom: 0; }
+.ic { width: 18px; height: 18px; border-radius: 50%; display: grid; place-items: center; font-size: 11px; font-weight: 700; }
+.repo.cloned .ic { background: var(--ok-soft); color: var(--ok-strong); }
+.repo.missing .ic { background: var(--red-bg); color: var(--risk); }
+.repo.not-git .ic { background: var(--yellow-bg); color: var(--yellow); }
+.main { min-width: 0; }
+.nm { font-weight: 600; font-size: 13.5px; color: var(--ink); display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap; }
+.rel { font-family: var(--font-mono); font-size: 11.5px; font-weight: 400; color: var(--ink-soft); }
+.remote { font-family: var(--font-mono); font-size: 11.5px; color: var(--ink-faint); overflow-wrap: anywhere; }
+.side { display: flex; align-items: center; gap: 8px; justify-content: flex-end; }
+.ver { font-family: var(--font-mono); font-size: 12px; color: var(--ink-soft); white-space: nowrap; }
+.chg { font-size: 11px; color: var(--yellow); background: var(--yellow-bg); border-radius: 6px; padding: 1px 6px; white-space: nowrap; }
+.example { font-family: var(--font-mono); font-size: 11.5px; background: var(--paper-2); border: 1px solid var(--line); border-radius: 8px; padding: 10px 12px; margin: 10px 0; cursor: copy; white-space: pre; overflow-x: auto; text-align: left; }
+.job-panel { padding: 10px 14px; cursor: pointer; }
+.job-panel:hover { background: var(--surface-hover); }
+.job-panel .t { display: flex; align-items: center; gap: 0.5rem; font-size: 0.8rem; font-weight: 550; }
+.job-panel .t .ty { font-weight: 400; }
+.job-panel ol { list-style: none; margin-top: 0.35rem; display: flex; flex-direction: column; gap: 0.15rem; }
+.job-panel li { font-size: 0.72rem; color: var(--text-muted); display: flex; gap: 0.4rem; align-items: baseline; }
+.job-panel li.failed { color: var(--red); }
+.job-panel li .m { width: 0.9rem; text-align: center; flex-shrink: 0; }

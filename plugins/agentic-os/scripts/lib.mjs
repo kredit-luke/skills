@@ -25,6 +25,49 @@ export const IGNORE = new Set(["node_modules", "dist", ".angular", "out-tsc", ".
 export const readJson = (f) => { try { return JSON.parse(fs.readFileSync(f, "utf-8").replace(/^﻿/, "")); } catch { return null; } };
 export const writeJson = (f, data) => { fs.mkdirSync(path.dirname(f), { recursive: true }); fs.writeFileSync(f, JSON.stringify(data, null, 2) + "\n"); };
 
+/** repos.json's schema, as a workspace refers to it (the engine ships a copy under dashboard/). */
+export const REPOS_SCHEMA = "./dashboard/shared/repos.schema.json";
+
+/**
+ * A relative folder inside the workspace ("api", "services/billing"), forward
+ * slashes, or null: absolute paths, drive letters and ".." segments are refused.
+ */
+export function safeRelativePath(p) {
+  if (typeof p !== "string") return null;
+  const s = p.trim().replace(/\\/g, "/").replace(/^(\.\/)+/, "").replace(/\/+$/, "");
+  if (!s || s === "." || s.startsWith("/") || /^[A-Za-z]:/.test(s) || s.split("/").includes("..")) return null;
+  return s;
+}
+
+/**
+ * One repos.json entry → { name, relativePath, remote, layer, defaultBranch, dependencies },
+ * or null when it has no usable name or path. `relativePath` / `remote` are the
+ * standard names; the older `directory` / `dir` / `path` and `url` are still read.
+ * The path defaults to the name. The engine's server/src/repos.ts does the same.
+ */
+export function normalizeRepo(r) {
+  if (!r || typeof r !== "object") return null;
+  const name = typeof r.name === "string" ? r.name.trim() : "";
+  const relativePath = safeRelativePath(r.relativePath ?? r.directory ?? r.dir ?? r.path ?? name);
+  if (!name || !relativePath) return null;
+  const str = (v) => (typeof v === "string" && v.trim() ? v.trim() : null);
+  return {
+    name,
+    relativePath,
+    remote: str(r.remote ?? r.url),
+    layer: str(r.layer),
+    defaultBranch: str(r.defaultBranch),
+    dependencies: Array.isArray(r.dependencies) ? r.dependencies.filter((d) => typeof d === "string") : [],
+  };
+}
+
+/** The workspace's repos.json, normalized (entries without a usable name/path dropped); [] when there's none. */
+export function readRepos(root) {
+  const manifest = readJson(path.join(root, "repos.json"));
+  const list = manifest && Array.isArray(manifest.repos) ? manifest.repos : [];
+  return list.map(normalizeRepo).filter(Boolean);
+}
+
 export function engineVersion(dir = ENGINE_DIR) {
   return (readJson(path.join(dir, "ENGINE.json")) || readJson(path.join(dir, "package.json")) || {}).version || null;
 }

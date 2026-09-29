@@ -13,6 +13,7 @@ export const routes: Routes = [
   { path: 'issues', loadComponent: () => import('./pages/issues/issues.component').then((m) => m.IssuesComponent), title: 'Issues' },
   { path: 'apps', loadComponent: () => import('./pages/apps/apps.component').then((m) => m.AppsComponent), title: 'Apps' },
   { path: 'workspaces', loadComponent: () => import('./pages/workspaces/workspaces.component').then((m) => m.WorkspacesComponent), title: 'Workspaces' },
+  { path: 'repos', loadComponent: () => import('./pages/repos/repos.component').then((m) => m.ReposComponent), title: 'Repos' },
   { path: 'skills', loadComponent: () => import('./pages/skills/skills.component').then((m) => m.SkillsComponent), title: 'Skills' },
   {
     path: 'explore', loadComponent: () => import('./pages/explore/explore.component').then((m) => m.ExploreComponent), title: 'Explore',

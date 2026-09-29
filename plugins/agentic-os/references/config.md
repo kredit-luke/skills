@@ -192,6 +192,24 @@ A tile has one `url` or several `links`. `url`s are `https://…`, `http://…` 
 
 Presets are the Home page's skill cards: `prompt` (with `{arg}` placeholders), `args` (`pattern` validates), `options` (checkboxes that `append` text), `model`/`effort`/`permissionMode` (`auto` | `acceptEdits` | `dontAsk` | `plan`), `budgetUsd` (only used when the per-run cap is on in Settings), `pickWorkspace`, `workspace`. Icons: `sun`, `download`, `eye`, `package`, `shield`, `bolt`, `terminal`, and the nav icons. `issues`: which teams (Linear teams / Jira projects / GitHub repos) and states the board shows (empty = all; states in column order), the preset Implement runs, and which teams get Implement (empty = all). `routines` fire presets on a schedule while the dashboard runs (off by default). Everyone can override limits and defaults for themselves on the Settings page.
 
+## repos.json: the Repos page (workspace root)
+
+The repos the workspace is made of, each cloned to `<workspace>/<relativePath>`. It sits at the workspace root, not in `.claude/dashboard/`, because the team's own skills (worktrees, pulls) read it too. Schema: `dashboard/shared/repos.schema.json` (point `$schema` at it for editor checks).
+
+```json
+{
+  "$schema": "./dashboard/shared/repos.schema.json",
+  "repos": [
+    { "name": "api", "relativePath": "services/api", "remote": "https://github.com/acme/api.git", "layer": "backend", "dependencies": [] },
+    { "name": "web", "relativePath": "web", "remote": "https://github.com/acme/web.git", "layer": "frontend", "defaultBranch": "main" }
+  ]
+}
+```
+
+Only `name` is required; `relativePath` defaults to it and must stay inside the workspace (no absolute paths, no `..`). `remote` is what `git clone` is given; without one the Repos page can only report the repo. `layer` groups the page; `dependencies` (other repos' names) is for implementation and PR order. The older `directory` / `url` names are still read everywhere, and `validate.mjs` warns about them.
+
+The Repos page lists each repo as cloned (branch, uncommitted file count), missing, or a folder with files but no `.git` (left alone). **Clone missing** runs `git clone -- <remote> <relativePath>` for missing repos with a remote, as a job in Activity / Logs; a folder that already has files is never touched. Git runs with terminal prompts off, so a remote needing a password fails with a message instead of hanging (a credential helper with its own sign-in window still works). `discover.mjs` and `doctor.mjs` read the file the same way.
+
 ## brand/: the look
 
 `brand/theme.css` is served at `/ds/theme.css`, after the dashboard's neutral defaults (`/ds/tokens.css`). It `@import`s the team's token files (copied into `brand/` verbatim) and maps them onto the contract. Other files in `brand/` (the logo, favicon, fonts) are served at `/ds/<file>`. See `branding.md`.
@@ -201,7 +219,7 @@ Presets are the Home page's skill cards: `prompt` (with `{arg}` placeholders), `
 ```json
 {
   "workspace": { … }, "apps": { … }, "machine": { … }, "docs": { … }, "reference": { … }, "links": { … }, "deck": { … },
-  "repos": [{ "name": "API", "url": "https://github.com/acme/api.git", "directory": "api", "dependencies": [] }],
+  "repos": [{ "name": "API", "relativePath": "api", "remote": "https://github.com/acme/api.git", "dependencies": [] }],
   "skills": ["dashboard"],
   "claudeMd": true
 }
