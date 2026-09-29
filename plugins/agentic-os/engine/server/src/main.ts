@@ -224,11 +224,18 @@ function ensurePorts(ws: Ws) {
   if (rule && ws.slug !== "main") workspaces.ensureSlot(portsFile(), ws, appsConfig().apps, rule, worktreeRoot());
 }
 
-/** TCP probe on IPv4 and IPv6 loopback (some dev servers bind only ::1). */
-function checkPort(port: number): Promise<boolean> {
+/**
+ * TCP probe on IPv4 and IPv6 loopback (some dev servers bind only ::1). Tries twice
+ * before calling a port down: one slow answer on a busy machine isn't an outage.
+ */
+async function checkPort(port: number): Promise<boolean> {
+  return (await probePort(port, 800)) || probePort(port, 1500);
+}
+
+function probePort(port: number, timeout: number): Promise<boolean> {
   const probe = (host: string) => new Promise<boolean>((resolve) => {
     const socket = new net.Socket();
-    socket.setTimeout(800);
+    socket.setTimeout(timeout);
     socket.once("connect", () => { socket.destroy(); resolve(true); });
     socket.once("timeout", () => { socket.destroy(); resolve(false); });
     socket.once("error", () => { socket.destroy(); resolve(false); });

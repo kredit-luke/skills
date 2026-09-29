@@ -49,10 +49,15 @@ export function cmpVer(a, b) {
 }
 export function fmtVer(v) { const p = parseVer(v); return p ? p.join(".") : null; }
 
-function portOpen(port) {
+/** Tries twice before calling a port down: one slow answer on a busy machine isn't an outage. */
+async function portOpen(port) {
+  return (await connectOnce(port, 800)) || connectOnce(port, 1500);
+}
+
+function connectOnce(port, timeout): Promise<boolean> {
   return new Promise((resolve) => {
     const s = new net.Socket();
-    s.setTimeout(800);
+    s.setTimeout(timeout);
     s.once("connect", () => { s.destroy(); resolve(true); });
     s.once("timeout", () => { s.destroy(); resolve(false); });
     s.once("error", () => { s.destroy(); resolve(false); });
