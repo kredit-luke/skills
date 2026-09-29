@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { runTicket } from './ticket';
+import { runTicket } from '../../../../shared/run-ticket';
 
 describe('runTicket', () => {
   it('prefers the worktree ticket', () => {

@@ -80,6 +80,48 @@ test("a repo the run edited without a snapshot is compared with where its branch
   fs.rmSync(ws, { recursive: true, force: true });
 });
 
+test("a run that worked in a worktree lists only that worktree's repos", async () => {
+  const ws = fs.mkdtempSync(path.join(os.tmpdir(), "rc-"));
+  const runsDir = path.join(ws, "_runs");
+  fs.mkdirSync(runsDir);
+  const mainApi = path.join(ws, "API");
+  const tools = path.join(ws, "tools");
+  repo(mainApi);
+  repo(tools);
+  const wtDir = path.join(ws, "worktrees", "ENG-1");
+  const wt = path.join(wtDir, "API");
+  const wtWeb = path.join(wtDir, "web"); // cloned later and committed to by a subagent: no edit event for it
+  repo(wt);
+  g(wt, "checkout", "-q", "-b", "feature/ENG-1");
+  repo(wtWeb);
+  g(wtWeb, "checkout", "-q", "-b", "feature/ENG-1");
+  fs.writeFileSync(path.join(wtWeb, "b.txt"), "subagent\n");
+  g(wtWeb, "commit", "-q", "-am", "web work");
+
+  const rc = new RunChanges(runsDir);
+  await rc.snapshot(meta("r3", ws));
+  // Main's repos change during the run: another session's commit, and one stray edit by the run.
+  fs.writeFileSync(path.join(tools, "a.txt"), "someone else\n");
+  g(tools, "commit", "-q", "-am", "unrelated");
+  fs.writeFileSync(path.join(mainApi, "a.txt"), "stray\n");
+  fs.writeFileSync(path.join(wt, "a.txt"), "the run's work\n");
+  const events = [{ type: "assistant", message: { content: [
+    { type: "tool_use", name: "Edit", input: { file_path: path.join(mainApi, "a.txt") } },
+    { type: "tool_use", name: "Edit", input: { file_path: path.join(wt, "a.txt") } },
+  ] } }];
+
+  const all = await rc.changes(meta("r3", ws), events as any, true);
+  assert.deepEqual(all.scopes.map((s) => s.repo).sort(), ["API", "tools", "worktrees/ENG-1/API"]);
+
+  const worktree = { path: wtDir, repos: [wt, wtWeb] };
+  const r = await rc.changes(meta("r3", ws), events as any, true, worktree);
+  assert.deepEqual(r.scopes.map((s) => s.repo), ["API", "web"]);
+  assert.equal(r.scopes[0].path, wt);
+  assert.deepEqual(r.scopes[1].commits.map((c) => c.message), ["web work"]);
+  await assert.rejects(rc.fileDiff(meta("r3", ws), events as any, mainApi, "a.txt", worktree), /Not one of this run/);
+  fs.rmSync(ws, { recursive: true, force: true });
+});
+
 test("editedPaths picks absolute paths from edit tools in any thread", () => {
   const ev = [
     { type: "assistant", parent_tool_use_id: "toolu_1", message: { content: [{ type: "tool_use", name: "NotebookEdit", input: { notebook_path: "/w/API/n.ipynb" } }] } },

@@ -13,13 +13,16 @@
  *
  * Which repos: every baselined repo that has changed, plus every repo holding a
  * file the run's Edit/Write/NotebookEdit calls touched (nearest .git upwards),
- * which is how a run started in main finds the worktree it created.
+ * which is how a run started in main finds the worktree it created. A run that
+ * worked in a worktree (see shared/run-workspace.ts) shows only that worktree's
+ * repos: main's repos change under it for reasons that aren't the run's.
  */
 
 import fs from "node:fs";
 import path from "node:path";
 import { execFile } from "node:child_process";
 import type { RunMeta, RunEvent } from "../../shared/api.ts";
+import { within } from "../../shared/run-workspace.ts";
 
 const SKIP_DIRS = new Set(["node_modules", "worktrees", ".git", ".claude", "dist", "bin", "obj"]);
 const MAX_UNTRACKED = 5000;
@@ -27,6 +30,8 @@ const CACHE_MS = 3000;
 const EDIT_TOOLS = new Set(["Edit", "Write", "MultiEdit", "NotebookEdit"]);
 
 interface RepoBaseline { head: string; snap: string; untracked: string[] }
+/** The worktree a run worked in and its repos (absolute paths). */
+export interface RunWorktree { path: string; repos: string[] }
 interface TurnBaseline { turn: number; at: string; repos: Record<string, RepoBaseline> }
 
 export interface ChangedFile { file: string; status: string; adds: number | null; dels: number | null }
@@ -77,12 +82,18 @@ export class RunChanges {
     const turns = this.read(meta.id).filter((t) => t.turn !== meta.turns);
     turns.push({ turn: meta.turns, at: new Date().toISOString(), repos: out });
     try { fs.writeFileSync(this.file(meta.id), JSON.stringify({ turns })); } catch {}
-    this.cache.delete(meta.id);
+    for (const k of this.cache.keys()) if (k.startsWith(meta.id + "|")) this.cache.delete(k);
   }
 
-  /** Repos the run changed, with files and commits, since its first turn. */
-  async changes(meta: RunMeta, events: RunEvent[], force = false): Promise<{ scopes: ChangeScope[]; hasBaseline: boolean; computedAt: string }> {
-    const hit = this.cache.get(meta.id);
+  /**
+   * Repos the run changed, with files and commits, since its first turn.
+   * `worktree`: the worktree the run worked in, if any, and its repos (absolute paths).
+   * Only repos inside it are listed, and all of its repos are checked, since a
+   * subagent's or git's changes don't show up as the run's own edits.
+   */
+  async changes(meta: RunMeta, events: RunEvent[], force = false, worktree: RunWorktree | null = null): Promise<{ scopes: ChangeScope[]; hasBaseline: boolean; computedAt: string }> {
+    const key = meta.id + "|" + (worktree?.path || "");
+    const hit = this.cache.get(key);
     const first = this.read(meta.id).sort((a, b) => a.turn - b.turn)[0] || null;
     if (hit && !force && Date.now() - hit.at < CACHE_MS) return { scopes: hit.scopes, hasBaseline: !!first, computedAt: new Date(hit.at).toISOString() };
 
@@ -91,21 +102,22 @@ export class RunChanges {
       const root = this.gitRoot(p);
       if (root) touched.add(root);
     }
-    const candidates = new Set<string>([...touched, ...Object.keys(first?.repos || {})]);
+    let candidates = [...new Set<string>([...touched, ...Object.keys(first?.repos || {}), ...(worktree?.repos || []).map((r) => path.resolve(r))])];
+    if (worktree) candidates = candidates.filter((repo) => within(repo, worktree.path));
     const scopes: ChangeScope[] = [];
-    await Promise.all([...candidates].map(async (repo) => {
+    await Promise.all(candidates.map(async (repo) => {
       if (!fs.existsSync(path.join(repo, ".git"))) return;
-      const s = await this.scope(meta, repo, first?.repos[repo] || null);
+      const s = await this.scope(meta, repo, worktree?.path || meta.cwd);
       if (s && (s.files.length || s.commits.length || touched.has(repo))) scopes.push(s);
     }));
     scopes.sort((a, b) => a.repo.localeCompare(b.repo));
-    this.cache.set(meta.id, { at: Date.now(), scopes });
+    this.cache.set(key, { at: Date.now(), scopes });
     return { scopes, hasBaseline: !!first, computedAt: new Date().toISOString() };
   }
 
   /** Unified diff of one file in one of the run's changed repos. */
-  async fileDiff(meta: RunMeta, events: RunEvent[], repo: string, file: string): Promise<string> {
-    const { scopes } = await this.changes(meta, events);
+  async fileDiff(meta: RunMeta, events: RunEvent[], repo: string, file: string, worktree: RunWorktree | null = null): Promise<string> {
+    const { scopes } = await this.changes(meta, events, false, worktree);
     const scope = scopes.find((s) => s.path === repo);
     const f = scope && scope.files.find((x) => x.file === file);
     if (!scope || !f) throw Object.assign(new Error("Not one of this run's changed files"), { status: 404 });
@@ -130,7 +142,8 @@ export class RunChanges {
     return { ref: mb || head, head: mb || head, kind: "branch", untracked: new Set() };
   }
 
-  private async scope(meta: RunMeta, repo: string, _b: RepoBaseline | null): Promise<ChangeScope | null> {
+  /** `home`: the folder repo names are shown relative to (the run's worktree, else where it started). */
+  private async scope(meta: RunMeta, repo: string, home: string): Promise<ChangeScope | null> {
     const base = await this.baseOf(meta, repo);
     if (!base.ref) return null;
     const [branch, numstat, names, log, untrackedNow] = await Promise.all([
@@ -159,7 +172,7 @@ export class RunChanges {
     }
     files.sort((a, b) => a.file.localeCompare(b.file));
     const commits = log.split(/\r?\n/).filter(Boolean).map((l) => ({ hash: l.slice(0, l.indexOf(" ")), message: l.slice(l.indexOf(" ") + 1) }));
-    const rel = path.relative(meta.cwd, repo);
+    const rel = path.relative(home, repo);
     return {
       repo: !rel ? path.basename(repo) : rel.startsWith("..") ? repo.split(/[\\/]/).slice(-3).join("/") : rel.split(path.sep).join("/"),
       path: repo,
