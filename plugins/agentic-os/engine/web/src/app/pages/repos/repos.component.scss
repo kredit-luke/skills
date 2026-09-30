@@ -22,3 +22,21 @@
 .job-panel li { font-size: 0.72rem; color: var(--text-muted); display: flex; gap: 0.4rem; align-items: baseline; }
 .job-panel li.failed { color: var(--red); }
 .job-panel li .m { width: 0.9rem; text-align: center; flex-shrink: 0; }
+.repo.snapshot .ic { background: var(--accent-bg); color: var(--accent); }
+.snap .panel-h { display: flex; align-items: center; justify-content: space-between; }
+.snap .panel-b { display: flex; flex-direction: column; gap: 8px; padding: 12px 14px; }
+.snap .panel-b > .ty { font-size: 12.5px; line-height: 1.5; }
+.connect h3 { font-size: 14px; font-weight: 650; margin-bottom: 4px; }
+.connect ol { margin: 0.4rem 0 0.8rem 1.1rem; font-size: 12.5px; line-height: 1.5; }
+.connect form { display: flex; gap: 0.5rem; max-width: 560px; }
+.connect input { flex: 1; }
+.form-err { color: var(--red); font-size: 12px; margin-top: 6px; }
+.snap .panel-h .acts { display: flex; gap: 6px; align-items: center; }
+.confirm { border: 1px solid var(--line); border-radius: 10px; padding: 12px 14px; background: var(--paper); display: flex; flex-direction: column; gap: 8px; }
+.confirm h3 { font-size: 14px; font-weight: 650; }
+.confirm > .ty { font-size: 12.5px; line-height: 1.5; }
+.confirm table { border-collapse: collapse; font-size: 12.5px; width: 100%; }
+.confirm td { padding: 3px 8px 3px 0; border-bottom: 1px solid var(--line-soft); white-space: nowrap; }
+.confirm td.nm { font-weight: 600; }
+.confirm td.subj { white-space: normal; color: var(--ink-soft); width: 100%; }
+.confirm .btns { display: flex; gap: 6px; }

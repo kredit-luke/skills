@@ -132,7 +132,7 @@ test("scaffold + validate on a scratch workspace", () => {
 test("repos.json: both field styles read the same; scaffold writes the standard names; validate flags bad entries", () => {
   // The standard (relativePath / remote), with a nested repo, as most hand-written files have it.
   assert.deepEqual(normalizeRepo({ name: "admin", layer: "bff", relativePath: "bff\\admin", remote: "https://x/admin.git" }), {
-    name: "admin", relativePath: "bff/admin", remote: "https://x/admin.git", layer: "bff", defaultBranch: null, dependencies: [],
+    name: "admin", relativePath: "bff/admin", remote: "https://x/admin.git", layer: "bff", defaultBranch: null, dependencies: [], snapshot: true,
   });
   // What scaffold used to write (directory / url).
   const old = normalizeRepo({ name: "API", url: "https://x/api.git", directory: "api" });
@@ -179,6 +179,16 @@ test("repos.json: both field styles read the same; scaffold writes the standard 
   assert.match(warns, /"local" isn't here and has no remote/);
   fs.writeFileSync(path.join(ws, "repos.json"), "{}");
   assert.match(validate(ws).errors.join("\n"), /repos\.json: needs a "repos" array/);
+
+  // snapshot: the source must be an adapter the installed engine has, with its required settings.
+  const snap = (snapshot) => { fs.writeFileSync(path.join(ws, "repos.json"), JSON.stringify({ snapshot, repos: [] })); return validate(ws).errors.join("\n"); };
+  assert.match(snap({ source: "dropbox" }), /snapshot\.source "dropbox" has no adapter in this engine \(known: confluence, http\)/);
+  assert.match(snap({ source: "confluence", site: "acme.atlassian.net" }), /needs "pageId"/);
+  assert.match(snap({ source: "confluence", site: "acme.atlassian.net", pageId: "abc" }), /the number in the page's URL/);
+  assert.match(snap({ source: "http", baseUrl: "https://x", auth: "token" }), /snapshot\.auth must be/);
+  assert.match(snap({}), /snapshot needs a "source"/);
+  assert.equal(snap({ source: "confluence", site: "acme.atlassian.net", pageId: "123" }), "");
+  assert.equal(normalizeRepo({ name: "infra", snapshot: false }).snapshot, false);
 });
 
 test("brand candidates: hashed build output and library variables don't outrank the real tokens", () => {

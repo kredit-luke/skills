@@ -8,6 +8,10 @@
  * Clone runs `git clone -- <remote> <relativePath>` for repos that aren't here yet,
  * as an app-launcher job (steps and a log, shown in the Logs dialog). It never
  * touches a folder that already has files in it.
+ *
+ * The top-level `snapshot` block names where read-only copies are published for
+ * people without git access (snapshot.ts); a repo with `"snapshot": false` is left
+ * out of them. A folder that came from one has a `.snapshot.json` stamp and no .git.
  */
 
 import fs from "node:fs";
@@ -22,7 +26,15 @@ export interface RepoDef {
   layer: string | null;
   defaultBranch: string | null;
   dependencies: string[];
+  /** Included in published snapshots (default true). */
+  snapshot: boolean;
 }
+
+/** repos.json `snapshot`: which source adapter (snapshot-sources/) and its own settings. */
+export interface SnapshotConfig { source: string; [key: string]: unknown }
+
+/** Written into a folder a snapshot was extracted to; its presence (without .git) marks the folder as ours to replace. */
+export const STAMP_FILE = ".snapshot.json";
 
 const CLONE_TIMEOUT_MS = 30 * 60_000;
 const GIT_TIMEOUT_MS = 8000;
@@ -52,17 +64,22 @@ export function normalizeRepo(r: any): RepoDef | null {
     layer: str(r.layer),
     defaultBranch: str(r.defaultBranch),
     dependencies: Array.isArray(r.dependencies) ? r.dependencies.filter((d: unknown) => typeof d === "string") : [],
+    snapshot: r.snapshot !== false,
   };
 }
 
+export interface ReposFile { configured: boolean; repos: RepoDef[]; snapshot: SnapshotConfig | null; error: string | null }
+
 /** repos.json at the workspace root: configured = the file exists; entries without a usable name/path are dropped. */
-export function readRepos(root: string): { configured: boolean; repos: RepoDef[]; error: string | null } {
+export function readRepos(root: string): ReposFile {
   const file = path.join(root, "repos.json");
   let text: string;
-  try { text = fs.readFileSync(file, "utf-8"); } catch { return { configured: false, repos: [], error: null }; }
+  try { text = fs.readFileSync(file, "utf-8"); } catch { return { configured: false, repos: [], snapshot: null, error: null }; }
   let data: any;
-  try { data = JSON.parse(text.replace(/^﻿/, "")); } catch (e) { return { configured: true, repos: [], error: `repos.json isn't valid JSON: ${(e as Error).message}` }; }
-  if (!data || !Array.isArray(data.repos)) return { configured: true, repos: [], error: 'repos.json needs a "repos" array.' };
+  try { data = JSON.parse(text.replace(/^﻿/, "")); } catch (e) { return { configured: true, repos: [], snapshot: null, error: `repos.json isn't valid JSON: ${(e as Error).message}` }; }
+  if (!data || !Array.isArray(data.repos)) return { configured: true, repos: [], snapshot: null, error: 'repos.json needs a "repos" array.' };
+  const s = data.snapshot;
+  const snapshot = s && typeof s === "object" && typeof s.source === "string" && s.source.trim() ? { ...s, source: s.source.trim() } : null;
   const repos: RepoDef[] = [];
   const seen = new Set<string>();
   for (const raw of data.repos) {
@@ -71,7 +88,7 @@ export function readRepos(root: string): { configured: boolean; repos: RepoDef[]
     seen.add(r.relativePath);
     repos.push(r);
   }
-  return { configured: true, repos, error: null };
+  return { configured: true, repos, snapshot, error: null };
 }
 
 function git(cwd: string, args: string[]): Promise<string | null> {
@@ -80,10 +97,14 @@ function git(cwd: string, args: string[]): Promise<string | null> {
   });
 }
 
-/** "cloned" (has .git: a folder, or a file for git worktrees), "missing" (absent or empty), or "not-git" (has files, no .git). */
+/**
+ * "cloned" (has .git: a folder, or a file for git worktrees), "snapshot" (a downloaded
+ * copy: a stamp, no .git), "missing" (absent or empty), or "not-git" (has files, neither).
+ */
 export function repoState(root: string, rel: string): RepoInfo["state"] {
   const dir = path.join(root, rel);
   if (fs.existsSync(path.join(dir, ".git"))) return "cloned";
+  if (fs.existsSync(path.join(dir, STAMP_FILE))) return "snapshot";
   let entries: string[] = [];
   try { entries = fs.readdirSync(dir); } catch { return "missing"; }
   return entries.length ? "not-git" : "missing";
@@ -91,7 +112,7 @@ export function repoState(root: string, rel: string): RepoInfo["state"] {
 
 /** Every repos.json repo with what's on disk: cloned or not, and for clones the branch and uncommitted file count. */
 export async function reposStatus(root: string): Promise<ReposResponse> {
-  const { configured, repos, error } = readRepos(root);
+  const { configured, repos, snapshot, error } = readRepos(root);
   const out = await Promise.all(repos.map(async (r): Promise<RepoInfo> => {
     const state = repoState(root, r.relativePath);
     const info: RepoInfo = { ...r, state, branch: null, changes: null };
@@ -103,7 +124,7 @@ export async function reposStatus(root: string): Promise<ReposResponse> {
     }
     return info;
   }));
-  return { configured, repos: out, error };
+  return { configured, repos: out, snapshotSource: snapshot ? snapshot.source : null, error };
 }
 
 /** The repos Clone would clone: not here yet and with a remote; `names` narrows it (null = all of them). */

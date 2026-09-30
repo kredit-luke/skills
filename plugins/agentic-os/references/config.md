@@ -48,6 +48,7 @@ Personal/local state is in `<workspace>/.claude/ledger/` (gitignored): run histo
 | `codeHost.ciRepos` / `ciBranch` | `[]` / `main` | Repos (`owner/name`) that get a CI health dot. |
 | `brand.logo` / `favicon` | none | Files in `brand/`. Use a light logo: the sidebar is dark. No logo = the `name` as text. |
 | `copy` | none | Wording overrides: `linksSub`, `docsSub`, `referenceSub`, `issuesSub`, `searchExamples` (array), `askPlaceholder`. |
+| `profiles.reader` | `{ hiddenPages: ["apps", "workspaces"], hiddenSkills: [] }` | What the **reader** profile hides (people who read and ask about the code but don't build or run it; each person picks their profile in Settings, and a first snapshot download picks reader). `hiddenPages`: nav routes. `hiddenSkills`: project skills set to `"off"` in that person's `.claude/settings.local.json` `skillOverrides`, which takes them out of Claude's `/` menu and refuses them by name; switching back removes only the entries the dashboard added. Readers never get Implement. |
 
 ## apps.json: the Apps and Workspaces pages
 
@@ -110,7 +111,7 @@ Port rules: unique across apps, not the dashboard's, and not a database's host p
 }
 ```
 
-Each check picks a catalog entry with `use` and overrides any field, or defines one with `kind`. Fields: `id` (defaults to `use`; unique), `group` (section; order = first appearance; default "Everyone"), `label` (`{required}`, `{major}`, `{image}` expand), `apps` (app ids that can't start while it's missing: their cards say "Needs …"), `required` (`"1.2"` or `{ file, regex?, min?, default? }`: read from a repo file; `min` is a floor), `optional` (absent = info, not missing), `when: { exists: "<dir>", os: "win"|"mac"|"linux" }`, `install: { label?, win, mac, linux, cwd? }` (runs in a visible terminal when the user clicks Install; `null` for an OS = no button), `fix` (copyable text; string or per OS), `detail: { ok, missing }`.
+Each check picks a catalog entry with `use` and overrides any field, or defines one with `kind`. Fields: `id` (defaults to `use`; unique), `group` (section; order = first appearance; default "Everyone"), `label` (`{required}`, `{major}`, `{image}` expand), `apps` (app ids that can't start while it's missing: their cards say "Needs …"), `required` (`"1.2"` or `{ file, regex?, min?, default? }`: read from a repo file; `min` is a floor), `optional` (absent = info, not missing), `when: { exists: "<dir>", os: "win"|"mac"|"linux", profile: "developer"|"reader" }` (profile: only for people with that workspace profile, e.g. build tools for developers), `install: { label?, win, mac, linux, cwd? }` (runs in a visible terminal when the user clicks Install; `null` for an OS = no button), `fix` (copyable text; string or per OS), `detail: { ok, missing }`.
 
 **Catalog ids** (`dashboard/server/src/machine-catalog.ts`): `package-manager` (winget/Homebrew), `node`, `npm`, `pnpm`, `yarn`, `bun`, `python`, `uv`, `php`, `composer`, `go`, `java`, `maven`, `gradle`, `ruby`, `bundler`, `cargo`, `dotnet`, `dotnet-dev-cert`, `dotnet-user-secrets` (`project`: a csproj with UserSecretsId), `git`, `gh`, `glab`, `claude` (installed **and signed in**, via `claude auth status`; signed out shows a Sign in button that opens a terminal running `claude auth login`), `curl`, `az`, `aws`, `gcloud`, `terraform`, `kubectl`, `docker`, `docker-container` (`name`, `port`, `image`; `setup: false` hides Run setup), `psql`, `mysql`, `redis-cli`, `path` (`path`, `repo`, `cloneFix`; `{exe}` = `.exe` on Windows), `npm-global` (`package`), `env-var` (`name`), `port` (`port`).
 
@@ -209,6 +210,36 @@ The repos the workspace is made of, each cloned to `<workspace>/<relativePath>`.
 Only `name` is required; `relativePath` defaults to it and must stay inside the workspace (no absolute paths, no `..`). `remote` is what `git clone` is given; without one the Repos page can only report the repo. `layer` groups the page; `dependencies` (other repos' names) is for implementation and PR order. The older `directory` / `url` names are still read everywhere, and `validate.mjs` warns about them.
 
 The Repos page lists each repo as cloned (branch, uncommitted file count), missing, or a folder with files but no `.git` (left alone). **Clone missing** runs `git clone -- <remote> <relativePath>` for missing repos with a remote, as a job in Activity / Logs; a folder that already has files is never touched. Git runs with terminal prompts off, so a remote needing a password fails with a message instead of hanging (a credential helper with its own sign-in window still works). `discover.mjs` and `doctor.mjs` read the file the same way.
+
+### Snapshots: the code for people who can't clone
+
+A top-level `snapshot` block names where read-only copies of the repos are published, so people without git access (or without access to the code host) can still have the code on disk for Ask, Explore and Docs:
+
+```json
+"snapshot": { "source": "confluence", "site": "acme.atlassian.net", "pageId": "123456", "maxFileMb": 100 }
+"snapshot": { "source": "http", "baseUrl": "https://files.acme.com/code", "auth": "none" }
+```
+
+- **Publish** (CI, nightly): `node dashboard/bin/snapshot.mjs publish --clone` shallow-clones missing repos, fetches each repo's **default branch from origin** (`defaultBranch` in repos.json, else origin's HEAD) and runs `git archive` on that commit into `<name>-<commit>.tar.gz` (files as committed, no history), whatever the clone has checked out, so a work branch or uncommitted changes are never published. It zips the workspace root's default branch into `workspace-<commit>.zip`, and uploads them with `snapshot-manifest.json` (each file's commit, size, date) last. File names carry the commit, so an interrupted publish never changes a file the current manifest names. Once the new manifest is up, files that only the previous manifest named are deleted, and old versions of the snapshot's own files are pruned; other files at the source are left alone. `--dry --out <dir>` builds without uploading (to check sizes); `--no-fetch` uses the origin refs the clones already have; `"snapshot": false` on a repo leaves it out. It needs git ≥ 2.40, and the source's credentials in the environment.
+- **Publish now** (the Repos page, developer profile, a source that takes uploads): the same, with your own key for the source. It first lists what would go up (each repo's branch, commit and message, fetched just then) and publishes exactly that after you confirm, as a job. Repos you haven't cloned, or without an origin, are skipped, and their last published copy stays in the manifest if the file is still at the source.
+- **Download** (the Repos page): connect the source (each person's own key, kept in the ledger), then **Download code** / **Update code**. Each archive is extracted next to its folder, stamped (`.snapshot.json`), and swapped in whole; the old copy goes only once the new one is in place. A folder with `.git`, or with files and no stamp, is never replaced. The first download sets the reader profile unless the person already chose one.
+- **Getting started with no git at all (Windows)**: each publish also uploads `Install-<name>.cmd` (confluence and http sources), generated from `dashboard/bin/install-windows.ps1` with the source filled in. Double-clicking it sets up or updates everything for that user, with no admin rights needed:
+  - Node.js at the dashboard's floor: the one on PATH, else a portable copy in `%LOCALAPPDATA%\agentic-os\node`, checked against nodejs.org's SHASUMS256.
+  - Claude Code: Anthropic's per-user installer.
+  - The source's key, asked for once and saved in the ledger.
+  - `workspace.zip` and the built UI, extracted into the folder the user picks. It never extracts over a git clone, and the user's ledger and downloaded repos are kept.
+  - Then it starts the dashboard, sets the reader profile, starts Download code, and adds a desktop shortcut.
+
+  Running the installer again updates the workspace files.
+- **Pre-built UI**: publish adds `dashboard-ui.tar.gz`, the publisher's `dashboard/dist` marked with `.prebuilt.json`, when `dashboard/` there is exactly the published commit and its build is current (in CI: run `npm ci && npm run build` in `dashboard/` before publishing). `dashboard.mjs start` then needs neither npm nor a build, since the server only uses Node itself. Without it, the first start runs `npm ci` and `ng build`, which takes a few minutes.
+- **By hand, or on another OS**: download `workspace.zip` from the source, extract it, and run `node dashboard/bin/dashboard.mjs start`; the Repos page does the rest.
+
+Sources (`dashboard/server/src/snapshot-sources/`; adding one: `references/adapters.md`):
+
+| source | settings | who can download | publishing credentials |
+|---|---|---|---|
+| `confluence` | `site`, `pageId` (the page the files are attached to), `maxFileMb` (the site's attachment limit, 100 by default on Cloud) | whoever can view the page; the key is the Docs page's Confluence key, or Jira's on the same site | `CONFLUENCE_EMAIL` + `CONFLUENCE_API_TOKEN` of an account that can edit the page |
+| `http` | `baseUrl`, `auth` (`none` / `bearer` / `basic`) | anyone with the link (and the key, with auth); the key is pasted on the Repos page or set as `SNAPSHOT_HTTP_TOKEN` | none: download-only; copy the `--out` folder to the server yourself |
 
 ## brand/: the look
 

@@ -83,9 +83,9 @@ export function scaffold(root, plan, { force = false, dry = false } = {}) {
 
   // ---- repos.json
   if (Array.isArray(plan.repos) && plan.repos.length) {
-    // Standard field names only, and no empty optional fields.
+    // Standard field names only, and no empty optional fields (snapshot only when it's false).
     const repos = plan.repos.map(normalizeRepo).filter(Boolean).map((r) =>
-      Object.fromEntries(Object.entries(r).filter(([, v]) => v !== null && !(Array.isArray(v) && !v.length))));
+      Object.fromEntries(Object.entries(r).filter(([k, v]) => v !== null && !(Array.isArray(v) && !v.length) && !(k === "snapshot" && v === true))));
     write(path.join(root, "repos.json"), () => writeJson(path.join(root, "repos.json"), { $schema: REPOS_SCHEMA, repos }));
   }
 

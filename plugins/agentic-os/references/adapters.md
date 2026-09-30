@@ -71,3 +71,27 @@ interface DocsProvider {
 Same conventions as trackers: each person's own key (never a shared one in config, never OAuth), `node:https` only, 20s timeouts, errors with a `status` (400 = bad input, 401/403 = reconnect). If the service shares a login with the issue tracker (Confluence and Jira), reuse the tracker's key when the site matches, so there's nothing more to paste. Register it in `PROVIDERS` in `docs-providers/index.ts`; test the pure parts (query building, result mapping) in `server/test/docs-providers.test.ts`.
 
 Candidates: Notion (`POST /v1/search`, integration token; pages → blocks to HTML), Google Drive (Drive v3 `files.list` with `fullText contains`, export Docs as HTML; needs OAuth, so probably a CLI such as `gcloud` instead), SharePoint/OneDrive (Microsoft Graph search), GitBook, Guru, Slab.
+
+## Snapshot sources (the code for people who can't clone)
+
+repos.json `snapshot.source` picks where read-only copies of the repos are published and downloaded from (config: `references/config.md`, "Snapshots"). Adapters live in `dashboard/server/src/snapshot-sources/`: `confluence.ts` (attachments on one page, REST v1, the Docs page's Confluence key) and `http.ts` (any direct-link host, download only). An adapter only moves files by name; `snapshot.ts` owns the archives, the manifest (`manifest.ts`), extraction and the swap. The interface (`snapshot-sources/index.ts`):
+
+```ts
+interface SnapshotSource {
+  kind: string; label: string;
+  maxFileBytes: number | null;                 // publish refuses anything bigger
+  status(): { connected: boolean; source: "env" | "file" | "tracker" | null; viewer: string | null };
+  connectHelp(): { title; steps: string[] /* markdown */; placeholder; needsKey; method?: "key" | "oauth" } | null;
+  connect(key: string): Promise<status>;       // validate first, then save to <ledger>/<file> (mode 600)
+  disconnect(): status;
+  list(): Promise<{ id; name; size; updatedAt }[]>;   // must include snapshot-manifest.json once published
+  download(file, destPath: string): Promise<void>;     // stream to disk (http-util.ts downloadFile)
+  upload?(name: string, srcPath: string): Promise<void>;   // publishing: create or replace by name
+  remove?(file): Promise<void>;                // publishing: delete a file the new manifest no longer names
+  prune?(names: string[]): Promise<number>;    // publishing: drop old versions of these files only (the source may hold others)
+}
+```
+
+Conventions: each person's own key for downloads (the service's own permissions decide who gets the code); publishing credentials from the environment, since it runs in CI. Use `http-util.ts` (`request`, `requestJson`, `downloadFile`, `multipartFile`): it streams, follows redirects, and drops `Authorization` on a redirect to another host (Confluence hands downloads to a media host with a signed URL). Reuse an existing login where there is one (`confluence.ts` wraps the Docs provider for its key). `method: "oauth"` is reserved for a sign-in-with flow: an adapter that has one returns its authorize URL from `connect`; nothing implements it yet, because it needs an app each company registers itself (a secret shipped in the plugin wouldn't be secret). Register it in `SOURCES`, add its required settings to `validate.mjs` and a `oneOf` branch to `shared/repos.schema.json`, and give it a case in `server/test/snapshot.test.ts` against a local fake server (list, download through a redirect, upload, prune).
+
+Candidates: SharePoint / OneDrive (Microsoft Graph drive items; `@microsoft.graph.downloadUrl` is pre-signed; upload sessions for files over 4 MB), Google Drive (Drive v3 `files.list` in a folder, `alt=media`; resumable uploads), Notion (its file-upload API, and file blocks with short-lived signed URLs; size limits depend on the plan), S3 with signed uploads (`http` already downloads). Check each service's current API docs before building: none of these is verified.
