@@ -174,3 +174,115 @@ describe('toolLabel', () => {
     expect(toolLabel('mcp__linear__get_issue', { title: 'x' })).toBe('x');
   });
 });
+
+// A real /implement stream (trimmed, text scrubbed): a reviewer's first pass is an Agent
+// call; later passes are SendMessage({ to: <agentId> }) resumes, whose task_* events carry
+// the SendMessage id while their messages keep the Agent call's. A foreground "wait" Bash
+// also gets task_* events there.
+describe('buildThread: subagents resumed with SendMessage', () => {
+  const events = fixture('subagent-resume.jsonl');
+  const AGENT = 'ad4b466c915fda516';
+  const FIRST = 'toolu_01A38qv6pjPY8FSYaMGwN8LH';
+  const RESUME1 = 'toolu_01F37uHkgnkc5ujDNnZPU3kU';
+  const RESUME2 = 'toolu_016CP1UfazUhjFwQweq3TefT';
+  const WAIT = 'toolu_01WxwdCAdF4AJJNABVP6GYnn';
+  const t = buildThread(events, { runActive: false });
+  const byId = (id: string) => t.agents.find((a) => a.id === id)!;
+  const agentItems = (items: ThreadItem[]): AgentCard[] =>
+    items.flatMap((i) => (i.kind === 'agent' ? [i.card, ...agentItems(i.card.items)] : []));
+
+  it('gives each pass its own card in time order, numbered and tied to the same agent', () => {
+    expect(t.agents.map((a) => [a.id, a.pass, a.resumed, a.agentId])).toEqual([
+      [FIRST, 1, false, AGENT], [RESUME1, 2, true, AGENT], [RESUME2, 3, true, AGENT],
+    ]);
+    const main = t.items.filter((i) => i.kind === 'agent').map((i) => i.kind === 'agent' && i.card.id);
+    expect(main).toEqual([FIRST, RESUME1, RESUME2]);
+    expect(t.items.some((i) => i.kind === 'tool' && i.name === 'SendMessage')).toBe(false);
+  });
+
+  it('a completed resume has the agent type, the SendMessage summary, its prompt, usage and status', () => {
+    const r = byId(RESUME1);
+    expect(r.agentType).toBe('backend-code-review-agent');
+    expect(r.description).toBe('summary 9');
+    expect(r.prompt).toBe('message 10');
+    expect(r.status).toBe('completed');
+    expect([r.tokens, r.toolUses, r.durationMs]).toEqual([211089, 15, 271144]);
+    // Its own report (its SubagentHandback), not the CLI's "delivered to you as a message" note.
+    expect(r.summary).toBe('message 24');
+  });
+
+  it("the pass's steps, streamed under the first Agent call's id, land in the resume's card", () => {
+    const r = byId(RESUME1);
+    expect(r.items.map((i) => i.kind === 'tool' && [i.name, i.done])).toEqual([['Bash', true], ['Grep', true]]);
+    const first = byId(FIRST);
+    expect(first.items.map((i) => i.kind === 'tool' && i.name)).toEqual(['Bash'], 'only the first pass\'s own step');
+    expect(first.summary).toBe('message 7', 'and its own report');
+  });
+
+  it('a resume still going when the run has no process shows Stopped (running while it does)', () => {
+    expect(byId(RESUME2).status).toBe('stopped');
+    expect(buildThread(events, { runActive: true }).agents.find((a) => a.id === RESUME2)!.status).toBe('running');
+  });
+
+  it('every card in the strip has a card in the transcript to scroll to', () => {
+    const targets = new Set(agentItems(t.items).map((c) => c.id));
+    for (const a of t.agents) expect(targets.has(a.id)).toBe(true);
+  });
+
+  it('the first pass reports its SubagentHandback, not the "delivered to you" note', () => {
+    const first = byId(FIRST);
+    expect(first.status).toBe('completed');
+    expect(first.summary).toBe('message 7');
+    expect(first.items.some((i) => i.kind === 'tool' && i.name === 'SubagentHandback')).toBe(false);
+  });
+
+  it('a long foreground Bash with task_* events finishes normally and is not labelled background', () => {
+    const wait = t.items.find((i) => i.kind === 'tool' && i.id === WAIT);
+    expect(wait && wait.kind === 'tool' && wait.done).toBe(true);
+    expect(wait && wait.kind === 'tool' && wait.bgStatus).toBeUndefined();
+  });
+
+  it('a resume of an agent the excerpt never started turns its SendMessage row into a card in place', () => {
+    const from = events.findIndex((e) => e.type === 'assistant' && JSON.stringify(e).includes(RESUME1));
+    const t2 = buildThread(events.slice(from), { runActive: false });
+    const r = t2.agents.find((a) => a.id === RESUME1)!;
+    expect(r.resumed).toBe(true);
+    expect(r.description).toBe('summary 9');
+    expect(r.status).toBe('completed');
+    expect(t2.items[0].kind).toBe('agent');
+    expect(t2.items.some((i) => i.kind === 'tool' && i.name === 'SendMessage')).toBe(false);
+    // Its steps and report arrive under the first call's id, which this excerpt never showed: no ghost card.
+    expect(r.items.map((i) => i.kind === 'tool' && i.name)).toEqual(['Bash', 'Grep']);
+    expect(r.summary).toBe('message 24');
+    expect(t2.agents.some((a) => a.id === FIRST)).toBe(false);
+  });
+
+  it('a message sent while the agent is still busy starts no pass, so its steps stay with the pass that is running', () => {
+    const send = events.findIndex((e) => e.type === 'assistant' && JSON.stringify(e).includes(RESUME1));
+    // Up to the SendMessage, then the CLI's ordinary answer for a delivered message, then the agent carries on.
+    const delivered = { type: 'user', uuid: 'd1', message: { content: [{ type: 'tool_result', tool_use_id: RESUME1, content: '{"success":true,"message":"Message delivered"}' }] } };
+    const queued = { type: 'assistant', parent_tool_use_id: FIRST, uuid: 'q1', message: { content: [{ type: 'tool_use', id: 'toolu_q', name: 'Read', input: { file_path: 'a.ts' } }] } };
+    const t2 = buildThread([...events.slice(0, send + 1), delivered, queued], { runActive: true });
+    expect(t2.agents.find((a) => a.id === FIRST)!.items.some((i) => i.kind === 'tool' && i.name === 'Read')).toBe(true);
+    expect(t2.agents.some((a) => a.id === RESUME1)).toBe(false, 'no phantom pass');
+    const row = t2.items.find((i) => i.kind === 'tool' && i.id === RESUME1);
+    expect(row && row.kind === 'tool' && row.done).toBe(true);
+  });
+
+  it('a "Resuming agent" result starts the pass even before its task_started', () => {
+    const at = events.findIndex((e) => e.subtype === 'task_started' && e.tool_use_id === RESUME1);
+    const t2 = buildThread([...events.slice(0, at), ...events.slice(at + 1)], { runActive: true });
+    const r = t2.agents.find((a) => a.id === RESUME1)!;
+    expect([r.resumed, r.pass, r.agentId]).toEqual([true, 2, 'ad4b466c915fda516']);
+    expect(r.items.map((i) => i.kind === 'tool' && i.name)).toEqual(['Bash', 'Grep']);
+  });
+
+  it('a refused resume fails with its message', () => {
+    // A refused resume runs no pass: the stream stops at its result here.
+    const at = events.findIndex((e) => e.type === 'user' && JSON.stringify(e).includes(RESUME1) && JSON.stringify(e).includes('resumedAgentId'));
+    const refused = [...events.slice(0, at), { ...events[at], message: { content: [{ type: 'tool_result', tool_use_id: RESUME1, content: '{"success":false,"message":"No agent with that id"}' }] } }];
+    const r = buildThread(refused, { runActive: true }).agents.find((a) => a.id === RESUME1)!;
+    expect(r.status).toBe('failed');
+    expect(r.summary).toBe('No agent with that id');
+  });
+});

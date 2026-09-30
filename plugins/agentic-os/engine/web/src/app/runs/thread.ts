@@ -11,6 +11,17 @@
  *    task_updated carries only task_id, so task_id → tool_use_id is remembered.
  *  - a background agent's tool_result is "Async agent launched…"; it finishes later
  *    (task_notification), and the model is re-invoked: a second init + result.
+ *  - SendMessage({ to: <agentId> }) resumes a finished subagent: task_* events come
+ *    under the SendMessage's id (task_id = the agent) and its result is a JSON
+ *    "Resuming agent …", but the pass's own messages keep the FIRST Agent call's id
+ *    as parent_tool_use_id. Each pass is its own card where the SendMessage was, so
+ *    the transcript stays in time order, and messages under an earlier pass's id go
+ *    to the newest pass that has started. Cards of one agent share agentId and count
+ *    up `pass`.
+ *  - a subagent's report is its SubagentHandback call; the CLI's tool_result and
+ *    notification only say it was "delivered to you as a message".
+ *  - a foreground Bash that outlives the CLI's own timer gets task_* events too
+ *    (is_backgrounded: false): that isn't a background task.
  * Dashboard-added: { type: 'human' } (your replies), { type: 'turn' } (turn N starts),
  * { type: 'divider', text } (e.g. "Continued in terminal").
  */
@@ -30,6 +41,12 @@ export interface AgentCard {
   status: AgentStatus; activity: string; lastTool: string; tokens: number; toolUses: number;
   durationMs: number | null; summary: string; steps: number; depth: number;
   items: ThreadItem[];
+  /** The subagent's own id (task_id), shared by every pass of it; '' until known. */
+  agentId: string;
+  /** 1 for the Agent call, 2+ for each SendMessage that resumed the same agent. */
+  pass: number;
+  /** This card is a SendMessage resume, not the Agent call itself. */
+  resumed: boolean;
 }
 export type ThreadItem =
   | { kind: 'text'; key: string; text: string }
@@ -93,6 +110,14 @@ export function toolLabel(name: string, input: Record<string, any> = {}): string
   return oneLine(v);
 }
 
+/** The CLI's stand-in for a report that went to the lead as a SubagentHandback message. */
+const HANDBACK_NOTE = /report was delivered to you as a message from/i;
+const AGENT_ID_IN_TEXT = /agentId:\s*([\w-]{6,64})/;
+
+function parseJson(text: string): any {
+  try { return JSON.parse(text); } catch { return null; }
+}
+
 function resultText(content: unknown): string {
   if (typeof content === 'string') return content;
   if (Array.isArray(content)) return content.map((c: any) => (c && c.type === 'text' ? c.text : '[' + (c && c.type) + ']')).join('\n');
@@ -109,7 +134,15 @@ export function buildThread(events: readonly any[], opts: BuildOptions = {}): Th
   const agents: AgentCard[] = [];
   const cards = new Map<string, AgentCard>();
   const tools = new Map<string, ToolItem>();
+  /** Where each tool row sits, so a SendMessage row can become a card in place. */
+  const toolIn = new Map<string, ThreadItem[]>();
   const taskToTool = new Map<string, string>();
+  /** Every card of one subagent, by its agent id, in pass order. */
+  const passes = new Map<string, AgentCard[]>();
+  /** A parent id the stream never showed, tied to the agent whose resumed pass its messages turned out to be. */
+  const aliases = new Map<string, string>();
+  /** Tool calls the CLI actually backgrounded (task_started is_backgrounded). */
+  const backgrounded = new Set<string>();
   let n = 0;
   const key = (p: string) => p + ':' + n++;
   let inits = 0;
@@ -119,14 +152,67 @@ export function buildThread(events: readonly any[], opts: BuildOptions = {}): Th
   const card = (id: string, depth = 1): AgentCard => {
     let c = cards.get(id);
     if (!c) {
-      c = { id, agentType: '', description: '', prompt: '', background: false, status: 'starting', activity: '', lastTool: '', tokens: 0, toolUses: 0, durationMs: null, summary: '', steps: 0, depth, items: [] };
+      c = { id, agentType: '', description: '', prompt: '', background: false, status: 'starting', activity: '', lastTool: '', tokens: 0, toolUses: 0, durationMs: null, summary: '', steps: 0, depth, items: [], agentId: '', pass: 1, resumed: false };
       cards.set(id, c);
       agents.push(c);
     }
     return c;
   };
+  /** Tie a card to its subagent; a resume's pass number follows the agent's earlier cards. */
+  const link = (c: AgentCard, agentId: unknown) => {
+    const id = String(agentId || '');
+    if (!id || c.agentId) return;
+    c.agentId = id;
+    const list = passes.get(id) || [];
+    list.push(c);
+    passes.set(id, list);
+    c.pass = list.length;
+    const first = list[0];
+    if (c !== first) {
+      c.agentType = c.agentType || first.agentType;
+      c.depth = first.depth;
+    }
+  };
+  /** A SendMessage row that turned out to resume a subagent: swap it for that pass's card, in place. */
+  const resumeCard = (toolId: string): AgentCard => {
+    const c = card(toolId);
+    const t = tools.get(toolId);
+    if (t && t.name === 'SendMessage') {
+      const box = toolIn.get(toolId);
+      const at = box ? box.indexOf(t) : -1;
+      if (box && at >= 0) box.splice(at, 1, { kind: 'agent', key: 'agent:' + toolId, card: c });
+      tools.delete(toolId);
+      c.resumed = true;
+      c.background = true;
+      c.description = c.description || oneLine(t.input['summary']);
+      c.prompt = c.prompt || (typeof t.input['message'] === 'string' ? t.input['message'] : '');
+    }
+    return c;
+  };
+  /**
+   * Some resumed passes stream under the first Agent call's id, not the SendMessage's:
+   * once a later pass of the same agent has started, its messages belong to that pass.
+   * (A message queued while the agent is still busy starts no pass, so nothing moves.)
+   */
+  const currentPass = (parent: string | null): string | null => {
+    if (!parent) return parent;
+    const c = cards.get(parent);
+    let agentId = c ? c.agentId : aliases.get(parent);
+    if (!c && !agentId) {
+      // A parent this stream never showed (it starts after the Agent call): the messages are
+      // the running resumed pass's, when exactly one agent is resumed without its first pass here.
+      const orphans = agents.filter((a) => a.resumed && a.status === 'running' && a.agentId && !(passes.get(a.agentId) || []).some((p) => !p.resumed));
+      if (orphans.length === 1) { agentId = orphans[0].agentId; aliases.set(parent, agentId); }
+    }
+    const list = agentId ? passes.get(agentId) : undefined;
+    const latest = list ? [...list].reverse().find((p) => p.status !== 'starting') : undefined;
+    if (!latest) return parent;
+    return c ? (latest.pass > c.pass ? latest.id : parent) : latest.id;
+  };
   const containerFor = (parent: string | null | undefined): ThreadItem[] => (parent ? card(parent).items : main);
   const finish = (c: AgentCard, status: AgentStatus) => { if (!FINISHED.includes(c.status) || status === 'failed') c.status = status; };
+  /** A report, unless it's only the CLI's note that the report went elsewhere (the SubagentHandback has it). */
+  const report = (c: AgentCard, text: string) => { if (!c.summary && text.trim() && !HANDBACK_NOTE.test(text)) c.summary = text.trim(); };
 
   for (const ev of events) {
     if (!ev || SKIP_TYPES.has(ev.type)) continue;
@@ -151,14 +237,19 @@ export function buildThread(events: readonly any[], opts: BuildOptions = {}): Th
         const isAgent = ev.task_type === 'local_agent' || cards.has(toolId) || (ev.task_type !== 'local_bash' && !tools.has(toolId));
         if (!isAgent) {
           const t = tools.get(toolId);
-          if (t) t.bgStatus = st === 'task_started' ? 'running' : ev.status || (ev.patch && ev.patch.status) || t.bgStatus;
+          if (st === 'task_started' && ev.is_backgrounded) backgrounded.add(toolId);
+          // Only a call the CLI backgrounded is a background task; a long foreground one gets task_* events too.
+          if (t && (backgrounded.has(toolId) || t.input['run_in_background'])) {
+            t.bgStatus = st === 'task_started' ? 'running' : ev.status || (ev.patch && ev.patch.status) || t.bgStatus;
+          }
           continue;
         }
-        const c = card(toolId);
+        const c = resumeCard(toolId);
         if (st === 'task_started') {
           if (!FINISHED.includes(c.status)) c.status = 'running';
           c.background = c.background || !!ev.is_backgrounded;
           c.agentType = c.agentType || ev.subagent_type || '';
+          link(c, ev.task_id);
           c.description = c.description || ev.description || '';
           c.prompt = c.prompt || ev.prompt || '';
         } else if (st === 'task_progress') {
@@ -174,7 +265,7 @@ export function buildThread(events: readonly any[], opts: BuildOptions = {}): Th
           if (s) finish(c, mapStatus(s));
         } else if (st === 'task_notification') {
           if (ev.status) finish(c, mapStatus(ev.status));
-          if (ev.summary) c.summary = ev.summary;
+          if (ev.summary) report(c, String(ev.summary));
           if (ev.usage) applyUsage(c, ev.usage);
         }
         continue;
@@ -199,7 +290,7 @@ export function buildThread(events: readonly any[], opts: BuildOptions = {}): Th
     }
 
     if (ev.type === 'assistant' && ev.message && Array.isArray(ev.message.content)) {
-      const parent: string | null = ev.parent_tool_use_id || null;
+      const parent: string | null = currentPass(ev.parent_tool_use_id || null);
       const into = containerFor(parent);
       const owner = parent ? card(parent) : null;
       for (const b of ev.message.content) {
@@ -208,7 +299,15 @@ export function buildThread(events: readonly any[], opts: BuildOptions = {}): Th
           const text = parent ? String(b.text || '').trim() : stripQuestion(b.text);
           if (text) into.push({ kind: 'text', key: key('text'), text });
         } else if (b.type === 'tool_use') {
+          // The subagent's report: the card's summary, not a step.
+          if (owner && b.name === 'SubagentHandback') {
+            const msg = b.input && b.input.message;
+            if (typeof msg === 'string' && msg.trim()) owner.summary = msg.trim();
+            continue;
+          }
           if (owner) owner.steps++;
+          // A SendMessage stays a plain row until the CLI confirms it started a pass (task_started,
+          // or a result naming resumedAgentId): one to an agent that's still busy is only a message.
           if (b.name === 'Agent' || b.name === 'Task') {
             const c = card(b.id, owner ? owner.depth + 1 : 1);
             const input = b.input || {};
@@ -221,6 +320,7 @@ export function buildThread(events: readonly any[], opts: BuildOptions = {}): Th
           } else {
             const t: ToolItem = { kind: 'tool', key: 'tool:' + b.id, id: b.id, name: b.name, label: toolLabel(b.name, b.input), input: b.input || {}, output: null, isError: false, done: false };
             tools.set(b.id, t);
+            toolIn.set(b.id, into);
             into.push(t);
           }
         }
@@ -235,14 +335,34 @@ export function buildThread(events: readonly any[], opts: BuildOptions = {}): Th
         const text = resultText(b.content);
         const c = cards.get(b.tool_use_id);
         if (c) {
+          const id = AGENT_ID_IN_TEXT.exec(text);
+          if (id) link(c, id[1]);
+          if (c.resumed) {
+            // SendMessage's own result: the resume was accepted (the pass itself finishes later) or refused.
+            const r = parseJson(text.trim());
+            if (r && r.resumedAgentId) link(c, r.resumedAgentId);
+            if (b.is_error || (r && r.success === false)) { finish(c, 'failed'); report(c, (r && r.message) || text); }
+            else if (c.status === 'starting') c.status = 'running';
+            continue;
+          }
           if (/Async agent launched/i.test(text)) { c.background = true; if (c.status === 'starting') c.status = 'running'; continue; }
           if (!c.background) {
             finish(c, b.is_error ? 'failed' : 'completed');
-            if (!c.summary) c.summary = text.trim();
+            report(c, text);
           }
           continue;
         }
         const t = tools.get(b.tool_use_id);
+        if (t && t.name === 'SendMessage' && !b.is_error) {
+          // "Resuming agent …" before (or without) its task_started: that is a new pass.
+          const r = parseJson(text.trim());
+          if (r && r.success !== false && r.resumedAgentId) {
+            const rc = resumeCard(b.tool_use_id);
+            link(rc, r.resumedAgentId);
+            if (rc.status === 'starting') rc.status = 'running';
+            continue;
+          }
+        }
         if (t) { t.output = text; t.isError = !!b.is_error; t.done = true; }
       }
       continue;

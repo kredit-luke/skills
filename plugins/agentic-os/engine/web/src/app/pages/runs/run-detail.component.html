@@ -62,8 +62,8 @@
       <div class="agent-strip" aria-label="Subagents">
         <span class="strip-lbl">Subagents <b>{{ thread().agents.length }}</b></span>
         @for (a of thread().agents; track a.id; let last = $last) {
-          <button type="button" class="chip" [class]="'chip ' + a.status" (click)="jumpTo(a)" [title]="a.description">
-            {{ a.agentType || 'agent' }} <span class="ic">{{ agentIcon(a) }}</span>
+          <button type="button" class="chip" [class]="'chip ' + a.status" (click)="jumpTo(a)" [title]="a.description + (a.resumed ? ' (pass ' + a.pass + ', resumed with SendMessage)' : '')">
+            @if (a.resumed) { <span class="resume" aria-label="resumed">↻</span> }{{ a.agentType || 'agent' }}@if (a.pass > 1) { <span class="pass">· {{ a.pass }}</span> } <span class="ic">{{ agentIcon(a) }}</span>
           </button>
           @if (!last) { <span class="arrow-sep">→</span> }
         }
@@ -169,7 +169,9 @@
           <div class="agent-h" (click)="toggle(it.key)">
             <span class="arrow" [class.open]="isOpen(it.key)">&#9654;</span>
             <span class="ic">{{ agentIcon(c) }}</span>
+            @if (c.resumed) { <span class="resume" title="Resumed with SendMessage">↻</span> }
             <b class="type">{{ c.agentType || 'agent' }}</b>
+            @if (c.pass > 1) { <span class="pass" [title]="'Pass ' + c.pass + ' of this agent (' + c.agentId + ')'">pass {{ c.pass }}</span> }
             <span class="desc">{{ c.description }}</span>
             <span class="grow"></span>
             <span class="meta">{{ agentStatus(c) }} · {{ steps(c) }} step{{ steps(c) === 1 ? '' : 's' }}{{ c.tokens ? ' · ' + tok(c.tokens) + ' tokens' : '' }}{{ c.durationMs ? ' · ' + d(c.durationMs) : '' }}</span>

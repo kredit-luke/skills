@@ -256,10 +256,17 @@ export class RunDetailComponent implements OnDestroy {
     this.expanded.set(s);
     setTimeout(() => {
       const box = this.box()?.nativeElement;
-      const el = box?.querySelector<HTMLElement>(`[data-agent="${CSS.escape(card.id)}"]`);
+      const find = (id: string) => box?.querySelector<HTMLElement>(`[data-agent="${CSS.escape(id)}"]`) || null;
+      // No card of its own in the transcript: the nearest pass of the same agent, so the click always lands somewhere.
+      const sibling = card.agentId ? this.thread().agents.filter((a) => a.agentId === card.agentId && a.id !== card.id)
+        .sort((a, b) => Math.abs(a.pass - card.pass) - Math.abs(b.pass - card.pass)).map((a) => find(a.id)).find(Boolean) : null;
+      const el = find(card.id) || sibling;
       if (box && el) {
         this.stick = false;
         box.scrollTop = el.getBoundingClientRect().top - box.getBoundingClientRect().top + box.scrollTop - 8;
+        if (el !== find(card.id)) this.toast.show(`Pass ${card.pass} isn't in the transcript; showing pass ${this.thread().agents.find((a) => find(a.id) === el)?.pass ?? '?'} of the same agent.`);
+      } else {
+        this.toast.show(`${card.agentType || 'This agent'}'s steps aren't in this transcript.`);
       }
     });
   }
