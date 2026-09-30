@@ -601,7 +601,24 @@ export interface SnapshotStatus {
   /** The workspace files themselves (workspace.zip): what's published, and the stamp at the workspace root. */
   workspace: { latest: SnapshotVersion & { size: number }; local: SnapshotVersion | null } | null;
   repos: SnapshotRepo[];
+  /** This source takes uploads and you're connected: the Repos page offers Publish now (developers only). */
+  canPublish: boolean;
   error: string | null;
+}
+
+/** One repo as a publish would upload it: its origin default branch's latest commit. */
+export interface PublishTarget { name: string; relativePath: string; branch: string; sha: string; subject: string; committedAt: string }
+/**
+ * POST /api/snapshot/plan → PublishPlanResponse (fetches each repo's default branch first) ;
+ * POST /api/snapshot/publish { planId } → 202 { job }: uploads exactly that plan. Developer profile only.
+ */
+export interface PublishPlanResponse {
+  planId: string;
+  label: string;
+  repos: PublishTarget[];
+  workspace: PublishTarget | null;
+  /** Included in repos.json but not publishable from this machine; the last published copy of each is kept. */
+  skipped: { name: string; reason: string }[];
 }
 
 /** GET /api/profile ;  POST /api/profile { profile } → ProfileInfo. Per person (ledger). */

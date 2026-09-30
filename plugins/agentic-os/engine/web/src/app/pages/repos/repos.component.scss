@@ -31,3 +31,12 @@
 .connect form { display: flex; gap: 0.5rem; max-width: 560px; }
 .connect input { flex: 1; }
 .form-err { color: var(--red); font-size: 12px; margin-top: 6px; }
+.snap .panel-h .acts { display: flex; gap: 6px; align-items: center; }
+.confirm { border: 1px solid var(--line); border-radius: 10px; padding: 12px 14px; background: var(--paper); display: flex; flex-direction: column; gap: 8px; }
+.confirm h3 { font-size: 14px; font-weight: 650; }
+.confirm > .ty { font-size: 12.5px; line-height: 1.5; }
+.confirm table { border-collapse: collapse; font-size: 12.5px; width: 100%; }
+.confirm td { padding: 3px 8px 3px 0; border-bottom: 1px solid var(--line-soft); white-space: nowrap; }
+.confirm td.nm { font-weight: 600; }
+.confirm td.subj { white-space: normal; color: var(--ink-soft); width: 100%; }
+.confirm .btns { display: flex; gap: 6px; }

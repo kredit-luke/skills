@@ -7,6 +7,7 @@
  *   --clone         shallow-clone repos.json repos that aren't here yet first (CI)
  *   --out <dir>     where the files are built (default: a temp folder)
  *   --dry           build only; don't upload (check sizes, inspect the files)
+ *   --no-fetch      use the origin/<default branch> each clone already has (no git fetch)
  *   --no-workspace  leave out workspace.zip
  *
  * The source is repos.json `snapshot`. Credentials come from the environment (e.g.
@@ -30,7 +31,7 @@ const log = (t: string) => console.log(t);
 async function main() {
   const cmd = argv[0];
   if (cmd !== "publish") {
-    console.error("Usage: node dashboard/bin/snapshot.mjs publish [--clone] [--out <dir>] [--dry] [--no-workspace]");
+    console.error("Usage: node dashboard/bin/snapshot.mjs publish [--clone] [--out <dir>] [--dry] [--no-fetch] [--no-workspace]");
     process.exit(2);
   }
   const root = WORKSPACE_ROOT;
@@ -43,7 +44,8 @@ async function main() {
 
   if (flag("clone")) await cloneForPublish(root, log);
   const out = path.resolve(opt("out") || fs.mkdtempSync(path.join(os.tmpdir(), "aos-snapshot-out-")));
-  const manifest = await buildSnapshot(root, out, { workspace: !flag("no-workspace"), log });
+  // Each repo at its origin default branch, fetched now: never a clone's work branch or local edits.
+  const manifest = await buildSnapshot(root, out, { workspace: !flag("no-workspace"), fetch: !flag("no-fetch"), log });
   log(`Built ${Object.keys(manifest.repos).length} repo archives${manifest.workspace ? " + workspace.zip" : ""} in ${out}`);
   if (flag("dry") || !source) return;
   await publishSnapshot(source, out, manifest, log);

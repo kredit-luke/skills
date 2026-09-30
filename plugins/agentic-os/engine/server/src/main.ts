@@ -15,10 +15,11 @@
 import http from "node:http";
 import fs from "node:fs";
 import net from "node:net";
+import os from "node:os";
 import path from "node:path";
 import crypto from "node:crypto";
 import { execFile } from "node:child_process";
-import type { Boot, LaunchRequest, ProfileInfo, RunEvent, RunMeta } from "../../shared/api.ts";
+import type { Boot, LaunchRequest, ProfileInfo, PublishPlanResponse, RunEvent, RunMeta } from "../../shared/api.ts";
 import { runTicket } from "../../shared/run-ticket.ts";
 import { runWorkspace } from "../../shared/run-workspace.ts";
 import { CLAUDE_SESSION_ENV } from "./claude.ts";
@@ -44,7 +45,10 @@ import { Trackers } from "./issues/index.ts";
 import { readLinks, saveLink, deleteLink, readRepoReadme } from "./links.ts";
 import { Machine, openTerminal } from "./machine.ts";
 import { cloneStep, cloneTargets, readRepos, reposStatus } from "./repos.ts";
-import { downloadStep, downloadTargets, dropManifestCache, snapshotStatus } from "./snapshot.ts";
+import { buildSnapshot, carryOver, downloadStep, downloadTargets, dropManifestCache, fetchManifest, planSnapshot, publishSnapshot, snapshotStatus, writeManifest } from "./snapshot.ts";
+import type { PublishPlan } from "./snapshot.ts";
+import type { SnapshotFile } from "./snapshot-sources/index.ts";
+import type { Manifest } from "./snapshot-sources/manifest.ts";
 import { SnapshotSources } from "./snapshot-sources/index.ts";
 import type { SnapshotSource } from "./snapshot-sources/index.ts";
 import { readProfile, reapplyProfile, setProfile } from "./profile.ts";
@@ -373,6 +377,20 @@ function snapshotSource(): SnapshotSource | null {
   if (!cfg) return null;
   try { return snapshotSources.get(cfg); } catch (e) { throw httpError(400, e.message); }
 }
+
+/** Publish now: a developer, connected to a source that takes uploads; else a 4xx saying which. */
+function publishableSource(): SnapshotSource {
+  if (isReader()) throw httpError(403, "Publishing isn't available in the reader profile.");
+  const source = snapshotSource();
+  if (!source) throw httpError(400, "repos.json has no snapshot source.");
+  if (!source.upload) throw httpError(400, `The ${source.label} source is download-only; publish to it from CI.`);
+  if (!source.status().connected) throw httpError(400, `Connect ${source.label} first.`);
+  return source;
+}
+
+/** The last plan shown in Publish now's confirmation: publish uploads exactly that, if it's recent. */
+let pendingPlan: { id: string; at: number; plan: PublishPlan } | null = null;
+const PLAN_TTL_MS = 15 * 60_000;
 
 /** An external docs source and its provider, or a 404 (unknown source / no adapter for its provider). */
 function externalDocs(key: unknown) {
@@ -1189,6 +1207,50 @@ async function handleApi(req: http.IncomingMessage, res: http.ServerResponse, ur
         try { setProfile(LEDGER_DIR, MAIN_WORKSPACE_PATH, "reader", workspaceConfig().profiles.reader.hiddenSkills); } catch {}
       }
       if (failed.length) throw new Error(`Couldn't download ${failed.join(", ")}`);
+    });
+    const { _log, ...pub } = job;
+    return sendJson(res, { job: pub }, 202);
+  }
+  if (p === "/api/snapshot/plan") {
+    const source = publishableSource();
+    const plan = await planSnapshot(MAIN_WORKSPACE_PATH, { fetch: true, allowMissing: true });
+    if (!plan.repos.length) return sendError(res, 400, `Nothing to publish from here: ${plan.skipped.map((s) => `${s.name} (${s.reason})`).join(", ") || "no repos in repos.json are included"}.`);
+    pendingPlan = { id: crypto.randomBytes(6).toString("hex"), at: Date.now(), plan };
+    const out: PublishPlanResponse = { planId: pendingPlan.id, label: source.label, ...plan };
+    return sendJson(res, out);
+  }
+  if (p === "/api/snapshot/publish") {
+    const source = publishableSource();
+    // Only what was shown and confirmed goes up; a stale or unknown plan has to be looked at again.
+    if (!pendingPlan || pendingPlan.id !== String(body.planId || "") || Date.now() - pendingPlan.at > PLAN_TTL_MS) {
+      return sendError(res, 409, "That publish plan has expired; open Publish now again to see what would be uploaded.");
+    }
+    if (launcher.jobs.some((j) => j.status === "running" && j.workspace === "main" && j.label.startsWith("Publish"))) {
+      return sendError(res, 409, "A publish is already running.");
+    }
+    const { plan } = pendingPlan;
+    pendingPlan = null;
+    const main = { slug: "main", name: "Main Workspace", path: MAIN_WORKSPACE_PATH };
+    const job = launcher.job(main, `Publish ${plan.repos.length} repo${plan.repos.length === 1 ? "" : "s"} to ${source.label}`, async (step, note) => {
+      const out = fs.mkdtempSync(path.join(os.tmpdir(), "aos-publish-"));
+      try {
+        let manifest!: Manifest;
+        await step("Build the archives", async (log) => { manifest = await buildSnapshot(MAIN_WORKSPACE_PATH, out, { plan, log }); });
+        if (plan.skipped.length) {
+          await step("Keep what's published for skipped repos", async (log) => {
+            let previous: Manifest | null = null, files: SnapshotFile[] = [];
+            try { ({ manifest: previous, files } = await fetchManifest(source, JSON.stringify(readRepos(MAIN_WORKSPACE_PATH).snapshot), true)); } catch (e) { log(`no earlier publish to keep from (${e.message})`); }
+            const kept = carryOver(manifest, previous, files, plan.skipped.map((s) => s.name));
+            writeManifest(out, manifest);
+            log(kept.length ? `kept the published copy of ${kept.join(", ")}` : "nothing earlier to keep");
+            for (const s of plan.skipped) if (!kept.includes(s.name)) note(`${s.name} isn't in this publish (${s.reason}) and had no earlier copy.`);
+          });
+        }
+        await step(`Upload to ${source.label}`, (log) => publishSnapshot(source, out, manifest, log));
+      } finally {
+        fs.rmSync(out, { recursive: true, force: true });
+        dropManifestCache();
+      }
     });
     const { _log, ...pub } = job;
     return sendJson(res, { job: pub }, 202);

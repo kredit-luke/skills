@@ -75,6 +75,7 @@ export async function snapshotStatus(root: string, source: SnapshotSource | null
   const base: SnapshotStatus = {
     configured: !!cfg.snapshot, sourceKind: cfg.snapshot ? cfg.snapshot.source : null, label: source ? source.label : null,
     connection: source ? source.status() : null, connect: null, builtAt: null, workspace: null, repos: [], error: cfg.error,
+    canPublish: !!source && !!source.upload && source.status().connected,
   };
   if (!cfg.snapshot || !source) return base;
   const rows = (manifest: Manifest | null): SnapshotRepo[] => cfg.repos.map((r) => {
@@ -181,49 +182,124 @@ async function git(cwd: string, args: string[]): Promise<string> {
   return String(stdout).trim();
 }
 
+const tryGit = (cwd: string, args: string[]) => git(cwd, args).catch(() => null);
+
 /**
- * Build the files to publish into outDir: one <name>.tar.gz per included repo (its
- * checked-out commit), workspace.zip, and the manifest. Fails if an included repo
- * isn't a git clone here (`clone` first, e.g. in CI).
+ * The default branch of a clone's origin: repos.json defaultBranch, else origin/HEAD
+ * (asking the remote if the clone never recorded it), else main / master.
  */
-export async function buildSnapshot(root: string, outDir: string, opts: { workspace?: boolean; log?: (t: string) => void } = {}): Promise<Manifest> {
+async function defaultBranch(dir: string, configured: string | null): Promise<string> {
+  if (configured) return configured;
+  const head = async () => (await tryGit(dir, ["symbolic-ref", "--short", "refs/remotes/origin/HEAD"]))?.replace(/^origin\//, "") || null;
+  let b = await head();
+  if (!b && (await tryGit(dir, ["remote", "set-head", "origin", "--auto"])) !== null) b = await head();
+  for (const guess of ["main", "master"]) if (!b && (await tryGit(dir, ["rev-parse", "--verify", "--quiet", `refs/remotes/origin/${guess}`])) !== null) b = guess;
+  if (!b) throw new Error("its origin has no default branch this clone knows of; set defaultBranch in repos.json");
+  return b;
+}
+
+/** One repo (or the workspace root) as it will be published: the default branch's latest commit on origin. */
+export interface PublishTarget { name: string; relativePath: string; branch: string; sha: string; subject: string; committedAt: string }
+export interface PublishPlan { repos: PublishTarget[]; workspace: PublishTarget | null; skipped: { name: string; reason: string }[] }
+
+/**
+ * What a publish would upload: for each included repo, `git fetch` its default branch
+ * from origin and take that commit, whatever the clone has checked out, so a work
+ * branch or uncommitted changes never get published. A repo that isn't cloned here
+ * or has no origin is skipped (`allowMissing`) or fails the plan.
+ */
+export async function planSnapshot(root: string, opts: { fetch?: boolean; workspace?: boolean; allowMissing?: boolean; log?: (t: string) => void } = {}): Promise<PublishPlan> {
   const log = opts.log || (() => {});
   const cfg = readRepos(root);
   if (cfg.error) throw new Error(cfg.error);
   if (!cfg.configured) throw new Error("There's no repos.json at the workspace root.");
+  const plan: PublishPlan = { repos: [], workspace: null, skipped: [] };
+  const target = async (name: string, rel: string, dir: string, configured: string | null): Promise<PublishTarget> => {
+    if ((await tryGit(dir, ["remote", "get-url", "origin"])) === null) throw new Error("it has no origin remote");
+    const branch = await defaultBranch(dir, configured);
+    if (opts.fetch !== false) {
+      log(`fetch ${name} (${branch})`);
+      await git(dir, ["fetch", "--quiet", "origin", `+refs/heads/${branch}:refs/remotes/origin/${branch}`]);
+    }
+    const ref = `refs/remotes/origin/${branch}`;
+    const [sha, subject, committedAt] = (await git(dir, ["log", "-1", "--format=%H%x00%s%x00%cI", ref])).split("\0");
+    return { name, relativePath: rel, branch, sha, subject, committedAt };
+  };
+  for (const r of cfg.repos) {
+    if (!r.snapshot) continue;
+    const skip = (reason: string) => {
+      if (!opts.allowMissing) throw new Error(`${r.name} (${r.relativePath}): ${reason}. Clone it first (publish --clone), or set "snapshot": false on it in repos.json.`);
+      plan.skipped.push({ name: r.name, reason });
+      log(`skip ${r.name}: ${reason}`);
+    };
+    if (repoState(root, r.relativePath) !== "cloned") { skip("not cloned here"); continue; }
+    try { plan.repos.push(await target(r.name, r.relativePath, path.join(root, r.relativePath), r.defaultBranch)); }
+    catch (e) { skip((e as Error).message.split("\n")[0]); }
+  }
+  if (opts.workspace !== false && fs.existsSync(path.join(root, ".git"))) {
+    try { plan.workspace = await target("workspace", ".", root, null); }
+    catch (e) { log(`skip workspace.zip: ${(e as Error).message.split("\n")[0]}`); }
+  }
+  return plan;
+}
+
+/**
+ * Build the files to publish into outDir: one <name>.tar.gz per planned repo (at the
+ * planned commit), workspace.zip, and the manifest. Plans first unless given a plan.
+ */
+export async function buildSnapshot(root: string, outDir: string, opts: { workspace?: boolean; fetch?: boolean; plan?: PublishPlan; log?: (t: string) => void } = {}): Promise<Manifest> {
+  const log = opts.log || (() => {});
+  const plan = opts.plan || await planSnapshot(root, { fetch: opts.fetch, workspace: opts.workspace, log });
   fs.mkdirSync(outDir, { recursive: true });
   const builtAt = new Date().toISOString();
-  const missing = cfg.repos.filter((r) => r.snapshot && repoState(root, r.relativePath) !== "cloned");
-  if (missing.length) throw new Error(`Not cloned here: ${missing.map((r) => r.relativePath).join(", ")}. Clone them first (publish --clone), or set "snapshot": false on them in repos.json.`);
   const entry = (file: string, sha: string): ManifestEntry => ({ file, sha, size: fs.statSync(path.join(outDir, file)).size, builtAt });
   const repos: Record<string, ManifestEntry> = {};
-  for (const r of cfg.repos) {
-    if (!r.snapshot) { log(`skip ${r.name} ("snapshot": false)`); continue; }
-    const dir = path.join(root, r.relativePath);
-    const sha = await git(dir, ["rev-parse", "HEAD"]);
-    const file = archiveName(r.name);
-    await git(dir, [...AS_COMMITTED, "archive", "--format=tar.gz", "-o", path.join(outDir, file), "HEAD"]);
-    repos[r.name] = entry(file, sha);
-    log(`${r.name}: ${file} ${Math.round(repos[r.name].size / 1024)} KB at ${sha.slice(0, 10)}`);
+  for (const t of plan.repos) {
+    const file = archiveName(t.name);
+    await git(path.join(root, t.relativePath), [...AS_COMMITTED, "archive", "--format=tar.gz", "-o", path.join(outDir, file), t.sha]);
+    repos[t.name] = entry(file, t.sha);
+    log(`${t.name}: ${file} ${Math.round(repos[t.name].size / 1024)} KB, ${t.branch} at ${t.sha.slice(0, 10)}`);
   }
   let workspace: ManifestEntry | null = null;
-  if (opts.workspace !== false && fs.existsSync(path.join(root, ".git"))) {
-    const sha = await git(root, ["rev-parse", "HEAD"]);
-    const stamp = JSON.stringify({ name: "workspace", sha, builtAt, source: "publish" });
+  if (plan.workspace) {
+    const t = plan.workspace;
+    const stamp = JSON.stringify({ name: "workspace", sha: t.sha, builtAt, source: "publish" });
     // The stamp rides inside the zip, so the Repos page can tell how old the workspace files are.
-    await git(root, [...AS_COMMITTED, "archive", "--format=zip", `--add-virtual-file=${STAMP_FILE}:${stamp}`, "-o", path.join(outDir, WORKSPACE_FILE), "HEAD"]);
-    workspace = entry(WORKSPACE_FILE, sha);
-    log(`workspace: ${WORKSPACE_FILE} ${Math.round(workspace.size / 1024)} KB at ${sha.slice(0, 10)}`);
+    await git(root, [...AS_COMMITTED, "archive", "--format=zip", `--add-virtual-file=${STAMP_FILE}:${stamp}`, "-o", path.join(outDir, WORKSPACE_FILE), t.sha]);
+    workspace = entry(WORKSPACE_FILE, t.sha);
+    log(`workspace: ${WORKSPACE_FILE} ${Math.round(workspace.size / 1024)} KB, ${t.branch} at ${t.sha.slice(0, 10)}`);
   }
   const manifest: Manifest = { version: 1, builtAt, repos, workspace };
   fs.writeFileSync(path.join(outDir, MANIFEST), JSON.stringify(manifest, null, 2) + "\n");
   return manifest;
 }
 
+/**
+ * Repos a publish skipped keep what was published before, when that file is still at
+ * the source: a partial publish (someone without every repo cloned) doesn't drop them.
+ */
+export function carryOver(manifest: Manifest, previous: Manifest | null, files: SnapshotFile[], skipped: string[]): string[] {
+  if (!previous) return [];
+  const kept: string[] = [];
+  for (const name of skipped) {
+    const e = previous.repos[name];
+    if (e && !manifest.repos[name] && files.some((f) => f.name === e.file)) { manifest.repos[name] = e; kept.push(name); }
+  }
+  if (!manifest.workspace && previous.workspace && files.some((f) => f.name === previous.workspace!.file)) manifest.workspace = previous.workspace;
+  return kept;
+}
+
+/** Rewrite the manifest file after carryOver changed it. */
+export function writeManifest(outDir: string, manifest: Manifest) {
+  fs.writeFileSync(path.join(outDir, MANIFEST), JSON.stringify(manifest, null, 2) + "\n");
+}
+
 /** Upload what buildSnapshot made: every archive, then the manifest, then prune old versions. */
 export async function publishSnapshot(source: SnapshotSource, outDir: string, manifest: Manifest, log: (t: string) => void = () => {}): Promise<void> {
   if (!source.upload) throw new Error(`The ${source.label} source can't be published to from here; copy the files in ${outDir} to it yourself.`);
-  const files = [...Object.values(manifest.repos), ...(manifest.workspace ? [manifest.workspace] : [])];
+  // Only what this run built: entries carried over from the last publish are already at the source.
+  const files = [...Object.values(manifest.repos), ...(manifest.workspace ? [manifest.workspace] : [])]
+    .filter((f) => f.builtAt === manifest.builtAt && fs.existsSync(path.join(outDir, f.file)));
   const tooBig = source.maxFileBytes ? files.filter((f) => f.size > source.maxFileBytes!) : [];
   if (tooBig.length) {
     const mb = (n: number) => `${Math.ceil(n / 1024 / 1024)} MB`;

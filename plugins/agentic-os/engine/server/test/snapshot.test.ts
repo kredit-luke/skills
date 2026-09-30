@@ -10,7 +10,7 @@ import zlib from "node:zlib";
 import { execFileSync } from "node:child_process";
 import type { AddressInfo } from "node:net";
 import { extractTarGz, safeMemberPath } from "../src/tar.ts";
-import { buildSnapshot, downloadStep, downloadTargets, dropManifestCache, publishSnapshot, readStamp, snapshotStatus } from "../src/snapshot.ts";
+import { buildSnapshot, carryOver, downloadStep, downloadTargets, dropManifestCache, planSnapshot, publishSnapshot, readStamp, snapshotStatus } from "../src/snapshot.ts";
 import { repoState, readRepos } from "../src/repos.ts";
 import { createSource, snapshotSourceKinds } from "../src/snapshot-sources/index.ts";
 import type { SnapshotFile, SnapshotSource } from "../src/snapshot-sources/index.ts";
@@ -97,18 +97,25 @@ function folderSource(dir: string): SnapshotSource & { uploads: string[] } {
   };
 }
 
+/** An upstream repo (what origin has) and a clone of it at dest; returns the upstream's commit. */
+function cloned(up: string, dest: string, files: Record<string, string>): string {
+  const sha = repo(up, files);
+  fs.mkdirSync(path.dirname(dest), { recursive: true });
+  execFileSync("git", ["clone", "-q", up, dest], { stdio: "pipe" });
+  return sha;
+}
+
 test("publish → download → update: stamps, manifest last, left-out and foreign folders untouched", async () => {
-  // Publisher side: a workspace (itself a repo) with two repos and one left out.
-  const pub = scratch("pub");
-  const shaApi1 = repo(path.join(pub, "svc", "api"), { "main.go": "v1\n" });
-  repo(path.join(pub, "web"), { "index.html": "<h1>web</h1>\n" });
-  repo(path.join(pub, "infra"), { "secret.tf": "nope\n" });
+  // Publisher side: a workspace (itself a clone) with two repos and one left out, all cloned from upstreams.
+  const ups = scratch("ups");
   const reposJson = { snapshot: { source: "folder" }, repos: [
     { name: "api", relativePath: "svc/api" }, { name: "web" }, { name: "infra", snapshot: false },
   ] };
-  fs.writeFileSync(path.join(pub, "repos.json"), JSON.stringify(reposJson));
-  fs.writeFileSync(path.join(pub, ".gitignore"), "svc/\nweb/\ninfra/\n");
-  repo(pub, {});
+  const pub = path.join(scratch("pubroot"), "ws");
+  cloned(path.join(ups, "ws"), pub, { "repos.json": JSON.stringify(reposJson), ".gitignore": "svc/\nweb/\ninfra/\n" });
+  const shaApi1 = cloned(path.join(ups, "api"), path.join(pub, "svc", "api"), { "main.go": "v1\n" });
+  cloned(path.join(ups, "web"), path.join(pub, "web"), { "index.html": "<h1>web</h1>\n" });
+  cloned(path.join(ups, "infra"), path.join(pub, "infra"), { "secret.tf": "nope\n" });
   const store = folderSource(scratch("store"));
   const out1 = scratch("out1");
   const m1 = await buildSnapshot(pub, out1);
@@ -137,12 +144,13 @@ test("publish → download → update: stamps, manifest last, left-out and forei
   assert.equal(fs.readFileSync(path.join(rd, "web", "mine.txt"), "utf-8"), "keep");
   assert.equal((await downloadTargets(rd, store, null)).length, 0, "up to date");
 
-  // A new commit is published: the copy is replaced as a whole (a deleted file goes too).
+  // A new commit lands on origin and is published (fetched, not pulled): the copy is replaced as a whole.
   fs.writeFileSync(path.join(rd, "svc", "api", "scratch.txt"), "local edit");
-  fs.writeFileSync(path.join(pub, "svc", "api", "main.go"), "v2\n");
-  git(path.join(pub, "svc", "api"), "commit", "-qam", "v2");
+  fs.writeFileSync(path.join(ups, "api", "main.go"), "v2\n");
+  git(path.join(ups, "api"), "commit", "-qam", "v2");
   const out2 = scratch("out2");
   const m2 = await buildSnapshot(pub, out2, { workspace: false });
+  assert.equal(m2.repos.api.sha, git(path.join(ups, "api"), "rev-parse", "HEAD"));
   await publishSnapshot(store, out2, m2);
   st = await snapshotStatus(rd, store, true);
   assert.equal(st.repos.find((r) => r.name === "api")!.needsDownload, true);
@@ -153,23 +161,65 @@ test("publish → download → update: stamps, manifest last, left-out and forei
   assert.deepEqual(fs.readdirSync(path.join(rd, "svc")), ["api"], "no staging or old copies left behind");
 
   // A clone is never replaced, even when it's behind.
-  const cloned = scratch("cloned");
-  fs.writeFileSync(path.join(cloned, "repos.json"), JSON.stringify(reposJson));
-  fs.mkdirSync(path.join(cloned, "svc", "api", ".git"), { recursive: true });
-  assert.deepEqual((await downloadTargets(cloned, store, null)).map((t) => t.repo.name), ["web"]);
+  const withClone = scratch("with-clone");
+  fs.writeFileSync(path.join(withClone, "repos.json"), JSON.stringify(reposJson));
+  fs.mkdirSync(path.join(withClone, "svc", "api", ".git"), { recursive: true });
+  assert.deepEqual((await downloadTargets(withClone, store, null)).map((t) => t.repo.name), ["web"]);
 });
 
 test("publish refuses a file over the source's limit, and repos that aren't cloned", async () => {
   const pub = scratch("big");
-  repo(path.join(pub, "api"), { "big.bin": "x".repeat(5000) });
+  cloned(path.join(scratch("bigup"), "api"), path.join(pub, "api"), { "big.bin": "x".repeat(5000) });
   fs.writeFileSync(path.join(pub, "repos.json"), JSON.stringify({ repos: [{ name: "api" }, { name: "gone" }] }));
-  await assert.rejects(buildSnapshot(pub, scratch("o")), /Not cloned here: gone/);
+  await assert.rejects(buildSnapshot(pub, scratch("o")), /gone \(gone\): not cloned here/);
   fs.writeFileSync(path.join(pub, "repos.json"), JSON.stringify({ repos: [{ name: "api" }] }));
   const out = scratch("o2");
   const m = await buildSnapshot(pub, out, { workspace: false });
   const small = { ...folderSource(scratch("s")), maxFileBytes: 10 };
   await assert.rejects(publishSnapshot(small, out, m), /Over the Folder limit/);
   assert.deepEqual(small.uploads, [], "nothing goes up when one file is too big");
+});
+
+test("publish takes origin's default branch, never the clone's work branch or local changes", async () => {
+  const ups = scratch("wb-up");
+  const pub = scratch("wb");
+  const shaMain = cloned(path.join(ups, "api"), path.join(pub, "api"), { "main.go": "released\n" });
+  const dir = path.join(pub, "api");
+  git(dir, "checkout", "-q", "-b", "feature/x");
+  fs.writeFileSync(path.join(dir, "main.go"), "work in progress\n");
+  git(dir, "commit", "-qam", "wip (not pushed)");
+  fs.writeFileSync(path.join(dir, "main.go"), "uncommitted\n");
+  // origin moved on after the clone: the plan fetches it.
+  fs.writeFileSync(path.join(ups, "api", "NEW.md"), "new\n");
+  git(path.join(ups, "api"), "add", ".");
+  git(path.join(ups, "api"), "commit", "-qm", "released v2");
+  const shaV2 = git(path.join(ups, "api"), "rev-parse", "HEAD");
+  assert.notEqual(shaV2, shaMain);
+  // A repo without an origin can't have a default branch to publish.
+  repo(path.join(pub, "local-only"), { "x.txt": "x\n" });
+  fs.writeFileSync(path.join(pub, "repos.json"), JSON.stringify({ repos: [{ name: "api" }, { name: "local-only" }, { name: "gone" }] }));
+
+  await assert.rejects(planSnapshot(pub), /local-only \(local-only\): it has no origin remote/);
+  const plan = await planSnapshot(pub, { allowMissing: true, workspace: false });
+  assert.deepEqual(plan.repos.map((t) => [t.name, t.branch, t.sha, t.subject]), [["api", "main", shaV2, "released v2"]]);
+  assert.deepEqual(plan.skipped, [{ name: "local-only", reason: "it has no origin remote" }, { name: "gone", reason: "not cloned here" }]);
+  assert.equal(git(dir, "rev-parse", "--abbrev-ref", "HEAD"), "feature/x", "the clone's own checkout is left alone");
+
+  const out = scratch("wb-out");
+  const m = await buildSnapshot(pub, out, { plan });
+  const x = scratch("wb-x");
+  await extractTarGz(path.join(out, m.repos.api.file), x);
+  assert.equal(fs.readFileSync(path.join(x, "main.go"), "utf-8"), "released\n");
+  assert.ok(fs.existsSync(path.join(x, "NEW.md")));
+
+  // A partial publish keeps the last published copy of what it skipped, when that file is still there.
+  const previous = { version: 1 as const, builtAt: "2026-01-01T00:00:00Z", repos: { gone: { file: "gone.tar.gz", sha: "abc", size: 3, builtAt: "2026-01-01T00:00:00Z" }, "local-only": { file: "local-only.tar.gz", sha: "def", size: 3, builtAt: "2026-01-01T00:00:00Z" } }, workspace: null };
+  const kept = carryOver(m, previous, [{ id: "1", name: "gone.tar.gz", size: 3, updatedAt: null }], ["gone", "local-only"]);
+  assert.deepEqual(kept, ["gone"], "local-only's file isn't at the source any more");
+  assert.equal(m.repos.gone.sha, "abc");
+  const store = folderSource(scratch("wb-store"));
+  await publishSnapshot(store, out, m);
+  assert.deepEqual(store.uploads, ["api.tar.gz", MANIFEST], "a carried-over file isn't uploaded again");
 });
 
 async function serve(handler: http.RequestListener): Promise<{ url: string; close: () => void }> {

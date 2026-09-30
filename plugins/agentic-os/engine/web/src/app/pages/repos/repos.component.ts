@@ -1,5 +1,5 @@
 import { ChangeDetectionStrategy, Component, OnInit, computed, effect, inject, signal, untracked } from '@angular/core';
-import type { Job, RepoInfo, ReposResponse, SnapshotRepo, SnapshotStatus } from '../../../../../shared/api';
+import type { Job, PublishPlanResponse, RepoInfo, ReposResponse, SnapshotRepo, SnapshotStatus } from '../../../../../shared/api';
 import { ApiService } from '../../core/api.service';
 import { DataService } from '../../core/data.service';
 import { MdPipe } from '../../core/md.pipe';
@@ -50,7 +50,12 @@ const STALE_DAYS = 3;
       @if (snap(); as s) {
         <div class="panel snap">
           <div class="panel-h"><h2>Read-only copy <span class="ty">{{ s.label || s.sourceKind }}</span></h2>
-            @if (s.connection?.connected && s.connection?.source === 'file') { <button class="btn ghost sm" (click)="disconnect()">Disconnect</button> }
+            <span class="acts">
+              @if (!reader() && s.canPublish && !plan()) {
+                <button class="btn sm" [disabled]="busy() || planning()" (click)="startPublish()" title="Upload each repo's default branch, as it is on origin now, for people who download the code">{{ planning() ? 'Checking the repos…' : publishing() ? 'Publishing…' : 'Publish now' }}</button>
+              }
+              @if (s.connection?.connected && s.connection?.source === 'file') { <button class="btn ghost sm" (click)="disconnect()">Disconnect</button> }
+            </span>
           </div>
           <div class="panel-b">
             @if (s.error) { <div class="warn-note">{{ s.error }}</div> }
@@ -77,6 +82,27 @@ const STALE_DAYS = 3;
               </p>
               @if (staleDays(); as d) { <div class="warn-note">The published copy is {{ d }} days old; whoever runs the publish job should check it.</div> }
               @if (workspaceBehind()) { <div class="warn-note">A newer copy of the workspace itself (skills, dashboard) is published. Download <code>workspace.zip</code> again from {{ s.label }} and extract it over this folder.</div> }
+            }
+            @if (plan(); as pl) {
+              <div class="confirm">
+                <h3>Publish to {{ pl.label }}?</h3>
+                <p class="ty">These are uploaded as they are on origin now: each repo's default branch, without history. Anyone who can view the {{ pl.label }} source can download them. Your local branches and uncommitted changes aren't included.</p>
+                <table>
+                  @for (t of pl.repos; track t.name) {
+                    <tr><td class="nm">{{ t.name }}</td><td><code>{{ t.branch }}</code></td><td><code [title]="t.sha">{{ t.sha.slice(0, 10) }}</code></td><td class="subj" [title]="t.subject">{{ t.subject }}</td><td class="ty">{{ relTime(t.committedAt) }}</td></tr>
+                  }
+                  @if (pl.workspace; as w) {
+                    <tr><td class="nm">workspace files</td><td><code>{{ w.branch }}</code></td><td><code [title]="w.sha">{{ w.sha.slice(0, 10) }}</code></td><td class="subj" [title]="w.subject">{{ w.subject }}</td><td class="ty">{{ relTime(w.committedAt) }}</td></tr>
+                  }
+                </table>
+                @if (pl.skipped.length) {
+                  <div class="warn-note">Not from this machine (the last published copy of each stays): @for (k of pl.skipped; track k.name; let last = $last) { <b>{{ k.name }}</b> ({{ k.reason }}){{ last ? '' : ', ' }} }</div>
+                }
+                <div class="btns">
+                  <button class="btn primary sm" [disabled]="busy()" (click)="publish(pl.planId)">Publish {{ pl.repos.length }} repo{{ pl.repos.length === 1 ? '' : 's' }}</button>
+                  <button class="btn ghost sm" (click)="plan.set(null)">Cancel</button>
+                </div>
+              </div>
             }
           </div>
         </div>
@@ -140,11 +166,15 @@ export class ReposComponent implements OnInit {
   readonly relTime = relTime;
   readonly reader = computed(() => this.api.boot()?.profile?.current === 'reader');
 
-  /** The latest Clone / Download job in main (the one this page started, or an earlier one). */
-  readonly job = computed<Job | null>(() => this.data.jobs().find((j) => j.workspace === 'main' && /^(Clone|Download)\b/.test(j.label)) || null);
+  /** The latest Clone / Download / Publish job in main (the one this page started, or an earlier one). */
+  readonly job = computed<Job | null>(() => this.data.jobs().find((j) => j.workspace === 'main' && /^(Clone|Download|Publish)\b/.test(j.label)) || null);
   readonly busy = computed(() => this.job()?.status === 'running');
   readonly cloning = computed(() => this.busy() && this.job()!.label.startsWith('Clone'));
   readonly downloading = computed(() => this.busy() && this.job()!.label.startsWith('Download'));
+  readonly publishing = computed(() => this.busy() && this.job()!.label.startsWith('Publish'));
+  /** Publish now: what would be uploaded, shown for a yes before anything goes up. */
+  readonly plan = signal<PublishPlanResponse | null>(null);
+  readonly planning = signal(false);
   readonly cloneable = computed(() => (this.repos()?.repos || []).filter((x) => x.state === 'missing' && !!x.remote));
   readonly downloadable = computed(() => (this.snap()?.connection?.connected ? this.snap()!.repos.filter((x) => x.needsDownload) : []));
   readonly anyLocal = computed(() => (this.repos()?.repos || []).some((x) => x.state === 'snapshot'));
@@ -215,6 +245,26 @@ export class ReposComponent implements OnInit {
 
   async clone(names: string[] | null): Promise<void> { await this.startJob('/api/repos/clone', names); }
   async download(names: string[] | null): Promise<void> { await this.startJob('/api/snapshot/download', names); }
+
+  /** Fetch each repo's default branch and show what would go up; nothing is uploaded yet. */
+  async startPublish(): Promise<void> {
+    this.planning.set(true);
+    try { this.plan.set(await this.api.post<PublishPlanResponse>('/api/snapshot/plan', {})); }
+    catch (e) { this.toast.error((e as Error).message); }
+    finally { this.planning.set(false); }
+  }
+
+  async publish(planId: string): Promise<void> {
+    try {
+      const r = await this.api.post<{ job: Job }>('/api/snapshot/publish', { planId });
+      this.plan.set(null);
+      this.toast.show(r.job.label + '…');
+      await this.data.loadJobs();
+    } catch (e) {
+      this.toast.error((e as Error).message);
+      this.plan.set(null);
+    }
+  }
 
   private async startJob(url: string, names: string[] | null): Promise<void> {
     try {
