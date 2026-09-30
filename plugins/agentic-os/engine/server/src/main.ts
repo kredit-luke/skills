@@ -1235,7 +1235,7 @@ async function handleApi(req: http.IncomingMessage, res: http.ServerResponse, ur
       const out = fs.mkdtempSync(path.join(os.tmpdir(), "aos-publish-"));
       try {
         let manifest!: Manifest;
-        await step("Build the archives", async (log) => { manifest = await buildSnapshot(MAIN_WORKSPACE_PATH, out, { plan, log }); });
+        await step("Build the archives", async (log) => { manifest = await buildSnapshot(MAIN_WORKSPACE_PATH, out, { plan, log, installer: { name: workspaceConfig().name, sourceLabel: source.label } }); });
         if (plan.skipped.length) {
           await step("Keep what's published for skipped repos", async (log) => {
             let previous: Manifest | null = null, files: SnapshotFile[] = [];

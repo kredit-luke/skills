@@ -151,15 +151,18 @@ function newest(p) {
 }
 
 function ensureBuilt(env) {
+  const index = path.join(DASH_DIR, "dist", "browser", "index.html");
+  const sources = () => Math.max(...["web", "shared", "angular.json", "package.json", "tsconfig.json"].map((s) => newest(path.join(DASH_DIR, s))));
+  // A published UI (dist/.prebuilt.json, from snapshot publish) needs no packages: the
+  // server only uses Node itself. So someone with the downloaded copy never runs npm.
+  if (fs.existsSync(path.join(DASH_DIR, "dist", ".prebuilt.json")) && fs.existsSync(index) && sources() <= newest(index)) return;
   const installed = path.join(DASH_DIR, "node_modules", ".package-lock.json");
   if (!fs.existsSync(installed) || newest(path.join(DASH_DIR, "package-lock.json")) > newest(installed)) {
     console.log("Installing the dashboard's packages (npm ci)...");
     execSync("npm ci --no-audit --no-fund", { cwd: DASH_DIR, stdio: "inherit", env });
   }
   if (flags["skip-build"]) return;
-  const index = path.join(DASH_DIR, "dist", "browser", "index.html");
-  const sources = ["web", "shared", "angular.json", "package.json", "tsconfig.json"].map((s) => newest(path.join(DASH_DIR, s)));
-  if (!fs.existsSync(index) || Math.max(...sources) > newest(index)) {
+  if (!fs.existsSync(index) || sources() > newest(index)) {
     console.log("Building the dashboard UI (ng build)...");
     execSync("npx ng build", { cwd: DASH_DIR, stdio: "inherit", env });
   }

@@ -598,8 +598,11 @@ export interface SnapshotStatus {
   connect: ConnectHelp | null;
   /** When the published snapshot was built (null until the manifest is read). */
   builtAt: string | null;
-  /** The workspace files themselves (workspace.zip): what's published, and the stamp at the workspace root. */
-  workspace: { latest: SnapshotVersion & { size: number }; local: SnapshotVersion | null } | null;
+  /**
+   * The workspace files themselves (workspace.zip): what's published, the stamp at the
+   * workspace root, and the Windows setup script published with it (it also updates).
+   */
+  workspace: { latest: SnapshotVersion & { size: number }; local: SnapshotVersion | null; installer: string | null } | null;
   repos: SnapshotRepo[];
   /** This source takes uploads and you're connected: the Repos page offers Publish now (developers only). */
   canPublish: boolean;

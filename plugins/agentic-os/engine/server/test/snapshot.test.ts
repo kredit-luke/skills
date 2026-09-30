@@ -15,6 +15,7 @@ import { repoState, readRepos } from "../src/repos.ts";
 import { createSource, snapshotSourceKinds } from "../src/snapshot-sources/index.ts";
 import type { SnapshotFile, SnapshotSource } from "../src/snapshot-sources/index.ts";
 import { ConfluenceSource } from "../src/snapshot-sources/confluence.ts";
+import { installerName, renderInstaller } from "../src/installer.ts";
 import { MANIFEST } from "../src/snapshot-sources/manifest.ts";
 
 const scratch = (name: string) => fs.mkdtempSync(path.join(os.tmpdir(), `dash-snap-${name}-`));
@@ -332,4 +333,52 @@ test("repos.json snapshot config and per-repo opt-out are read; a snapshot folde
   assert.equal(repoState(root, "a"), "snapshot");
   fs.writeFileSync(path.join(root, "repos.json"), JSON.stringify({ snapshot: { nope: 1 }, repos: [] }));
   assert.equal(readRepos(root).snapshot, null, "a snapshot block without a source is ignored");
+});
+
+test("the Windows installer: a .cmd that runs the PowerShell after its marker, with only the source filled in", () => {
+  const text = renderInstaller({ name: "Acme", folder: "acme-workspace", source: { source: "confluence", site: "acme.atlassian.net", pageId: "123", maxFileMb: 50 }, sourceLabel: "Confluence", nodeMin: "24.15.0" });
+  assert.ok(!/[^\r]\n/.test(text), "CRLF throughout (cmd.exe)");
+  const lines = text.split("\r\n");
+  assert.equal(lines[0], "@echo off");
+  const marker = lines.indexOf("#>PS");
+  assert.ok(marker > 0 && lines.slice(0, marker).some((l) => l.startsWith("powershell.exe -NoProfile -ExecutionPolicy Bypass")));
+  assert.ok(!lines.slice(0, marker).some((l) => l === "#>PS"), "the header doesn't contain the marker itself");
+  const ps = lines.slice(marker + 1).join("\n");
+  const json = /ConvertFrom-Json @'\n([\s\S]*?)\n'@/.exec(ps)![1];
+  assert.deepEqual(JSON.parse(json), { name: "Acme", folder: "acme-workspace", source: { source: "confluence", site: "acme.atlassian.net", pageId: "123" }, sourceLabel: "Confluence", nodeMin: "24.15.0" });
+  assert.ok(!/^__AOS_CONFIG__$/m.test(ps), "the placeholder line is filled in");
+  assert.equal(installerName("Acme Corp / Eng"), "Install-Acme-Corp-Eng.cmd");
+  assert.throws(() => renderInstaller({ name: "Café", folder: "x", source: { source: "http", baseUrl: "https://x" }, sourceLabel: "Web", nodeMin: "24.0.0" }), /plain ASCII/);
+});
+
+test("publish adds the built dashboard UI only when dashboard/ is exactly the published commit, and the installer for sources it can download from", async () => {
+  const ups = scratch("ui-up");
+  const pub = path.join(scratch("ui-root"), "ws");
+  cloned(path.join(ups, "ws"), pub, {
+    "repos.json": JSON.stringify({ snapshot: { source: "http", baseUrl: "https://files.acme.test/code" }, repos: [] }),
+    ".gitignore": "dashboard/dist/\n",
+    "dashboard/web/main.ts": "export {};\n",
+  });
+  const dist = path.join(pub, "dashboard", "dist", "browser");
+  fs.mkdirSync(dist, { recursive: true });
+  fs.writeFileSync(path.join(dist, "index.html"), "<html></html>");
+  const out = scratch("ui-out");
+  const m = await buildSnapshot(pub, out, { installer: { name: "Acme", sourceLabel: "Web server" } });
+  assert.ok(m.ui && fs.existsSync(path.join(out, m.ui.file)));
+  const x = scratch("ui-x");
+  await extractTarGz(path.join(out, m.ui.file), x);
+  assert.equal(fs.readFileSync(path.join(x, "dist", "browser", "index.html"), "utf-8"), "<html></html>");
+  assert.equal(JSON.parse(fs.readFileSync(path.join(x, "dist", ".prebuilt.json"), "utf-8")).sha, m.workspace!.sha);
+  assert.ok(!fs.existsSync(path.join(pub, "dashboard", "dist", ".prebuilt.json")), "the publisher's own dist isn't marked");
+  assert.equal(m.installer!.file, "Install-Acme.cmd");
+  assert.ok(fs.readFileSync(path.join(out, m.installer!.file), "utf-8").includes('"baseUrl": "https://files.acme.test/code"'));
+  const store = folderSource(scratch("ui-store"));
+  await publishSnapshot(store, out, m);
+  assert.deepEqual(store.uploads.slice(-3), ["dashboard-ui.tar.gz", "Install-Acme.cmd", MANIFEST]);
+
+  // An edit in dashboard/ (not in the published commit): the UI isn't that commit's, so it's left out.
+  fs.writeFileSync(path.join(pub, "dashboard", "web", "main.ts"), "export const edited = 1;\n");
+  const m2 = await buildSnapshot(pub, scratch("ui-out2"), {});
+  assert.equal(m2.ui, null);
+  assert.equal(m2.installer, null, "no installer without the installer option");
 });

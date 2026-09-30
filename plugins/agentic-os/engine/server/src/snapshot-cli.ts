@@ -45,7 +45,7 @@ async function main() {
   if (flag("clone")) await cloneForPublish(root, log);
   const out = path.resolve(opt("out") || fs.mkdtempSync(path.join(os.tmpdir(), "aos-snapshot-out-")));
   // Each repo at its origin default branch, fetched now: never a clone's work branch or local edits.
-  const manifest = await buildSnapshot(root, out, { workspace: !flag("no-workspace"), fetch: !flag("no-fetch"), log });
+  const manifest = await buildSnapshot(root, out, { workspace: !flag("no-workspace"), fetch: !flag("no-fetch"), log, installer: source ? { name: workspaceConfig().name, sourceLabel: source.label } : undefined });
   log(`Built ${Object.keys(manifest.repos).length} repo archives${manifest.workspace ? " + workspace.zip" : ""} in ${out}`);
   if (flag("dry") || !source) return;
   await publishSnapshot(source, out, manifest, log);

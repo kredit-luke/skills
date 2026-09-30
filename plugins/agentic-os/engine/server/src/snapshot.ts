@@ -17,6 +17,7 @@ import os from "node:os";
 import path from "node:path";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
+import { fileURLToPath } from "node:url";
 import type { SnapshotRepo, SnapshotStatus } from "../../shared/api.ts";
 import { readRepos, repoState, STAMP_FILE } from "./repos.ts";
 import type { RepoDef } from "./repos.ts";
@@ -24,6 +25,7 @@ import type { SnapshotFile, SnapshotSource } from "./snapshot-sources/index.ts";
 import { MANIFEST, parseManifest } from "./snapshot-sources/manifest.ts";
 import type { Manifest, ManifestEntry } from "./snapshot-sources/manifest.ts";
 import { extractTarGz } from "./tar.ts";
+import { canInstallFrom, installerName, renderInstaller } from "./installer.ts";
 
 const run = promisify(execFile);
 const MANIFEST_TTL_MS = 60_000;
@@ -98,6 +100,7 @@ export async function snapshotStatus(root: string, source: SnapshotSource | null
       workspace: manifest.workspace ? {
         latest: { sha: manifest.workspace.sha, builtAt: manifest.workspace.builtAt, size: manifest.workspace.size },
         local: rootStamp ? { sha: rootStamp.sha, builtAt: rootStamp.builtAt } : null,
+        installer: manifest.installer ? manifest.installer.file : null,
       } : null,
     };
   } catch (e) {
@@ -247,7 +250,7 @@ export async function planSnapshot(root: string, opts: { fetch?: boolean; worksp
  * Build the files to publish into outDir: one <name>.tar.gz per planned repo (at the
  * planned commit), workspace.zip, and the manifest. Plans first unless given a plan.
  */
-export async function buildSnapshot(root: string, outDir: string, opts: { workspace?: boolean; fetch?: boolean; plan?: PublishPlan; log?: (t: string) => void } = {}): Promise<Manifest> {
+export async function buildSnapshot(root: string, outDir: string, opts: { workspace?: boolean; fetch?: boolean; plan?: PublishPlan; log?: (t: string) => void; installer?: { name: string; sourceLabel: string } } = {}): Promise<Manifest> {
   const log = opts.log || (() => {});
   const plan = opts.plan || await planSnapshot(root, { fetch: opts.fetch, workspace: opts.workspace, log });
   fs.mkdirSync(outDir, { recursive: true });
@@ -269,9 +272,73 @@ export async function buildSnapshot(root: string, outDir: string, opts: { worksp
     workspace = entry(WORKSPACE_FILE, t.sha);
     log(`workspace: ${WORKSPACE_FILE} ${Math.round(workspace.size / 1024)} KB, ${t.branch} at ${t.sha.slice(0, 10)}`);
   }
-  const manifest: Manifest = { version: 1, builtAt, repos, workspace };
+  let ui: ManifestEntry | null = null, installer: ManifestEntry | null = null;
+  if (plan.workspace) {
+    if (await buildUi(root, outDir, plan.workspace.sha, log)) ui = entry(UI_FILE, plan.workspace.sha);
+    const snap = readRepos(root).snapshot;
+    if (snap && canInstallFrom(snap) && opts.installer) {
+      const file = installerName(opts.installer.name);
+      fs.writeFileSync(path.join(outDir, file), renderInstaller({
+        name: opts.installer.name, folder: path.basename(path.resolve(root)), source: snap, sourceLabel: opts.installer.sourceLabel, nodeMin: nodeFloor(),
+      }));
+      installer = entry(file, plan.workspace.sha);
+      log(`installer: ${file}`);
+    }
+  }
+  const manifest: Manifest = { version: 1, builtAt, repos, workspace, ui, installer };
   fs.writeFileSync(path.join(outDir, MANIFEST), JSON.stringify(manifest, null, 2) + "\n");
   return manifest;
+}
+
+export const UI_FILE = "dashboard-ui.tar.gz";
+
+/** The dashboard's Node floor, from its package.json engines. */
+function nodeFloor(): string {
+  try {
+    const pkg = JSON.parse(fs.readFileSync(path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "..", "package.json"), "utf-8"));
+    return (/(\d+\.\d+\.\d+)/.exec(String(pkg.engines && pkg.engines.node)) || [])[1] || "24.0.0";
+  } catch { return "24.0.0"; }
+}
+
+/** Newest mtime under p, skipping installs and build output (as dashboard.mjs does). */
+function newest(p: string): number {
+  let st: fs.Stats;
+  try { st = fs.statSync(p); } catch { return 0; }
+  if (!st.isDirectory()) return st.mtimeMs;
+  let max = 0;
+  for (const e of fs.readdirSync(p, { withFileTypes: true })) {
+    if (e.name === "node_modules" || e.name === "dist" || e.name.startsWith(".")) continue;
+    max = Math.max(max, newest(path.join(p, e.name)));
+  }
+  return max;
+}
+
+/**
+ * dashboard-ui.tar.gz: this machine's built dashboard UI (dashboard/dist), marked
+ * prebuilt, so the downloaded workspace starts without npm or a build. Only when the
+ * dashboard here is exactly the published commit's (no edits, nothing untracked) and
+ * the build is newer than its sources; otherwise it's left out and a download builds
+ * it on first start. Returns whether it was made.
+ */
+async function buildUi(root: string, outDir: string, sha: string, log: (t: string) => void): Promise<boolean> {
+  const dash = path.join(root, "dashboard");
+  const index = path.join(dash, "dist", "browser", "index.html");
+  const skip = (why: string) => { log(`dashboard UI not included: ${why}`); return false; };
+  if (!fs.existsSync(index)) return skip("dashboard/dist isn't built here");
+  if ((await tryGit(root, ["diff", "--quiet", sha, "--", "dashboard"])) === null) return skip("dashboard/ here differs from the published commit");
+  const untracked = await tryGit(root, ["status", "--porcelain", "--untracked-files=all", "--", "dashboard"]);
+  if (untracked === null || untracked.trim()) return skip("dashboard/ here has untracked or changed files");
+  const sources = Math.max(...["web", "shared", "angular.json", "package.json", "tsconfig.json"].map((s) => newest(path.join(dash, s))));
+  if (sources > fs.statSync(index).mtimeMs) return skip("dashboard/dist is older than its sources (run npm run build in dashboard/)");
+  const stage = tmpDir("ui");
+  try {
+    fs.cpSync(path.join(dash, "dist"), path.join(stage, "dist"), { recursive: true });
+    fs.writeFileSync(path.join(stage, "dist", ".prebuilt.json"), JSON.stringify({ sha, builtAt: new Date().toISOString() }) + "\n");
+    const tar = process.platform === "win32" ? path.join(process.env.SystemRoot || "C:\\Windows", "System32", "tar.exe") : "tar";
+    await run(tar, ["-czf", path.join(outDir, UI_FILE), "-C", stage, "dist"], { windowsHide: true, timeout: 5 * 60_000 });
+    log(`dashboard UI: ${UI_FILE} ${Math.round(fs.statSync(path.join(outDir, UI_FILE)).size / 1024)} KB`);
+    return true;
+  } finally { rmrf(stage); }
 }
 
 /**
@@ -285,7 +352,9 @@ export function carryOver(manifest: Manifest, previous: Manifest | null, files: 
     const e = previous.repos[name];
     if (e && !manifest.repos[name] && files.some((f) => f.name === e.file)) { manifest.repos[name] = e; kept.push(name); }
   }
-  if (!manifest.workspace && previous.workspace && files.some((f) => f.name === previous.workspace!.file)) manifest.workspace = previous.workspace;
+  // Not rebuilt this time: the workspace files, their UI and the installer stay as they were.
+  const keep = (e: ManifestEntry | null | undefined) => (e && files.some((f) => f.name === e.file) ? e : null);
+  if (!manifest.workspace && keep(previous.workspace)) { manifest.workspace = previous.workspace; manifest.ui = keep(previous.ui); manifest.installer = keep(previous.installer); }
   return kept;
 }
 
@@ -298,7 +367,7 @@ export function writeManifest(outDir: string, manifest: Manifest) {
 export async function publishSnapshot(source: SnapshotSource, outDir: string, manifest: Manifest, log: (t: string) => void = () => {}): Promise<void> {
   if (!source.upload) throw new Error(`The ${source.label} source can't be published to from here; copy the files in ${outDir} to it yourself.`);
   // Only what this run built: entries carried over from the last publish are already at the source.
-  const files = [...Object.values(manifest.repos), ...(manifest.workspace ? [manifest.workspace] : [])]
+  const files = [...Object.values(manifest.repos), ...[manifest.workspace, manifest.ui, manifest.installer].filter((e): e is ManifestEntry => !!e)]
     .filter((f) => f.builtAt === manifest.builtAt && fs.existsSync(path.join(outDir, f.file)));
   const tooBig = source.maxFileBytes ? files.filter((f) => f.size > source.maxFileBytes!) : [];
   if (tooBig.length) {

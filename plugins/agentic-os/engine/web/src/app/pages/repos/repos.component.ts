@@ -81,7 +81,12 @@ const STALE_DAYS = 3;
                 Copies are the default branch without history, and are replaced as a whole on update: don't edit files in them.
               </p>
               @if (staleDays(); as d) { <div class="warn-note">The published copy is {{ d }} days old; whoever runs the publish job should check it.</div> }
-              @if (workspaceBehind()) { <div class="warn-note">A newer copy of the workspace itself (skills, dashboard) is published. Download <code>workspace.zip</code> again from {{ s.label }} and extract it over this folder.</div> }
+              @if (workspaceBehind()) {
+                <div class="warn-note">A newer copy of the workspace itself (skills, dashboard) is published.
+                  @if (s.workspace?.installer; as inst) { Run <code>{{ inst }}</code> from {{ s.label }} again to update it (your downloaded code and settings stay). }
+                  @else { Download <code>workspace.zip</code> again from {{ s.label }} and extract it over this folder. }
+                </div>
+              }
             }
             @if (plan(); as pl) {
               <div class="confirm">
