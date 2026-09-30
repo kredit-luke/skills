@@ -32,6 +32,8 @@ export interface Boot {
     copy: Record<string, any>;
   };
   issues: IssuesBoot;
+  /** This person's workspace profile; a reader doesn't see the developer pages (reload after changing it). */
+  profile: { current: 'developer' | 'reader'; hiddenPages: string[] };
 }
 
 /** The configured issue tracker, as the UI needs it everywhere (badges, links, ticket ids). */
@@ -500,7 +502,7 @@ export interface Issue {
   lastRun: { id: string; status: RunStatus; startedAt: string } | null;
 }
 /** How to connect the tracker when it needs a personal key (steps are markdown). */
-export interface ConnectHelp { title: string; steps: string[]; placeholder: string; needsKey: boolean }
+export interface ConnectHelp { title: string; steps: string[]; placeholder: string; needsKey: boolean; method?: 'key' | 'oauth' }
 /** GET /api/issues[?force=1]  (/api/linear/issues still works) */
 export interface IssuesResponse {
   connected: boolean; issues: Issue[]; states: string[]; teams: string[]; viewer: string | null; fetchedAt?: number; error?: string;
@@ -547,8 +549,13 @@ export interface MachineReport {
 export interface RepoInfo {
   name: string; relativePath: string; remote: string | null; layer: string | null;
   defaultBranch: string | null; dependencies: string[];
-  /** cloned: has .git · missing: absent or an empty folder (Clone can fill it) · not-git: has files but no .git (left alone). */
-  state: 'cloned' | 'missing' | 'not-git';
+  /** In published snapshots (repos.json "snapshot": false leaves it out). */
+  snapshot: boolean;
+  /**
+   * cloned: has .git · snapshot: a downloaded read-only copy (.snapshot.json, no .git) ·
+   * missing: absent or an empty folder (Clone / Download can fill it) · not-git: has files but neither (left alone).
+   */
+  state: 'cloned' | 'snapshot' | 'missing' | 'not-git';
   /** For clones: the checked-out branch and how many files have uncommitted changes. */
   branch: string | null; changes: number | null;
 }
@@ -560,7 +567,50 @@ export interface ReposResponse {
   /** repos.json exists at the workspace root. */
   configured: boolean;
   repos: RepoInfo[];
+  /** repos.json snapshot.source (read-only copies can be downloaded; see GET /api/snapshot), or null. */
+  snapshotSource: string | null;
   error: string | null;
+}
+
+export interface SnapshotVersion { sha: string; builtAt: string }
+export interface SnapshotRepo {
+  name: string; relativePath: string; layer: string | null;
+  /** In snapshots at all (repos.json "snapshot": false = no). */
+  included: boolean;
+  state: RepoInfo['state'];
+  /** The downloaded copy's stamp (state 'snapshot'), and what's published. */
+  local: SnapshotVersion | null;
+  latest: (SnapshotVersion & { size: number }) | null;
+  /** Download would fetch it: missing or older, and not a clone or someone else's folder. */
+  needsDownload: boolean;
+}
+/**
+ * GET /api/snapshot[?force=1] ;  POST /api/snapshot/connect { key } | /disconnect → ConnectionStatus ;
+ * POST /api/snapshot/download { names?: string[] } → 202 { job }. The source is repos.json `snapshot`.
+ */
+export interface SnapshotStatus {
+  configured: boolean;
+  /** repos.json snapshot.source, and its adapter's label ("Confluence", "Web server"); label null = no adapter. */
+  sourceKind: string | null;
+  label: string | null;
+  connection: { connected: boolean; source: 'env' | 'file' | 'tracker' | null; viewer: string | null } | null;
+  /** How to connect, when not connected. */
+  connect: ConnectHelp | null;
+  /** When the published snapshot was built (null until the manifest is read). */
+  builtAt: string | null;
+  /** The workspace files themselves (workspace.zip): what's published, and the stamp at the workspace root. */
+  workspace: { latest: SnapshotVersion & { size: number }; local: SnapshotVersion | null } | null;
+  repos: SnapshotRepo[];
+  error: string | null;
+}
+
+/** GET /api/profile ;  POST /api/profile { profile } → ProfileInfo. Per person (ledger). */
+export interface ProfileInfo {
+  profile: 'developer' | 'reader';
+  /** False until someone chose (or a first snapshot download set it). */
+  chosen: boolean;
+  /** For the reader profile: nav pages and skills it hides (workspace.json profiles.reader). */
+  reader: { hiddenPages: string[]; hiddenSkills: string[] };
 }
 
 // ---------------------------------------------------------------- explore

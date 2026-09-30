@@ -19,7 +19,7 @@ test("relative paths: nested folders are fine, anything leaving the workspace is
 
 test("both repos.json styles normalize to relativePath / remote", () => {
   assert.deepEqual(normalizeRepo({ name: "admin-service", layer: "bff", relativePath: "bff/admin-service", remote: "https://x/admin-service.git" }), {
-    name: "admin-service", relativePath: "bff/admin-service", remote: "https://x/admin-service.git", layer: "bff", defaultBranch: null, dependencies: [],
+    name: "admin-service", relativePath: "bff/admin-service", remote: "https://x/admin-service.git", layer: "bff", defaultBranch: null, dependencies: [], snapshot: true,
   });
   const old = normalizeRepo({ name: "API", url: "https://x/api.git", directory: "api", dependencies: ["web", 3] });
   assert.equal(old!.relativePath, "api");
@@ -32,7 +32,7 @@ test("both repos.json styles normalize to relativePath / remote", () => {
 
 test("readRepos: no file, bad JSON, and duplicate paths", () => {
   const root = scratch("read");
-  assert.deepEqual(readRepos(root), { configured: false, repos: [], error: null });
+  assert.deepEqual(readRepos(root), { configured: false, repos: [], snapshot: null, error: null });
   writeRepos(root, "{ nope");
   assert.match(readRepos(root).error!, /isn't valid JSON/);
   writeRepos(root, { nope: [] });

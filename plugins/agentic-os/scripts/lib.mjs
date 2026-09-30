@@ -58,6 +58,7 @@ export function normalizeRepo(r) {
     layer: str(r.layer),
     defaultBranch: str(r.defaultBranch),
     dependencies: Array.isArray(r.dependencies) ? r.dependencies.filter((d) => typeof d === "string") : [],
+    snapshot: r.snapshot !== false,
   };
 }
 

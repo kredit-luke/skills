@@ -38,7 +38,12 @@ export interface ProviderStatus {
   source: "env" | "file" | "tracker" | null;
   viewer: string | null;
 }
-export interface ProviderHelp { title: string; steps: string[]; placeholder: string; needsKey: boolean }
+/**
+ * How to connect. `method` "key" (the default) = paste a key into the card; "oauth" is
+ * reserved for a sign-in-with flow (an adapter that has one returns its authorize URL
+ * from connect) and nothing uses it yet.
+ */
+export interface ProviderHelp { title: string; steps: string[]; placeholder: string; needsKey: boolean; method?: "key" | "oauth" }
 
 export interface DocsProvider {
   kind: string;

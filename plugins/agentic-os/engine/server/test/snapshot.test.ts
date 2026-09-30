@@ -1,0 +1,285 @@
+// Snapshots: the tar extractor, publish → download → update through a source, and the
+// http and Confluence adapters against local fake servers.
+import { test } from "node:test";
+import assert from "node:assert/strict";
+import fs from "node:fs";
+import http from "node:http";
+import os from "node:os";
+import path from "node:path";
+import zlib from "node:zlib";
+import { execFileSync } from "node:child_process";
+import type { AddressInfo } from "node:net";
+import { extractTarGz, safeMemberPath } from "../src/tar.ts";
+import { buildSnapshot, downloadStep, downloadTargets, dropManifestCache, publishSnapshot, readStamp, snapshotStatus } from "../src/snapshot.ts";
+import { repoState, readRepos } from "../src/repos.ts";
+import { createSource, snapshotSourceKinds } from "../src/snapshot-sources/index.ts";
+import type { SnapshotFile, SnapshotSource } from "../src/snapshot-sources/index.ts";
+import { ConfluenceSource } from "../src/snapshot-sources/confluence.ts";
+import { MANIFEST } from "../src/snapshot-sources/manifest.ts";
+
+const scratch = (name: string) => fs.mkdtempSync(path.join(os.tmpdir(), `dash-snap-${name}-`));
+const git = (cwd: string, ...args: string[]) => execFileSync("git", ["-c", "user.name=t", "-c", "user.email=t@t", ...args], { cwd, stdio: "pipe" }).toString().trim();
+const ctx = (dir: string) => ({ ledgerDir: dir, issues: { kind: "none" } });
+
+function repo(dir: string, files: Record<string, string>) {
+  fs.mkdirSync(dir, { recursive: true });
+  git(dir, "init", "-q", "-b", "main");
+  for (const [f, text] of Object.entries(files)) { fs.mkdirSync(path.dirname(path.join(dir, f)), { recursive: true }); fs.writeFileSync(path.join(dir, f), text); }
+  git(dir, "add", ".");
+  git(dir, "commit", "-q", "-m", "c");
+  return git(dir, "rev-parse", "HEAD");
+}
+
+/** A tar header block for a crafted archive. */
+function header(name: string, size: number, type = "0"): Buffer {
+  const h = Buffer.alloc(512);
+  h.write(name, 0, 100);
+  h.write("0000644\0", 100); h.write("0000000\0", 108); h.write("0000000\0", 116);
+  h.write(size.toString(8).padStart(11, "0") + "\0", 124);
+  h.write("00000000000\0", 136);
+  h.write("        ", 148);
+  h.write(type, 156);
+  h.write("ustar\0", 257); h.write("00", 263);
+  let sum = 0; for (const b of h) sum += b;
+  h.write(sum.toString(8).padStart(6, "0") + "\0 ", 148);
+  return h;
+}
+const block = (text: string) => { const b = Buffer.alloc(Math.ceil(text.length / 512) * 512); b.write(text); return b; };
+const tgz = (file: string, parts: Buffer[]) => fs.writeFileSync(file, zlib.gzipSync(Buffer.concat([...parts, Buffer.alloc(1024)])));
+
+test("tar: git archive output (nested, long pax names, empty files) extracts byte-for-byte", async () => {
+  const src = scratch("tar-src");
+  const long = "deep/" + "a".repeat(60) + "/" + "b".repeat(60) + "/file.txt";
+  repo(src, { "README.md": "hello\n", "src/x/y.ts": "export const y = 1;\n", [long]: "long\n", "empty.txt": "", "bin.dat": "\x00\x01\x02\xff" });
+  const archive = path.join(scratch("tar-a"), "r.tar.gz");
+  git(src, "-c", "core.autocrlf=false", "archive", "--format=tar.gz", "-o", archive, "HEAD");
+  const out = scratch("tar-out");
+  const r = await extractTarGz(archive, out);
+  assert.equal(r.files, 5);
+  for (const f of ["README.md", "src/x/y.ts", long, "empty.txt", "bin.dat"]) assert.deepEqual(fs.readFileSync(path.join(out, f)), fs.readFileSync(path.join(src, f)), f);
+  assert.ok(!fs.existsSync(path.join(out, "pax_global_header")), "git's global pax header isn't a file");
+});
+
+test("tar: an entry leaving the folder fails the extraction; links are skipped", async () => {
+  for (const bad of ["../evil.txt", "/etc/evil", "a/../../evil", "C:/evil"]) assert.equal(safeMemberPath(bad), null, bad);
+  const dir = scratch("tar-bad");
+  const evil = path.join(dir, "evil.tar.gz");
+  tgz(evil, [header("ok.txt", 2), block("ok"), header("../evil.txt", 4), block("evil")]);
+  await assert.rejects(extractTarGz(evil, path.join(dir, "out")), /outside the target folder/);
+  assert.ok(!fs.existsSync(path.join(dir, "evil.txt")));
+
+  const links = path.join(dir, "links.tar.gz");
+  const lh = header("link", 0, "2"); lh.write("/etc/passwd", 157, 100);
+  let sum = 0; lh.write("        ", 148); for (const b of lh) sum += b; lh.write(sum.toString(8).padStart(6, "0") + "\0 ", 148);
+  tgz(links, [lh, header("real.txt", 3), block("yes")]);
+  const r = await extractTarGz(links, path.join(dir, "out2"));
+  assert.equal(r.skipped, 1);
+  assert.equal(fs.readFileSync(path.join(dir, "out2", "real.txt"), "utf-8"), "yes");
+  assert.ok(!fs.existsSync(path.join(dir, "out2", "link")));
+
+  const corrupt = path.join(dir, "corrupt.tar.gz");
+  const h = header("x.txt", 1); h[0] = 0x79; // checksum no longer matches
+  tgz(corrupt, [h, block("x")]);
+  await assert.rejects(extractTarGz(corrupt, path.join(dir, "out3")), /checksum/);
+});
+
+/** A source backed by a folder: upload copies in, download copies out, and it remembers the upload order. */
+function folderSource(dir: string): SnapshotSource & { uploads: string[] } {
+  fs.mkdirSync(dir, { recursive: true });
+  const uploads: string[] = [];
+  return {
+    kind: "folder", label: "Folder", maxFileBytes: null, uploads,
+    status: () => ({ connected: true, source: null, viewer: null }),
+    connectHelp: () => null, connect: async () => ({ connected: true, source: null, viewer: null }), disconnect: () => ({ connected: true, source: null, viewer: null }),
+    list: async () => fs.readdirSync(dir).map((n): SnapshotFile => ({ id: n, name: n, size: fs.statSync(path.join(dir, n)).size, updatedAt: null })),
+    download: async (f, dest) => fs.copyFileSync(path.join(dir, f.name), dest),
+    upload: async (name, src) => { uploads.push(name); fs.copyFileSync(src, path.join(dir, name)); },
+  };
+}
+
+test("publish → download → update: stamps, manifest last, left-out and foreign folders untouched", async () => {
+  // Publisher side: a workspace (itself a repo) with two repos and one left out.
+  const pub = scratch("pub");
+  const shaApi1 = repo(path.join(pub, "svc", "api"), { "main.go": "v1\n" });
+  repo(path.join(pub, "web"), { "index.html": "<h1>web</h1>\n" });
+  repo(path.join(pub, "infra"), { "secret.tf": "nope\n" });
+  const reposJson = { snapshot: { source: "folder" }, repos: [
+    { name: "api", relativePath: "svc/api" }, { name: "web" }, { name: "infra", snapshot: false },
+  ] };
+  fs.writeFileSync(path.join(pub, "repos.json"), JSON.stringify(reposJson));
+  fs.writeFileSync(path.join(pub, ".gitignore"), "svc/\nweb/\ninfra/\n");
+  repo(pub, {});
+  const store = folderSource(scratch("store"));
+  const out1 = scratch("out1");
+  const m1 = await buildSnapshot(pub, out1);
+  assert.deepEqual(Object.keys(m1.repos).sort(), ["api", "web"], "infra is left out");
+  assert.equal(m1.repos.api.sha, shaApi1);
+  assert.ok(m1.workspace && fs.existsSync(path.join(out1, "workspace.zip")));
+  await publishSnapshot(store, out1, m1);
+  assert.equal(store.uploads.at(-1), MANIFEST, "the manifest goes up last");
+
+  // Reader side: the same repos.json, nothing cloned; a folder of someone else's where "web" would go.
+  const rd = scratch("reader");
+  fs.writeFileSync(path.join(rd, "repos.json"), JSON.stringify(reposJson));
+  dropManifestCache();
+  let st = await snapshotStatus(rd, store, true);
+  assert.equal(st.builtAt, m1.builtAt);
+  assert.deepEqual(st.repos.map((r) => [r.name, r.needsDownload]), [["api", true], ["web", true], ["infra", false]]);
+  fs.mkdirSync(path.join(rd, "web"));
+  fs.writeFileSync(path.join(rd, "web", "mine.txt"), "keep");
+  const targets = await downloadTargets(rd, store, null);
+  assert.deepEqual(targets.map((t) => t.repo.name), ["api"], "a folder with files and no stamp isn't ours");
+  const lines: string[] = [];
+  await downloadStep(rd, store, targets[0])((t) => lines.push(t));
+  assert.equal(repoState(rd, "svc/api"), "snapshot");
+  assert.equal(fs.readFileSync(path.join(rd, "svc", "api", "main.go"), "utf-8"), "v1\n");
+  assert.equal(readStamp(path.join(rd, "svc", "api"))!.sha, shaApi1);
+  assert.equal(fs.readFileSync(path.join(rd, "web", "mine.txt"), "utf-8"), "keep");
+  assert.equal((await downloadTargets(rd, store, null)).length, 0, "up to date");
+
+  // A new commit is published: the copy is replaced as a whole (a deleted file goes too).
+  fs.writeFileSync(path.join(rd, "svc", "api", "scratch.txt"), "local edit");
+  fs.writeFileSync(path.join(pub, "svc", "api", "main.go"), "v2\n");
+  git(path.join(pub, "svc", "api"), "commit", "-qam", "v2");
+  const out2 = scratch("out2");
+  const m2 = await buildSnapshot(pub, out2, { workspace: false });
+  await publishSnapshot(store, out2, m2);
+  st = await snapshotStatus(rd, store, true);
+  assert.equal(st.repos.find((r) => r.name === "api")!.needsDownload, true);
+  const [t2] = await downloadTargets(rd, store, ["api"]);
+  await downloadStep(rd, store, t2)(() => {});
+  assert.equal(fs.readFileSync(path.join(rd, "svc", "api", "main.go"), "utf-8"), "v2\n");
+  assert.ok(!fs.existsSync(path.join(rd, "svc", "api", "scratch.txt")));
+  assert.deepEqual(fs.readdirSync(path.join(rd, "svc")), ["api"], "no staging or old copies left behind");
+
+  // A clone is never replaced, even when it's behind.
+  const cloned = scratch("cloned");
+  fs.writeFileSync(path.join(cloned, "repos.json"), JSON.stringify(reposJson));
+  fs.mkdirSync(path.join(cloned, "svc", "api", ".git"), { recursive: true });
+  assert.deepEqual((await downloadTargets(cloned, store, null)).map((t) => t.repo.name), ["web"]);
+});
+
+test("publish refuses a file over the source's limit, and repos that aren't cloned", async () => {
+  const pub = scratch("big");
+  repo(path.join(pub, "api"), { "big.bin": "x".repeat(5000) });
+  fs.writeFileSync(path.join(pub, "repos.json"), JSON.stringify({ repos: [{ name: "api" }, { name: "gone" }] }));
+  await assert.rejects(buildSnapshot(pub, scratch("o")), /Not cloned here: gone/);
+  fs.writeFileSync(path.join(pub, "repos.json"), JSON.stringify({ repos: [{ name: "api" }] }));
+  const out = scratch("o2");
+  const m = await buildSnapshot(pub, out, { workspace: false });
+  const small = { ...folderSource(scratch("s")), maxFileBytes: 10 };
+  await assert.rejects(publishSnapshot(small, out, m), /Over the Folder limit/);
+  assert.deepEqual(small.uploads, [], "nothing goes up when one file is too big");
+});
+
+async function serve(handler: http.RequestListener): Promise<{ url: string; close: () => void }> {
+  const server = http.createServer(handler);
+  await new Promise<void>((r) => server.listen(0, "127.0.0.1", r));
+  return { url: `http://127.0.0.1:${(server.address() as AddressInfo).port}`, close: () => server.close() };
+}
+
+test("http source: files come from the manifest, the bearer key is checked on connect and sent on download", async () => {
+  assert.deepEqual(snapshotSourceKinds().sort(), ["confluence", "http"]);
+  assert.throws(() => createSource({ source: "nope" }, ctx(scratch("x"))), /isn't supported \(known: confluence, http\)/);
+  const manifest = { version: 1, builtAt: "2026-01-01T00:00:00Z", repos: { api: { file: "api.tar.gz", sha: "abc", size: 3, builtAt: "2026-01-01T00:00:00Z" } }, workspace: null };
+  const seen: (string | undefined)[] = [];
+  const srv = await serve((req, res) => {
+    seen.push(req.headers.authorization);
+    if (req.headers.authorization !== "Bearer good") { res.writeHead(401); return res.end(); }
+    if (req.url === "/code/snapshot-manifest.json") { res.writeHead(200, { "Content-Type": "application/json" }); return res.end(JSON.stringify(manifest)); }
+    if (req.url === "/code/api.tar.gz") { res.writeHead(200); return res.end("abc"); }
+    res.writeHead(404); res.end();
+  });
+  try {
+    const ledger = scratch("http-ledger");
+    delete process.env.SNAPSHOT_HTTP_TOKEN;
+    const s = createSource({ source: "http", baseUrl: `${srv.url}/code/`, auth: "bearer" }, ctx(ledger));
+    assert.equal(s.status().connected, false);
+    assert.equal(s.connectHelp()!.needsKey, true);
+    await assert.rejects(s.connect("bad"), /refused \(HTTP 401\)/);
+    assert.equal(s.status().connected, false, "a refused key isn't kept");
+    await s.connect("good");
+    assert.equal(s.status().connected, true);
+    const files = await s.list();
+    assert.deepEqual(files.map((f) => f.name), [MANIFEST, "api.tar.gz"]);
+    const dest = path.join(scratch("http-dl"), "a");
+    await s.download(files[1], dest);
+    assert.equal(fs.readFileSync(dest, "utf-8"), "abc");
+    assert.ok(seen.slice(1).every((a) => a === "Bearer good"));
+    s.disconnect();
+    assert.equal(s.status().connected, false);
+  } finally { srv.close(); }
+});
+
+class LocalConfluence extends ConfluenceSource {
+  base = "";
+  protected origin() { return this.base; }
+}
+
+test("confluence source: lists pages of attachments, downloads through a cross-host redirect without our key, uploads multipart, prunes old versions", async () => {
+  const media = await serve((req, res) => {
+    // The media host must never see the Confluence credentials.
+    if (req.headers.authorization) { res.writeHead(400); return res.end("leaked auth"); }
+    res.writeHead(200); res.end("ARCHIVE");
+  });
+  const uploads: { url: string; body: string; token: string | undefined }[] = [];
+  const deleted: string[] = [];
+  const conf = await serve((req, res) => {
+    const json = (d: unknown) => { res.writeHead(200, { "Content-Type": "application/json" }); res.end(JSON.stringify(d)); };
+    if (req.headers.authorization !== `Basic ${Buffer.from("me@x.com:tokentokentoken").toString("base64")}`) { res.writeHead(401); return res.end(); }
+    const u = req.url || "";
+    if (req.method === "GET" && u === "/wiki/rest/api/content/42/child/attachment?limit=100&expand=version") {
+      return json({ results: [{ id: "att1", title: "api.tar.gz", extensions: { fileSize: 7 }, version: { when: "2026-01-01" } }], _links: { next: "/rest/api/content/42/child/attachment?limit=100&expand=version&start=1" } });
+    }
+    if (req.method === "GET" && u.endsWith("&start=1")) return json({ results: [{ id: "att2", title: MANIFEST, extensions: { fileSize: 2 } }], _links: {} });
+    if (req.method === "GET" && u === "/wiki/rest/api/content/42/child/attachment/att1/download") { res.writeHead(302, { Location: `${media.url}/file?token=signed` }); return res.end(); }
+    if (req.method === "PUT" && u === "/wiki/rest/api/content/42/child/attachment") {
+      let body = ""; req.on("data", (c) => (body += c)); req.on("end", () => { uploads.push({ url: u, body, token: req.headers["x-atlassian-token"] as string }); json({ results: [] }); });
+      return;
+    }
+    if (req.method === "GET" && /\/wiki\/rest\/api\/content\/att\d\/version\?limit=200$/.test(u)) return json({ results: u.includes("att1") ? [{ number: 3 }, { number: 2 }, { number: 1 }] : [{ number: 1 }] });
+    if (req.method === "DELETE") { deleted.push(u); return json({}); }
+    res.writeHead(404); res.end();
+  });
+  try {
+    const ledger = scratch("conf-ledger");
+    fs.writeFileSync(path.join(ledger, "confluence-api-token"), "me@x.com:tokentokentoken");
+    const s = new LocalConfluence({ source: "confluence", site: "acme.atlassian.net", pageId: "42", maxFileMb: 5 }, ctx(ledger));
+    s.base = conf.url;
+    assert.equal(s.status().connected, true, "the Docs page's Confluence key is used");
+    assert.equal(s.maxFileBytes, 5 * 1024 * 1024);
+    const files = await s.list();
+    assert.deepEqual(files.map((f) => [f.id, f.name, f.size]), [["att1", "api.tar.gz", 7], ["att2", MANIFEST, 2]]);
+    const dest = path.join(scratch("conf-dl"), "api.tar.gz");
+    await s.download(files[0], dest);
+    assert.equal(fs.readFileSync(dest, "utf-8"), "ARCHIVE");
+
+    const src = path.join(scratch("conf-up"), "web.tar.gz");
+    fs.writeFileSync(src, "PAYLOAD");
+    await s.upload("web.tar.gz", src);
+    assert.equal(uploads.length, 1);
+    assert.equal(uploads[0].token, "nocheck");
+    assert.match(uploads[0].body, /name="file"; filename="web.tar.gz"\r\nContent-Type: application\/octet-stream\r\n\r\nPAYLOAD\r\n--/);
+    assert.match(uploads[0].body, /name="minorEdit"\r\n\r\ntrue/);
+
+    assert.equal(await s.prune(), 2);
+    assert.deepEqual(deleted, ["/wiki/rest/api/content/att1/version/2", "/wiki/rest/api/content/att1/version/1"], "only the old versions go");
+
+    const noPage = new LocalConfluence({ source: "confluence", site: "acme.atlassian.net" }, ctx(ledger));
+    noPage.base = conf.url;
+    await assert.rejects(noPage.list(), /needs "pageId"/);
+  } finally { conf.close(); media.close(); }
+});
+
+test("repos.json snapshot config and per-repo opt-out are read; a snapshot folder has its own state", () => {
+  const root = scratch("cfg");
+  fs.writeFileSync(path.join(root, "repos.json"), JSON.stringify({ snapshot: { source: " http ", baseUrl: "x" }, repos: [{ name: "a" }, { name: "b", snapshot: false }] }));
+  const r = readRepos(root);
+  assert.deepEqual(r.snapshot, { source: "http", baseUrl: "x" });
+  assert.deepEqual(r.repos.map((x) => x.snapshot), [true, false]);
+  fs.mkdirSync(path.join(root, "a"));
+  fs.writeFileSync(path.join(root, "a", ".snapshot.json"), JSON.stringify({ sha: "1" }));
+  assert.equal(repoState(root, "a"), "snapshot");
+  fs.writeFileSync(path.join(root, "repos.json"), JSON.stringify({ snapshot: { nope: 1 }, repos: [] }));
+  assert.equal(readRepos(root).snapshot, null, "a snapshot block without a source is ignored");
+});

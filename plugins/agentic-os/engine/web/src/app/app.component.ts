@@ -33,7 +33,7 @@ interface NavItem { path: string; label: string; icon: string; exact?: boolean; 
           <dash-icon name="search" style="width:15px;height:15px" /><span>Search</span><kbd>Ctrl K</kbd>
         </button>
         <nav class="side-nav">
-          @for (n of nav; track n.path) {
+          @for (n of visibleNav(); track n.path) {
             @if (n.group) { <div class="grp">{{ n.group }}</div> }
             <a [routerLink]="n.path" routerLinkActive="active" [routerLinkActiveOptions]="{ exact: !!n.exact }" [title]="n.label">
               <dash-icon [name]="n.icon" style="width:17px;height:17px" />
@@ -89,6 +89,19 @@ export class AppComponent implements OnInit {
     { path: '/machine', label: 'Machine', icon: 'machine' },
     { path: '/settings', label: 'Settings', icon: 'settings' },
   ];
+  /** The nav minus the pages this person's profile hides; a hidden group's first page hands its heading on. */
+  readonly visibleNav = computed<NavItem[]>(() => {
+    const hidden = new Set(this.api.boot()?.profile?.hiddenPages || []);
+    const out: NavItem[] = [];
+    let heading: string | undefined;
+    for (const n of this.nav) {
+      if (n.group) heading = n.group;
+      if (hidden.has(n.path.replace(/^\//, ''))) continue;
+      out.push(heading ? { ...n, group: heading } : { ...n, group: undefined });
+      heading = undefined;
+    }
+    return out;
+  });
   readonly machineProblems = computed(() => this.data.machine()?.problems || 0);
 
   ngOnInit(): void {

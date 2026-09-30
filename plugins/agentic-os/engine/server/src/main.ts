@@ -18,7 +18,7 @@ import net from "node:net";
 import path from "node:path";
 import crypto from "node:crypto";
 import { execFile } from "node:child_process";
-import type { Boot, LaunchRequest, RunEvent, RunMeta } from "../../shared/api.ts";
+import type { Boot, LaunchRequest, ProfileInfo, RunEvent, RunMeta } from "../../shared/api.ts";
 import { runTicket } from "../../shared/run-ticket.ts";
 import { runWorkspace } from "../../shared/run-workspace.ts";
 import { CLAUDE_SESSION_ENV } from "./claude.ts";
@@ -43,7 +43,11 @@ import { AppLauncher, appsConfig } from "./apps.ts";
 import { Trackers } from "./issues/index.ts";
 import { readLinks, saveLink, deleteLink, readRepoReadme } from "./links.ts";
 import { Machine, openTerminal } from "./machine.ts";
-import { cloneStep, cloneTargets, reposStatus } from "./repos.ts";
+import { cloneStep, cloneTargets, readRepos, reposStatus } from "./repos.ts";
+import { downloadStep, downloadTargets, dropManifestCache, snapshotStatus } from "./snapshot.ts";
+import { SnapshotSources } from "./snapshot-sources/index.ts";
+import type { SnapshotSource } from "./snapshot-sources/index.ts";
+import { readProfile, reapplyProfile, setProfile } from "./profile.ts";
 import { DocSites, docSources } from "./docs.ts";
 import { DocsProviders } from "./docs-providers/index.ts";
 import { Memory } from "./memory.ts";
@@ -352,6 +356,23 @@ const trackers = new Trackers(LEDGER_DIR);
 const machine = new Machine(MAIN_WORKSPACE_PATH);
 const docSites = new DocSites(MAIN_WORKSPACE_PATH);
 const docsProviders = new DocsProviders(() => ({ ledgerDir: LEDGER_DIR, issues: workspaceConfig().issues }));
+const snapshotSources = new SnapshotSources(() => ({ ledgerDir: LEDGER_DIR, issues: workspaceConfig().issues }));
+// A reader's hidden skills follow workspace.json if it changed while the dashboard was down.
+reapplyProfile(LEDGER_DIR, MAIN_WORKSPACE_PATH, workspaceConfig().profiles.reader.hiddenSkills);
+
+const isReader = () => readProfile(LEDGER_DIR).profile === "reader";
+
+function profileInfo(): ProfileInfo {
+  const p = readProfile(LEDGER_DIR);
+  return { profile: p.profile, chosen: p.chosen, reader: workspaceConfig().profiles.reader };
+}
+
+/** repos.json's snapshot source (null when there's no snapshot block); an unknown kind is a 400. */
+function snapshotSource(): SnapshotSource | null {
+  const cfg = readRepos(MAIN_WORKSPACE_PATH).snapshot;
+  if (!cfg) return null;
+  try { return snapshotSources.get(cfg); } catch (e) { throw httpError(400, e.message); }
+}
 
 /** An external docs source and its provider, or a 404 (unknown source / no adapter for its provider). */
 function externalDocs(key: unknown) {
@@ -613,6 +634,7 @@ async function getIssues(force: boolean) {
   const cfg = deck.config().issues;
   const tracker = trackers.get();
   const tcfg = trackers.config();
+  const reader = isReader();
   // Your own board filter (Settings → issues.query), when the tracker has a query language.
   const queryHelp = tracker.queryHelp();
   const query = queryHelp ? deck.personal().issues.query || "" : "";
@@ -640,7 +662,7 @@ async function getIssues(force: boolean) {
     query: queryHelp ? { value: query, ...queryHelp } : null,
     issues: list.map((i) => ({
       ...i,
-      canImplement: tcfg.implementStates.includes(i.state) && (!implementTeams.length || implementTeams.includes(i.team)),
+      canImplement: !reader && tcfg.implementStates.includes(i.state) && (!implementTeams.length || implementTeams.includes(i.team)),
       hasWorktree: worktrees.has(String(i.id).toUpperCase()),
       lastRun: lastRuns.get(i.id) || null,
     })),
@@ -715,6 +737,7 @@ function bootInfo(): Boot {
       // {id} placeholder; built from the adapter so the UI never hardcodes a tracker's URLs.
       urlTemplate: tracker.issueUrl("{id}"),
     },
+    profile: { current: readProfile(LEDGER_DIR).profile, hiddenPages: isReader() ? ws.profiles.reader.hiddenPages : [] },
   };
 }
 
@@ -910,6 +933,8 @@ async function handleApi(req: http.IncomingMessage, res: http.ServerResponse, ur
       });
     }
     if (p === "/api/repos") return sendJson(res, await reposStatus(MAIN_WORKSPACE_PATH));
+    if (p === "/api/snapshot") return sendJson(res, await snapshotStatus(MAIN_WORKSPACE_PATH, snapshotSource(), force));
+    if (p === "/api/profile") return sendJson(res, profileInfo());
     if (p === "/api/apps/jobs") {
       const cfg = appsConfig();
       return sendJson(res, { jobs: launcher.list(), stacks: cfg.stacks, groups: cfg.groups, defaultStack: cfg.defaultStack, hasSetup: !!cfg.setup, configured: cfg.configured, error: cfg.error });
@@ -972,7 +997,8 @@ async function handleApi(req: http.IncomingMessage, res: http.ServerResponse, ur
       return sendJson(res, {
         ...deck.config(),
         stats: runs.stats(),
-        skills: deck.skills(),
+        // A reader's hidden skills are off in Claude too (profile.ts); don't offer them here.
+        skills: isReader() ? deck.skills().filter((s) => !workspaceConfig().profiles.reader.hiddenSkills.includes(s.name)) : deck.skills(),
         workspaces: listWorkspaces().map(({ slug, name, ticketId }) => ({ slug, name, ticketId })),
         options: { models: MODELS, efforts: EFFORTS, permissionModes: PERMISSION_MODES },
       });
@@ -1084,6 +1110,7 @@ async function handleApi(req: http.IncomingMessage, res: http.ServerResponse, ur
   if (p === "/api/issues/implement" || p === "/api/linear/implement") {
     const ticket = ticketParam(body.ticket);
     if (!ticket) return sendError(res, 400, "Invalid ticket id");
+    if (isReader()) return sendError(res, 403, "Implement isn't available in the reader profile (Settings → Profile).");
     // Only implement-state issues of issues.implementTeams do code work; refuse the rest.
     const known = ((await getIssues(false)).issues || []).find((i) => i.id === ticket);
     if (known && !known.canImplement) {
@@ -1132,6 +1159,46 @@ async function handleApi(req: http.IncomingMessage, res: http.ServerResponse, ur
     });
     const { _log, ...pub } = job;
     return sendJson(res, { job: pub }, 202);
+  }
+  if (p === "/api/snapshot/connect" || p === "/api/snapshot/disconnect") {
+    const source = snapshotSource();
+    if (!source) return sendError(res, 400, "repos.json has no snapshot source.");
+    const status = p.endsWith("/connect") ? await source.connect(body.key) : source.disconnect();
+    dropManifestCache();
+    return sendJson(res, status);
+  }
+  if (p === "/api/snapshot/download") {
+    const source = snapshotSource();
+    if (!source) return sendError(res, 400, "repos.json has no snapshot source.");
+    if (!source.status().connected) return sendError(res, 400, `Connect ${source.label} first.`);
+    if (launcher.jobs.some((j) => j.status === "running" && j.workspace === "main" && j.label.startsWith("Download"))) {
+      return sendError(res, 409, "A download is already running.");
+    }
+    const names = Array.isArray(body.names) ? body.names.map(String) : null;
+    const targets = await downloadTargets(MAIN_WORKSPACE_PATH, source, names);
+    if (!targets.length) return sendError(res, 400, "Nothing to download: every published repo here is up to date.");
+    const main = { slug: "main", name: "Main Workspace", path: MAIN_WORKSPACE_PATH };
+    const label = targets.length === 1 ? `Download ${targets[0].repo.name}` : `Download ${targets.length} repos`;
+    const job = launcher.job(main, label, async (step) => {
+      const failed: string[] = [];
+      for (const t of targets) {
+        try { await step(`Download ${t.repo.name} into ${t.repo.relativePath}`, downloadStep(MAIN_WORKSPACE_PATH, source, t)); } catch { failed.push(t.repo.name); }
+      }
+      // Someone downloading code instead of cloning it reads it: default them to the reader profile once.
+      if (!readProfile(LEDGER_DIR).chosen) {
+        try { setProfile(LEDGER_DIR, MAIN_WORKSPACE_PATH, "reader", workspaceConfig().profiles.reader.hiddenSkills); } catch {}
+      }
+      if (failed.length) throw new Error(`Couldn't download ${failed.join(", ")}`);
+    });
+    const { _log, ...pub } = job;
+    return sendJson(res, { job: pub }, 202);
+  }
+  if (p === "/api/profile") {
+    const profile = body.profile === "reader" ? "reader" : body.profile === "developer" ? "developer" : null;
+    if (!profile) return sendError(res, 400, 'profile must be "developer" or "reader".');
+    try { setProfile(LEDGER_DIR, MAIN_WORKSPACE_PATH, profile, workspaceConfig().profiles.reader.hiddenSkills); }
+    catch (e) { return sendError(res, 400, e.message); }
+    return sendJson(res, profileInfo());
   }
   if (p === "/api/docs/preview") return sendJson(res, { url: await docSites.preview(String(body.site || "")) });
   if (p === "/api/docs/external/connect") {

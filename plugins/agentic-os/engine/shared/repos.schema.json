@@ -10,6 +10,36 @@
     "repos": {
       "type": "array",
       "items": { "$ref": "#/$defs/repo" }
+    },
+    "snapshot": {
+      "description": "Where read-only copies of the repos are published (dashboard/bin/snapshot.mjs publish) and downloaded from (the Repos page), for people who can't clone.",
+      "oneOf": [
+        {
+          "type": "object",
+          "required": ["source", "site", "pageId"],
+          "properties": {
+            "source": { "const": "confluence" },
+            "site": { "type": "string", "description": "e.g. acme.atlassian.net" },
+            "pageId": { "type": ["string", "integer"], "pattern": "^\\d+$", "description": "The page the archives are attached to: the number in its URL." },
+            "maxFileMb": { "type": "number", "description": "The site's attachment size limit (Confluence Cloud's default is 100)." }
+          }
+        },
+        {
+          "type": "object",
+          "required": ["source", "baseUrl"],
+          "properties": {
+            "source": { "const": "http" },
+            "baseUrl": { "type": "string", "description": "Files are downloaded from <baseUrl>/<name>." },
+            "auth": { "enum": ["none", "bearer", "basic"] }
+          }
+        },
+        {
+          "type": "object",
+          "required": ["source"],
+          "properties": { "source": { "type": "string", "not": { "enum": ["confluence", "http"] } } },
+          "description": "Another source adapter the engine has."
+        }
+      ]
     }
   },
   "$defs": {
@@ -32,6 +62,7 @@
           "items": { "type": "string" },
           "description": "Names of repos this one consumes (for implementation and PR order)."
         },
+        "snapshot": { "type": "boolean", "description": "Include it in published read-only copies (default true)." },
         "directory": { "type": "string", "deprecated": true, "description": "Old name for relativePath; still read." },
         "url": { "type": "string", "deprecated": true, "description": "Old name for remote; still read." }
       }

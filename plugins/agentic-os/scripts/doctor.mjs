@@ -82,8 +82,10 @@ export async function doctor(root) {
   }
 
   const repos = readRepos(root);
-  const missingRepos = repos.filter((r) => !fs.existsSync(path.join(root, r.relativePath, ".git")));
-  if (repos.length) add(missingRepos.length ? "warn" : "ok", "repos", missingRepos.length ? `not cloned: ${missingRepos.map((r) => r.relativePath).join(", ")}` : `${repos.length} cloned`, missingRepos.length ? "Open the dashboard's Repos page and click Clone missing (or remove them from repos.json)." : "");
+  // Here = a clone, or a read-only copy downloaded from the snapshot source (.snapshot.json).
+  const here = (r) => fs.existsSync(path.join(root, r.relativePath, ".git")) || fs.existsSync(path.join(root, r.relativePath, ".snapshot.json"));
+  const missingRepos = repos.filter((r) => !here(r));
+  if (repos.length) add(missingRepos.length ? "warn" : "ok", "repos", missingRepos.length ? `not here: ${missingRepos.map((r) => r.relativePath).join(", ")}` : `${repos.length} here`, missingRepos.length ? "Open the dashboard's Repos page and click Clone missing (or remove them from repos.json)." : "");
 
   const host = (ws.codeHost && ws.codeHost.kind) || "github";
   if (host === "github") {

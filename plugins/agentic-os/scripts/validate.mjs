@@ -213,6 +213,19 @@ export function validate(root) {
         if (old.length) warn("repos.json", `${which} uses ${old.join(", ")}; the standard names are relativePath and remote (still read)`);
         if (!r.remote && !fs.existsSync(path.join(root, r.relativePath))) warn("repos.json", `${which} isn't here and has no remote to clone it from`);
       });
+      // snapshot: where read-only copies are published (engine snapshot-sources/).
+      const snap = manifest.snapshot;
+      if (snap !== undefined) {
+        const kinds = literalKeys(path.join(engine, "server", "src", "snapshot-sources", "index.ts"), "const SOURCES");
+        const need = { confluence: ["site", "pageId"], http: ["baseUrl"] };
+        if (!snap || typeof snap !== "object" || typeof snap.source !== "string" || !snap.source) err("repos.json", "snapshot needs a \"source\" (e.g. \"confluence\" or \"http\")");
+        else if (kinds.length && !kinds.includes(snap.source)) err("repos.json", `snapshot.source "${snap.source}" has no adapter in this engine (known: ${kinds.join(", ")})`);
+        else {
+          for (const k of need[snap.source] || []) if (!snap[k]) err("repos.json", `snapshot.source "${snap.source}" needs "${k}"`);
+          if (snap.source === "confluence" && snap.pageId && !/^\d+$/.test(String(snap.pageId))) err("repos.json", "snapshot.pageId is the number in the page's URL (…/pages/<pageId>/…)");
+          if (snap.source === "http" && snap.auth && !["none", "bearer", "basic"].includes(snap.auth)) err("repos.json", `snapshot.auth must be "none", "bearer" or "basic"`);
+        }
+      }
     }
   }
 

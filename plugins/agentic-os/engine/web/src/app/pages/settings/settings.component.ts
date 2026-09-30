@@ -1,6 +1,6 @@
 import { ChangeDetectionStrategy, Component, OnInit, computed, inject, signal } from '@angular/core';
 import { NgTemplateOutlet } from '@angular/common';
-import type { Limits, Settings, SettingKey } from '../../../../../shared/api';
+import type { Limits, ProfileInfo, ReposResponse, Settings, SettingKey, SnapshotStatus } from '../../../../../shared/api';
 import { ApiService } from '../../core/api.service';
 import { DataService } from '../../core/data.service';
 import { ToastService } from '../../core/toast.service';
@@ -25,6 +25,36 @@ interface NumberRow { key: LimitKey; label: string; help: string; min: number; m
       sub="Yours only: saved on this machine in .claude/ledger/settings.json. Anything you don't change follows the team's .claude/dashboard/deck.json." />
 
     @if (error()) { <div class="warn-note">{{ error() }}</div> }
+    @if (profile(); as p) {
+      <div class="panel">
+        <div class="panel-h"><h2>Profile</h2></div>
+        <div class="rows">
+          <div class="row">
+            <div class="lbl">
+              <div class="t">How you use this workspace</div>
+              <div class="h">
+                Developer: everything. Reader: for reading and asking about the code without building or running it, so no Implement@if (p.reader.hiddenPages.length) {, no {{ p.reader.hiddenPages.join(', ') }} pages}@if (p.reader.hiddenSkills.length) {, and {{ p.reader.hiddenSkills.length }} skills turned off in Claude ({{ p.reader.hiddenSkills.join(', ') }})}. Only this machine changes.
+              </div>
+            </div>
+            <div class="ctl">
+              <select [disabled]="profileSaving()" (change)="saveProfile($any($event.target).value)">
+                <option value="developer" [selected]="p.profile === 'developer'">Developer</option>
+                <option value="reader" [selected]="p.profile === 'reader'">Reader</option>
+              </select>
+            </div>
+          </div>
+          @if (source(); as src) {
+            <div class="row">
+              <div class="lbl">
+                <div class="t">Code source</div>
+                <div class="h">Where read-only copies of the code are downloaded from, set for the whole team in <code>repos.json</code> (<code>snapshot</code>). Download or update them on the Repos page.</div>
+              </div>
+              <div class="ctl"><span class="ty">{{ src.label || src.sourceKind }} · {{ src.connection?.connected ? 'connected' + (src.connection?.viewer ? ' as ' + src.connection?.viewer : '') : 'not connected' }}</span></div>
+            </div>
+          }
+        </div>
+      </div>
+    }
     @if (s(); as s) {
       <div class="panel">
         <div class="panel-h"><h2>Runs</h2></div>
@@ -126,7 +156,35 @@ export class SettingsComponent implements OnInit {
       help: 'Files you attach to a run are deleted this long after it\'s done (not running, not waiting on you). 0 keeps them forever. Checked every 6 hours, and right away when you change this.' },
   ];
 
-  ngOnInit(): void { this.load(); }
+  readonly profile = signal<ProfileInfo | null>(null);
+  readonly profileSaving = signal(false);
+  readonly source = signal<SnapshotStatus | null>(null);
+
+  ngOnInit(): void {
+    this.load();
+    this.loadProfile();
+  }
+
+  async loadProfile(): Promise<void> {
+    try { this.profile.set(await this.api.get<ProfileInfo>('/api/profile')); } catch { /* the rest of the page still works */ }
+    try {
+      const repos = await this.api.get<ReposResponse>('/api/repos');
+      if (repos.snapshotSource) this.source.set(await this.api.get<SnapshotStatus>('/api/snapshot'));
+    } catch { /* no repos.json source row */ }
+  }
+
+  async saveProfile(profile: string): Promise<void> {
+    this.profileSaving.set(true);
+    try {
+      await this.api.post<ProfileInfo>('/api/profile', { profile });
+      // The nav and every page read the profile at load.
+      location.reload();
+    } catch (e) {
+      this.toast.error((e as Error).message);
+      this.profileSaving.set(false);
+      this.loadProfile();
+    }
+  }
 
   async load(): Promise<void> {
     try { this.s.set(await this.api.get<Settings>('/api/settings')); this.error.set(null); }

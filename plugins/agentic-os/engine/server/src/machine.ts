@@ -23,7 +23,8 @@ import os from "node:os";
 import net from "node:net";
 import path from "node:path";
 import { execFile, spawn } from "node:child_process";
-import { readConfigFile } from "./config.ts";
+import { LEDGER_DIR, readConfigFile } from "./config.ts";
+import { readProfile } from "./profile.ts";
 import { CATALOG } from "./machine-catalog.ts";
 import { claudeAuth } from "./claude.ts";
 
@@ -212,6 +213,8 @@ export function resolvedSpecs(root: string) {
     if (!spec.id) continue;
     if (raw.when && raw.when.exists && !fs.existsSync(path.join(root, raw.when.exists))) continue;
     if (raw.when && raw.when.os && ![].concat(raw.when.os).includes(OS_KEY)) continue;
+    // "developer" / "reader": e.g. build tools only for people who build (profile.ts).
+    if (raw.when && raw.when.profile && ![].concat(raw.when.profile).includes(readProfile(LEDGER_DIR).profile)) continue;
     out.push(spec);
   }
   return { specs: out, error, configured: !!data };

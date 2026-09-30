@@ -3,7 +3,7 @@
  * lives in <workspace>/.claude/dashboard/*.json (committed) and brand/ (tokens,
  * logo). The dashboard code itself names no team, repo, app, port or service.
  *
- *   workspace.json  identity, dashboard port, worktrees, issue tracker, code host, copy
+ *   workspace.json  identity, dashboard port, worktrees, issue tracker, code host, copy, profiles
  *   apps.json       apps, stacks and the app launcher (Apps / Workspaces pages)
  *   machine.json    requirement checks (Machine page), built from the check catalog
  *   docs.json       docs sources (Docs page, Search)
@@ -69,7 +69,16 @@ export interface WorkspaceConfig {
   codeHost: { kind: string; ciRepos: string[]; ciBranch: string };
   brand: { logo: string | null; logoAlt: string | null; favicon: string | null };
   copy: Record<string, any>;
+  /**
+   * What the reader profile (people who read the code but don't build or run it)
+   * doesn't see: nav pages by route ("apps", "workspaces", ...) and project skills by
+   * name. Readers never get Implement.
+   */
+  profiles: { reader: { hiddenPages: string[]; hiddenSkills: string[] } };
 }
+
+/** Pages a reader has no use for (they start and stop apps, and worktrees). */
+export const DEFAULT_READER_HIDDEN_PAGES = ["apps", "workspaces"];
 
 const DEFAULT_ISSUES: IssuesConfig = {
   kind: "none",
@@ -138,6 +147,7 @@ export function workspaceConfig(): WorkspaceConfig {
   const iss = raw.issues || {};
   const ch = raw.codeHost || {};
   const brand = raw.brand || {};
+  const reader = (raw.profiles && raw.profiles.reader) || {};
   const name = str(raw.name, path.basename(WORKSPACE_ROOT));
   const kindDefaults = TRACKER_DEFAULTS[iss.kind] || {};
   return {
@@ -170,6 +180,12 @@ export function workspaceConfig(): WorkspaceConfig {
     },
     brand: { logo: strOrNull(brand.logo), logoAlt: strOrNull(brand.logoAlt) || name, favicon: strOrNull(brand.favicon) },
     copy: raw.copy && typeof raw.copy === "object" ? raw.copy : {},
+    profiles: {
+      reader: {
+        hiddenPages: strList(reader.hiddenPages, DEFAULT_READER_HIDDEN_PAGES).map((p) => p.replace(/^\/+/, "")),
+        hiddenSkills: strList(reader.hiddenSkills, []),
+      },
+    },
   };
 }
 
