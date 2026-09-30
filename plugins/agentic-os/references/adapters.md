@@ -87,7 +87,8 @@ interface SnapshotSource {
   list(): Promise<{ id; name; size; updatedAt }[]>;   // must include snapshot-manifest.json once published
   download(file, destPath: string): Promise<void>;     // stream to disk (http-util.ts downloadFile)
   upload?(name: string, srcPath: string): Promise<void>;   // publishing: create or replace by name
-  prune?(): Promise<number>;                   // publishing: drop old versions uploads leave behind
+  remove?(file): Promise<void>;                // publishing: delete a file the new manifest no longer names
+  prune?(names: string[]): Promise<number>;    // publishing: drop old versions of these files only (the source may hold others)
 }
 ```
 

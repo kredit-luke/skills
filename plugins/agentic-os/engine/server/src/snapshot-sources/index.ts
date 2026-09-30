@@ -36,8 +36,10 @@ export interface SnapshotSource {
   download(file: SnapshotFile, destPath: string): Promise<void>;
   /** Publishing only: create or replace the file called `name`. */
   upload?(name: string, srcPath: string): Promise<void>;
-  /** Publishing only: drop what old uploads left behind (previous versions); returns how many were removed. */
-  prune?(): Promise<number>;
+  /** Publishing only: delete a file (one the new manifest no longer names). */
+  remove?(file: SnapshotFile): Promise<void>;
+  /** Publishing only: drop old versions of the named files (only those: the source may hold other files); returns how many. */
+  prune?(names: string[]): Promise<number>;
 }
 
 type Factory = (cfg: SnapshotConfig, ctx: ProviderContext) => SnapshotSource;

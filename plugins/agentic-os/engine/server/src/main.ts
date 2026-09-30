@@ -951,7 +951,13 @@ async function handleApi(req: http.IncomingMessage, res: http.ServerResponse, ur
       });
     }
     if (p === "/api/repos") return sendJson(res, await reposStatus(MAIN_WORKSPACE_PATH));
-    if (p === "/api/snapshot") return sendJson(res, await snapshotStatus(MAIN_WORKSPACE_PATH, snapshotSource(), force));
+    if (p === "/api/snapshot") {
+      // A source this engine has no adapter for is a state the Repos page explains (label null), not an error;
+      // connect, download and publish still refuse it.
+      let source: SnapshotSource | null = null;
+      try { source = snapshotSource(); } catch { source = null; }
+      return sendJson(res, await snapshotStatus(MAIN_WORKSPACE_PATH, source, force));
+    }
     if (p === "/api/profile") return sendJson(res, profileInfo());
     if (p === "/api/apps/jobs") {
       const cfg = appsConfig();

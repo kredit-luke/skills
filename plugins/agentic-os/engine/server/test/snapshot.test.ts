@@ -10,7 +10,7 @@ import zlib from "node:zlib";
 import { execFileSync } from "node:child_process";
 import type { AddressInfo } from "node:net";
 import { extractTarGz, safeMemberPath } from "../src/tar.ts";
-import { buildSnapshot, carryOver, downloadStep, downloadTargets, dropManifestCache, planSnapshot, publishSnapshot, readStamp, snapshotStatus } from "../src/snapshot.ts";
+import { archiveName, buildSnapshot, carryOver, downloadStep, downloadTargets, dropManifestCache, planSnapshot, publishSnapshot, readStamp, snapshotStatus } from "../src/snapshot.ts";
 import { repoState, readRepos } from "../src/repos.ts";
 import { createSource, snapshotSourceKinds } from "../src/snapshot-sources/index.ts";
 import type { SnapshotFile, SnapshotSource } from "../src/snapshot-sources/index.ts";
@@ -84,17 +84,19 @@ test("tar: an entry leaving the folder fails the extraction; links are skipped",
   await assert.rejects(extractTarGz(corrupt, path.join(dir, "out3")), /checksum/);
 });
 
-/** A source backed by a folder: upload copies in, download copies out, and it remembers the upload order. */
-function folderSource(dir: string): SnapshotSource & { uploads: string[] } {
+/** A source backed by a folder: upload copies in, download copies out; it remembers the order of uploads and removals. */
+function folderSource(dir: string): SnapshotSource & { uploads: string[]; log: string[] } {
   fs.mkdirSync(dir, { recursive: true });
   const uploads: string[] = [];
+  const log: string[] = [];
   return {
-    kind: "folder", label: "Folder", maxFileBytes: null, uploads,
+    kind: "folder", label: "Folder", maxFileBytes: null, uploads, log,
+    remove: async (f) => { log.push(`remove ${f.name}`); fs.unlinkSync(path.join(dir, f.name)); },
     status: () => ({ connected: true, source: null, viewer: null }),
     connectHelp: () => null, connect: async () => ({ connected: true, source: null, viewer: null }), disconnect: () => ({ connected: true, source: null, viewer: null }),
     list: async () => fs.readdirSync(dir).map((n): SnapshotFile => ({ id: n, name: n, size: fs.statSync(path.join(dir, n)).size, updatedAt: null })),
     download: async (f, dest) => fs.copyFileSync(path.join(dir, f.name), dest),
-    upload: async (name, src) => { uploads.push(name); fs.copyFileSync(src, path.join(dir, name)); },
+    upload: async (name, src) => { uploads.push(name); log.push(`upload ${name}`); fs.copyFileSync(src, path.join(dir, name)); },
   };
 }
 
@@ -122,7 +124,8 @@ test("publish → download → update: stamps, manifest last, left-out and forei
   const m1 = await buildSnapshot(pub, out1);
   assert.deepEqual(Object.keys(m1.repos).sort(), ["api", "web"], "infra is left out");
   assert.equal(m1.repos.api.sha, shaApi1);
-  assert.ok(m1.workspace && fs.existsSync(path.join(out1, "workspace.zip")));
+  assert.ok(m1.workspace && /^workspace-[0-9a-f]{12}.zip$/.test(m1.workspace.file) && fs.existsSync(path.join(out1, m1.workspace.file)));
+  assert.match(m1.repos.api.file, /^api-[0-9a-f]{12}.tar.gz$/, "archive names carry the commit");
   await publishSnapshot(store, out1, m1);
   assert.equal(store.uploads.at(-1), MANIFEST, "the manifest goes up last");
 
@@ -150,9 +153,15 @@ test("publish → download → update: stamps, manifest last, left-out and forei
   fs.writeFileSync(path.join(ups, "api", "main.go"), "v2\n");
   git(path.join(ups, "api"), "commit", "-qam", "v2");
   const out2 = scratch("out2");
-  const m2 = await buildSnapshot(pub, out2, { workspace: false });
+  const m2 = await buildSnapshot(pub, out2);
   assert.equal(m2.repos.api.sha, git(path.join(ups, "api"), "rev-parse", "HEAD"));
+  assert.notEqual(m2.repos.api.file, m1.repos.api.file, "a new commit is a new file, not an overwrite");
+  store.log.length = 0;
   await publishSnapshot(store, out2, m2);
+  // The old api archive goes only after the new manifest is up; unchanged files (web, workspace) stay.
+  assert.deepEqual(store.log.filter((l) => l.startsWith("remove")), [`remove ${m1.repos.api.file}`]);
+  assert.ok(store.log.indexOf(`upload ${MANIFEST}`) < store.log.indexOf(`remove ${m1.repos.api.file}`));
+  assert.equal(m2.repos.web.file, m1.repos.web.file);
   st = await snapshotStatus(rd, store, true);
   assert.equal(st.repos.find((r) => r.name === "api")!.needsDownload, true);
   const [t2] = await downloadTargets(rd, store, ["api"]);
@@ -220,7 +229,7 @@ test("publish takes origin's default branch, never the clone's work branch or lo
   assert.equal(m.repos.gone.sha, "abc");
   const store = folderSource(scratch("wb-store"));
   await publishSnapshot(store, out, m);
-  assert.deepEqual(store.uploads, ["api.tar.gz", MANIFEST], "a carried-over file isn't uploaded again");
+  assert.deepEqual(store.uploads, [m.repos.api.file, MANIFEST], "a carried-over file isn't uploaded again");
 });
 
 async function serve(handler: http.RequestListener): Promise<{ url: string; close: () => void }> {
@@ -313,8 +322,12 @@ test("confluence source: lists pages of attachments, downloads through a cross-h
     assert.match(uploads[0].body, /name="file"; filename="web.tar.gz"\r\nContent-Type: application\/octet-stream\r\n\r\nPAYLOAD\r\n--/);
     assert.match(uploads[0].body, /name="minorEdit"\r\n\r\ntrue/);
 
-    assert.equal(await s.prune(), 2);
+    assert.equal(await s.prune([MANIFEST]), 0, "only the named files are pruned");
+    assert.deepEqual(deleted, []);
+    assert.equal(await s.prune(["api.tar.gz", MANIFEST]), 2);
     assert.deepEqual(deleted, ["/wiki/rest/api/content/att1/version/2", "/wiki/rest/api/content/att1/version/1"], "only the old versions go");
+    await s.remove(files[0]);
+    assert.equal(deleted.at(-1), "/wiki/rest/api/content/att1", "remove deletes the attachment itself");
 
     const noPage = new LocalConfluence({ source: "confluence", site: "acme.atlassian.net" }, ctx(ledger));
     noPage.base = conf.url;
@@ -374,11 +387,22 @@ test("publish adds the built dashboard UI only when dashboard/ is exactly the pu
   assert.ok(fs.readFileSync(path.join(out, m.installer!.file), "utf-8").includes('"baseUrl": "https://files.acme.test/code"'));
   const store = folderSource(scratch("ui-store"));
   await publishSnapshot(store, out, m);
-  assert.deepEqual(store.uploads.slice(-3), ["dashboard-ui.tar.gz", "Install-Acme.cmd", MANIFEST]);
+  assert.match(store.uploads.at(-3)!, /^dashboard-ui-[0-9a-f]{12}.tar.gz$/);
+  assert.deepEqual(store.uploads.slice(-2), ["Install-Acme.cmd", MANIFEST]);
 
   // An edit in dashboard/ (not in the published commit): the UI isn't that commit's, so it's left out.
   fs.writeFileSync(path.join(pub, "dashboard", "web", "main.ts"), "export const edited = 1;\n");
   const m2 = await buildSnapshot(pub, scratch("ui-out2"), {});
   assert.equal(m2.ui, null);
   assert.equal(m2.installer, null, "no installer without the installer option");
+});
+
+test("archive names carry the commit and stay distinct when a repo name had to be made file-safe", () => {
+  const sha = "0123456789abcdef0123";
+  assert.equal(archiveName("api", sha), "api-0123456789ab.tar.gz");
+  const a = archiveName("api/core", sha), b = archiveName("api-core", sha);
+  assert.notEqual(a, b, "api/core and api-core don't collide");
+  assert.match(a, /^api-core-[0-9a-f]{6}-0123456789ab\.tar\.gz$/);
+  assert.match(archiveName("ünïcode", sha), /-[0-9a-f]{6}-0123456789ab\.tar\.gz$/, "made file-safe, so tagged");
+  assert.match(archiveName("日本", sha), /^repo-[0-9a-f]{6}-0123456789ab\.tar\.gz$/, "nothing file-safe left");
 });

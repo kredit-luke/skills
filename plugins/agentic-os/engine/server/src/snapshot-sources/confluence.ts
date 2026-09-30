@@ -112,11 +112,20 @@ export class ConfluenceSource implements SnapshotSource {
     }, `Uploading ${name}`);
   }
 
-  /** Every attachment keeps each upload as a version; delete all but the current one, so nightly publishes don't pile up. */
-  async prune(): Promise<number> {
+  /** Moves the attachment to the space's trash. */
+  async remove(file: SnapshotFile): Promise<void> {
+    await requestJson(`${this.wiki}/rest/api/content/${encodeURIComponent(file.id)}`, { method: "DELETE", headers: this.headers() }, `Deleting ${file.name}`);
+  }
+
+  /**
+   * Each upload is a new version of the attachment; delete all but the current one, so
+   * nightly publishes don't pile up. Only the named files: the page may have others.
+   */
+  async prune(names: string[]): Promise<number> {
     const headers = this.headers();
+    const own = new Set(names);
     let removed = 0;
-    for (const f of await this.list()) {
+    for (const f of (await this.list()).filter((x) => own.has(x.name))) {
       const res = await requestJson(`${this.wiki}/rest/api/content/${encodeURIComponent(f.id)}/version?limit=200`, { headers }, `Listing versions of ${f.name}`);
       const numbers: number[] = (res.results || []).map((v: any) => Number(v.number)).filter((n: number) => Number.isInteger(n));
       const latest = Math.max(0, ...numbers);

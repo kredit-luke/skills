@@ -12,6 +12,7 @@
  * is never replaced: it isn't ours.
  */
 
+import crypto from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -29,12 +30,27 @@ import { canInstallFrom, installerName, renderInstaller } from "./installer.ts";
 
 const run = promisify(execFile);
 const MANIFEST_TTL_MS = 60_000;
-export const WORKSPACE_FILE = "workspace.zip";
-
 export interface Stamp { name: string; sha: string; builtAt: string; source: string; downloadedAt?: string }
 
-/** A repo's archive name: its repos.json name, made file-safe. */
-export const archiveName = (repoName: string) => `${repoName.replace(/[^\w.-]+/g, "-")}.tar.gz`;
+/**
+ * Published file names carry the commit, so a new publish never overwrites a file the
+ * current manifest names: until the new manifest is up, the old snapshot stays whole.
+ * A repo name that had to be made file-safe also gets a short hash of the original,
+ * so "api/core" and "api-core" can't land on the same file.
+ */
+export function archiveName(repoName: string, sha: string): string {
+  const safe = repoName.replace(/[^\w.-]+/g, "-").replace(/^[-.]+|[-.]+$/g, "");
+  const tag = safe === repoName && safe ? "" : `-${crypto.createHash("sha1").update(repoName).digest("hex").slice(0, 6)}`;
+  return `${safe || "repo"}${tag}-${sha.slice(0, 12)}.tar.gz`;
+}
+export const workspaceFile = (sha: string) => `workspace-${sha.slice(0, 12)}.zip`;
+export const uiFile = (sha: string) => `dashboard-ui-${sha.slice(0, 12)}.tar.gz`;
+
+/** Every file a manifest names (the manifest itself not included). */
+export function manifestFiles(m: Manifest | null): string[] {
+  if (!m) return [];
+  return [...Object.values(m.repos), m.workspace, m.ui, m.installer].filter((e): e is ManifestEntry => !!e).map((e) => e.file);
+}
 
 export function readStamp(dir: string): Stamp | null {
   try {
@@ -258,7 +274,8 @@ export async function buildSnapshot(root: string, outDir: string, opts: { worksp
   const entry = (file: string, sha: string): ManifestEntry => ({ file, sha, size: fs.statSync(path.join(outDir, file)).size, builtAt });
   const repos: Record<string, ManifestEntry> = {};
   for (const t of plan.repos) {
-    const file = archiveName(t.name);
+    const file = archiveName(t.name, t.sha);
+    if (Object.values(repos).some((e) => e.file === file)) throw new Error(`Two repos would publish as ${file}; rename one in repos.json.`);
     await git(path.join(root, t.relativePath), [...AS_COMMITTED, "archive", "--format=tar.gz", "-o", path.join(outDir, file), t.sha]);
     repos[t.name] = entry(file, t.sha);
     log(`${t.name}: ${file} ${Math.round(repos[t.name].size / 1024)} KB, ${t.branch} at ${t.sha.slice(0, 10)}`);
@@ -268,13 +285,13 @@ export async function buildSnapshot(root: string, outDir: string, opts: { worksp
     const t = plan.workspace;
     const stamp = JSON.stringify({ name: "workspace", sha: t.sha, builtAt, source: "publish" });
     // The stamp rides inside the zip, so the Repos page can tell how old the workspace files are.
-    await git(root, [...AS_COMMITTED, "archive", "--format=zip", `--add-virtual-file=${STAMP_FILE}:${stamp}`, "-o", path.join(outDir, WORKSPACE_FILE), t.sha]);
-    workspace = entry(WORKSPACE_FILE, t.sha);
-    log(`workspace: ${WORKSPACE_FILE} ${Math.round(workspace.size / 1024)} KB, ${t.branch} at ${t.sha.slice(0, 10)}`);
+    await git(root, [...AS_COMMITTED, "archive", "--format=zip", `--add-virtual-file=${STAMP_FILE}:${stamp}`, "-o", path.join(outDir, workspaceFile(t.sha)), t.sha]);
+    workspace = entry(workspaceFile(t.sha), t.sha);
+    log(`workspace: ${workspace.file} ${Math.round(workspace.size / 1024)} KB, ${t.branch} at ${t.sha.slice(0, 10)}`);
   }
   let ui: ManifestEntry | null = null, installer: ManifestEntry | null = null;
   if (plan.workspace) {
-    if (await buildUi(root, outDir, plan.workspace.sha, log)) ui = entry(UI_FILE, plan.workspace.sha);
+    if (await buildUi(root, outDir, plan.workspace.sha, log)) ui = entry(uiFile(plan.workspace.sha), plan.workspace.sha);
     const snap = readRepos(root).snapshot;
     if (snap && canInstallFrom(snap) && opts.installer) {
       const file = installerName(opts.installer.name);
@@ -290,7 +307,6 @@ export async function buildSnapshot(root: string, outDir: string, opts: { worksp
   return manifest;
 }
 
-export const UI_FILE = "dashboard-ui.tar.gz";
 
 /** The dashboard's Node floor, from its package.json engines. */
 function nodeFloor(): string {
@@ -335,8 +351,8 @@ async function buildUi(root: string, outDir: string, sha: string, log: (t: strin
     fs.cpSync(path.join(dash, "dist"), path.join(stage, "dist"), { recursive: true });
     fs.writeFileSync(path.join(stage, "dist", ".prebuilt.json"), JSON.stringify({ sha, builtAt: new Date().toISOString() }) + "\n");
     const tar = process.platform === "win32" ? path.join(process.env.SystemRoot || "C:\\Windows", "System32", "tar.exe") : "tar";
-    await run(tar, ["-czf", path.join(outDir, UI_FILE), "-C", stage, "dist"], { windowsHide: true, timeout: 5 * 60_000 });
-    log(`dashboard UI: ${UI_FILE} ${Math.round(fs.statSync(path.join(outDir, UI_FILE)).size / 1024)} KB`);
+    await run(tar, ["-czf", path.join(outDir, uiFile(sha)), "-C", stage, "dist"], { windowsHide: true, timeout: 5 * 60_000 });
+    log(`dashboard UI: ${uiFile(sha)} ${Math.round(fs.statSync(path.join(outDir, uiFile(sha))).size / 1024)} KB`);
     return true;
   } finally { rmrf(stage); }
 }
@@ -363,9 +379,16 @@ export function writeManifest(outDir: string, manifest: Manifest) {
   fs.writeFileSync(path.join(outDir, MANIFEST), JSON.stringify(manifest, null, 2) + "\n");
 }
 
-/** Upload what buildSnapshot made: every archive, then the manifest, then prune old versions. */
+/**
+ * Upload what buildSnapshot made, then the manifest, and only then remove what the
+ * previous manifest named and the new one doesn't (file names carry the commit, so
+ * until the new manifest is up the old snapshot is untouched). Pruning old versions
+ * only touches the snapshot's own files, never other attachments at the source.
+ */
 export async function publishSnapshot(source: SnapshotSource, outDir: string, manifest: Manifest, log: (t: string) => void = () => {}): Promise<void> {
   if (!source.upload) throw new Error(`The ${source.label} source can't be published to from here; copy the files in ${outDir} to it yourself.`);
+  let previous: Manifest | null = null;
+  try { previous = (await fetchManifest(source, `publish:${manifest.builtAt}`, true)).manifest; } catch { /* first publish */ }
   // Only what this run built: entries carried over from the last publish are already at the source.
   const files = [...Object.values(manifest.repos), ...[manifest.workspace, manifest.ui, manifest.installer].filter((e): e is ManifestEntry => !!e)]
     .filter((f) => f.builtAt === manifest.builtAt && fs.existsSync(path.join(outDir, f.file)));
@@ -377,7 +400,13 @@ export async function publishSnapshot(source: SnapshotSource, outDir: string, ma
   for (const f of files) { log(`upload ${f.file}`); await source.upload(f.file, path.join(outDir, f.file)); }
   log(`upload ${MANIFEST}`);
   await source.upload(MANIFEST, path.join(outDir, MANIFEST));
-  if (source.prune) log(`pruned ${await source.prune()} old versions`);
+  dropManifestCache();
+  const keep = new Set([...manifestFiles(manifest), MANIFEST]);
+  const stale = new Set(manifestFiles(previous).filter((f) => !keep.has(f)));
+  if (stale.size && source.remove) {
+    for (const f of await source.list()) if (stale.has(f.name)) { log(`remove ${f.name} (no longer published)`); await source.remove(f); }
+  }
+  if (source.prune) log(`pruned ${await source.prune([...keep])} old versions`);
 }
 
 /** Shallow-clone repos.json repos that aren't here yet (publish --clone, for CI). */
