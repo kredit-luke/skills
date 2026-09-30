@@ -96,3 +96,6 @@
 .flag-on { background: var(--yellow-bg); border-color: var(--yellow); color: var(--yellow); }
 .es { font-family: var(--font-mono); font-size: 11px; color: var(--text-muted); margin-left: 6px; }
 .edit-diff { margin-top: 6px; max-height: 420px; overflow: auto; border: 1px solid var(--line-soft); border-radius: 6px; background: #fff; cursor: default; }
+.chip .resume, .agent-h .resume { color: var(--brand-700); font-size: 12px; }
+.chip .pass { color: var(--ink-soft); }
+.agent-h .pass { font-family: var(--font-mono); font-size: 11px; color: var(--ink-soft); background: var(--paper-2); border-radius: 6px; padding: 0 5px; flex: none; }
