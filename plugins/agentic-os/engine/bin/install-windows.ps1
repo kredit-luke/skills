@@ -213,6 +213,21 @@ Say 'Starting the dashboard'
 $port = 3333
 try { $ws = Get-Content (Join-Path $dir '.claude\dashboard\workspace.json') -Raw | ConvertFrom-Json; if ($ws.dashboard.port) { $port = [int]$ws.dashboard.port } } catch {}
 if ($env:DASHBOARD_PORT) { $port = [int]$env:DASHBOARD_PORT }
+function Port-Owner($p) {
+  # Who answers on the port: $null = nothing, else that dashboard's workspace folder ('' = something else).
+  $tcp = New-Object System.Net.Sockets.TcpClient
+  try { if (-not $tcp.ConnectAsync('127.0.0.1', $p).Wait(500) -or -not $tcp.Connected) { return $null } } catch { return $null } finally { $tcp.Close() }
+  try { $b = Invoke-RestMethod -UseBasicParsing -TimeoutSec 3 "http://localhost:$p/api/boot"; return [string]$b.workspaceRoot } catch { return '' }
+}
+function Same-Folder($a, $b) { try { return (Resolve-Path $a).Path.TrimEnd('\') -eq (Resolve-Path $b).Path.TrimEnd('\') } catch { return $false } }
+# Another workspace's dashboard (or anything else) on the port: take the next free one.
+$owner = Port-Owner $port
+if ($null -ne $owner -and -not ($owner -and (Same-Folder $owner $dir))) {
+  $taken = $port
+  for ($p = $port + 1; $p -lt $port + 50; $p++) { if ($null -eq (Port-Owner $p)) { $port = $p; break } }
+  if ($port -eq $taken) { Fail "Port $taken and the 49 after it are in use." }
+  Write-Host "   Port $taken is in use (another dashboard?); this one uses $port." -ForegroundColor Yellow
+}
 Push-Location $dir
 try { & $node (Join-Path $dir 'dashboard\bin\dashboard.mjs') start --port $port } finally { Pop-Location }
 if ($LASTEXITCODE -ne 0) { Fail 'The dashboard did not start (see the lines above).' }
@@ -222,7 +237,7 @@ for ($i = 0; $i -lt 60 -and -not $boot; $i++) {
   try { $boot = Invoke-RestMethod -UseBasicParsing "$base/api/boot" } catch { Start-Sleep -Seconds 1 }
 }
 if (-not $boot) { Fail "The dashboard did not answer on $base." }
-if ($boot.workspaceRoot -and ((Resolve-Path $boot.workspaceRoot).Path -ne (Resolve-Path $dir).Path)) { Fail "Port $port is another workspace's dashboard ($($boot.workspaceRoot)). Stop it, or set DASHBOARD_PORT, and run this again." }
+if ($boot.workspaceRoot -and -not (Same-Folder $boot.workspaceRoot $dir)) { Fail "Port $port is another workspace's dashboard ($($boot.workspaceRoot)). Stop it, or set DASHBOARD_PORT, and run this again." }
 $post = @{ 'x-dash-token' = $boot.token }
 try { Invoke-RestMethod -UseBasicParsing -Method Post -Headers $post -ContentType 'application/json' -Body '{"profile":"reader"}' "$base/api/profile" | Out-Null } catch {}
 try {
@@ -239,7 +254,7 @@ if ($env:AOS_NO_SHORTCUT) { } else { try {
   $desktop = [Environment]::GetFolderPath('Desktop')
   $lnk = (New-Object -ComObject WScript.Shell).CreateShortcut((Join-Path $desktop "$($cfg.name) dashboard.lnk"))
   $lnk.TargetPath = $node
-  $lnk.Arguments = '"' + (Join-Path $dir 'dashboard\bin\dashboard.mjs') + '" start --open'
+  $lnk.Arguments = '"' + (Join-Path $dir 'dashboard\bin\dashboard.mjs') + "`" start --open --port $port"
   $lnk.WorkingDirectory = $dir
   $lnk.Description = "Start the $($cfg.name) dashboard"
   $lnk.Save()
