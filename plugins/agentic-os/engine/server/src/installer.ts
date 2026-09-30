@@ -24,7 +24,15 @@ export interface InstallerConfig {
   sourceLabel: string;
   /** The dashboard's Node floor (package.json engines.node). */
   nodeMin: string;
+  /** workspace.json roles, asked for first; none = the reader profile, no question. */
+  roles?: InstallerRole[];
 }
+
+export interface InstallerRole { id: string; label: string; description: string; profile: string }
+
+/** The roles the installer asks about: the team's, when workspace.json has them. */
+export const installerRoles = (ws: { roles: InstallerRole[]; rolesConfigured: boolean }): InstallerRole[] =>
+  ws.rolesConfigured ? ws.roles.map(({ id, label, description, profile }) => ({ id, label, description, profile })) : [];
 
 /** The installer's file name for a workspace: Install-<name>.cmd, file-safe. */
 export const installerName = (name: string) => `Install-${name.replace(/[^\w.-]+/g, "-").replace(/^-+|-+$/g, "") || "workspace"}.cmd`;
@@ -38,8 +46,11 @@ export function renderInstaller(cfg: InstallerConfig): string {
   const s = cfg.source;
   const source = s.source === "confluence" ? { source: "confluence", site: String(s.site || ""), pageId: String(s.pageId || "") }
     : { source: "http", baseUrl: String(s.baseUrl || ""), auth: String(s.auth || "none") };
-  const json = JSON.stringify({ name: cfg.name, folder: cfg.folder, source, sourceLabel: cfg.sourceLabel, nodeMin: cfg.nodeMin }, null, 2);
-  if (/[^\x20-\x7e\n]/.test(json)) throw new Error("The installer's settings must be plain ASCII (check the workspace name).");
+  if (/[^\x20-\x7e]/.test(cfg.name + cfg.folder)) throw new Error("The installer's settings must be plain ASCII (check the workspace name).");
+  const roles = (cfg.roles || []).map(({ id, label, description, profile }) => ({ id, label, description, profile }));
+  // The script stays ASCII: ConvertFrom-Json turns \uXXXX back into the character (in a role's label, say).
+  const json = JSON.stringify({ name: cfg.name, folder: cfg.folder, source, sourceLabel: cfg.sourceLabel, nodeMin: cfg.nodeMin, ...(roles.length ? { roles } : {}) }, null, 2)
+    .replace(/[^\x20-\x7e\n]/g, (c) => `\\u${c.charCodeAt(0).toString(16).padStart(4, "0")}`);
   const header = [
     "@echo off",
     `rem ${cfg.name} workspace setup (agentic-os). Double-click to install or update; nothing needs administrator rights.`,

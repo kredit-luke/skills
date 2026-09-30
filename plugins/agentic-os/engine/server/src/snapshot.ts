@@ -26,7 +26,7 @@ import type { SnapshotFile, SnapshotSource } from "./snapshot-sources/index.ts";
 import { MANIFEST, parseManifest } from "./snapshot-sources/manifest.ts";
 import type { Manifest, ManifestEntry } from "./snapshot-sources/manifest.ts";
 import { extractTarGz } from "./tar.ts";
-import { canInstallFrom, installerName, renderInstaller } from "./installer.ts";
+import { canInstallFrom, installerName, renderInstaller, type InstallerRole } from "./installer.ts";
 
 const run = promisify(execFile);
 const MANIFEST_TTL_MS = 60_000;
@@ -266,7 +266,7 @@ export async function planSnapshot(root: string, opts: { fetch?: boolean; worksp
  * Build the files to publish into outDir: one <name>.tar.gz per planned repo (at the
  * planned commit), workspace.zip, and the manifest. Plans first unless given a plan.
  */
-export async function buildSnapshot(root: string, outDir: string, opts: { workspace?: boolean; fetch?: boolean; plan?: PublishPlan; log?: (t: string) => void; installer?: { name: string; sourceLabel: string } } = {}): Promise<Manifest> {
+export async function buildSnapshot(root: string, outDir: string, opts: { workspace?: boolean; fetch?: boolean; plan?: PublishPlan; log?: (t: string) => void; installer?: { name: string; sourceLabel: string; roles?: InstallerRole[] } } = {}): Promise<Manifest> {
   const log = opts.log || (() => {});
   const plan = opts.plan || await planSnapshot(root, { fetch: opts.fetch, workspace: opts.workspace, log });
   fs.mkdirSync(outDir, { recursive: true });
@@ -296,7 +296,7 @@ export async function buildSnapshot(root: string, outDir: string, opts: { worksp
     if (snap && canInstallFrom(snap) && opts.installer) {
       const file = installerName(opts.installer.name);
       fs.writeFileSync(path.join(outDir, file), renderInstaller({
-        name: opts.installer.name, folder: path.basename(path.resolve(root)), source: snap, sourceLabel: opts.installer.sourceLabel, nodeMin: nodeFloor(),
+        name: opts.installer.name, folder: path.basename(path.resolve(root)), source: snap, sourceLabel: opts.installer.sourceLabel, nodeMin: nodeFloor(), roles: opts.installer.roles,
       }));
       installer = entry(file, plan.workspace.sha);
       log(`installer: ${file}`);

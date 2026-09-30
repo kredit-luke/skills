@@ -127,6 +127,20 @@ test("scaffold + validate on a scratch workspace", () => {
   assert.match(w2, /apps\.api in worktree slot 1 would get port 8051, which apps\.api uses in main/);
   fs.writeFileSync(path.join(cfg, "workspace.json"), JSON.stringify({ name: "Test", worktrees: { ports: { base: "x" } } }));
   assert.match(validate(root).errors.join("\n"), /worktrees\.ports needs \{ base, slotSize \}/);
+
+  // Roles: a bad id and profile are errors; an output style that isn't built in or in .claude/output-styles/ is a warning.
+  fs.mkdirSync(path.join(root, ".claude", "output-styles"), { recursive: true });
+  fs.writeFileSync(path.join(root, ".claude", "output-styles", "product.md"), "---\nname: Product\nkeep-coding-instructions: true\n---\nPlain words.\n");
+  fs.writeFileSync(path.join(cfg, "workspace.json"), JSON.stringify({ name: "Test", roles: {
+    eng: { label: "Engineering" }, product: { profile: "reader", outputStyle: "Product" }, learn: { outputStyle: "Learning" },
+    "bad id": {}, ops: { profile: "viewer", outputStyle: "Business" },
+  } }));
+  const r3 = validate(root);
+  const e3 = r3.errors.join("\n"), w3 = r3.warnings.join("\n");
+  assert.match(e3, /roles\."bad id": an id is letters/);
+  assert.match(e3, /roles\.ops\.profile must be "developer" or "reader"/);
+  assert.match(w3, /roles\.ops\.outputStyle "Business" isn't built in or in \.claude\/output-styles\//);
+  assert.doesNotMatch(w3 + e3, /roles\.(product|learn|eng)\b/, "a team style by its frontmatter name, and a built-in one, are found");
 });
 
 test("repos.json: both field styles read the same; scaffold writes the standard names; validate flags bad entries", () => {

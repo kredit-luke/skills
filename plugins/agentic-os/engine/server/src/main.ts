@@ -47,11 +47,12 @@ import { Machine, openTerminal } from "./machine.ts";
 import { cloneStep, cloneTargets, readRepos, reposStatus } from "./repos.ts";
 import { buildSnapshot, carryOver, downloadStep, downloadTargets, dropManifestCache, fetchManifest, planSnapshot, publishSnapshot, snapshotStatus, writeManifest } from "./snapshot.ts";
 import type { PublishPlan } from "./snapshot.ts";
+import { installerRoles } from "./installer.ts";
 import type { SnapshotFile } from "./snapshot-sources/index.ts";
 import type { Manifest } from "./snapshot-sources/manifest.ts";
 import { SnapshotSources } from "./snapshot-sources/index.ts";
 import type { SnapshotSource } from "./snapshot-sources/index.ts";
-import { readProfile, reapplyProfile, setProfile } from "./profile.ts";
+import { readProfile, reapplyProfile, setRole } from "./profile.ts";
 import { DocSites, docSources } from "./docs.ts";
 import { DocsProviders } from "./docs-providers/index.ts";
 import { Memory } from "./memory.ts";
@@ -361,14 +362,24 @@ const machine = new Machine(MAIN_WORKSPACE_PATH);
 const docSites = new DocSites(MAIN_WORKSPACE_PATH);
 const docsProviders = new DocsProviders(() => ({ ledgerDir: LEDGER_DIR, issues: workspaceConfig().issues }));
 const snapshotSources = new SnapshotSources(() => ({ ledgerDir: LEDGER_DIR, issues: workspaceConfig().issues }));
-// A reader's hidden skills follow workspace.json if it changed while the dashboard was down.
-reapplyProfile(LEDGER_DIR, MAIN_WORKSPACE_PATH, workspaceConfig().profiles.reader.hiddenSkills);
+// Someone's hidden skills and output style follow workspace.json roles if they changed while the dashboard was down.
+reapplyProfile(LEDGER_DIR, MAIN_WORKSPACE_PATH);
 
 const isReader = () => readProfile(LEDGER_DIR).profile === "reader";
 
 function profileInfo(): ProfileInfo {
-  const p = readProfile(LEDGER_DIR);
-  return { profile: p.profile, chosen: p.chosen, reader: workspaceConfig().profiles.reader };
+  const ws = workspaceConfig();
+  const p = readProfile(LEDGER_DIR, ws.roles);
+  return {
+    profile: p.profile,
+    role: p.current.id,
+    chosen: p.chosen,
+    roleChosen: p.roleChosen,
+    configured: ws.rolesConfigured,
+    // Their own outputStyle in settings.local.json wins over the role's.
+    styleApplied: !p.current.outputStyle || p.outputStyle === p.current.outputStyle,
+    roles: ws.roles,
+  };
 }
 
 /** repos.json's snapshot source (null when there's no snapshot block); an unknown kind is a 400. */
@@ -755,7 +766,11 @@ function bootInfo(): Boot {
       // {id} placeholder; built from the adapter so the UI never hardcodes a tracker's URLs.
       urlTemplate: tracker.issueUrl("{id}"),
     },
-    profile: { current: readProfile(LEDGER_DIR).profile, hiddenPages: isReader() ? ws.profiles.reader.hiddenPages : [] },
+    profile: (() => {
+      const me = readProfile(LEDGER_DIR, ws.roles);
+      // ask: the team has roles and this person hasn't picked one yet (the first-start question).
+      return { current: me.profile, role: me.current.id, roleLabel: me.current.label, ask: ws.rolesConfigured && !me.roleChosen, hiddenPages: me.current.hiddenPages };
+    })(),
   };
 }
 
@@ -1021,8 +1036,8 @@ async function handleApi(req: http.IncomingMessage, res: http.ServerResponse, ur
       return sendJson(res, {
         ...deck.config(),
         stats: runs.stats(),
-        // A reader's hidden skills are off in Claude too (profile.ts); don't offer them here.
-        skills: isReader() ? deck.skills().filter((s) => !workspaceConfig().profiles.reader.hiddenSkills.includes(s.name)) : deck.skills(),
+        // A role's hidden skills are off in Claude too (profile.ts); don't offer them here.
+        skills: ((hidden) => deck.skills().filter((s) => !hidden.includes(s.name)))(readProfile(LEDGER_DIR).current.hiddenSkills),
         workspaces: listWorkspaces().map(({ slug, name, ticketId }) => ({ slug, name, ticketId })),
         options: { models: MODELS, efforts: EFFORTS, permissionModes: PERMISSION_MODES },
       });
@@ -1134,7 +1149,7 @@ async function handleApi(req: http.IncomingMessage, res: http.ServerResponse, ur
   if (p === "/api/issues/implement" || p === "/api/linear/implement") {
     const ticket = ticketParam(body.ticket);
     if (!ticket) return sendError(res, 400, "Invalid ticket id");
-    if (isReader()) return sendError(res, 403, "Implement isn't available in the reader profile (Settings → Profile).");
+    if (isReader()) return sendError(res, 403, `Implement isn't available to the ${readProfile(LEDGER_DIR).current.label} role (Settings → Role).`);
     // Only implement-state issues of issues.implementTeams do code work; refuse the rest.
     const known = ((await getIssues(false)).issues || []).find((i) => i.id === ticket);
     if (known && !known.canImplement) {
@@ -1208,9 +1223,10 @@ async function handleApi(req: http.IncomingMessage, res: http.ServerResponse, ur
       for (const t of targets) {
         try { await step(`Download ${t.repo.name} into ${t.repo.relativePath}`, downloadStep(MAIN_WORKSPACE_PATH, source, t)); } catch { failed.push(t.repo.name); }
       }
-      // Someone downloading code instead of cloning it reads it: default them to the reader profile once.
+      // Someone downloading code instead of cloning it reads it: default them to the reader profile once
+      // (the first reader role; if the team has roles, they're still asked which).
       if (!readProfile(LEDGER_DIR).chosen) {
-        try { setProfile(LEDGER_DIR, MAIN_WORKSPACE_PATH, "reader", workspaceConfig().profiles.reader.hiddenSkills); } catch {}
+        try { setRole(LEDGER_DIR, MAIN_WORKSPACE_PATH, { profile: "reader" }); } catch {}
       }
       if (failed.length) throw new Error(`Couldn't download ${failed.join(", ")}`);
     });
@@ -1241,7 +1257,7 @@ async function handleApi(req: http.IncomingMessage, res: http.ServerResponse, ur
       const out = fs.mkdtempSync(path.join(os.tmpdir(), "aos-publish-"));
       try {
         let manifest!: Manifest;
-        await step("Build the archives", async (log) => { manifest = await buildSnapshot(MAIN_WORKSPACE_PATH, out, { plan, log, installer: { name: workspaceConfig().name, sourceLabel: source.label } }); });
+        await step("Build the archives", async (log) => { manifest = await buildSnapshot(MAIN_WORKSPACE_PATH, out, { plan, log, installer: { name: workspaceConfig().name, sourceLabel: source.label, roles: installerRoles(workspaceConfig()) } }); });
         if (plan.skipped.length) {
           await step("Keep what's published for skipped repos", async (log) => {
             let previous: Manifest | null = null, files: SnapshotFile[] = [];
@@ -1262,9 +1278,11 @@ async function handleApi(req: http.IncomingMessage, res: http.ServerResponse, ur
     return sendJson(res, { job: pub }, 202);
   }
   if (p === "/api/profile") {
-    const profile = body.profile === "reader" ? "reader" : body.profile === "developer" ? "developer" : null;
-    if (!profile) return sendError(res, 400, 'profile must be "developer" or "reader".');
-    try { setProfile(LEDGER_DIR, MAIN_WORKSPACE_PATH, profile, workspaceConfig().profiles.reader.hiddenSkills); }
+    // { role } picks a role; { profile } (older installers) takes the first role on that profile.
+    const pick = typeof body.role === "string" ? { role: body.role }
+      : body.profile === "reader" || body.profile === "developer" ? { profile: body.profile as "reader" | "developer" } : null;
+    if (!pick) return sendError(res, 400, 'Send { role: "<id>" } (one of workspace.json roles).');
+    try { setRole(LEDGER_DIR, MAIN_WORKSPACE_PATH, pick); }
     catch (e) { return sendError(res, 400, e.message); }
     return sendJson(res, profileInfo());
   }

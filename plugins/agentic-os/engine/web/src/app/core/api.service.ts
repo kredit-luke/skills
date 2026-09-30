@@ -23,7 +23,7 @@ export class ApiService {
             token: '', platform: navigator.platform.toLowerCase().startsWith('win') ? 'win32' : 'darwin', workspaceRoot: '', version: '', port: 0,
             workspace: { name: '', title: 'Workspace Dashboard', logo: null, logoAlt: '', favicon: null, copy: {} },
             issues: { kind: 'none', label: 'Issues', configured: false, ticketPattern: '^[A-Z][A-Z0-9]*-\\d+$', urlTemplate: null },
-            profile: { current: 'developer', hiddenPages: [] },
+            profile: { current: 'developer', role: 'developer', roleLabel: 'Developer', ask: false, hiddenPages: [] },
           });
           return b;
         });

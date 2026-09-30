@@ -73,6 +73,24 @@ export function validate(root) {
     const brand = ws.brand || {};
     for (const key of ["logo", "favicon"]) if (brand[key] && !fs.existsSync(path.join(cfgDir, "brand", brand[key]))) err("workspace.json", `brand.${key} "${brand[key]}" isn't in .claude/dashboard/brand/`);
     if (ws.codeHost && ws.codeHost.kind && !["github", "none"].includes(ws.codeHost.kind)) warn("workspace.json", `codeHost.kind "${ws.codeHost.kind}": the Needs-you inbox only reads GitHub so far`);
+    if (ws.roles !== undefined) {
+      if (!ws.roles || typeof ws.roles !== "object" || Array.isArray(ws.roles)) err("workspace.json", 'roles must be an object: { "<id>": { "label": "…", "profile": "developer" | "reader" } }');
+      else {
+        // Output styles Claude Code has built in, else a .claude/output-styles/*.md whose name (frontmatter, else file name) matches.
+        const styles = new Set(["default", "explanatory", "learning"]);
+        const stylesDir = path.join(root, ".claude", "output-styles");
+        for (const f of (fs.existsSync(stylesDir) ? fs.readdirSync(stylesDir) : []).filter((f) => f.endsWith(".md"))) {
+          const m = /^---\r?\n[\s\S]*?^name:\s*["']?(.+?)["']?\s*$/m.exec(read(path.join(stylesDir, f)) || "");
+          styles.add((m ? m[1] : f.slice(0, -3)).toLowerCase());
+        }
+        for (const [id, r] of Object.entries(ws.roles)) {
+          if (!/^[a-z0-9][\w-]*$/i.test(id)) { err("workspace.json", `roles."${id}": an id is letters, digits, - and _ (the dashboard skips it)`); continue; }
+          if (!r || typeof r !== "object") { err("workspace.json", `roles.${id} must be an object`); continue; }
+          if (r.profile !== undefined && !["developer", "reader"].includes(r.profile)) err("workspace.json", `roles.${id}.profile must be "developer" or "reader" (it's treated as developer)`);
+          if (r.outputStyle && !styles.has(String(r.outputStyle).toLowerCase())) warn("workspace.json", `roles.${id}.outputStyle "${r.outputStyle}" isn't built in or in .claude/output-styles/ (Claude falls back to its default)`);
+        }
+      }
+    }
     const rule = ws.worktrees && ws.worktrees.ports;
     if (rule !== undefined && rule !== null) {
       const good = rule && Number.isInteger(rule.base) && rule.base > 0 && Number.isInteger(rule.slotSize) && rule.slotSize > 0 && rule.base + rule.slotSize < 65535;

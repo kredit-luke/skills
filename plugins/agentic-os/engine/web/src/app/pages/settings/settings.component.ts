@@ -27,19 +27,32 @@ interface NumberRow { key: LimitKey; label: string; help: string; min: number; m
     @if (error()) { <div class="warn-note">{{ error() }}</div> }
     @if (profile(); as p) {
       <div class="panel">
-        <div class="panel-h"><h2>Profile</h2></div>
+        <div class="panel-h"><h2>Role</h2></div>
         <div class="rows">
           <div class="row">
             <div class="lbl">
               <div class="t">How you use this workspace</div>
-              <div class="h">
-                Developer: everything. Reader: for reading and asking about the code without building or running it, so no Implement@if (p.reader.hiddenPages.length) {, no {{ p.reader.hiddenPages.join(', ') }} pages}@if (p.reader.hiddenSkills.length) {, and {{ p.reader.hiddenSkills.length }} skills turned off in Claude ({{ p.reader.hiddenSkills.join(', ') }})}. Only this machine changes.
-              </div>
+              @if (currentRole(); as r) {
+                <div class="h">
+                  @if (r.description) { {{ r.description }} }
+                  @if (r.profile === 'reader') {
+                    No Implement@if (r.hiddenPages.length) {, no {{ r.hiddenPages.join(', ') }} pages}@if (r.hiddenSkills.length) {, and {{ r.hiddenSkills.length }} skills turned off in Claude ({{ r.hiddenSkills.join(', ') }})}.
+                  } @else if (r.hiddenSkills.length) {
+                    {{ r.hiddenSkills.length }} skills turned off in Claude ({{ r.hiddenSkills.join(', ') }}).
+                  }
+                  @if (r.outputStyle) {
+                    @if (p.styleApplied) { Claude answers in the <b>{{ r.outputStyle }}</b> style. }
+                    @else { This role's <b>{{ r.outputStyle }}</b> style isn't used: you set <code>outputStyle</code> yourself in <code>.claude/settings.local.json</code>. }
+                  }
+                  Only this machine changes.
+                </div>
+              }
             </div>
             <div class="ctl">
-              <select [disabled]="profileSaving()" (change)="saveProfile($any($event.target).value)">
-                <option value="developer" [selected]="p.profile === 'developer'">Developer</option>
-                <option value="reader" [selected]="p.profile === 'reader'">Reader</option>
+              <select [disabled]="profileSaving()" (change)="saveRole($any($event.target).value)">
+                @for (r of p.roles; track r.id) {
+                  <option [value]="r.id" [selected]="r.id === p.role">{{ r.label }}</option>
+                }
               </select>
             </div>
           </div>
@@ -173,10 +186,12 @@ export class SettingsComponent implements OnInit {
     } catch { /* no repos.json source row */ }
   }
 
-  async saveProfile(profile: string): Promise<void> {
+  readonly currentRole = computed(() => { const p = this.profile(); return p ? p.roles.find((r) => r.id === p.role) || null : null; });
+
+  async saveRole(role: string): Promise<void> {
     this.profileSaving.set(true);
     try {
-      await this.api.post<ProfileInfo>('/api/profile', { profile });
+      await this.api.post<ProfileInfo>('/api/profile', { role });
       // The nav and every page read the profile at load.
       location.reload();
     } catch (e) {
