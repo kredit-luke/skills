@@ -139,6 +139,8 @@ export function buildThread(events: readonly any[], opts: BuildOptions = {}): Th
   const taskToTool = new Map<string, string>();
   /** Every card of one subagent, by its agent id, in pass order. */
   const passes = new Map<string, AgentCard[]>();
+  /** A parent id the stream never showed, tied to the agent whose resumed pass its messages turned out to be. */
+  const aliases = new Map<string, string>();
   /** Tool calls the CLI actually backgrounded (task_started is_backgrounded). */
   const backgrounded = new Set<string>();
   let n = 0;
@@ -193,10 +195,19 @@ export function buildThread(events: readonly any[], opts: BuildOptions = {}): Th
    * (A message queued while the agent is still busy starts no pass, so nothing moves.)
    */
   const currentPass = (parent: string | null): string | null => {
-    const c = parent ? cards.get(parent) : undefined;
-    const list = c && c.agentId ? passes.get(c.agentId) : undefined;
+    if (!parent) return parent;
+    const c = cards.get(parent);
+    let agentId = c ? c.agentId : aliases.get(parent);
+    if (!c && !agentId) {
+      // A parent this stream never showed (it starts after the Agent call): the messages are
+      // the running resumed pass's, when exactly one agent is resumed without its first pass here.
+      const orphans = agents.filter((a) => a.resumed && a.status === 'running' && a.agentId && !(passes.get(a.agentId) || []).some((p) => !p.resumed));
+      if (orphans.length === 1) { agentId = orphans[0].agentId; aliases.set(parent, agentId); }
+    }
+    const list = agentId ? passes.get(agentId) : undefined;
     const latest = list ? [...list].reverse().find((p) => p.status !== 'starting') : undefined;
-    return latest && c && latest.pass > c.pass ? latest.id : parent;
+    if (!latest) return parent;
+    return c ? (latest.pass > c.pass ? latest.id : parent) : latest.id;
   };
   const containerFor = (parent: string | null | undefined): ThreadItem[] => (parent ? card(parent).items : main);
   const finish = (c: AgentCard, status: AgentStatus) => { if (!FINISHED.includes(c.status) || status === 'failed') c.status = status; };
@@ -295,18 +306,9 @@ export function buildThread(events: readonly any[], opts: BuildOptions = {}): Th
             continue;
           }
           if (owner) owner.steps++;
-          const to = b.name === 'SendMessage' && b.input ? String(b.input.to || '') : '';
-          if (to && passes.has(to)) {
-            // Resuming a subagent this run already has: a card for this pass, right here.
-            const c = card(b.id);
-            const input = b.input || {};
-            c.resumed = true;
-            c.background = true;
-            c.description = oneLine(input.summary) || c.description;
-            c.prompt = typeof input.message === 'string' ? input.message : c.prompt;
-            link(c, to);
-            into.push({ kind: 'agent', key: 'agent:' + b.id, card: c });
-          } else if (b.name === 'Agent' || b.name === 'Task') {
+          // A SendMessage stays a plain row until the CLI confirms it started a pass (task_started,
+          // or a result naming resumedAgentId): one to an agent that's still busy is only a message.
+          if (b.name === 'Agent' || b.name === 'Task') {
             const c = card(b.id, owner ? owner.depth + 1 : 1);
             const input = b.input || {};
             c.agentType = input.subagent_type || c.agentType || 'agent';
@@ -351,6 +353,16 @@ export function buildThread(events: readonly any[], opts: BuildOptions = {}): Th
           continue;
         }
         const t = tools.get(b.tool_use_id);
+        if (t && t.name === 'SendMessage' && !b.is_error) {
+          // "Resuming agent …" before (or without) its task_started: that is a new pass.
+          const r = parseJson(text.trim());
+          if (r && r.success !== false && r.resumedAgentId) {
+            const rc = resumeCard(b.tool_use_id);
+            link(rc, r.resumedAgentId);
+            if (rc.status === 'starting') rc.status = 'running';
+            continue;
+          }
+        }
         if (t) { t.output = text; t.isError = !!b.is_error; t.done = true; }
       }
       continue;

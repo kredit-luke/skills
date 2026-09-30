@@ -251,14 +251,30 @@ describe('buildThread: subagents resumed with SendMessage', () => {
     expect(r.status).toBe('completed');
     expect(t2.items[0].kind).toBe('agent');
     expect(t2.items.some((i) => i.kind === 'tool' && i.name === 'SendMessage')).toBe(false);
+    // Its steps and report arrive under the first call's id, which this excerpt never showed: no ghost card.
+    expect(r.items.map((i) => i.kind === 'tool' && i.name)).toEqual(['Bash', 'Grep']);
+    expect(r.summary).toBe('message 24');
+    expect(t2.agents.some((a) => a.id === FIRST)).toBe(false);
   });
 
   it('a message sent while the agent is still busy starts no pass, so its steps stay with the pass that is running', () => {
     const send = events.findIndex((e) => e.type === 'assistant' && JSON.stringify(e).includes(RESUME1));
+    // Up to the SendMessage, then the CLI's ordinary answer for a delivered message, then the agent carries on.
+    const delivered = { type: 'user', uuid: 'd1', message: { content: [{ type: 'tool_result', tool_use_id: RESUME1, content: '{"success":true,"message":"Message delivered"}' }] } };
     const queued = { type: 'assistant', parent_tool_use_id: FIRST, uuid: 'q1', message: { content: [{ type: 'tool_use', id: 'toolu_q', name: 'Read', input: { file_path: 'a.ts' } }] } };
-    const t2 = buildThread([...events.slice(0, send + 1), queued], { runActive: true });
+    const t2 = buildThread([...events.slice(0, send + 1), delivered, queued], { runActive: true });
     expect(t2.agents.find((a) => a.id === FIRST)!.items.some((i) => i.kind === 'tool' && i.name === 'Read')).toBe(true);
-    expect(t2.agents.find((a) => a.id === RESUME1)!.items).toEqual([]);
+    expect(t2.agents.some((a) => a.id === RESUME1)).toBe(false, 'no phantom pass');
+    const row = t2.items.find((i) => i.kind === 'tool' && i.id === RESUME1);
+    expect(row && row.kind === 'tool' && row.done).toBe(true);
+  });
+
+  it('a "Resuming agent" result starts the pass even before its task_started', () => {
+    const at = events.findIndex((e) => e.subtype === 'task_started' && e.tool_use_id === RESUME1);
+    const t2 = buildThread([...events.slice(0, at), ...events.slice(at + 1)], { runActive: true });
+    const r = t2.agents.find((a) => a.id === RESUME1)!;
+    expect([r.resumed, r.pass, r.agentId]).toEqual([true, 2, 'ad4b466c915fda516']);
+    expect(r.items.map((i) => i.kind === 'tool' && i.name)).toEqual(['Bash', 'Grep']);
   });
 
   it('a refused resume fails with its message', () => {
