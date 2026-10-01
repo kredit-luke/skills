@@ -48,7 +48,7 @@ export class RolePromptComponent {
   constructor() {
     effect(() => {
       if (!this.api.boot()?.profile?.ask || sessionStorage.getItem('dash.role.later')) return;
-      this.api.get<ProfileInfo>('/api/profile').then((p) => this.roles.set(p.roles.length > 1 ? p.roles : null), () => {});
+      this.api.get<ProfileInfo>('/api/profile').then((p) => this.roles.set(p.roles.length ? p.roles : null), () => {});
     });
   }
 

@@ -80,7 +80,9 @@ export function validate(root) {
         const styles = new Set(["default", "explanatory", "learning"]);
         const stylesDir = path.join(root, ".claude", "output-styles");
         for (const f of (fs.existsSync(stylesDir) ? fs.readdirSync(stylesDir) : []).filter((f) => f.endsWith(".md"))) {
-          const m = /^---\r?\n[\s\S]*?^name:\s*["']?(.+?)["']?\s*$/m.exec(read(path.join(stylesDir, f)) || "");
+          // Only the frontmatter block: a "name:" line in the body isn't the style's name.
+          const front = /^---\r?\n([\s\S]*?)\r?\n---(?:\r?\n|$)/.exec(read(path.join(stylesDir, f)) || "");
+          const m = front && /^name:\s*["']?(.+?)["']?\s*$/m.exec(front[1]);
           styles.add((m ? m[1] : f.slice(0, -3)).toLowerCase());
         }
         for (const [id, r] of Object.entries(ws.roles)) {

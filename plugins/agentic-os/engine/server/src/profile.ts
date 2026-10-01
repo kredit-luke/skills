@@ -44,7 +44,8 @@ export interface ResolvedProfile extends ProfileState {
 }
 
 const SKILL_NAME = /^[\w.:-]+$/;
-const STYLE_NAME = /^[\w .:-]{1,80}$/;
+// Any letters (a team style can be "Français"), digits, spaces and _ . : -
+const STYLE_NAME = /^[\p{L}\p{N} _.:-]{1,80}$/u;
 
 const profileFile = (ledgerDir: string) => path.join(ledgerDir, "profile.json");
 const settingsFile = (root: string) => path.join(root, ".claude", "settings.local.json");

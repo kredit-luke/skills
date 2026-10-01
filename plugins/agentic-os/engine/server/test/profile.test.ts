@@ -144,6 +144,13 @@ test("a role's output style goes into settings.local.json; the person's own styl
   fs.writeFileSync(file, JSON.stringify({ outputStyle: "Learning" }));
   setRole(ledger, root, { role: "eng" }, roles);
   assert.equal(read().outputStyle, "Learning");
+
+  // A team style named outside ASCII is written too; a name with quotes isn't.
+  fs.writeFileSync(file, "{}");
+  setRole(ledger, root, { role: "fr" }, [...roles, role("fr", "reader", [], "Français")]);
+  assert.equal(read().outputStyle, "Français");
+  setRole(ledger, root, { role: "bad" }, [...roles, role("bad", "reader", [], 'x" y')]);
+  assert.equal("outputStyle" in read(), false);
 });
 
 test("a profile without a role still asks; an unknown role is refused; a role the team removed falls back to its profile", () => {

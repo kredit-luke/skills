@@ -50,8 +50,10 @@ interface NumberRow { key: LimitKey; label: string; help: string; min: number; m
             </div>
             <div class="ctl">
               <select [disabled]="profileSaving()" (change)="saveRole($any($event.target).value)">
+                <!-- Not picked yet: a placeholder, so picking the first role is a change too. -->
+                @if (p.configured && !p.roleChosen) { <option value="" disabled selected>Pick your role</option> }
                 @for (r of p.roles; track r.id) {
-                  <option [value]="r.id" [selected]="r.id === p.role">{{ r.label }}</option>
+                  <option [value]="r.id" [selected]="(p.roleChosen || !p.configured) && r.id === p.role">{{ r.label }}</option>
                 }
               </select>
             </div>
