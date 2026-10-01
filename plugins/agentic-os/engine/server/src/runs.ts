@@ -159,10 +159,14 @@ export class RunManager {
 
   list(): RunMeta[] {
     let files: string[] = [];
-    try { files = fs.readdirSync(this.runsDir).filter((f) => f.endsWith(".json")); } catch { return []; }
+    // Only <id>.json: runs/ also holds each run's <id>.baselines.json (run-changes.ts), which isn't a run.
+    try { files = fs.readdirSync(this.runsDir).filter((f) => /^[a-z0-9-]+\.json$/i.test(f)); } catch { return []; }
     const runs: RunMeta[] = [];
     for (const f of files) {
-      try { runs.push(normaliseMeta(JSON.parse(fs.readFileSync(path.join(this.runsDir, f), "utf-8")))); } catch {}
+      try {
+        const m = JSON.parse(fs.readFileSync(path.join(this.runsDir, f), "utf-8"));
+        if (m && typeof m.id === "string") runs.push(normaliseMeta(m));
+      } catch {}
     }
     return runs.sort((a, b) => lastActivity(b).localeCompare(lastActivity(a)));
   }

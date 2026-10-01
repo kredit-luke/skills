@@ -96,6 +96,10 @@ test("list() sorts by latest activity, not start time", () => {
     write({ id: "newer", startedAt: "2026-01-01T06:00:00Z", endedAt: "2026-01-01T06:05:00Z" });
     write({ id: "old-resumed", status: "waiting", startedAt: "2026-01-01T01:00:00Z", turnStartedAt: "2026-01-01T10:00:00Z", endedAt: "2026-01-01T02:00:00Z" });
     assert.deepEqual(runs.list().map((r) => r.id), ["old-resumed", "old-long", "newer"]);
+    // A run's Changes baselines live next to it; they aren't runs (they showed as an "undefined" row).
+    fs.writeFileSync(path.join(dir, "runs", "newer.baselines.json"), JSON.stringify({ repos: {} }));
+    fs.writeFileSync(path.join(dir, "runs", "stray.json"), JSON.stringify({ repos: {} }));
+    assert.deepEqual(runs.list().map((r) => r.id), ["old-resumed", "old-long", "newer"]);
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
   }
