@@ -214,7 +214,12 @@ export function resolvedSpecs(root: string) {
     if (raw.when && raw.when.exists && !fs.existsSync(path.join(root, raw.when.exists))) continue;
     if (raw.when && raw.when.os && ![].concat(raw.when.os).includes(OS_KEY)) continue;
     // "developer" / "reader": e.g. build tools only for people who build (profile.ts).
-    if (raw.when && raw.when.profile && ![].concat(raw.when.profile).includes(readProfile(LEDGER_DIR).profile)) continue;
+    if (raw.when && (raw.when.profile || raw.when.role)) {
+      const me = readProfile(LEDGER_DIR);
+      if (raw.when.profile && ![].concat(raw.when.profile).includes(me.profile)) continue;
+      // A role id from workspace.json roles: a check only one role needs.
+      if (raw.when.role && ![].concat(raw.when.role).includes(me.current.id)) continue;
+    }
     out.push(spec);
   }
   return { specs: out, error, configured: !!data };

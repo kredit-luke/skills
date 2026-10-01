@@ -9,6 +9,7 @@ import { WorkspaceTitleStrategy } from './core/title.strategy';
 import { IconComponent } from './shared/icon.component';
 import { LaunchDialogComponent } from './shared/launch-dialog.component';
 import { LogsDialogComponent, LogsService } from './shared/logs-dialog.component';
+import { RolePromptComponent } from './shared/role-prompt.component';
 import { SearchPaletteComponent } from './shared/search-palette.component';
 
 /** `group` starts a labelled section of the sidebar at that item. */
@@ -16,7 +17,7 @@ interface NavItem { path: string; label: string; icon: string; exact?: boolean; 
 
 @Component({
   selector: 'dash-root',
-  imports: [RouterOutlet, RouterLink, RouterLinkActive, IconComponent, LaunchDialogComponent, SearchPaletteComponent, LogsDialogComponent],
+  imports: [RouterOutlet, RouterLink, RouterLinkActive, IconComponent, LaunchDialogComponent, SearchPaletteComponent, LogsDialogComponent, RolePromptComponent],
   changeDetection: ChangeDetectionStrategy.OnPush,
   template: `
     <div class="shell">
@@ -59,6 +60,7 @@ interface NavItem { path: string; label: string; icon: string; exact?: boolean; 
     <dash-launch-dialog />
     <dash-search-palette />
     <dash-logs-dialog />
+    <dash-role-prompt />
     @if (toast.current(); as t) { <div class="toast" [class.err]="t.err" role="status">{{ t.msg }}</div> }
   `,
 })
@@ -89,7 +91,7 @@ export class AppComponent implements OnInit {
     { path: '/machine', label: 'Machine', icon: 'machine' },
     { path: '/settings', label: 'Settings', icon: 'settings' },
   ];
-  /** The nav minus the pages this person's profile hides; a hidden group's first page hands its heading on. */
+  /** The nav minus the pages this person's role hides; a hidden group's first page hands its heading on. */
   readonly visibleNav = computed<NavItem[]>(() => {
     const hidden = new Set(this.api.boot()?.profile?.hiddenPages || []);
     const out: NavItem[] = [];

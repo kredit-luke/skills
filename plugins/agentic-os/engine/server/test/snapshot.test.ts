@@ -362,6 +362,13 @@ test("the Windows installer: a .cmd that runs the PowerShell after its marker, w
   assert.ok(!/^__AOS_CONFIG__$/m.test(ps), "the placeholder line is filled in");
   assert.equal(installerName("Acme Corp / Eng"), "Install-Acme-Corp-Eng.cmd");
   assert.throws(() => renderInstaller({ name: "Café", folder: "x", source: { source: "http", baseUrl: "https://x" }, sourceLabel: "Web", nodeMin: "24.0.0" }), /plain ASCII/);
+
+  // The team's roles, asked for first; a label outside ASCII is escaped, and ConvertFrom-Json reads it back.
+  const roles = [{ id: "eng", label: "Engineering", description: "", profile: "developer" }, { id: "fin", label: "Finanças", description: "Invoices", profile: "reader" }];
+  const withRoles = renderInstaller({ name: "Acme", folder: "acme", source: { source: "http", baseUrl: "https://x" }, sourceLabel: "Web", nodeMin: "24.0.0", roles });
+  assert.ok(!/[^\x00-\x7f]/.test(withRoles), "still ASCII");
+  const cfg = JSON.parse(/ConvertFrom-Json @'\r\n([\s\S]*?)\r\n'@/.exec(withRoles)![1]);
+  assert.deepEqual(cfg.roles, roles);
 });
 
 test("publish adds the built dashboard UI only when dashboard/ is exactly the published commit, and the installer for sources it can download from", async () => {

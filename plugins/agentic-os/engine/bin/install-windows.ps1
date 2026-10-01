@@ -10,12 +10,13 @@
 #   3. The source's key (Confluence: email + API token; web server: its key), once
 #   4. workspace.zip + the built dashboard UI, extracted into the folder you pick
 #      (never over a git clone; your .claude\ledger and downloaded repos are kept)
-#   5. the dashboard started, the reader profile set, Download code started, and a
-#      desktop shortcut that starts it again
+#   5. the dashboard started, your role set (asked first when the team has roles;
+#      else the reader profile), Download code started, and a desktop shortcut that
+#      starts it again
 #
 # Windows PowerShell 5.1 compatible, ASCII only. For testing: AOS_DIR (the folder),
-# AOS_YES=1 (no questions), AOS_CONFLUENCE_KEY / AOS_HTTP_KEY (the key), DASHBOARD_PORT,
-# AOS_NO_SHORTCUT=1 (no desktop shortcut).
+# AOS_YES=1 (no questions), AOS_ROLE (a role id), AOS_CONFLUENCE_KEY / AOS_HTTP_KEY
+# (the key), DASHBOARD_PORT, AOS_NO_SHORTCUT=1 (no desktop shortcut).
 
 $ErrorActionPreference = 'Stop'
 $ProgressPreference = 'SilentlyContinue'   # Invoke-WebRequest is many times slower with the progress bar
@@ -64,6 +65,31 @@ if (Test-Path (Join-Path $dir '.git')) { Fail "$dir is a git clone. This install
 New-Item -ItemType Directory -Force -Path $dir | Out-Null
 $ledger = Join-Path $dir '.claude\ledger'
 New-Item -ItemType Directory -Force -Path $ledger | Out-Null
+
+# ---------------------------------------------------------------- role
+# Asked now, so the rest runs without questions. Sets how Claude answers and what the dashboard shows.
+$role = $null
+$roles = @($cfg.roles | Where-Object { $_ })
+if ($roles.Count -gt 0) {
+  $default = @(@($roles | Where-Object { $_.profile -eq 'reader' }) + $roles)[0]
+  if ($env:AOS_ROLE) { $role = $env:AOS_ROLE }
+  elseif ($env:AOS_YES) { $role = $default.id }
+  else {
+    Write-Host ''
+    Write-Host 'What is your role? Claude answers in a way that suits it (you can change it later in Settings).'
+    for ($i = 0; $i -lt $roles.Count; $i++) {
+      $line = "   $($i + 1). $($roles[$i].label)"
+      if ($roles[$i].description) { $line += " - $($roles[$i].description)" }
+      Write-Host $line
+    }
+    while (-not $role) {
+      $a = Ask 'Number' (1 + [array]::IndexOf($roles, $default))
+      $k = 0
+      if ([int]::TryParse("$a", [ref]$k) -and $k -ge 1 -and $k -le $roles.Count) { $role = $roles[$k - 1].id }
+      else { Write-Host "   Type a number from 1 to $($roles.Count)." -ForegroundColor Yellow }
+    }
+  }
+}
 
 # ---------------------------------------------------------------- Node.js
 Say 'Node.js'
@@ -239,7 +265,9 @@ for ($i = 0; $i -lt 60 -and -not $boot; $i++) {
 if (-not $boot) { Fail "The dashboard did not answer on $base." }
 if ($boot.workspaceRoot -and -not (Same-Folder $boot.workspaceRoot $dir)) { Fail "Port $port is another workspace's dashboard ($($boot.workspaceRoot)). Stop it, or set DASHBOARD_PORT, and run this again." }
 $post = @{ 'x-dash-token' = $boot.token }
-try { Invoke-RestMethod -UseBasicParsing -Method Post -Headers $post -ContentType 'application/json' -Body '{"profile":"reader"}' "$base/api/profile" | Out-Null } catch {}
+$pick = if ($role) { ConvertTo-Json -Compress @{ role = $role } } else { '{"profile":"reader"}' }
+try { Invoke-RestMethod -UseBasicParsing -Method Post -Headers $post -ContentType 'application/json' -Body $pick "$base/api/profile" | Out-Null }
+catch { if ($role) { Write-Host "   Could not set your role ($($_.Exception.Message)). The dashboard asks for it." -ForegroundColor Yellow } }
 try {
   Invoke-RestMethod -UseBasicParsing -Method Post -Headers $post -ContentType 'application/json' -Body '{}' "$base/api/snapshot/download" | Out-Null
   Done 'Downloading the code (the Repos page shows how far it is)'

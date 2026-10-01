@@ -127,6 +127,23 @@ test("scaffold + validate on a scratch workspace", () => {
   assert.match(w2, /apps\.api in worktree slot 1 would get port 8051, which apps\.api uses in main/);
   fs.writeFileSync(path.join(cfg, "workspace.json"), JSON.stringify({ name: "Test", worktrees: { ports: { base: "x" } } }));
   assert.match(validate(root).errors.join("\n"), /worktrees\.ports needs \{ base, slotSize \}/);
+
+  // Roles: a bad id and profile are errors; an output style that isn't built in or in .claude/output-styles/ is a warning.
+  fs.mkdirSync(path.join(root, ".claude", "output-styles"), { recursive: true });
+  fs.writeFileSync(path.join(root, ".claude", "output-styles", "product.md"), "---\nname: Product\nkeep-coding-instructions: true\n---\nPlain words.\n");
+  // No name in the frontmatter: the style is "terse" (its file name), not the "name:" line in its body.
+  fs.writeFileSync(path.join(root, ".claude", "output-styles", "terse.md"), "---\ndescription: Short\n---\nname: Body\n");
+  fs.writeFileSync(path.join(cfg, "workspace.json"), JSON.stringify({ name: "Test", roles: {
+    eng: { label: "Engineering" }, product: { profile: "reader", outputStyle: "Product" }, learn: { outputStyle: "Learning" },
+    "bad id": {}, ops: { profile: "viewer", outputStyle: "Business" }, short: { outputStyle: "terse" }, body: { outputStyle: "Body" },
+  } }));
+  const r3 = validate(root);
+  const e3 = r3.errors.join("\n"), w3 = r3.warnings.join("\n");
+  assert.match(e3, /roles\."bad id": an id is letters/);
+  assert.match(e3, /roles\.ops\.profile must be "developer" or "reader"/);
+  assert.match(w3, /roles\.ops\.outputStyle "Business" isn't built in or in \.claude\/output-styles\//);
+  assert.doesNotMatch(w3 + e3, /roles\.(product|learn|eng|short)\b/, "a team style by its frontmatter or file name, and a built-in one, are found");
+  assert.match(w3, /roles\.body\.outputStyle "Body" isn't built in/, "a name: line in the body doesn't count");
 });
 
 test("repos.json: both field styles read the same; scaffold writes the standard names; validate flags bad entries", () => {

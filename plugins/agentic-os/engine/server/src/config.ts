@@ -75,10 +75,59 @@ export interface WorkspaceConfig {
    * name. Readers never get Implement.
    */
   profiles: { reader: { hiddenPages: string[]; hiddenSkills: string[] } };
+  /**
+   * The roles people pick from (in order), each on the developer or reader profile.
+   * Without workspace.json `roles` there are just Developer and Reader
+   * (rolesConfigured false), and nobody is asked.
+   */
+  roles: RoleConfig[];
+  rolesConfigured: boolean;
+}
+
+/**
+ * One role in workspace.json `roles` ({ "<id>": { label, profile, ... } }). Its hidden
+ * pages and skills are its profile's (`profiles.reader` for readers) plus its own.
+ */
+export interface RoleConfig {
+  id: string;
+  label: string;
+  description: string;
+  profile: "developer" | "reader";
+  /** An output style (.claude/output-styles/<name>.md, or a built-in one) set for this person; null = Claude's default. */
+  outputStyle: string | null;
+  hiddenPages: string[];
+  hiddenSkills: string[];
 }
 
 /** Pages a reader has no use for (they start and stop apps, and worktrees). */
 export const DEFAULT_READER_HIDDEN_PAGES = ["apps", "workspaces"];
+
+const ROLE_ID = /^[a-z0-9][\w-]*$/i;
+const DEFAULT_ROLES = {
+  developer: { label: "Developer", profile: "developer", description: "Builds and runs the code: everything." },
+  reader: { label: "Reader", profile: "reader", description: "Reads and asks about the code without building or running it." },
+};
+
+function roleList(raw: unknown, reader: { hiddenPages: string[]; hiddenSkills: string[] }): RoleConfig[] {
+  const src = raw && typeof raw === "object" && !Array.isArray(raw) ? raw as Record<string, any> : {};
+  const union = (a: string[], b: string[]) => [...new Set([...a, ...b])];
+  const out: RoleConfig[] = [];
+  for (const [id, r] of Object.entries(src)) {
+    if (!ROLE_ID.test(id) || !r || typeof r !== "object") continue;
+    const profile = r.profile === "reader" ? "reader" : "developer";
+    const base = profile === "reader" ? reader : { hiddenPages: [], hiddenSkills: [] };
+    out.push({
+      id,
+      label: str(r.label, id),
+      description: str(r.description, ""),
+      profile,
+      outputStyle: strOrNull(r.outputStyle),
+      hiddenPages: union(base.hiddenPages, strList(r.hiddenPages, []).map((p) => p.replace(/^\/+/, ""))),
+      hiddenSkills: union(base.hiddenSkills, strList(r.hiddenSkills, [])),
+    });
+  }
+  return out.length || src === DEFAULT_ROLES ? out : roleList(DEFAULT_ROLES, reader);
+}
 
 const DEFAULT_ISSUES: IssuesConfig = {
   kind: "none",
@@ -148,6 +197,10 @@ export function workspaceConfig(): WorkspaceConfig {
   const ch = raw.codeHost || {};
   const brand = raw.brand || {};
   const reader = (raw.profiles && raw.profiles.reader) || {};
+  const readerProfile = {
+    hiddenPages: strList(reader.hiddenPages, DEFAULT_READER_HIDDEN_PAGES).map((p) => p.replace(/^\/+/, "")),
+    hiddenSkills: strList(reader.hiddenSkills, []),
+  };
   const name = str(raw.name, path.basename(WORKSPACE_ROOT));
   const kindDefaults = TRACKER_DEFAULTS[iss.kind] || {};
   return {
@@ -180,14 +233,13 @@ export function workspaceConfig(): WorkspaceConfig {
     },
     brand: { logo: strOrNull(brand.logo), logoAlt: strOrNull(brand.logoAlt) || name, favicon: strOrNull(brand.favicon) },
     copy: raw.copy && typeof raw.copy === "object" ? raw.copy : {},
-    profiles: {
-      reader: {
-        hiddenPages: strList(reader.hiddenPages, DEFAULT_READER_HIDDEN_PAGES).map((p) => p.replace(/^\/+/, "")),
-        hiddenSkills: strList(reader.hiddenSkills, []),
-      },
-    },
+    profiles: { reader: readerProfile },
+    roles: roleList(raw.roles, readerProfile),
+    rolesConfigured: hasRoles(raw.roles),
   };
 }
+
+const hasRoles = (v: unknown) => !!v && typeof v === "object" && !Array.isArray(v) && Object.keys(v).some((id) => ROLE_ID.test(id));
 
 /** The dashboard's port: --port, else DASHBOARD_PORT (per machine), else workspace.json, else 3333. */
 export function dashboardPort(argv = process.argv): number {

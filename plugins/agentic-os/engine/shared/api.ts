@@ -32,8 +32,11 @@ export interface Boot {
     copy: Record<string, any>;
   };
   issues: IssuesBoot;
-  /** This person's workspace profile; a reader doesn't see the developer pages (reload after changing it). */
-  profile: { current: 'developer' | 'reader'; hiddenPages: string[] };
+  /**
+   * This person's role and its profile; the role's pages are hidden (reload after changing it).
+   * `ask`: the team has roles and this person hasn't picked one (the first-start question).
+   */
+  profile: { current: 'developer' | 'reader'; role: string; roleLabel: string; ask: boolean; hiddenPages: string[] };
 }
 
 /** The configured issue tracker, as the UI needs it everywhere (badges, links, ticket ids). */
@@ -624,13 +627,32 @@ export interface PublishPlanResponse {
   skipped: { name: string; reason: string }[];
 }
 
-/** GET /api/profile ;  POST /api/profile { profile } → ProfileInfo. Per person (ledger). */
+/** A workspace.json role; its hidden pages and skills include its profile's (profiles.reader). */
+export interface RoleInfo {
+  id: string;
+  label: string;
+  description: string;
+  profile: 'developer' | 'reader';
+  /** The output style Claude answers this role in; null = Claude's default. */
+  outputStyle: string | null;
+  hiddenPages: string[];
+  hiddenSkills: string[];
+}
+
+/** GET /api/profile ;  POST /api/profile { role } → ProfileInfo. Per person (ledger). */
 export interface ProfileInfo {
   profile: 'developer' | 'reader';
-  /** False until someone chose (or a first snapshot download set it). */
+  /** The role in effect (the one picked, else the first on the profile). */
+  role: string;
+  /** False until someone chose (or a first snapshot download set the reader profile). */
   chosen: boolean;
-  /** For the reader profile: nav pages and skills it hides (workspace.json profiles.reader). */
-  reader: { hiddenPages: string[]; hiddenSkills: string[] };
+  /** They picked one of the team's roles. */
+  roleChosen: boolean;
+  /** workspace.json has roles (else there are just Developer and Reader). */
+  configured: boolean;
+  /** False when their own outputStyle in .claude/settings.local.json is kept instead of the role's. */
+  styleApplied: boolean;
+  roles: RoleInfo[];
 }
 
 // ---------------------------------------------------------------- explore
