@@ -165,7 +165,8 @@ export class RunManager {
     for (const f of files) {
       try {
         const m = JSON.parse(fs.readFileSync(path.join(this.runsDir, f), "utf-8"));
-        if (m && typeof m.id === "string") runs.push(normaliseMeta(m));
+        // The id must be the file's own name: a copy holding another run's id would list it twice.
+        if (m && typeof m.id === "string" && `${m.id}.json` === f) runs.push(normaliseMeta(m));
       } catch {}
     }
     return runs.sort((a, b) => lastActivity(b).localeCompare(lastActivity(a)));
