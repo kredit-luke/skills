@@ -74,4 +74,4 @@ git tag agentic-os-v0.4.0 && git push origin main --tags
 
 The tag matters: a workspace's `upgrade` fetches the version it installed (by tag) as the merge base, so a tag on an earlier commit makes the version files look like local edits.
 
-`tools/sync-engine.mjs <workspace>/dashboard` still copies a workspace's whole engine over `plugins/agentic-os/engine/` (it **refuses** if any file names something team-specific, `tools/denylist.txt`). It overwrites anything merged here that the workspace doesn't have, so upgrade that workspace to the latest release first, or use `/agentic-os:contribute` instead.
+`tools/sync-engine.mjs <workspace>/dashboard` still copies a workspace's whole engine over `plugins/agentic-os/engine/` (it **refuses** if any file names something team-specific on the maintainer's denylist: `AGENTIC_OS_DENYLIST`, else the gitignored `tools/denylist.local.txt`, format in `tools/denylist.example.txt`; the list names private teams, so it is never committed). It overwrites anything merged here that the workspace doesn't have, so upgrade that workspace to the latest release first, or use `/agentic-os:contribute` instead.

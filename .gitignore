@@ -1,2 +1,4 @@
 node_modules/
+# The maintainer's denylist names private teams and products (tools/sync-engine.mjs).
+tools/denylist.local.txt
 .DS_Store
