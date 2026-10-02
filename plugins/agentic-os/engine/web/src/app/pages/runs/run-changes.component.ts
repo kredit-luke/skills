@@ -63,6 +63,8 @@ export class RunChangesComponent implements OnDestroy {
   private readonly api = inject(ApiService);
   readonly runId = input.required<string>();
   readonly running = input(false);
+  /** The Changes tab is the one showing. Hidden, it still refreshes (the tab label's count), just slower. */
+  readonly shown = input(true);
   /** Number of changed files, for the tab label. */
   readonly count = output<number>();
 
@@ -75,16 +77,18 @@ export class RunChangesComponent implements OnDestroy {
   private timer: ReturnType<typeof setInterval> | null = null;
 
   constructor() {
-    // New run: reset and load. While it's running, refresh every 5 s (and the open diffs with it).
+    // New run: reset and load. While it's running, refresh every 5 s while shown and
+    // every 30 s while hidden (each refresh re-reads the run's events and runs git per repo).
     effect(() => {
       const id = this.runId();
       const running = this.running();
+      const shown = this.shown();
       untracked(() => {
         if (this.loadedFor !== id) { this.data.set(null); this.open.set(new Set()); this.diffs.set({}); this.loadedFor = id; }
         this.load();
       });
       if (this.timer) clearInterval(this.timer);
-      this.timer = running ? setInterval(() => this.load(), 5000) : null;
+      this.timer = running ? setInterval(() => this.load(), shown ? 5000 : 30000) : null;
     });
     effect(() => this.count.emit(this.fileCount()));
   }

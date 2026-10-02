@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { EventEmitter } from "node:events";
 import { parseQuestion, toolLabel, backgroundWarning, normaliseMeta, lastActivity, RunManager } from "../src/runs.ts";
 
 test("parseQuestion: {questions:[...]} with options", () => {
@@ -118,6 +119,45 @@ test("setFlag persists; a verdict clears the flag, clearing the verdict doesn't"
     runs.setVerdict("r1", "good");
     assert.equal(runs.get("r1")!.flagged, false);
     assert.throws(() => runs.setFlag("missing", true), /Unknown run/);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("list() is cached until a run is saved or a run file is added", () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "dash-runs-"));
+  try {
+    const changed: string[] = [];
+    const runs = new RunManager(dir, { onChange: (m) => changed.push(m.id) });
+    const write = (id: string) => fs.writeFileSync(path.join(dir, "runs", `${id}.json`), JSON.stringify({ id, status: "succeeded", permissionMode: "auto", startedAt: "2026-01-01T00:00:00Z" }));
+    write("r1");
+    assert.deepEqual(runs.list().map((r) => r.id), ["r1"]);
+    write("r2"); // a new file: seen by name, without waiting for the cache to expire
+    assert.equal(runs.list().length, 2);
+    runs.list()[0].label = "edited by a caller"; // callers get copies
+    assert.notEqual(runs.list()[0].label, "edited by a caller");
+    runs.setFlag("r1", true); // a save drops the cache and says so
+    assert.equal(runs.list().find((r) => r.id === "r1")!.flagged, true);
+    assert.deepEqual(changed, ["r1"]);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("subscribe() numbers events and skips the ones before Last-Event-ID", () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "dash-runs-"));
+  try {
+    const runs = new RunManager(dir);
+    fs.writeFileSync(path.join(dir, "runs", "r1.json"), JSON.stringify({ id: "r1", status: "succeeded", permissionMode: "auto", startedAt: "2026-01-01T00:00:00Z" }));
+    fs.writeFileSync(path.join(dir, "runs", "r1.events.jsonl"), ["a", "b", "c"].map((uuid) => JSON.stringify({ type: "human", uuid })).join("\n") + "\n");
+    const sent = (after?: number) => {
+      const res = Object.assign(new EventEmitter(), { chunks: [] as string[], write(s: string) { this.chunks.push(s); return true; } });
+      runs.subscribe("r1", res as any, after);
+      return res.chunks.filter((c: string) => c.includes("event: event\n")).map((c: string) => [c.match(/^id: (\d+)/)![1], JSON.parse(c.split("\ndata: ")[1]).uuid].join(":"));
+    };
+    assert.deepEqual(sent(), ["0:a", "1:b", "2:c"]);
+    assert.deepEqual(sent(1), ["2:c"]);
+    assert.deepEqual(sent(2), []);
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
   }

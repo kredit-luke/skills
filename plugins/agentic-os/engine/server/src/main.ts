@@ -41,6 +41,7 @@ import { Inbox } from "./inbox.ts";
 import { Usage } from "./usage.ts";
 import { UsageHistory } from "./usage-history.ts";
 import { AppLauncher, appsConfig } from "./apps.ts";
+import { LiveHub } from "./live.ts";
 import { Trackers } from "./issues/index.ts";
 import { readLinks, saveLink, deleteLink, readRepoReadme } from "./links.ts";
 import { Machine, openTerminal } from "./machine.ts";
@@ -333,6 +334,12 @@ async function getStatus() {
   return { workspaces, timestamp: new Date().toISOString() };
 }
 
+/** One probe pass at a time: callers that arrive while one is running share its result. */
+let statusInFlight: Promise<Awaited<ReturnType<typeof getStatus>>> | null = null;
+function sharedStatus() {
+  return (statusInFlight ||= getStatus().finally(() => { statusInFlight = null; }));
+}
+
 // ------------------------------------------------------------------ services
 
 fs.mkdirSync(LEDGER_DIR, { recursive: true });
@@ -341,9 +348,11 @@ const usageHistory = new UsageHistory();
 usageHistory.refresh().catch(() => {}); // first scan in the background so the Usage page opens fast
 const runChanges = new RunChanges(path.join(LEDGER_DIR, "runs"));
 const attachments = new Attachments(LEDGER_DIR);
+const live = new LiveHub(); // topics registered once every service exists, below
 const runs = new RunManager(LEDGER_DIR, {
-  onFinish: () => usage.invalidate(), // a finished turn moves the meters
+  onFinish: () => { usage.invalidate(); live.refresh("runs"); live.refresh("overview"); }, // a finished turn moves the meters and preset stats
   onTurnStart: (meta) => { runChanges.snapshot({ ...meta }).catch(() => {}); },
+  onChange: (meta) => live.publish("run", meta), // one run, not the whole list: a live run saves every 1.5 s
   attachments,
 });
 const deck = new Deck(MAIN_WORKSPACE_PATH, path.join(LEDGER_DIR, "settings.json"));
@@ -457,6 +466,26 @@ const launcher = new AppLauncher({
   resolvePort: async (ws, key, starting) => (await resolvePort(ws, key, starting)).port,
   ensurePorts,
 });
+launcher.onChange = () => { live.refresh("jobs"); live.refresh("status"); };
+
+/** /api/apps/jobs and the live `jobs` topic. */
+function jobsView() {
+  const cfg = appsConfig();
+  return { jobs: launcher.list(), stacks: cfg.stacks, groups: cfg.groups, defaultStack: cfg.defaultStack, hasSetup: !!cfg.setup, configured: cfg.configured, error: cfg.error };
+}
+
+/** /api/deck and the live `deck` topic. */
+function deckView() {
+  return {
+    ...deck.config(),
+    stats: runs.stats(),
+    // A role's hidden skills are off in Claude too (profile.ts); don't offer them here.
+    skills: ((hidden) => deck.skills().filter((s) => !hidden.includes(s.name)))(readProfile(LEDGER_DIR).current.hiddenSkills),
+    workspaces: listWorkspaces().map(({ slug, name, ticketId }) => ({ slug, name, ticketId })),
+    options: { models: MODELS, efforts: EFFORTS, permissionModes: PERMISSION_MODES },
+  };
+}
+
 claudeAuth().catch(() => {}); // sign-in state: runs check it before starting
 machine.get().catch(() => {}); // warm caches so the first page load has them
 usage.get().catch(() => {});
@@ -592,6 +621,15 @@ const scheduler = new Scheduler(deck, path.join(LEDGER_DIR, "scheduler-state.jso
   }
 });
 scheduler.start();
+
+// /api/events: the shared data each page used to poll. Cadences are the old poll
+// intervals; runs and jobs also refresh the moment they change (hooks above).
+live.register("jobs", jobsView, 10000);
+live.register("runs", () => ({ runs: runs.list().slice(0, 200), stats: runs.stats() }), 15000);
+live.register("overview", getOverview, 5000);
+live.register("status", sharedStatus, 5000);
+live.register("deck", deckView, 30000);
+live.register("inbox", () => inbox.get(false), 60000);
 
 let sessionsCache = { at: 0, data: [] as any[] };
 function listSessions(): Promise<any[]> {
@@ -936,7 +974,8 @@ async function handleApi(req: http.IncomingMessage, res: http.ServerResponse, ur
     if (p === "/api/explore/list") return sendJson(res, explore.list(q("path")));
     if (p === "/api/explore/file") return sendJson(res, explore.read(q("path")));
     if (p === "/api/boot") return sendJson(res, bootInfo());
-    if (p === "/api/status") return sendJson(res, await getStatus());
+    if (p === "/api/events") return live.subscribe(res);
+    if (p === "/api/status") return sendJson(res, await sharedStatus());
     if (p === "/api/overview") return sendJson(res, await getOverview());
     if (p === "/api/inbox") return sendJson(res, await inbox.get(force));
     if (p === "/api/usage") return sendJson(res, await usage.get(force));
@@ -976,10 +1015,7 @@ async function handleApi(req: http.IncomingMessage, res: http.ServerResponse, ur
       return sendJson(res, await snapshotStatus(MAIN_WORKSPACE_PATH, source, force));
     }
     if (p === "/api/profile") return sendJson(res, profileInfo());
-    if (p === "/api/apps/jobs") {
-      const cfg = appsConfig();
-      return sendJson(res, { jobs: launcher.list(), stacks: cfg.stacks, groups: cfg.groups, defaultStack: cfg.defaultStack, hasSetup: !!cfg.setup, configured: cfg.configured, error: cfg.error });
-    }
+    if (p === "/api/apps/jobs") return sendJson(res, jobsView());
     if (p === "/api/apps/log") {
       const job = q("job");
       const files = job ? launcher.log(job) : launcher.appLog(q("workspace"), q("app"));
@@ -1034,16 +1070,7 @@ async function handleApi(req: http.IncomingMessage, res: http.ServerResponse, ur
       const d = search.doc(String(q("id") || ""));
       return d ? sendJson(res, d) : sendError(res, 404, "Not in the index");
     }
-    if (p === "/api/deck") {
-      return sendJson(res, {
-        ...deck.config(),
-        stats: runs.stats(),
-        // A role's hidden skills are off in Claude too (profile.ts); don't offer them here.
-        skills: ((hidden) => deck.skills().filter((s) => !hidden.includes(s.name)))(readProfile(LEDGER_DIR).current.hiddenSkills),
-        workspaces: listWorkspaces().map(({ slug, name, ticketId }) => ({ slug, name, ticketId })),
-        options: { models: MODELS, efforts: EFFORTS, permissionModes: PERMISSION_MODES },
-      });
-    }
+    if (p === "/api/deck") return sendJson(res, deckView());
     if (p === "/api/runs") {
       const limit = Math.min(parseInt(q("limit") || "", 10) || 100, 500);
       return sendJson(res, { runs: runs.list().slice(0, limit), stats: runs.stats() });
@@ -1051,7 +1078,8 @@ async function handleApi(req: http.IncomingMessage, res: http.ServerResponse, ur
     if (runMatch && !runMatch[2]) {
       const meta = runs.get(runMatch[1]);
       if (!meta) return sendError(res, 404, "Unknown run");
-      return sendJson(res, { run: meta, events: runs.events(meta.id) });
+      // ?events=0: the run page gets the events from the stream's replay instead.
+      return sendJson(res, { run: meta, events: q("events") === "0" ? [] : runs.events(meta.id) });
     }
     if (runMatch && runMatch[2] === "changes") {
       const meta = runs.get(runMatch[1]);
@@ -1075,7 +1103,8 @@ async function handleApi(req: http.IncomingMessage, res: http.ServerResponse, ur
       if (!runs.get(runMatch[1])) return sendError(res, 404, "Unknown run");
       res.writeHead(200, { "Content-Type": "text/event-stream", "Cache-Control": "no-cache", Connection: "keep-alive", "X-Accel-Buffering": "no" });
       res.write(": connected\n\n");
-      runs.subscribe(runMatch[1], res);
+      const lastId = parseInt(String(req.headers["last-event-id"] ?? ""), 10); // a reconnect: send only what came after
+      runs.subscribe(runMatch[1], res, Number.isFinite(lastId) ? lastId : -1);
       const ping = setInterval(() => res.write(": ping\n\n"), 25000);
       res.on("close", () => clearInterval(ping));
       return;

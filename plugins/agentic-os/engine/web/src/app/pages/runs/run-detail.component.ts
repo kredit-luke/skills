@@ -173,13 +173,12 @@ export class RunDetailComponent implements OnDestroy {
     this.expanded.set(new Set());
     this.seen = new Set();
     this.stick = true;
-    // Subscribe first so nothing falls in the gap; the uuid dedupe covers the overlap.
+    // The stream replays the saved events, so this GET only needs the run (a big run's events are megabytes).
     this.connect(id);
     try {
-      const d = await this.api.get<RunDetail>('/api/runs/' + encodeURIComponent(id));
+      const d = await this.api.get<RunDetail>('/api/runs/' + encodeURIComponent(id) + '?events=0');
       if (seq !== this.loadSeq) return;
       this.setRun(d.run);
-      this.addEvents(d.events);
     } catch (e) {
       if (seq === this.loadSeq) this.loadError.set((e as Error).message);
       return;
@@ -203,10 +202,18 @@ export class RunDetailComponent implements OnDestroy {
       this.data.loadRuns();
     });
     es.onerror = () => {
-      if (this.es !== es || es.readyState !== EventSource.CLOSED) return; // the browser retries on its own
+      if (this.es !== es || es.readyState !== EventSource.CLOSED) return; // the browser retries on its own (resuming after the last event id)
       this.es = null;
       if (this.active()) setTimeout(() => { if (!this.es && this.runId() === id) this.connect(id); }, 3000);
+      else this.loadEvents(id); // a finished run won't be streamed again: fetch what the replay didn't send
     };
+  }
+
+  private async loadEvents(id: string): Promise<void> {
+    try {
+      const d = await this.api.get<RunDetail>('/api/runs/' + encodeURIComponent(id));
+      if (this.runId() === id) this.addEvents(d.events);
+    } catch { /* the error state is set by load() */ }
   }
 
   private closeStream(): void {

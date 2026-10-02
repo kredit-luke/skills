@@ -122,7 +122,7 @@
       }
     </div>
     <!-- Always mounted (hidden when not selected) so the tab label can show the file count. -->
-    <dash-run-changes [hidden]="view() !== 'changes'" [runId]="r.id" [running]="r.status === 'running'" (count)="changedFiles.set($event)" />
+    <dash-run-changes [hidden]="view() !== 'changes'" [runId]="r.id" [running]="r.status === 'running'" [shown]="view() === 'changes'" (count)="changedFiles.set($event)" />
 
     <dash-run-composer [run]="r" (changed)="onRunChanged($event)" />
   </div>

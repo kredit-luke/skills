@@ -33,6 +33,8 @@ import { promptWithAttachments, type Attachments } from "./attachments.ts";
 const RESULT_TEXT_MAX = 4000;
 const REPLY_MAX = 20000;
 const LABEL_MAX = 120;
+/** Backstop for run files edited outside this server (a file added or removed is caught by name). */
+const LIST_TTL_MS = 10000;
 const QUESTION_RE = /<<QUESTION>>([\s\S]*?)(?:<<\/QUESTION>>|$)/;
 const QUESTION_STRIP_RE = /\s*<<QUESTION>>[\s\S]*?(?:<<\/QUESTION>>|$)\s*/g;
 const SCHEDULE_TOOLS = new Set(["CronCreate", "ScheduleWakeup", "Monitor"]);
@@ -109,15 +111,22 @@ export class RunManager {
   subscribers = new Map<string, Set<ServerResponse>>();
   onFinish: (meta: RunMeta) => void;
   onTurnStart: (meta: RunMeta) => void;
+  /** A run's meta was written (any change the run list shows). */
+  onChange: (meta: RunMeta) => void;
   attachments: Attachments | null;
   private _cont = new Map<string, any>();
   private _paths = new Map<string, string>();
+  /** list() parses every run file; kept until a write, a file added or removed, or LIST_TTL_MS. */
+  private _listCache: { runs: RunMeta[]; names: string; at: number } | null = null;
+  /** Events in each streamed run's file: the SSE id of its next live event. */
+  private _counts = new Map<string, number>();
 
-  constructor(ledgerDir: string, { onFinish, onTurnStart, attachments }: { onFinish?: (meta: RunMeta) => void; onTurnStart?: (meta: RunMeta) => void; attachments?: Attachments } = {}) {
+  constructor(ledgerDir: string, { onFinish, onTurnStart, onChange, attachments }: { onFinish?: (meta: RunMeta) => void; onTurnStart?: (meta: RunMeta) => void; onChange?: (meta: RunMeta) => void; attachments?: Attachments } = {}) {
     this.runsDir = path.join(ledgerDir, "runs");
     fs.mkdirSync(this.runsDir, { recursive: true });
     this.onFinish = onFinish || (() => {});
     this.onTurnStart = onTurnStart || (() => {});
+    this.onChange = onChange || (() => {});
     this.attachments = attachments || null;
     this._markOrphansInterrupted();
   }
@@ -129,6 +138,8 @@ export class RunManager {
 
   private _write(meta: RunMeta) {
     fs.writeFileSync(this._metaPath(meta.id), JSON.stringify(meta, null, 2));
+    this._listCache = null;
+    try { this.onChange(meta); } catch {}
   }
 
   /** Persist and tell anyone watching. */
@@ -161,6 +172,10 @@ export class RunManager {
     let files: string[] = [];
     // Only <id>.json: runs/ also holds each run's <id>.baselines.json (run-changes.ts), which isn't a run.
     try { files = fs.readdirSync(this.runsDir).filter((f) => /^[a-z0-9-]+\.json$/i.test(f)); } catch { return []; }
+    const names = files.join("/");
+    const c = this._listCache;
+    // Copies, so a caller that edits a run can't change the cache.
+    if (c && c.names === names && Date.now() - c.at < LIST_TTL_MS) return c.runs.map((r) => ({ ...r }));
     const runs: RunMeta[] = [];
     for (const f of files) {
       try {
@@ -169,7 +184,9 @@ export class RunManager {
         if (m && typeof m.id === "string" && `${m.id}.json` === f) runs.push(normaliseMeta(m));
       } catch {}
     }
-    return runs.sort((a, b) => lastActivity(b).localeCompare(lastActivity(a)));
+    runs.sort((a, b) => lastActivity(b).localeCompare(lastActivity(a)));
+    this._listCache = { runs, names, at: Date.now() };
+    return runs.map((r) => ({ ...r }));
   }
 
   events(id: string): RunEvent[] {
@@ -347,28 +364,32 @@ export class RunManager {
 
   /**
    * SSE: replay the saved events, then stream live ones (and meta changes) until
-   * the client disconnects. The stream stays open across turns.
+   * the client disconnects. The stream stays open across turns. An event's SSE id
+   * is its index in the run's events; `after` (a reconnect's Last-Event-ID) skips
+   * the ones the client already has.
    */
-  subscribe(id: string, res: ServerResponse): boolean {
+  subscribe(id: string, res: ServerResponse, after = -1): boolean {
     const meta = this.get(id);
     if (!meta) return false;
     // Synchronous read + add: no event can be appended in between.
-    for (const ev of this.events(id)) res.write(`event: event\ndata: ${JSON.stringify(ev)}\n\n`);
+    const events = this.events(id);
+    for (let i = Math.max(0, after + 1); i < events.length; i++) res.write(`id: ${i}\nevent: event\ndata: ${JSON.stringify(events[i])}\n\n`);
+    this._counts.set(id, events.length);
     res.write(`event: meta\ndata: ${JSON.stringify(meta)}\n\n`);
     let set = this.subscribers.get(id);
     if (!set) this.subscribers.set(id, (set = new Set()));
     set.add(res);
     res.on("close", () => {
       set.delete(res);
-      if (!set.size) this.subscribers.delete(id);
+      if (!set.size) { this.subscribers.delete(id); this._counts.delete(id); }
     });
     return true;
   }
 
-  private _broadcast(id: string, event: string, data: unknown) {
+  private _broadcast(id: string, event: string, data: unknown, eventId: number | null = null) {
     const set = this.subscribers.get(id);
     if (!set) return;
-    const payload = `event: ${event}\ndata: ${JSON.stringify(data)}\n\n`;
+    const payload = `${eventId === null ? "" : `id: ${eventId}\n`}event: ${event}\ndata: ${JSON.stringify(data)}\n\n`;
     for (const res of set) res.write(payload);
   }
 
@@ -376,7 +397,11 @@ export class RunManager {
 
   private _append(meta: RunMeta, ev: RunEvent) {
     fs.appendFileSync(this._eventsPath(meta.id), JSON.stringify(ev) + "\n");
-    this._broadcast(meta.id, "event", ev);
+    // Counted only while someone is subscribed; subscribe() counts the file again.
+    const n = this._counts.get(meta.id);
+    if (n === undefined) return;
+    this._counts.set(meta.id, n + 1);
+    this._broadcast(meta.id, "event", ev, n);
   }
 
   /** `files` are a reply's attachments (the first turn's are already in `prompt`). */

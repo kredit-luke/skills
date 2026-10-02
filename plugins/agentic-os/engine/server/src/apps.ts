@@ -139,6 +139,8 @@ class AppLauncher {
   resolvePort: ((ws, key: string, starting: Set<string>) => Promise<number | null>) | null;
   ensurePorts: ((ws) => void) | null;
   jobs: any[];
+  /** A job was added or changed (status, steps, notes). */
+  onChange: (job) => void = () => {};
 
   /**
    * @param o.logDir    where job logs go
@@ -201,6 +203,7 @@ class AppLauncher {
   _save(job) {
     const { _log, ...pub } = job;
     try { fs.writeFileSync(path.join(this.logDir, `${job.id}.json`), JSON.stringify(pub, null, 2)); } catch {}
+    try { this.onChange(pub); } catch {}
   }
 
   /** Is this app usable in this workspace (repo cloned, allowed there)? */
