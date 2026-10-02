@@ -104,7 +104,7 @@ export function parseWorktreeList(text: string): GitWorktree[] {
 const WORKTREE_TTL_MS = 10_000;
 /** How long a list is trusted while the repo's .git/worktrees folder looks unchanged. */
 const WORKTREE_MAX_AGE_MS = 120_000;
-const worktreeCache = new Map<string, { at: number; stamp: string; list: GitWorktree[]; refreshing?: boolean }>();
+const worktreeCache = new Map<string, { at: number; stamp: string; list: GitWorktree[]; refreshing?: boolean; retryAt?: number }>();
 const worktreeRefreshing = new Set<Promise<void>>();
 
 /** Resolves once no background worktree refresh is running (tests: before deleting the repo it runs in). */
@@ -127,11 +127,15 @@ export function gitWorktrees(repoPath: string): GitWorktree[] {
     const age = Date.now() - hit.at;
     // No .git folder to watch (a worktree checkout, where .git is a file): the plain TTL.
     const stale = stamp === null ? age >= WORKTREE_TTL_MS : stamp !== hit.stamp || age >= WORKTREE_MAX_AGE_MS;
-    if (stale && !hit.refreshing) {
+    if (stale && !hit.refreshing && !(hit.retryAt && Date.now() < hit.retryAt)) {
       hit.refreshing = true;
       const done = new Promise<void>((resolve) => {
         execFile("git", WORKTREE_ARGS, { cwd: repoPath, encoding: "utf-8", timeout: 5000, windowsHide: true }, (err, text) => {
-          worktreeCache.set(repoPath, { at: Date.now(), stamp: stamp ?? "", list: err ? [] : linkedWorktrees(text, repoPath) });
+          // A failed refresh (a timeout on a busy machine) keeps the last good list and
+          // tries again after WORKTREE_TTL_MS.
+          worktreeCache.set(repoPath, err
+            ? { ...hit, refreshing: false, retryAt: Date.now() + WORKTREE_TTL_MS }
+            : { at: Date.now(), stamp: stamp ?? "", list: linkedWorktrees(text, repoPath) });
           resolve();
         });
       });

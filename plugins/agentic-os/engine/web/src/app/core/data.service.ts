@@ -84,10 +84,12 @@ export class DataService {
     es.onerror = () => {
       if (this.es !== es) return;
       this.api.connected.set(false);
-      // CONNECTING: the browser retries on its own (server restarting). CLOSED: it gave up; poll and try again later.
+      // Poll until the stream is back (onopen stops it): a stream that can't connect while
+      // plain requests work, such as behind a proxy that buffers it, still gets data.
+      this.startPolling();
+      // CONNECTING: the browser retries on its own. CLOSED: it gave up; try again later.
       if (es.readyState !== EventSource.CLOSED) return;
       this.es = null;
-      this.startPolling();
       this.retry = setTimeout(() => { this.retry = null; if (!document.hidden) this.connect(); }, 10000);
     };
   }

@@ -64,6 +64,10 @@ export class RunDetailComponent implements OnDestroy {
   private readonly box = viewChild<ElementRef<HTMLElement>>('transcript');
   private readonly titleInput = viewChild<ElementRef<HTMLInputElement>>('titleInput');
   private es: EventSource | null = null;
+  /** This run's stream has connected at least once (its replay carries the events). */
+  private streamOpened = false;
+  /** The full events were fetched over plain GET: done at most once per run. */
+  private eventsFetched = false;
   private seen = new Set<string>();
   private contTimer: ReturnType<typeof setInterval> | null = null;
   private tick: ReturnType<typeof setInterval> | null = null;
@@ -173,6 +177,8 @@ export class RunDetailComponent implements OnDestroy {
     this.expanded.set(new Set());
     this.seen = new Set();
     this.stick = true;
+    this.streamOpened = false;
+    this.eventsFetched = false;
     // The stream replays the saved events, so this GET only needs the run (a big run's events are megabytes).
     this.connect(id);
     try {
@@ -193,6 +199,7 @@ export class RunDetailComponent implements OnDestroy {
     this.es = es;
     es.addEventListener('event', (m) => { if (this.es === es) this.addEvents([JSON.parse((m as MessageEvent).data)]); });
     es.addEventListener('meta', (m) => { if (this.es === es) this.setRun(JSON.parse((m as MessageEvent).data)); });
+    es.onopen = () => { if (this.es === es) this.streamOpened = true; };
     // Older server: the stream ends when the run's process does.
     es.addEventListener('done', (m) => {
       if (this.es !== es) return;
@@ -202,14 +209,20 @@ export class RunDetailComponent implements OnDestroy {
       this.data.loadRuns();
     });
     es.onerror = () => {
-      if (this.es !== es || es.readyState !== EventSource.CLOSED) return; // the browser retries on its own (resuming after the last event id)
+      if (this.es !== es) return;
+      // Never connected (the stream is blocked while plain requests work): the transcript would stay empty.
+      if (!this.streamOpened) this.loadEvents(id);
+      if (es.readyState !== EventSource.CLOSED) return; // the browser retries on its own (resuming after the last event id)
       this.es = null;
       if (this.active()) setTimeout(() => { if (!this.es && this.runId() === id) this.connect(id); }, 3000);
       else this.loadEvents(id); // a finished run won't be streamed again: fetch what the replay didn't send
     };
   }
 
+  /** The run's events over plain GET, once per run: they can be megabytes, so not on every retry. */
   private async loadEvents(id: string): Promise<void> {
+    if (this.eventsFetched) return;
+    this.eventsFetched = true;
     try {
       const d = await this.api.get<RunDetail>('/api/runs/' + encodeURIComponent(id));
       if (this.runId() === id) this.addEvents(d.events);
