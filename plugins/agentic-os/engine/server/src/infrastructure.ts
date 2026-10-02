@@ -1,9 +1,12 @@
 /**
- * The Reference page: one Markdown doc in the workspace (reference.json `file`),
- * read on every request, with "quick facts" pulled out of it. Nothing is copied
- * by hand: facts come from the doc's header lines and tables, as described by
- * reference.json `groups`, and the page renders the whole doc below them. If a
- * table moves or is renamed, its group simply drops out; the full doc still shows.
+ * The Infrastructure page: one Markdown doc in the workspace about the team's
+ * infrastructure (infrastructure.json `file`: accounts, environments, URLs, databases,
+ * IPs, firewall rules), read on every request, with "quick facts" pulled out of it.
+ * Nothing is copied by hand: facts come from the doc's header lines and tables, as
+ * described by infrastructure.json `groups`, and the page renders the whole doc below
+ * them. If a table moves or is renamed, its group simply drops out; the full doc still
+ * shows. Workspaces set up before the rename have reference.json, read when
+ * infrastructure.json isn't there.
  *
  * A group is { title, section?, ... } plus ONE way to get its rows:
  *   rows:    [{ label, header }]                    "**Header:** value" lines
@@ -26,8 +29,9 @@ import { readConfigFile } from "./config.ts";
 export interface FactRow { label: string; value: string; note?: string }
 export interface FactGroup { title: string; section: string; rows: FactRow[] }
 
-export function reference(workspaceRoot: string) {
-  const { data, error } = readConfigFile("reference.json");
+export function infrastructure(workspaceRoot: string) {
+  let { data, error } = readConfigFile("infrastructure.json");
+  if (!data && !error) ({ data, error } = readConfigFile("reference.json"));
   const rel = data && typeof data.file === "string" ? data.file.replace(/\\/g, "/") : null;
   const empty = { available: false, configured: !!rel, error, title: data?.title || null, rel, file: null, markdown: "", updatedAt: null, lastUpdated: null, groups: [] };
   if (!rel || rel.split("/").some((p) => p === "..") || path.isAbsolute(rel)) return empty;

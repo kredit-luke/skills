@@ -13,3 +13,8 @@
 .doc .toc button:hover { border-color: var(--border-strong); color: var(--ink); }
 .doc .body { padding: 16px 20px 40px; }
 .ty { font-size: 12px; color: var(--text-muted); }
+.none { padding: 1.6rem 2rem; max-width: 760px; }
+.none h2 { font-size: 16px; margin: 0 0 8px; }
+.none p { margin: 0 0 8px; color: var(--ink-soft); line-height: 1.5; }
+.none .hint { margin: 12px 0; padding: 10px 12px; background: var(--paper-2); border-radius: 8px; font-size: 13px; line-height: 1.5; color: var(--ink); }
+.none .acts { display: flex; flex-wrap: wrap; gap: 8px; }

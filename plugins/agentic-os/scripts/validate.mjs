@@ -191,9 +191,11 @@ export function validate(root) {
     }
   }
 
-  // ---- reference.json
-  const ref = load("reference.json");
-  if (ref && ref.file && !dirExists(ref.file)) warn("reference.json", `file "${ref.file}" isn't in the workspace`);
+  // ---- infrastructure.json (reference.json before the page was renamed; still read when it's the only one)
+  const infraName = fs.existsSync(path.join(cfgDir, "infrastructure.json")) || !fs.existsSync(path.join(cfgDir, "reference.json")) ? "infrastructure.json" : "reference.json";
+  const infra = load(infraName);
+  if (infraName === "reference.json") warn("reference.json", "rename it to infrastructure.json (the Reference page is now Infrastructure)");
+  if (infra && infra.file && !dirExists(infra.file)) warn(infraName, `file "${infra.file}" isn't in the workspace`);
 
   // ---- links.json
   const links = load("links.json");

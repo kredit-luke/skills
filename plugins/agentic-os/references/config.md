@@ -49,7 +49,7 @@ Running it on company infrastructure for people without a dev machine (hosted mo
 | `codeHost.kind` | `github` | The Home page's Needs-you inbox (your PRs, reviews requested, red CI). `github` uses the `gh` CLI; `none` turns it off. |
 | `codeHost.ciRepos` / `ciBranch` | `[]` / `main` | Repos (`owner/name`) that get a CI health dot. |
 | `brand.logo` / `favicon` | none | Files in `brand/`. Use a light logo: the sidebar is dark. No logo = the `name` as text. |
-| `copy` | none | Wording overrides: `linksSub`, `docsSub`, `referenceSub`, `issuesSub`, `searchExamples` (array), `askPlaceholder`. |
+| `copy` | none | Wording overrides: `linksSub`, `docsSub`, `infrastructureSub`, `issuesSub`, `searchExamples` (array), `askPlaceholder`. |
 | `roles` | Developer, Reader | The roles people pick from, in order: `{ "<id>": { label, description?, profile?, outputStyle?, hiddenPages?, hiddenSkills? } }`. See **Roles** below. With `roles` set, everyone is asked which is theirs (the Windows installer asks first; the dashboard asks on first start); without it nobody is asked. |
 | `profiles.reader` | `{ hiddenPages: ["apps", "workspaces"], hiddenSkills: [] }` | What every role on the **reader** profile hides (people who read and ask about the code but don't build or run it); each role adds its own. `hiddenPages`: nav routes (Home also drops the tiles of a hidden page: Apps up, Workspaces). `hiddenSkills`: project skills. Readers never get Implement. |
 
@@ -158,7 +158,9 @@ Always include: `package-manager`, `node` (the dashboard itself needs it; floor 
 With a `provider` that has an adapter (`dashboard/server/src/docs-providers/`: `confluence` so far), an external source is also **searchable**: the Docs page searches it and shows its pages, global search (Ctrl+K) lists its matches, and Ask and the launch dialog get a **Use <name>** checkbox that tells the run to search it through the MCP connector and cite pages. Each person reads it with their own key, pasted on the Docs page (kept in `.claude/ledger/`), so they only see what their account can.
 - **Confluence**: `"provider": "confluence"`, `url` = `https://<site>.atlassian.net/wiki`, optional `spaces` (space keys; empty = every non-personal space). Key: `CONFLUENCE_EMAIL` + `CONFLUENCE_API_TOKEN`, the pasted `email:api-token`, or, when `issues.kind` is `jira` on the same site, the Jira key (nothing more to paste).
 
-## reference.json: the Reference page
+## infrastructure.json: the Infrastructure page
+
+The page is for **infrastructure only**: cloud accounts and projects, environments, public URLs, databases, egress IPs, firewall rules, DNS. Point it at a doc about something else and it misleads; leave the file out instead. Without it (or when its doc isn't in the workspace) the page explains what belongs there and asks someone with infrastructure access to have Claude fill it in. Workspaces set up before the rename have `reference.json`: the dashboard still reads it, validate asks for the rename, and a `reference` key in hiddenPages, the `/reference` URL and the `referenceSub` wording still work.
 
 ```json
 {
@@ -174,7 +176,7 @@ With a `provider` that has an adapter (`dashboard/server/src/docs-providers/`: `
 }
 ```
 
-The page shows the groups as click-to-copy fact tables, then the whole doc. Group kinds: `rows` (`header` = a `**Header:** value` line; `regex` = first capture group anywhere; `table`+`key`+`match`+`value` = one cell of a key/value table), `table` (one row per row of the pipe table under that exact heading; `label` may be a list of columns (first non-empty wins); `firstOf` keeps the first of a comma list; `noteFromHeading` notes which table it came from), `kv` (one row per key/value table), `extract` (every regex match in one column; merged by label). A group whose table is missing just doesn't show. No `groups` = just the doc. No doc yet? Offer to write one with the user (hosts, IPs, environments, accounts) and point `file` at it.
+The page shows the groups as click-to-copy fact tables, then the whole doc. Group kinds: `rows` (`header` = a `**Header:** value` line; `regex` = first capture group anywhere; `table`+`key`+`match`+`value` = one cell of a key/value table), `table` (one row per row of the pipe table under that exact heading; `label` may be a list of columns (first non-empty wins); `firstOf` keeps the first of a comma list; `noteFromHeading` notes which table it came from), `kv` (one row per key/value table), `extract` (every regex match in one column; merged by label). A group whose table is missing just doesn't show. No `groups` = just the doc. No doc yet? Only write one from real sources (infrastructure code such as Terraform, Helm, CloudFormation, Pulumi or Kubernetes manifests; cloud CLIs the user is signed in to; existing infrastructure docs): a `##` section with a table each for Accounts and projects, Environments, Public URLs, Databases, Egress IPs, Allowed inbound, DNS, never any secrets, and a closing list of what the sources couldn't answer. Nothing to write it from: leave `infrastructure.json` out.
 
 ## links.json: the Links page
 
@@ -190,7 +192,7 @@ The page shows the groups as click-to-copy fact tables, then the whole doc. Grou
 }
 ```
 
-A tile has one `url` or several `links`. `url`s are `https://…`, `http://…` or a dashboard page (`/docs`, `/reference`). `repo` (a top-level workspace folder) adds Info (its README); `edit: true` adds Make edits (a Claude run in that repo). Users add, edit and delete tiles from the page, for the team (this file) or just themselves (`.claude/ledger/links.local.json`). Seed it from discovery: each app's prod/staging URLs (deploy configs, README), the code host org, the tracker, CI, cloud consoles, monitoring.
+A tile has one `url` or several `links`. `url`s are `https://…`, `http://…` or a dashboard page (`/docs`, `/infrastructure`). `repo` (a top-level workspace folder) adds Info (its README); `edit: true` adds Make edits (a Claude run in that repo). Users add, edit and delete tiles from the page, for the team (this file) or just themselves (`.claude/ledger/links.local.json`). Seed it from discovery: each app's prod/staging URLs (deploy configs, README), the code host org, the tracker, CI, cloud consoles, monitoring.
 
 ## deck.json: skill cards, routines, limits, Issues view
 
@@ -271,7 +273,7 @@ Sources (`dashboard/server/src/snapshot-sources/`; adding one: `references/adapt
 
 ```json
 {
-  "workspace": { … }, "apps": { … }, "machine": { … }, "docs": { … }, "reference": { … }, "links": { … }, "deck": { … },
+  "workspace": { … }, "apps": { … }, "machine": { … }, "docs": { … }, "infrastructure": { … }, "links": { … }, "deck": { … },
   "repos": [{ "name": "API", "relativePath": "api", "remote": "https://github.com/acme/api.git", "dependencies": [] }],
   "skills": ["dashboard"],
   "claudeMd": true

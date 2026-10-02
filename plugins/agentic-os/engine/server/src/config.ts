@@ -7,7 +7,7 @@
  *   apps.json       apps, stacks and the app launcher (Apps / Workspaces pages)
  *   machine.json    requirement checks (Machine page), built from the check catalog
  *   docs.json       docs sources (Docs page, Search)
- *   reference.json  the Reference page's doc and quick facts
+ *   infrastructure.json  the Infrastructure page's doc and quick facts (was reference.json)
  *   links.json      Links page tiles (+ .claude/ledger/links.local.json, personal)
  *   deck.json       presets, routines, limits, defaults, issues view
  *
@@ -102,6 +102,12 @@ export interface RoleConfig {
 /** Pages a reader has no use for (they start and stop apps, and worktrees). */
 export const DEFAULT_READER_HIDDEN_PAGES = ["apps", "workspaces"];
 
+/** A page id from hiddenPages: no leading slash; "reference" is the Infrastructure page's old name. */
+function pageId(p: string): string {
+  const id = p.replace(/^\/+/, "");
+  return id === "reference" ? "infrastructure" : id;
+}
+
 const ROLE_ID = /^[a-z0-9][\w-]*$/i;
 const DEFAULT_ROLES = {
   developer: { label: "Developer", profile: "developer", description: "Builds and runs the code: everything." },
@@ -122,7 +128,7 @@ function roleList(raw: unknown, reader: { hiddenPages: string[]; hiddenSkills: s
       description: str(r.description, ""),
       profile,
       outputStyle: strOrNull(r.outputStyle),
-      hiddenPages: union(base.hiddenPages, strList(r.hiddenPages, []).map((p) => p.replace(/^\/+/, ""))),
+      hiddenPages: union(base.hiddenPages, strList(r.hiddenPages, []).map(pageId)),
       hiddenSkills: union(base.hiddenSkills, strList(r.hiddenSkills, [])),
     });
   }
@@ -198,7 +204,7 @@ export function workspaceConfig(): WorkspaceConfig {
   const brand = raw.brand || {};
   const reader = (raw.profiles && raw.profiles.reader) || {};
   const readerProfile = {
-    hiddenPages: strList(reader.hiddenPages, DEFAULT_READER_HIDDEN_PAGES).map((p) => p.replace(/^\/+/, "")),
+    hiddenPages: strList(reader.hiddenPages, DEFAULT_READER_HIDDEN_PAGES).map(pageId),
     hiddenSkills: strList(reader.hiddenSkills, []),
   };
   const name = str(raw.name, path.basename(WORKSPACE_ROOT));
