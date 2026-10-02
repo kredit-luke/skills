@@ -36,14 +36,16 @@ Read `references/discovery.md` for how to turn the inventory into questions. Kee
 3. **Apps**: which to put on the Apps page, how each starts, its port, and which run together as a stack (and in what order, e.g. database, then API, then web).
 4. **Docs**: where they live: folders/repos here, and/or Confluence, Notion, Google Drive, a wiki (URLs).
 5. **Brand**: which design-system candidate (show the top 2-3 with their source files), and the logo (a light version for the dark sidebar).
-6. **Links** worth a tile beyond what discovery found (cloud consoles, monitoring, vendor portals), and whether to seed a Reference doc (hosts, IPs, environments).
+6. **Links** worth a tile beyond what discovery found (cloud consoles, monitoring, vendor portals), and, if discovery found infrastructure code (Terraform, Helm, Kubernetes) or the user has cloud access, whether to write an Infrastructure doc from it.
 7. **Dashboard port**: the suggested free one (3333 unless taken).
 
 Don't ask what the inventory already answers with confidence; state it in the summary instead.
 
+The **Infrastructure** page is for infrastructure only (accounts, environments, public URLs, databases, egress IPs, firewall rules, DNS). Write its doc only from real sources (shape and rules in `references/config.md`, "infrastructure.json"), never pad it with app or product docs, and never put secrets in it. No infrastructure code and no cloud access: leave `infrastructure.json` out. The page then explains what goes there and asks someone with infrastructure access to have Claude fill it in, so say that in the summary.
+
 ## 3. Write the plan, confirm, scaffold
 
-Build a plan file (shape in `references/config.md`, "plan.json"): the contents of `workspace.json`, `apps.json`, `machine.json`, `docs.json`, `reference.json`, `links.json`, `deck.json`, plus `repos`, `skills: ["dashboard"]`, `claudeMd: true`. Show the user a short summary (apps with ports, tracker, docs, checks, port) and get a yes. Then:
+Build a plan file (shape in `references/config.md`, "plan.json"): the contents of `workspace.json`, `apps.json`, `machine.json`, `docs.json`, `infrastructure.json` (only with infrastructure info; see below), `links.json`, `deck.json`, plus `repos`, `skills: ["dashboard"]`, `claudeMd: true`. Show the user a short summary (apps with ports, tracker, docs, checks, port) and get a yes. Then:
 
 ```bash
 node "${CLAUDE_PLUGIN_ROOT}/scripts/scaffold.mjs" <workspace> --plan <scratch>/plan.json
@@ -70,7 +72,7 @@ node <workspace>/dashboard/bin/dashboard.mjs start      # foreground; first star
 node "${CLAUDE_PLUGIN_ROOT}/scripts/doctor.mjs" <workspace>
 ```
 
-Fix every validate error. Then open the dashboard and look at it (a browser tool if you have one; otherwise ask the user): Home, Links, Apps, Machine, Issues, Docs, Reference. Things that should be true: the logo and colors are theirs, Apps shows their apps with the right ports, Machine lists their toolchain (not Node-only, unless it is), Issues shows the connect card for their tracker (or their issues), Docs lists their sources. Fix config and reload; no restart is needed for config.
+Fix every validate error. Then open the dashboard and look at it (a browser tool if you have one; otherwise ask the user): Home, Links, Apps, Machine, Issues, Docs, Infrastructure. Things that should be true: the logo and colors are theirs, Apps shows their apps with the right ports, Machine lists their toolchain (not Node-only, unless it is), Issues shows the connect card for their tracker (or their issues), Docs lists their sources. Fix config and reload; no restart is needed for config.
 
 ## 6. Workflow skills (offer, don't assume)
 

@@ -255,3 +255,17 @@ test("line endings: copyTree writes LF, engine-diff shows only real edits in a C
   const lines = r.patch.split("\n").filter((l) => /^[-+][^-+]/.test(l));
   assert.deepEqual(lines, ["-b", "+B"]);
 });
+
+test("infrastructure.json: scaffold writes it (also from the old plan key); validate reads an old reference.json with a warning", () => {
+  const ws = fs.mkdtempSync(path.join(os.tmpdir(), "aos-infra-"));
+  const cfg = path.join(ws, ".claude", "dashboard");
+  scaffold(ws, { workspace: { name: "T" }, reference: { title: "Infra", file: "docs/infra.md" } });
+  assert.equal(JSON.parse(fs.readFileSync(path.join(cfg, "infrastructure.json"), "utf-8")).file, "docs/infra.md");
+  assert.ok(!fs.existsSync(path.join(cfg, "reference.json")));
+  assert.match(validate(ws).warnings.join("\n"), /infrastructure\.json: file "docs\/infra\.md" isn't in the workspace/);
+
+  fs.renameSync(path.join(cfg, "infrastructure.json"), path.join(cfg, "reference.json"));
+  const v = validate(ws).warnings.join("\n");
+  assert.match(v, /reference\.json: rename it to infrastructure\.json/);
+  assert.match(v, /reference\.json: file "docs\/infra\.md" isn't in the workspace/);
+});

@@ -5,7 +5,8 @@ export const routes: Routes = [
   { path: 'links', loadComponent: () => import('./pages/links/links.component').then((m) => m.LinksComponent), title: 'Links' },
   { path: 'docs', loadComponent: () => import('./pages/docs/docs.component').then((m) => m.DocsComponent), title: 'Docs' },
   { path: 'docs/:site', loadComponent: () => import('./pages/docs/docs.component').then((m) => m.DocsComponent), title: 'Docs' },
-  { path: 'reference', loadComponent: () => import('./pages/reference/reference.component').then((m) => m.ReferenceComponent), title: 'Reference' },
+  { path: 'infrastructure', loadComponent: () => import('./pages/infrastructure/infrastructure.component').then((m) => m.InfrastructureComponent), title: 'Infrastructure' },
+  { path: 'reference', redirectTo: 'infrastructure' }, // the page's old name, in bookmarks and link tiles
   { path: 'ask', loadComponent: () => import('./pages/ask/ask.component').then((m) => m.AskComponent), title: 'Ask' },
   { path: 'runs', loadComponent: () => import('./pages/runs/runs.component').then((m) => m.RunsComponent), title: 'Activity' },
   { path: 'runs/:id', loadComponent: () => import('./pages/runs/runs.component').then((m) => m.RunsComponent), title: 'Activity' },

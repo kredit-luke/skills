@@ -31,7 +31,7 @@ One round of AskUserQuestion (up to 4 questions) is usually enough; a second onl
 3. Docs outside the repos (Confluence space, Notion workspace, Drive folder URLs).
 4. Brand source + logo (top candidates with file paths), when there's more than one plausible choice.
 
-Also worth one question each when relevant: which repos are *not* part of this workspace; extra link tiles; whether they have (or want) an infrastructure reference doc; the dashboard port if 3333 is taken; teams/states for the board.
+Also worth one question each when relevant: which repos are *not* part of this workspace; extra link tiles; whether they have (or want) an Infrastructure doc (only from infrastructure code or cloud access: see config.md, "infrastructure.json"); the dashboard port if 3333 is taken; teams/states for the board.
 
 Don't ask about: things with strong evidence (say them in the summary), secrets (never collect them: the dashboard asks each person for their own tracker key, and machine checks only point at where secrets come from), or dashboard internals.
 

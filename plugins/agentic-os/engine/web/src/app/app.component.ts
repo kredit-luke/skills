@@ -77,7 +77,7 @@ export class AppComponent implements OnInit {
     { path: '/', label: 'Home', icon: 'home', exact: true },
     { path: '/links', label: 'Links', icon: 'links', group: 'Company' },
     { path: '/docs', label: 'Docs', icon: 'docs' },
-    { path: '/reference', label: 'Reference', icon: 'reference' },
+    { path: '/infrastructure', label: 'Infrastructure', icon: 'infrastructure' },
     { path: '/issues', label: 'Issues', icon: 'issues' },
     { path: '/ask', label: 'Ask', icon: 'ask', group: 'Claude' },
     { path: '/runs', label: 'Activity', icon: 'runs' },

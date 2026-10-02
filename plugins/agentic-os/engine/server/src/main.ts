@@ -61,7 +61,7 @@ import { DocsProviders } from "./docs-providers/index.ts";
 import { Memory } from "./memory.ts";
 import { Search } from "./search.ts";
 import { claudeAuth, claudeAuthCached, claudeEnv } from "./claude.ts";
-import { reference } from "./reference.ts";
+import { infrastructure } from "./infrastructure.ts";
 import { RunChanges } from "./run-changes.ts";
 import type { RunWorktree } from "./run-changes.ts";
 import { Attachments, MAX_ATTACHMENT_BYTES, contentTypeOf } from "./attachments.ts";
@@ -1079,7 +1079,7 @@ async function handleApi(req: http.IncomingMessage, res: http.ServerResponse, ur
       const r = readRepoReadme(MAIN_WORKSPACE_PATH, q("repo"));
       return r ? sendJson(res, r) : sendError(res, 404, "No README in that repo");
     }
-    if (p === "/api/reference") return sendJson(res, reference(MAIN_WORKSPACE_PATH));
+    if (p === "/api/infrastructure") return sendJson(res, infrastructure(MAIN_WORKSPACE_PATH));
     if (p === "/api/memory") return sendJson(res, memory.list());
     if (p === "/api/search") {
       const limit = Math.min(parseInt(q("limit") || "", 10) || 40, 100);

@@ -1,8 +1,8 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { quickFacts, table } from "../src/reference.ts";
+import { quickFacts, table } from "../src/infrastructure.ts";
 
-// One group of each kind reference.json supports (rows, table, extract, kv).
+// One group of each kind infrastructure.json supports (rows, table, extract, kv).
 const GROUPS = [
   {
     title: "Cloud",

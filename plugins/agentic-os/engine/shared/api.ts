@@ -466,13 +466,13 @@ export interface RepoReadme { repo: string; file: string; path: string; markdown
 
 export interface FactGroup { title: string; section: string; rows: { label: string; value: string; note?: string }[] }
 /**
- * GET /api/reference: the doc reference.json names, live. `groups` are quick
- * facts extracted from it by reference.json groups (hosts, IPs, ids, ...); `section` is the
+ * GET /api/infrastructure: the doc infrastructure.json names, live. `groups` are quick
+ * facts extracted from it by infrastructure.json groups (hosts, IPs, ids, ...); `section` is the
  * slug of the doc heading they come from (same slug renderMd gives headings).
  */
-export interface ReferenceResponse {
+export interface InfrastructureResponse {
   available: boolean;
-  /** reference.json names a doc. */
+  /** infrastructure.json (or the older reference.json) names a doc. */
   configured: boolean;
   error: string | null;
   title: string | null;

@@ -11,7 +11,7 @@
  *     "apps":      { ...apps.json },
  *     "machine":   { ...machine.json },
  *     "docs":      { ...docs.json },
- *     "reference": { ...reference.json },
+ *     "infrastructure": { ...infrastructure.json },  only when the team has infrastructure info ("reference" is the old key)
  *     "links":     { ...links.json },
  *     "deck":      { ...deck.json },
  *     "repos":     [{ "name", "relativePath", "remote", "layer"?, "dependencies"? }],   written as repos.json
@@ -33,7 +33,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { ENGINE_DIR, REPOS_SCHEMA, SOURCE_REPO, TAG_PREFIX, TEMPLATES_DIR, args, copyTree, engineVersion, isMain, normalizeRepo, readJson, writeJson } from "./lib.mjs";
 
-const CONFIG_FILES = { workspace: "workspace.json", apps: "apps.json", machine: "machine.json", docs: "docs.json", reference: "reference.json", links: "links.json", deck: "deck.json" };
+const CONFIG_FILES = { workspace: "workspace.json", apps: "apps.json", machine: "machine.json", docs: "docs.json", infrastructure: "infrastructure.json", links: "links.json", deck: "deck.json" };
 
 // What each file is, for its $comment (kept short; the full schema is references/config.md).
 const COMMENTS = {
@@ -41,7 +41,7 @@ const COMMENTS = {
   apps: "Apps and stacks for the Apps / Workspaces pages: folder, port, and how each starts ({ cmd } or your launcher script). Schema: references/config.md.",
   machine: "Machine page checks, from the catalog in dashboard/server/src/machine-catalog.ts. Schema: references/config.md.",
   docs: "Docs page sources: site repos, Markdown folders, or external (Confluence, Notion, ...). Schema: references/config.md.",
-  reference: "Reference page: a Markdown doc in the workspace and the quick facts to pull out of it. Schema: references/config.md.",
+  infrastructure: "Infrastructure page: a Markdown doc in the workspace about the team's infrastructure (accounts, environments, URLs, databases, IPs, firewall rules) and the quick facts to pull out of it. Schema: references/config.md.",
   links: "Links page tiles for the team (personal ones: .claude/ledger/links.local.json). Edit them from the Links page. Schema: references/config.md.",
   deck: "Skill cards, routines, limits, default model and the Issues view. Schema: references/config.md.",
 };
@@ -75,6 +75,7 @@ export function scaffold(root, plan, { force = false, dry = false } = {}) {
   report.wrote.push(".claude/dashboard/engine.json");
 
   // ---- config
+  if (plan.reference && !plan.infrastructure) plan.infrastructure = plan.reference; // the Infrastructure page's old name
   for (const [key, name] of Object.entries(CONFIG_FILES)) {
     if (!plan[key]) continue;
     const data = { $comment: COMMENTS[key], ...plan[key] };
