@@ -24,6 +24,7 @@ export class ApiService {
             workspace: { name: '', title: 'Workspace Dashboard', logo: null, logoAlt: '', favicon: null, copy: {} },
             issues: { kind: 'none', label: 'Issues', configured: false, ticketPattern: '^[A-Z][A-Z0-9]*-\\d+$', urlTemplate: null },
             profile: { current: 'developer', role: 'developer', roleLabel: 'Developer', ask: false, hiddenPages: [] },
+            hosted: null,
           });
           return b;
         });
@@ -33,6 +34,8 @@ export class ApiService {
 
   /** The workspace's name, title and brand (workspace.json). */
   readonly workspace = computed(() => this.boot()?.workspace || null);
+  /** Hosted mode: running in a container behind a login proxy, so nothing opens on "this computer". */
+  readonly hosted = computed(() => !!this.boot()?.hosted);
   /** The issue tracker's name for labels: "Linear", "Jira", ... */
   readonly trackerLabel = computed(() => this.boot()?.issues?.label || 'Issues');
 

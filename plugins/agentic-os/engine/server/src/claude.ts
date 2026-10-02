@@ -125,6 +125,9 @@ let resolved: { file: string; shim: boolean } | null = null;
  */
 function resolveClaude(): { file: string; shim: boolean } {
   if (resolved) return resolved;
+  // A container image (hosted mode) or a test can pin the exact CLI.
+  const pinned = (process.env.DASHBOARD_CLAUDE_BIN || "").trim();
+  if (pinned) return (resolved = { file: pinned, shim: /\.(cmd|bat)$/i.test(pinned) });
   if (process.platform !== "win32") return (resolved = { file: "claude", shim: false });
   try {
     const hits = execFileSync("where", ["claude"], { encoding: "utf-8", windowsHide: true, stdio: ["ignore", "pipe", "ignore"] })

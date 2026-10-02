@@ -34,7 +34,7 @@ A run is a conversation; **each turn is a new `claude -p` process**:
 
 ## Security
 
-The server can start processes as the user, so no other origin may reach it: it binds 127.0.0.1 only; the `Host` header must be `localhost`/`127.0.0.1` on its port (DNS rebinding); foreign `Origin`s get 403; every POST needs the per-install token from `/api/boot` (same-origin only). Install buttons and app commands come only from config files, never from the browser (it sends an id). Explore and brand/file serving refuse paths outside their roots and `.git`. Tracker keys never go to the browser.
+The server can start processes as the user, so no other origin may reach it. Hosted mode (`hosted.ts`, [hosting.md](hosting.md)) replaces the loopback and Host/Origin checks with its own: the login proxy's secret on every request, the public Host and Origin, and the signed-in email matching the container's owner. Locally it binds 127.0.0.1 only; the `Host` header must be `localhost`/`127.0.0.1` on its port (DNS rebinding); foreign `Origin`s get 403; every POST needs the per-install token from `/api/boot` (same-origin only). Install buttons and app commands come only from config files, never from the browser (it sends an id). Explore and brand/file serving refuse paths outside their roots and `.git`. Tracker keys never go to the browser.
 
 ## Pitfalls we've hit
 

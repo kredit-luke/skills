@@ -81,22 +81,22 @@ type View = 'page' | 'text';
               <div class="meta">{{ site()?.name }} · {{ p.rel }}</div>
               <h2>{{ p.title }}</h2>
               <div class="acts">
-                @if (p.format === 'html') {
+                @if (p.format === 'html' && !api.hosted()) {
                   <span class="seg">
                     <button type="button" [class.on]="view() === 'page'" (click)="setView('page')">Page</button>
                     <button type="button" [class.on]="view() === 'text'" (click)="setView('text')">Text</button>
                   </span>
                 }
                 @if (p.live) { <a class="btn sm" [href]="p.live" target="_blank" rel="noopener">Live page ↗</a> }
-                @if (doc()?.file) { <a class="btn ghost sm" [href]="vscode(doc()!.file!)">Open in VS Code</a> }
+                @if (doc()?.file && !api.hosted()) { <a class="btn ghost sm" [href]="vscode(doc()!.file!)">Open in VS Code</a> }
                 <button class="btn ghost sm" (click)="ask(p)">Ask Claude about this</button>
                 <button class="btn ghost sm" (click)="changes()" title="Start a Claude run that edits this repo (it pulls the latest main first)">Make edits</button>
               </div>
-              @if (view() === 'text' && p.sections.length > 2) {
+              @if (shown() === 'text' && p.sections.length > 2) {
                 <div class="toc">@for (s of p.sections; track $index) { <button type="button" (click)="jump(s)">{{ s }}</button> }</div>
               }
             </div>
-            @if (p.format === 'html' && view() === 'page') {
+            @if (p.format === 'html' && shown() === 'page') {
               @if (frameUrl()) { <iframe class="frame" [src]="frameUrl()" [title]="p.title"></iframe> }
               @else { <div class="empty">{{ frameError() || 'Starting the local preview…' }}</div> }
             } @else {
@@ -130,6 +130,8 @@ export class DocsComponent implements OnInit {
   readonly doc = signal<SearchDoc | null>(null);
   readonly q = signal('');
   readonly view = signal<View>('page');
+  /** What's shown: the chosen view, except hosted, where there's no local preview server to frame. */
+  readonly shown = computed<View>(() => (this.api.hosted() ? 'text' : this.view()));
   readonly frameUrl = signal<SafeResourceUrl | null>(null);
   readonly frameError = signal<string | null>(null);
   private previewBase: Record<string, string> = {};
@@ -171,7 +173,7 @@ export class DocsComponent implements OnInit {
       this.api.get<SearchDoc>('/api/search/doc?id=' + encodeURIComponent(p.id))
         .then((d) => { if (this.current()?.id === p.id) this.doc.set(d); })
         .catch(() => {});
-      if (p.format === 'html' && untracked(this.view) === 'page') this.showFrame(p);
+      if (p.format === 'html' && untracked(this.shown) === 'page') this.showFrame(p);
     });
   }
 
@@ -184,7 +186,7 @@ export class DocsComponent implements OnInit {
     this.view.set(v);
     try { localStorage.setItem('dash.docs.view', v); } catch {}
     const p = this.current();
-    if (p && v === 'page') this.showFrame(p);
+    if (p && this.shown() === 'page') this.showFrame(p);
   }
 
   /** HTML pages render as the real page, served by the site's local preview server. */

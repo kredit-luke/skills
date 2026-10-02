@@ -288,8 +288,9 @@ export class SearchPaletteComponent {
     if (r.source === 'issue' && this.implementable(r)) a.push({ act: 'implement', label: 'Implement' });
     if (r.source === 'issue') a.push({ act: 'explain', label: 'Explain' });
     if (r.source === 'run') a.push({ act: 'open-run', label: 'Open run' });
-    if (r.source === 'doc' && r.extra['kind'] === 'site') a.push({ act: 'preview', label: 'Preview local' });
-    if (file) a.push({ act: 'link', label: 'Open in VS Code', href: file });
+    // Hosted: no local preview server or editor on the person's side.
+    if (r.source === 'doc' && r.extra['kind'] === 'site' && !this.api.hosted()) a.push({ act: 'preview', label: 'Preview local' });
+    if (file && !this.api.hosted()) a.push({ act: 'link', label: 'Open in VS Code', href: file });
     if (r.ref) a.push({ act: 'ask', label: 'Ask Claude about this' });
     if (r.source === 'doc') a.push({ act: 'changes', label: 'Make edits' });
     if (r.source === 'memory') a.push({ act: 'mem-delete', label: 'Delete memory' });

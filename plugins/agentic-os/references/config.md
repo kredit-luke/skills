@@ -4,6 +4,8 @@ Everything team-specific lives in `<workspace>/.claude/dashboard/` (committed) p
 
 Personal/local state is in `<workspace>/.claude/ledger/` (gitignored): run history, attachments, settings overrides, pasted tracker keys, personal links, the dashboard token and log.
 
+Running it on company infrastructure for people without a dev machine (hosted mode) is set by environment variables, not these files: see [hosting.md](hosting.md).
+
 ---
 
 ## workspace.json: who this workspace is
