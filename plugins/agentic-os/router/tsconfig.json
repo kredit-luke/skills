@@ -1,0 +1,21 @@
+{
+  // Type-check only, like the engine's server (Node runs the .ts directly). The router
+  // has no packages of its own: tsc and @types/node come from the engine's install.
+  "compilerOptions": {
+    "target": "ES2023",
+    "module": "nodenext",
+    "moduleResolution": "nodenext",
+    "allowImportingTsExtensions": true,
+    "rewriteRelativeImportExtensions": false,
+    "erasableSyntaxOnly": true,
+    "verbatimModuleSyntax": true,
+    "noEmit": true,
+    "strict": false,
+    "noImplicitThis": true,
+    "useUnknownInCatchVariables": false,
+    "skipLibCheck": true,
+    "typeRoots": ["../engine/node_modules/@types"],
+    "types": ["node"]
+  },
+  "include": ["src/**/*.ts", "test/**/*.ts", "../engine/server/src/hosted.ts"]
+}

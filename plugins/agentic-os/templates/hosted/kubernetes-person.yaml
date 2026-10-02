@@ -1,0 +1,60 @@
+# One person's dashboard behind the router (kubernetes-router.yaml). Fill in per person
+# and apply; the router finds it by the agentic-os/owner annotation and starts it (0 → 1)
+# the first time they open https://dashboard.example.com:
+#
+#   PERSON=ana EMAIL=ana@example.com envsubst '$PERSON $EMAIL' < kubernetes-person.yaml | kubectl apply -n dashboards -f -
+#
+# Removing someone: delete the StatefulSet and Service (and the volume, if their history can go).
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: dashboard-${PERSON}
+  labels: { app: agentic-dashboard }
+  annotations:
+    agentic-os/owner: "${EMAIL}"
+spec:
+  replicas: 0   # the router starts it on their first visit and stops it when idle
+  serviceName: dashboard-${PERSON}
+  selector:
+    matchLabels: { app: agentic-dashboard, person: "${PERSON}" }
+  template:
+    metadata:
+      labels: { app: agentic-dashboard, person: "${PERSON}" }
+    spec:
+      automountServiceAccountToken: false
+      securityContext: { runAsNonRoot: true, runAsUser: 1000, runAsGroup: 1000, fsGroup: 1000 }
+      # nodeSelector: { pool: dashboards }
+      # tolerations: [{ key: dedicated, value: dashboards, effect: NoSchedule }]
+      containers:
+        - name: dashboard
+          image: REGISTRY/agentic-dashboard:1   # built from templates/hosted/Dockerfile
+          env:
+            - { name: DASHBOARD_PUBLIC_URL, value: "https://dashboard.example.com" }   # the router's address
+            - { name: DASHBOARD_OWNER, value: "${EMAIL}" }
+            - { name: DASHBOARD_PROXY_SECRET, valueFrom: { secretKeyRef: { name: dashboard-router, key: backend-secret } } }
+            - { name: WORKSPACE_REPO, value: "https://git.example.com/acme/workspace.git" }
+            - { name: GIT_TOKEN, valueFrom: { secretKeyRef: { name: dashboard-router, key: git-token, optional: true } } }
+          ports: [{ name: http, containerPort: 3333 }]
+          resources:
+            requests: { cpu: 100m, memory: 512Mi }
+            limits: { cpu: "1", memory: 2Gi }
+          startupProbe: { httpGet: { path: /healthz, port: 3333 }, periodSeconds: 5, failureThreshold: 120 }
+          readinessProbe: { httpGet: { path: /healthz, port: 3333 }, periodSeconds: 10 }
+          # A hung dashboard is restarted: the router only scales 0 → 1, so it can't fix one that's stuck at 1.
+          livenessProbe: { httpGet: { path: /healthz, port: 3333 }, periodSeconds: 30, failureThreshold: 3 }
+          volumeMounts:
+            - { name: data, mountPath: /data }
+  volumeClaimTemplates:
+    - metadata: { name: data }
+      spec:
+        accessModes: [ReadWriteOnce]
+        resources: { requests: { storage: 10Gi } }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: dashboard-${PERSON}
+spec:
+  selector: { app: agentic-dashboard, person: "${PERSON}" }
+  ports: [{ name: http, port: 3333, targetPort: http }]

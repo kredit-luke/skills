@@ -17,8 +17,8 @@ Nothing in it is tied to a cloud: it needs a container platform with a persisten
 
 ## One address, or one per person
 
-- **One per person** (`ana.dashboard.example.com`): what the templates set up. Each person's pod has its own login proxy sidecar that lets only them in. Needs a DNS record and TLS for each host (or one wildcard record and certificate), and each host registered as a redirect URI with the identity provider (or a wildcard, where it allows one).
-- **One for everyone** (`dashboard.example.com`): needs a router behind the login proxy that sends each signed-in email to that person's container, and starts it if it's stopped. The engine supports it (set `DASHBOARD_ALLOWED_HOSTS` if the router rewrites Host), but the router itself isn't part of the plugin yet.
+- **One for everyone** (`dashboard.example.com`), recommended: one login proxy and the router (`router/`) in front of everyone's containers. The router sends each signed-in person to their own container, starts it on their first visit and stops it when idle. One DNS record, one certificate and one redirect URI. See "One address for everyone" below; templates: `kubernetes-router.yaml` once, `kubernetes-person.yaml` per person.
+- **One per person** (`ana.dashboard.example.com`): each person's pod has its own login proxy sidecar that lets only them in, and runs all the time; template: `kubernetes.yaml`. Needs a DNS record and TLS for each host (or one wildcard record and certificate), and each host registered as a redirect URI with the identity provider (or a wildcard, where it allows one).
 
 ## Settings
 
@@ -67,11 +67,57 @@ To refuse personal accounts, put managed settings in the image (commented lines 
 
 The tracker key for the dashboard's own Issues page is pasted on its Connect card, as locally, or injected per person (`JIRA_EMAIL` + `JIRA_API_TOKEN` for Jira, for example).
 
+## One address for everyone (the router)
+
+`router/` is a small Node service with no packages. It runs behind the login proxy at the shared address:
+
+```
+browser ── login proxy (adds the email and ROUTER_PROXY_SECRET)
+        └─ router: email → that person's container (started if stopped)
+              └─ their dashboard (DASHBOARD_PUBLIC_URL = the shared address,
+                 DASHBOARD_PROXY_SECRET = ROUTER_BACKEND_SECRET, DASHBOARD_OWNER = their email)
+```
+
+- **What it forwards.** It passes requests through, run streams included, with the backend secret and the person's email. It keeps the browser's Host and Origin, so every dashboard's `DASHBOARD_PUBLIC_URL` is the shared address.
+- **Each dashboard still checks.** Every dashboard still checks the secret and its owner, so a wrong route is refused, not served.
+- **People without a container** get a page saying so.
+- **A stopped container** gets a "Starting your dashboard…" page that reloads itself, while the router starts it.
+
+| Variable | Default | Notes |
+|---|---|---|
+| `ROUTER_PUBLIC_URL` | (required) | The shared address, e.g. `https://dashboard.example.com`. |
+| `ROUTER_PROXY_SECRET` | (required) | 32+ characters; the login proxy sends it as `X-Dashboard-Proxy-Secret`. |
+| `ROUTER_BACKEND_SECRET` | (required) | 32+ characters; every dashboard's `DASHBOARD_PROXY_SECRET`. |
+| `ROUTER_BACKEND` | (required) | `kubernetes` or `static` (below). |
+| `ROUTER_IDLE_MINUTES` | 0 (never) | Stop a container this long after its last request. Never while a run is going (it asks the dashboard), and not while a page has a stream open. Only for backends that can stop containers. |
+| `ROUTER_ADMIN` | none | Who to ask for a dashboard, shown to people without one. |
+| `ROUTER_IDENTITY_HEADER` / `ROUTER_BACKEND_IDENTITY_HEADER` | `X-Forwarded-Email` | Where the login proxy puts the email, and where the dashboards expect it. |
+| `ROUTER_ALLOWED_HOSTS` | none | Extra `Host` values, comma-separated. |
+| `ROUTER_PORT` / `ROUTER_BIND` | 8080 / `0.0.0.0` | `127.0.0.1` when the login proxy is a sidecar. |
+
+Backends:
+- **`kubernetes`.** Each person's dashboard is a StatefulSet with the label `app=agentic-dashboard` and the annotation `agentic-os/owner: <email>`.
+  - The router reaches it at `http://<serviceName>.<namespace>.svc:3333`. Change that with `ROUTER_K8S_URL_TEMPLATE` (`{service}`, `{namespace}`, `{port}`) and `ROUTER_K8S_PORT`.
+  - Starting and stopping is scaling between 1 and 0, which keeps the volume.
+  - Inside the cluster it uses its service account, which needs `list` on statefulsets and `patch` on statefulsets/scale (the Role in `kubernetes-router.yaml`).
+  - `ROUTER_K8S_NAMESPACE` and `ROUTER_K8S_SELECTOR` override the defaults.
+- **`static`.** `ROUTER_STATIC_FILE` names a JSON file of `{ "<email>": "<dashboard URL>" }`, re-read when it changes. Use it for containers someone else keeps running: a VM with Docker, App Service apps, ECS services. The router never starts or stops them.
+- **Another platform.** Implement `Backend` in `router/src/backends.ts` (find a person's URL, and optionally start/stop/list running ones) and add it to `makeBackend()`.
+
+Build it from `plugins/agentic-os`, so it gets the engine's shared request checks:
+
+```sh
+docker build -f plugins/agentic-os/router/Dockerfile -t <registry>/agentic-router:1 plugins/agentic-os
+```
+
 ## Running it
 
 ### Kubernetes (GKE, EKS, AKS, or your own)
 
-`templates/hosted/kubernetes.yaml` has one person's StatefulSet with a 10 GB volume, an oauth2-proxy sidecar, a Service, an Ingress, and a NetworkPolicy. Fill in the placeholders per person with `envsubst`. The parts that differ by cloud:
+- **One address for everyone:** apply `templates/hosted/kubernetes-router.yaml` once. It has the router, its oauth2-proxy sidecar, a Role to scale dashboards, an Ingress, and a NetworkPolicy that lets only the router reach them. Then apply `kubernetes-person.yaml` per person (`envsubst` fills in their name and email). It starts at 0 replicas, and the router scales it up when they first open the address.
+- **One per person:** `templates/hosted/kubernetes.yaml` has one person's StatefulSet with a 10 GB volume, an oauth2-proxy sidecar, a Service, an Ingress, and a NetworkPolicy, filled in per person the same way.
+
+The parts that differ by cloud:
 
 | | GKE | EKS | AKS |
 |---|---|---|---|
@@ -87,8 +133,8 @@ On every cloud:
 
 ### Without Kubernetes
 
-- **A VM with Docker:** one container per person, each with its own volume, behind Caddy or Traefik with oauth2-proxy in front. This is the simplest setup for a handful of people.
-- **Azure App Service** (Web App for Containers, Linux): one app per person, with the person's own `*.azurewebsites.net` or custom-domain address.
+- **A VM with Docker:** one container per person, each with its own volume, plus oauth2-proxy and the router with the `static` backend, behind Caddy or Traefik for TLS. This is the simplest setup for a handful of people.
+- **Azure App Service** (Web App for Containers, Linux): one app per person. Either put the router (with `static`) in front of them all, or give each app its own address.
   - Run the image with oauth2-proxy as a sidecar container in front of it, and point the app's port (`WEBSITES_PORT`) at the sidecar's 4180. App Service's built-in sign-in (Easy Auth) passes the person's identity in `X-MS-CLIENT-PRINCIPAL-NAME`, but it can't add the proxy secret, so on its own it isn't enough.
   - Mount an Azure Files share at `/data` (path mappings).
   - Turn on **Always On**, or idle apps are unloaded mid-run.
