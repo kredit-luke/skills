@@ -24,7 +24,7 @@
 
 import fs from "node:fs";
 import path from "node:path";
-import { execFileSync } from "node:child_process";
+import { execFile, execFileSync } from "node:child_process";
 
 export interface Ws {
   slug: string;
@@ -46,7 +46,17 @@ export function slugify(name: string): string {
 
 // Real paths, so a Windows 8.3 short name (C:\Users\RUNNER~1) or a macOS /var symlink
 // matches the long path git prints. A path that doesn't exist compares as resolved.
-const real = (p: string) => { try { return fs.realpathSync.native(p); } catch { return path.resolve(p); } };
+// Memoised briefly: a status pass compares the same few paths once per app per workspace.
+const REAL_TTL_MS = 30_000;
+const realCache = new Map<string, { at: number; real: string }>();
+const real = (p: string) => {
+  const hit = realCache.get(p);
+  if (hit && Date.now() - hit.at < REAL_TTL_MS) return hit.real;
+  let r: string;
+  try { r = fs.realpathSync.native(p); } catch { r = path.resolve(p); }
+  realCache.set(p, { at: Date.now(), real: r });
+  return r;
+};
 
 const same = (a: string, b: string) => {
   const norm = (p: string) => real(p).replace(/[\\/]+$/, "");
@@ -92,19 +102,68 @@ export function parseWorktreeList(text: string): GitWorktree[] {
 }
 
 const WORKTREE_TTL_MS = 10_000;
-const worktreeCache = new Map<string, { at: number; list: GitWorktree[] }>();
+/** How long a list is trusted while the repo's .git/worktrees folder looks unchanged. */
+const WORKTREE_MAX_AGE_MS = 120_000;
+const worktreeCache = new Map<string, { at: number; stamp: string; list: GitWorktree[]; refreshing?: boolean; retryAt?: number }>();
+const worktreeRefreshing = new Set<Promise<void>>();
 
-/** Linked worktrees of the repo at repoPath (not its own checkout), cached briefly. */
+/** Resolves once no background worktree refresh is running (tests: before deleting the repo it runs in). */
+export function worktreeRefreshes(): Promise<void> {
+  return Promise.all(worktreeRefreshing).then(() => {});
+}
+
+/**
+ * Linked worktrees of the repo at repoPath (not its own checkout), cached. git adds
+ * and removes an entry under .git/worktrees for each one, so while that folder's
+ * stamp is unchanged the list is kept (up to WORKTREE_MAX_AGE_MS) without running
+ * git: starting a process takes ~60 ms of the event loop on Windows, per repo.
+ * Only a repo's first call waits for git; after that a stale entry is returned as
+ * is and refreshed in the background.
+ */
 export function gitWorktrees(repoPath: string): GitWorktree[] {
   const hit = worktreeCache.get(repoPath);
-  if (hit && Date.now() - hit.at < WORKTREE_TTL_MS) return hit.list;
+  const stamp = worktreesStamp(repoPath);
+  if (hit) {
+    const age = Date.now() - hit.at;
+    // No .git folder to watch (a worktree checkout, where .git is a file): the plain TTL.
+    const stale = stamp === null ? age >= WORKTREE_TTL_MS : stamp !== hit.stamp || age >= WORKTREE_MAX_AGE_MS;
+    if (stale && !hit.refreshing && !(hit.retryAt && Date.now() < hit.retryAt)) {
+      hit.refreshing = true;
+      const done = new Promise<void>((resolve) => {
+        execFile("git", WORKTREE_ARGS, { cwd: repoPath, encoding: "utf-8", timeout: 5000, windowsHide: true }, (err, text) => {
+          // A failed refresh (a timeout on a busy machine) keeps the last good list and
+          // tries again after WORKTREE_TTL_MS.
+          worktreeCache.set(repoPath, err
+            ? { ...hit, refreshing: false, retryAt: Date.now() + WORKTREE_TTL_MS }
+            : { at: Date.now(), stamp: stamp ?? "", list: linkedWorktrees(text, repoPath) });
+          resolve();
+        });
+      });
+      worktreeRefreshing.add(done);
+      done.then(() => worktreeRefreshing.delete(done));
+    }
+    return hit.list.filter((w) => fs.existsSync(w.path)); // one deleted by hand drops out at once
+  }
   let list: GitWorktree[] = [];
   try {
-    const text = execFileSync("git", ["worktree", "list", "--porcelain"], { cwd: repoPath, encoding: "utf-8", timeout: 5000, windowsHide: true, stdio: ["ignore", "pipe", "ignore"] });
-    list = parseWorktreeList(text).filter((w) => !w.bare && !w.prunable && !same(w.path, repoPath) && fs.existsSync(w.path));
+    list = linkedWorktrees(execFileSync("git", WORKTREE_ARGS, { cwd: repoPath, encoding: "utf-8", timeout: 5000, windowsHide: true, stdio: ["ignore", "pipe", "ignore"] }), repoPath);
   } catch { /* not a repo, or git missing */ }
-  worktreeCache.set(repoPath, { at: Date.now(), list });
+  worktreeCache.set(repoPath, { at: Date.now(), stamp: stamp ?? "", list });
   return list;
+}
+
+/** The repo's .git/worktrees folder: its mtime and entries, "" when it has none, null when .git isn't a folder. */
+function worktreesStamp(repoPath: string): string | null {
+  const git = path.join(repoPath, ".git");
+  try { if (!fs.statSync(git).isDirectory()) return null; } catch { return null; }
+  const dir = path.join(git, "worktrees");
+  try { return `${fs.statSync(dir).mtimeMs}:${fs.readdirSync(dir).join("/")}`; } catch { return ""; }
+}
+
+const WORKTREE_ARGS = ["worktree", "list", "--porcelain"];
+
+function linkedWorktrees(text: string, repoPath: string): GitWorktree[] {
+  return parseWorktreeList(text).filter((w) => !w.bare && !w.prunable && !same(w.path, repoPath) && fs.existsSync(w.path));
 }
 
 // ------------------------------------------------------------------ repos

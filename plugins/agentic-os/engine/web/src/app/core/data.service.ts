@@ -7,9 +7,11 @@ import { ApiService } from './api.service';
 import { ToastService } from './toast.service';
 
 /**
- * App-wide data that several pages and the sidebar share, polled on the same
- * intervals the old dashboard used. Page-specific data (issues, memory, git,
- * run detail) lives with its page.
+ * App-wide data that several pages and the sidebar share. The server pushes it on
+ * one stream (/api/events) while the tab is visible; if the stream can't connect
+ * this falls back to polling on the old intervals. The load* methods stay for
+ * pages that want a refresh right after an action. Page-specific data (issues,
+ * memory, git, run detail) lives with its page.
  */
 @Injectable({ providedIn: 'root' })
 export class DataService {
@@ -47,23 +49,74 @@ export class DataService {
   readonly mainWorkspace = computed(() => this.status()?.workspaces.find((w) => w.slug === 'main') || null);
 
   private started = false;
+  private es: EventSource | null = null;
+  private polls: ReturnType<typeof setInterval>[] = [];
+  private retry: ReturnType<typeof setTimeout> | null = null;
 
   start(): void {
     if (this.started) return;
     this.started = true;
-    this.loadDeck();
-    this.loadRuns();
-    this.loadOverview();
-    this.loadStatus();
-    this.loadInbox(false);
-    this.loadJobs();
     this.loadMachine(false);
-    setInterval(() => this.loadJobs(), 2000);
-    setInterval(() => this.loadRuns(), 3000);
-    setInterval(() => this.loadOverview(), 5000);
-    setInterval(() => this.loadStatus(), 5000);
-    setInterval(() => this.loadDeck(), 30000);
-    setInterval(() => this.loadInbox(false), 60000);
+    if (typeof EventSource === 'undefined') { this.startPolling(); return; }
+    // A hidden tab holds no stream: nothing to keep current, and the browser's few connections per host stay free.
+    document.addEventListener('visibilitychange', () => (document.hidden ? this.disconnect() : this.connect()));
+    if (!document.hidden) this.connect();
+  }
+
+  private connect(): void {
+    if (this.es) return;
+    if (this.retry) { clearTimeout(this.retry); this.retry = null; }
+    const es = new EventSource('/api/events');
+    this.es = es;
+    const on = <T>(event: string, apply: (d: T) => void) => es.addEventListener(event, (m) => {
+      if (this.es !== es) return;
+      this.api.connected.set(true);
+      apply(JSON.parse((m as MessageEvent).data) as T);
+    });
+    on<JobsResponse>('jobs', (d) => this.applyJobs(d));
+    on<RunsResponse>('runs', (d) => this.applyRuns(d));
+    on<RunMeta>('run', (r) => this.upsertRun(r));
+    on<Overview>('overview', (d) => this.overview.set(d));
+    on<StatusResponse>('status', (d) => this.status.set(d));
+    on<DeckResponse>('deck', (d) => { this.deck.set(d); this.deckError.set(null); });
+    on<Inbox>('inbox', (d) => { this.inbox.set(d); this.inboxError.set(null); });
+    es.onopen = () => { if (this.es === es) { this.api.connected.set(true); this.stopPolling(); } };
+    es.onerror = () => {
+      if (this.es !== es) return;
+      this.api.connected.set(false);
+      // Poll until the stream is back (onopen stops it): a stream that can't connect while
+      // plain requests work, such as behind a proxy that buffers it, still gets data.
+      this.startPolling();
+      // CONNECTING: the browser retries on its own. CLOSED: it gave up; try again later.
+      if (es.readyState !== EventSource.CLOSED) return;
+      this.es = null;
+      this.retry = setTimeout(() => { this.retry = null; if (!document.hidden) this.connect(); }, 10000);
+    };
+  }
+
+  private disconnect(): void {
+    if (this.es) { this.es.close(); this.es = null; }
+    if (this.retry) { clearTimeout(this.retry); this.retry = null; }
+    this.stopPolling();
+  }
+
+  /** The intervals the dashboard polled on before the stream. */
+  private startPolling(): void {
+    if (this.polls.length) return;
+    this.loadDeck(); this.loadRuns(); this.loadOverview(); this.loadStatus(); this.loadInbox(false); this.loadJobs();
+    this.polls = [
+      setInterval(() => this.loadJobs(), 2000),
+      setInterval(() => this.loadRuns(), 3000),
+      setInterval(() => this.loadOverview(), 5000),
+      setInterval(() => this.loadStatus(), 5000),
+      setInterval(() => this.loadDeck(), 30000),
+      setInterval(() => this.loadInbox(false), 60000),
+    ];
+  }
+
+  private stopPolling(): void {
+    for (const t of this.polls) clearInterval(t);
+    this.polls = [];
   }
 
   async loadDeck(): Promise<void> {
@@ -72,11 +125,12 @@ export class DataService {
   }
 
   async loadRuns(): Promise<void> {
-    try {
-      const d = await this.api.get<RunsResponse>('/api/runs?limit=200');
-      this.runs.set(d.runs.map(normaliseRun));
-      this.stats.set(d.stats);
-    } catch { /* server restarting */ }
+    try { this.applyRuns(await this.api.get<RunsResponse>('/api/runs?limit=200')); } catch { /* server restarting */ }
+  }
+
+  private applyRuns(d: RunsResponse): void {
+    this.runs.set(d.runs.map(normaliseRun));
+    this.stats.set(d.stats);
   }
 
   /** Put a fresher copy of one run into the list (from a stream `meta` or a POST response). */
@@ -101,24 +155,25 @@ export class DataService {
   }
 
   async loadJobs(): Promise<void> {
-    try {
-      const data = await this.api.get<JobsResponse>('/api/apps/jobs');
-      const wasRunning = new Set(this.jobs().filter((j) => j.status === 'running').map((j) => j.id));
-      this.jobs.set(data.jobs);
-      this.stacks.set(data.stacks);
-      this.appGroups.set(data.groups || []);
-      this.defaultStack.set(data.defaultStack || null);
-      this.appsConfigured.set(!!data.configured);
-      this.appsError.set(data.error || null);
-      for (const j of data.jobs) {
-        if (wasRunning.has(j.id) && j.status !== 'running') {
-          this.toast.show(j.label + (j.status === 'succeeded' ? ' · done' : ' · failed: ' + (j.error || '')), j.status !== 'succeeded');
-          this.loadStatus();
-          // Setup changes containers and installs; re-check the machine right away.
-          if (j.label.startsWith('Setup')) this.loadMachine(true);
-        }
+    try { this.applyJobs(await this.api.get<JobsResponse>('/api/apps/jobs')); } catch { /* ignore */ }
+  }
+
+  private applyJobs(data: JobsResponse): void {
+    const wasRunning = new Set(this.jobs().filter((j) => j.status === 'running').map((j) => j.id));
+    this.jobs.set(data.jobs);
+    this.stacks.set(data.stacks);
+    this.appGroups.set(data.groups || []);
+    this.defaultStack.set(data.defaultStack || null);
+    this.appsConfigured.set(!!data.configured);
+    this.appsError.set(data.error || null);
+    for (const j of data.jobs) {
+      if (wasRunning.has(j.id) && j.status !== 'running') {
+        this.toast.show(j.label + (j.status === 'succeeded' ? ' · done' : ' · failed: ' + (j.error || '')), j.status !== 'succeeded');
+        if (!this.es) this.loadStatus(); // the stream sends status after a job changes
+        // Setup changes containers and installs; re-check the machine right away.
+        if (j.label.startsWith('Setup')) this.loadMachine(true);
       }
-    } catch { /* ignore */ }
+    }
   }
 
   async loadMachine(force: boolean): Promise<void> {

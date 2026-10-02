@@ -7,7 +7,7 @@ import os from "node:os";
 import path from "node:path";
 import { execFileSync } from "node:child_process";
 import {
-  ensureSlot, listRepos, listWorkspaces, ownPort, parseWorktreeList, repoDirOf, resolvePort,
+  ensureSlot, gitWorktrees, listRepos, listWorkspaces, worktreeRefreshes, ownPort, parseWorktreeList, repoDirOf, resolvePort,
   slotOffsets, withFileLock,
 } from "../src/workspaces.ts";
 
@@ -194,4 +194,40 @@ test("withFileLock breaks a stale lock and waits for a live one", async () => {
   const { spawn } = await import("node:child_process");
   spawn(process.execPath, ["-e", holder], { stdio: "ignore" }).unref();
   assert.equal(withFileLock(file, () => fs.existsSync(marker)), true, "ran only after the other writer released the lock");
+});
+
+test("gitWorktrees: a worktree added or removed later is picked up without waiting out the cache", async () => {
+  const root = repo(path.join(TMP, "later"));
+  assert.deepEqual(gitWorktrees(root), []); // first call: git, synchronously
+  const wt = path.join(TMP, "later-ENG-3");
+  git(root, "worktree", "add", "-q", "-b", "feature/ENG-3", wt);
+  // .git/worktrees changed: this call starts a background refresh; a later one has the result.
+  const until = async (ok: (n: number) => boolean) => {
+    for (const end = Date.now() + 10000; Date.now() < end; await new Promise((r) => setTimeout(r, 50))) if (ok(gitWorktrees(root).length)) return true;
+    return false;
+  };
+  assert.ok(await until((n) => n === 1), "the new worktree is listed");
+  git(root, "worktree", "remove", "--force", wt);
+  assert.equal(gitWorktrees(root).length, 0, "a removed worktree's folder is gone, so it drops out at once");
+  await worktreeRefreshes(); // Windows won't delete TMP while git's cwd is in it
+});
+
+test("gitWorktrees: a refresh that fails keeps the last good list", async () => {
+  const root = repo(path.join(TMP, "flaky"));
+  const wt = path.join(TMP, "flaky-ENG-4");
+  git(root, "worktree", "add", "-q", "-b", "feature/ENG-4", wt);
+  assert.equal(gitWorktrees(root).length, 1);
+  const head = path.join(root, ".git", "HEAD");
+  const good = fs.readFileSync(head, "utf-8");
+  fs.writeFileSync(head, "not a ref\n"); // git now fails in this repo
+  fs.mkdirSync(path.join(root, ".git", "worktrees", "stamp-change")); // makes the next call refresh
+  try {
+    gitWorktrees(root);
+    await worktreeRefreshes();
+    assert.equal(gitWorktrees(root).length, 1, "the worktree is still listed after git failed");
+  } finally {
+    fs.writeFileSync(head, good);
+    fs.rmdirSync(path.join(root, ".git", "worktrees", "stamp-change"));
+    await worktreeRefreshes();
+  }
 });
