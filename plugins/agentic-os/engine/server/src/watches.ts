@@ -87,8 +87,8 @@ export class Watcher {
       let snaps: PrSnapshot[];
       try {
         const me = await this.login();
-        // Merged and closed PRs don't change any more; don't ask again.
-        snaps = await Promise.all(w.prs.map((p) => (p.seen && p.seen.state !== "OPEN" ? p.seen : prSnapshot(this.gh, p.repo, p.number, me))));
+        // A merged PR doesn't change any more; don't ask again. A closed one can be reopened.
+        snaps = await Promise.all(w.prs.map((p) => (p.seen && p.seen.state === "MERGED" ? p.seen : prSnapshot(this.gh, p.repo, p.number, me))));
       } catch (e) {
         this.runs.updateWatch(id, w.startedAt, (x) => { x.error = `Couldn't check the pull requests: ${(e as Error).message}`; x.lastCheckAt = now.toISOString(); x.nextCheckAt = nextCheckAt; });
         return;
@@ -174,7 +174,8 @@ export function describeChanges(prev: PrSnapshot | null, next: PrSnapshot): stri
   const out: string[] = [];
   if (next.state !== prev.state) out.push(next.state === "MERGED" ? "was merged" : next.state === "CLOSED" ? "was closed" : "was reopened");
   if (next.state !== "OPEN") return out;
-  if (next.reviewDecision !== prev.reviewDecision && next.reviewDecision) {
+  // An empty decision is a change too: a dismissed approval leaves none, often without a new review.
+  if (next.reviewDecision !== prev.reviewDecision) {
     out.push(next.reviewDecision === "APPROVED" ? "is approved" : next.reviewDecision === "CHANGES_REQUESTED" ? "has changes requested" : "needs review again");
   }
   if (next.lastReviewAt > prev.lastReviewAt) out.push(`new review from ${next.lastReviewBy} (${next.lastReviewState.toLowerCase().replace(/_/g, " ")})`);

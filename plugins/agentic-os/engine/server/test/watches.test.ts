@@ -72,6 +72,8 @@ test("describeChanges: reviews, comments, failing checks, behind and conflicts w
   assert.deepEqual(describeChanges(prev, snap({ mergeStateStatus: "BEHIND" })), ["branch is behind its base"]);
   assert.deepEqual(describeChanges(prev, snap({ mergeStateStatus: "DIRTY" })), ["has a merge conflict"]);
   assert.deepEqual(describeChanges(prev, snap({ state: "MERGED" })), ["was merged"]);
+  // A dismissed approval leaves no decision at all.
+  assert.deepEqual(describeChanges(snap({ reviewDecision: "APPROVED" }), snap({ reviewDecision: "" })), ["needs review again"]);
 });
 
 test("describeChanges: checks restarting, passing before approval and other merge states don't wake", () => {
@@ -194,6 +196,39 @@ test("watcher: paused unless the run is idle and done", async () => {
       assert.equal(t.calls.length, 0, status);
     } finally { t.done(); }
   }
+});
+
+test("watcher: a closed PR is checked again and its reopening wakes the run; a merged one isn't asked again", async () => {
+  const t = setup();
+  try {
+    // Watch a second PR so closing the first doesn't end the watch.
+    const meta = t.runs.get("r1")!;
+    applyWatchBlock(meta, '<<WATCH>>{"prs":["a/b#1","a/b#2"],"prompt":"Run the cycle."}<</WATCH>>', T0);
+    fs.writeFileSync(path.join(t.dir, "runs", "r1.json"), JSON.stringify(meta));
+    // #2 stays open until the end; #1 follows t.pr.
+    let second = "OPEN";
+    const gh = t.watcher.gh;
+    t.watcher.gh = (args) => (args[0] === "pr" && args[2] === "2" ? gh(args).then((v) => JSON.stringify({ ...JSON.parse(v), state: second })) : gh(args));
+    await t.watcher.tick(later(0));
+    t.pr.state = "CLOSED";
+    await t.watcher.tick(later(5));
+    assert.equal(t.wakes.length, 1);
+    assert.match(t.wakes[0], /a\/b#1: was closed/);
+
+    t.pr.state = "OPEN";
+    await t.watcher.tick(later(10));
+    assert.equal(t.wakes.length, 2);
+    assert.match(t.wakes[1], /was reopened/);
+
+    t.pr.state = "MERGED";
+    second = "MERGED";
+    await t.watcher.tick(later(15));
+    const views = () => t.calls.filter((c) => c[0] === "pr").length;
+    const before = views();
+    await t.watcher.tick(later(20));
+    assert.equal(views(), before); // both merged: the watch ended, nothing is asked
+    assert.match(t.runs.get("r1")!.watch!.endReason!, /merged or closed/);
+  } finally { t.done(); }
 });
 
 test("watcher: ends when every PR is merged or closed, and when it expires", async () => {
