@@ -1,3 +1,4 @@
+import { KeyFieldsComponent } from '../../shared/key-fields.component';
 import { ChangeDetectionStrategy, Component, OnInit, computed, effect, inject, signal, untracked } from '@angular/core';
 import type { Job, PublishPlanResponse, RepoInfo, ReposResponse, SnapshotRepo, SnapshotStatus } from '../../../../../shared/api';
 import { ApiService } from '../../core/api.service';
@@ -21,7 +22,7 @@ const STALE_DAYS = 3;
 
 @Component({
   selector: 'dash-repos',
-  imports: [PageHeaderComponent, MdPipe, TrustedHtmlPipe],
+  imports: [PageHeaderComponent, MdPipe, TrustedHtmlPipe, KeyFieldsComponent],
   changeDetection: ChangeDetectionStrategy.OnPush,
   styleUrl: './repos.component.scss',
   template: `
@@ -68,7 +69,7 @@ const STALE_DAYS = 3;
                   <ol>@for (st of help.steps; track $index) { <li class="md tight" [innerHTML]="st | md | trustedHtml"></li> }</ol>
                   @if (help.needsKey) {
                     <form (submit)="$event.preventDefault(); connect()">
-                      <input type="password" [placeholder]="help.placeholder" [value]="key()" (input)="key.set($any($event.target).value)" autocomplete="off">
+                      <dash-key-fields [fields]="help.keyFields" [placeholder]="help.placeholder" [(value)]="key" />
                       <button class="btn primary" type="submit" [disabled]="connecting() || !key().trim()">Connect</button>
                     </form>
                   }

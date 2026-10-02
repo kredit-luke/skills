@@ -2,7 +2,7 @@ import { readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
-import { buildThread, stripQuestion, toolLabel, type AgentCard, type ThreadItem } from './thread';
+import { STRIP_COLLAPSE_AT, buildThread, stripAgents, stripQuestion, stripSummary, toolLabel, type AgentCard, type AgentStatus, type ThreadItem } from './thread';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const fixture = (name: string) =>
@@ -284,5 +284,31 @@ describe('buildThread: subagents resumed with SendMessage', () => {
     const r = buildThread(refused, { runActive: true }).agents.find((a) => a.id === RESUME1)!;
     expect(r.status).toBe('failed');
     expect(r.summary).toBe('No agent with that id');
+  });
+});
+
+describe('subagent strip', () => {
+  const card = (id: string, status: AgentStatus): AgentCard => ({
+    id, agentType: 'agent-' + id, description: '', prompt: '', background: false, status, activity: '', lastTool: '', tokens: 0, toolUses: 0,
+    durationMs: null, summary: '', steps: 0, depth: 0, items: [], agentId: '', pass: 1, resumed: false,
+  });
+
+  it('shows every card up to the collapse limit', () => {
+    const few = Array.from({ length: STRIP_COLLAPSE_AT }, (_, i) => card(String(i), 'completed'));
+    expect(stripAgents(few)).toEqual({ shown: few, hidden: 0 });
+  });
+
+  it('past the limit keeps running and failed cards plus the last few, in run order', () => {
+    const many = Array.from({ length: 43 }, (_, i) => card(String(i), 'completed'));
+    many[2] = card('2', 'failed');
+    many[20] = card('20', 'running');
+    const { shown, hidden } = stripAgents(many);
+    expect(shown.map((a) => a.id)).toEqual(['2', '20', '39', '40', '41', '42']);
+    expect(hidden).toBe(37);
+  });
+
+  it('summarises by status, leaving out the zeros', () => {
+    expect(stripSummary([card('a', 'running'), card('b', 'completed'), card('c', 'completed'), card('d', 'failed')])).toBe('1 running · 2 done · 1 failed');
+    expect(stripSummary([card('a', 'completed')])).toBe('1 done');
   });
 });

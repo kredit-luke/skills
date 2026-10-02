@@ -1,6 +1,9 @@
-import { test } from "node:test";
+import { test, after } from "node:test";
 import assert from "node:assert/strict";
-import { adfToMarkdown, cleanQuery, jql } from "../src/issues/jira.ts";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
+import { JiraTracker, adfToMarkdown, cleanQuery, jql } from "../src/issues/jira.ts";
 import { repoList, searchArgs, stateOf } from "../src/issues/github.ts";
 
 test("jira: JQL from projects and states, quoting names safely", () => {
@@ -76,4 +79,65 @@ test("the board filter is saved per person, cleared with null or an empty string
   assert.throws(() => deck.savePersonal({ issues: { query: "a\nb" } }, allowed), /one line/);
   deck.savePersonal({ issues: { query: "" } }, allowed);
   assert.deepEqual(deck.personal().issues, {});
+});
+
+test("jira key lookup: its own env vars, then its pasted key, then Confluence's key only for the same site", () => {
+  const ledger = fs.mkdtempSync(path.join(os.tmpdir(), "dash-jira-"));
+  after(() => fs.rmSync(ledger, { recursive: true, force: true }));
+  for (const k of ["CONFLUENCE_EMAIL", "CONFLUENCE_API_TOKEN", "JIRA_EMAIL", "JIRA_API_TOKEN"]) delete process.env[k];
+  const tracker = (sources: unknown) => {
+    const t = new JiraTracker(ledger, { kind: "jira", site: "acme.atlassian.net", projects: ["ENG"] } as any);
+    t.docsSources = () => sources;
+    return t;
+  };
+  const wiki = (url: string) => [{ key: "wiki", kind: "external", provider: "confluence", url }];
+
+  // Only a Confluence key, on the same site: Issues is connected with it.
+  fs.writeFileSync(path.join(ledger, "confluence-api-token"), "me@acme.com:wiki-token-456");
+  const same = tracker(wiki("https://acme.atlassian.net/wiki"));
+  assert.equal(same._cred(), "me@acme.com:wiki-token-456");
+  assert.equal(same.status().connected, true);
+  // Confluence on another site, or no Confluence source: not used.
+  assert.equal(tracker(wiki("https://other.atlassian.net/wiki")).status().connected, false);
+  assert.equal(tracker(undefined).status().connected, false);
+
+  // A pasted Jira key wins over Confluence's; Jira env vars win over both.
+  fs.writeFileSync(path.join(ledger, "jira-api-token"), "me@acme.com:jira-token-123");
+  assert.equal(same._cred(), "me@acme.com:jira-token-123");
+  process.env.JIRA_EMAIL = "env@acme.com";
+  process.env.JIRA_API_TOKEN = "env-token-789";
+  try { assert.equal(same._cred(), "env@acme.com:env-token-789"); }
+  finally { delete process.env.JIRA_EMAIL; delete process.env.JIRA_API_TOKEN; }
+
+  same.disconnect();
+  assert.equal(same._cred(), "me@acme.com:wiki-token-456", "disconnect drops only its own key");
+});
+
+test("atlassian: a classic key stays on the site; a key the site refuses goes through the gateway and stays there", async () => {
+  const { atlassianRequest } = await import("../src/atlassian.ts");
+  const cloudId = async () => "abc-123";
+  const refusedAtSite = (calls: string[]) => async (url: string) => {
+    calls.push(url);
+    if (url.startsWith("https://acme.atlassian.net")) throw Object.assign(new Error("refused"), { status: 401 });
+    return "ok";
+  };
+
+  const classic: string[] = [];
+  assert.equal(await atlassianRequest("jira", "acme.atlassian.net", "me@acme.com:classic", "/rest/api/3/myself", async (u) => { classic.push(u); return "ok"; }, cloudId), "ok");
+  assert.deepEqual(classic, ["https://acme.atlassian.net/rest/api/3/myself"]);
+
+  const scoped: string[] = [];
+  const send = refusedAtSite(scoped);
+  await atlassianRequest("confluence", "acme.atlassian.net", "me@acme.com:scoped", "/wiki/rest/api/user/current", send, cloudId);
+  await atlassianRequest("confluence", "acme.atlassian.net", "me@acme.com:scoped", "/wiki/rest/api/space", send, cloudId);
+  assert.deepEqual(scoped, [
+    "https://acme.atlassian.net/wiki/rest/api/user/current",
+    "https://api.atlassian.com/ex/confluence/abc-123/wiki/rest/api/user/current",
+    "https://api.atlassian.com/ex/confluence/abc-123/wiki/rest/api/space",
+  ]);
+
+  // Not a refused key (e.g. a 404): no retry through the gateway.
+  const other: string[] = [];
+  await assert.rejects(() => atlassianRequest("jira", "acme.atlassian.net", "me@acme.com:other", "/x", async (u) => { other.push(u); throw Object.assign(new Error("nope"), { status: 404 }); }, cloudId), /nope/);
+  assert.equal(other.length, 1);
 });

@@ -1,6 +1,6 @@
 # Issue tracker adapters
 
-The Issues page, Explain / Implement, search, and the ticket strip on runs all go through one `IssueTracker`, chosen by `workspace.json` `issues.kind`. Adapters live in `dashboard/server/src/issues/`: `linear.ts` (GraphQL, pasted key), `jira.ts` (REST v3, pasted `email:token`), `github.ts` (the `gh` CLI's own login). The dashboard reads the tracker directly with each person's own credentials: refreshing the board costs no Claude usage, and everyone sees what their account can see. Claude *runs* that need the tracker (Implement, a morning brief) use its MCP connector instead.
+The Issues page, Explain / Implement, search, and the ticket strip on runs all go through one `IssueTracker`, chosen by `workspace.json` `issues.kind`. Adapters live in `dashboard/server/src/issues/`: `linear.ts` (GraphQL, pasted key), `jira.ts` (REST v3, `email:token` entered as two fields; classic tokens at the site, scoped tokens through `api.atlassian.com/ex/jira/<cloudId>` via `atlassian.ts`; it reuses a same-site Confluence key and vice versa, and **Disconnect Atlassian** clears both), `github.ts` (the `gh` CLI's own login). The dashboard reads the tracker directly with each person's own credentials: refreshing the board costs no Claude usage, and everyone sees what their account can see. Claude *runs* that need the tracker (Implement, a morning brief) use its MCP connector instead.
 
 ## The interface (`issues/index.ts`)
 
@@ -9,7 +9,7 @@ interface IssueTracker {
   kind: string;
   cache: { issues: Issue[] } | null;            // last good list (search indexes it)
   status(): { connected: boolean; source: "env" | "file" | "cli" | null; viewer: string | null };
-  connectHelp(): { title: string; steps: string[] /* markdown */; placeholder: string; needsKey: boolean } | null;
+  connectHelp(): { title: string; steps: string[] /* markdown */; placeholder: string; needsKey: boolean; keyFields?: "email-token" /* two fields, sent as email:token */ } | null;
   connect(key: string): Promise<status>;         // validate with a cheap "who am I" call, then save (mode 600)
   disconnect(): status;
   issues(filter: { teams: string[]; states: string[]; query?: string }, force?: boolean): Promise<{ connected: boolean; issues: Issue[]; fetchedAt?: number; error?: string | null }>;

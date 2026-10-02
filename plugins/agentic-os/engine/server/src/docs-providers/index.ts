@@ -43,7 +43,11 @@ export interface ProviderStatus {
  * reserved for a sign-in-with flow (an adapter that has one returns its authorize URL
  * from connect) and nothing uses it yet.
  */
-export interface ProviderHelp { title: string; steps: string[]; placeholder: string; needsKey: boolean; method?: "key" | "oauth" }
+export interface ProviderHelp {
+  title: string; steps: string[]; placeholder: string; needsKey: boolean; method?: "key" | "oauth";
+  /** 'email-token': the key is an email and an API token, asked for in two fields and sent as "email:token". */
+  keyFields?: "email-token";
+}
 
 export interface DocsProvider {
   kind: string;

@@ -13,7 +13,7 @@ import { relTime, vscodeUrl } from '../core/util';
 import { DocsPreviewService } from '../core/docs-preview.service';
 import { askPrompt } from './ask-prompt';
 
-const SOURCE_TABS: [string, string][] = [['', 'All'], ['skill', 'Skills'], ['memory', 'Memory'], ['guide', 'Guides'], ['doc', 'Docs'], ['issue', 'Issues'], ['agent', 'Agents'], ['run', 'Runs']];
+const SOURCE_TABS: [string, string][] = [['', 'All'], ['skill', 'Skills'], ['memory', 'Memory'], ['guide', 'Guides'], ['doc', 'Docs'], ['issue', 'Issues'], ['agent', 'Agents'], ['run', 'Activity']];
 
 interface Action { act: string; label: string; href?: string }
 

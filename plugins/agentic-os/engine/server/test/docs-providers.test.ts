@@ -79,7 +79,7 @@ test("key lookup: its own env vars, then its pasted key, then Jira's key only fo
 
 test("connect rejects a key that isn't email:token before calling anything", async () => {
   const p = new ConfluenceProvider(source, ctx());
-  await assert.rejects(() => p.connect("just-a-token"), /your-email:api-token/);
+  await assert.rejects(() => p.connect("just-a-token"), /email you sign in with and an API token/);
 });
 
 test("the run note names the site, the spaces and the page", () => {

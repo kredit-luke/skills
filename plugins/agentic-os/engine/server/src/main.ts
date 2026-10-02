@@ -63,6 +63,7 @@ import { RunChanges } from "./run-changes.ts";
 import type { RunWorktree } from "./run-changes.ts";
 import { Attachments, MAX_ATTACHMENT_BYTES, contentTypeOf } from "./attachments.ts";
 import { Explore, MAX_SAVE_BYTES, rawType, resolveSafe } from "./explore.ts";
+import { forgetAtlassianKeys } from "./atlassian.ts";
 
 const DIST_DIR = path.join(DASHBOARD_DIR, "dist", "browser");
 const VERSION = JSON.parse(fs.readFileSync(path.join(DASHBOARD_DIR, "package.json"), "utf-8")).version;
@@ -688,6 +689,7 @@ async function getIssues(force: boolean) {
     states: cfg.states && cfg.states.length ? cfg.states : seen("state"),
     teams: cfg.teams && cfg.teams.length ? cfg.teams : seen("team"),
     viewer: tracker.status().viewer,
+    keySource: tracker.status().source,
     query: queryHelp ? { value: query, ...queryHelp } : null,
     issues: list.map((i) => ({
       ...i,
@@ -1146,6 +1148,13 @@ async function handleApi(req: http.IncomingMessage, res: http.ServerResponse, ur
   }
   if (p === "/api/issues/connect" || p === "/api/linear/connect") return sendJson(res, await trackers.get().connect(body.key));
   if (p === "/api/issues/disconnect" || p === "/api/linear/disconnect") return sendJson(res, trackers.get().disconnect());
+  if (p === "/api/atlassian/disconnect") {
+    // Issues and Docs fall back to each other's Atlassian key, so forgetting one forgets both.
+    const out = forgetAtlassianKeys(LEDGER_DIR);
+    if (workspaceConfig().issues.kind === "jira") trackers.get().disconnect();
+    for (const src of docSources().sources) { const dp = docsProviders.get(src); if (dp && dp.kind === "confluence") dp.disconnect(); }
+    return sendJson(res, out);
+  }
   if (p === "/api/issues/implement" || p === "/api/linear/implement") {
     const ticket = ticketParam(body.ticket);
     if (!ticket) return sendError(res, 400, "Invalid ticket id");

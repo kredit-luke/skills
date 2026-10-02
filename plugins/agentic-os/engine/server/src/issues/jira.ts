@@ -15,7 +15,10 @@
 import fs from "node:fs";
 import path from "node:path";
 import https from "node:https";
-import type { IssuesConfig } from "../config.ts";
+import { atlassianRequest } from "../atlassian.ts";
+import { readConfigFile, type IssuesConfig } from "../config.ts";
+
+const REFUSED = "Jira rejected the email/API token. A scoped token needs at least the read:jira-work and read:jira-user scopes.";
 import type { ConnectHelp, IssueFilter, IssueTracker, TrackerStatus } from "./index.ts";
 
 const CACHE_TTL_MS = 60 * 1000;
@@ -94,9 +97,14 @@ class JiraTracker implements IssueTracker {
   cacheKey = "";
   viewer: string | null = null;
 
+  confluenceKeyFile: string;
+  /** docs.json sources (a field so tests can supply their own). */
+  docsSources = (): unknown => readConfigFile("docs.json").data?.sources;
+
   constructor(ledgerDir: string, cfg: IssuesConfig) {
     this.cfg = cfg as any;
     this.keyFile = path.join(ledgerDir, "jira-api-token");
+    this.confluenceKeyFile = path.join(ledgerDir, "confluence-api-token");
   }
 
   get site(): string | null {
@@ -105,18 +113,33 @@ class JiraTracker implements IssueTracker {
   }
   get projects(): string[] { return Array.isArray(this.cfg.projects) ? this.cfg.projects.filter((p) => typeof p === "string") : []; }
 
-  /** "email:token", from the env or the ledger file. */
+  /** A docs.json Confluence source is on this same site: its key is an Atlassian token that works here too. */
+  get sameSiteConfluence(): boolean {
+    const sources = this.docsSources();
+    if (!this.site || !Array.isArray(sources)) return false;
+    return sources.some((s: any) => {
+      if (!s || s.kind !== "external" || s.provider !== "confluence") return false;
+      try { return new URL(String(s.url)).hostname === this.site; } catch { return false; }
+    });
+  }
+
+  /** "email:token", from the env or the ledger file, else the same site's Confluence key (docs-providers/confluence.ts does the reverse). */
   _cred(): string | null {
     if (process.env.JIRA_API_TOKEN && process.env.JIRA_EMAIL) return `${process.env.JIRA_EMAIL.trim()}:${process.env.JIRA_API_TOKEN.trim()}`;
-    try { return fs.readFileSync(this.keyFile, "utf-8").trim() || null; } catch { return null; }
+    try { const k = fs.readFileSync(this.keyFile, "utf-8").trim(); if (k) return k; } catch {}
+    if (this.sameSiteConfluence) {
+      if (process.env.CONFLUENCE_API_TOKEN && process.env.CONFLUENCE_EMAIL) return `${process.env.CONFLUENCE_EMAIL.trim()}:${process.env.CONFLUENCE_API_TOKEN.trim()}`;
+      try { return fs.readFileSync(this.confluenceKeyFile, "utf-8").trim() || null; } catch {}
+    }
+    return null;
   }
 
   _get(cred: string, pathAndQuery: string, body?: object): Promise<any> {
     const site = this.site;
     if (!site) return Promise.reject(new Error("Set issues.site in workspace.json (e.g. acme.atlassian.net)."));
-    return new Promise((resolve, reject) => {
+    const send = (url: string) => new Promise<any>((resolve, reject) => {
       const data = body ? JSON.stringify(body) : null;
-      const req = https.request(`https://${site}${pathAndQuery}`, {
+      const req = https.request(url, {
         method: body ? "POST" : "GET",
         headers: {
           Authorization: `Basic ${Buffer.from(cred).toString("base64")}`,
@@ -128,7 +151,7 @@ class JiraTracker implements IssueTracker {
         let out = "";
         res.on("data", (c) => (out += c));
         res.on("end", () => {
-          if (res.statusCode === 401 || res.statusCode === 403) return reject(new Error("Jira rejected the email/API token."));
+          if (res.statusCode === 401 || res.statusCode === 403) return reject(Object.assign(new Error(REFUSED), { status: res.statusCode }));
           let json;
           try { json = out ? JSON.parse(out) : {}; } catch { return reject(new Error(`Jira returned HTTP ${res.statusCode}`)); }
           if (res.statusCode && res.statusCode >= 400) return reject(new Error((json.errorMessages && json.errorMessages[0]) || `Jira returned HTTP ${res.statusCode}`));
@@ -139,6 +162,7 @@ class JiraTracker implements IssueTracker {
       req.on("error", reject);
       req.end(data || undefined);
     });
+    return atlassianRequest("jira", site, cred, pathAndQuery, send);
   }
 
   status(): TrackerStatus {
@@ -154,17 +178,18 @@ class JiraTracker implements IssueTracker {
       title: "Connect Jira",
       steps: [
         "Create an API token at [id.atlassian.com → Security → API tokens](https://id.atlassian.com/manage-profile/security/api-tokens).",
-        "Paste it below as `your-email:token` (the email you sign in to Jira with).",
+        "Enter it below with the email you sign in to Jira with. Use a classic token (Create API token, no scopes): one covers both Issues and Confluence docs. A scoped token works too but only for Jira, and needs at least the `read:jira-work` and `read:jira-user` scopes.",
         "It stays on this machine (in `.claude/ledger/`, never committed) and uses your own Jira permissions.",
       ],
       placeholder: "you@company.com:ATATT…",
       needsKey: true,
+      keyFields: "email-token",
     };
   }
 
   async connect(key: string): Promise<TrackerStatus> {
     const cred = String(key || "").trim();
-    if (!/^[^:\s]+@[^:\s]+:\S{10,}$/.test(cred)) throw new Error("Paste it as your-email:api-token.");
+    if (!/^[^:\s]+@[^:\s]+:\S{10,}$/.test(cred)) throw new Error("Enter the email you sign in with and an API token.");
     const me = await this._get(cred, "/rest/api/3/myself");
     fs.writeFileSync(this.keyFile, cred, { mode: 0o600 });
     this.viewer = me.displayName || me.emailAddress || null;

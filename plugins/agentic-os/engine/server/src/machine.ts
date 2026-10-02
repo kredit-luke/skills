@@ -26,7 +26,7 @@ import { execFile, spawn } from "node:child_process";
 import { LEDGER_DIR, readConfigFile } from "./config.ts";
 import { readProfile } from "./profile.ts";
 import { CATALOG } from "./machine-catalog.ts";
-import { claudeAuth } from "./claude.ts";
+import { claudeAuth, connectorState } from "./claude.ts";
 
 const IS_WIN = process.platform === "win32";
 const IS_MAC = process.platform === "darwin";
@@ -236,11 +236,15 @@ class Machine {
     this.inflight = null;
   }
 
-  /** machine.json and apps.json mtimes: an edit to either re-runs the checks on the next request. */
+  /**
+   * machine.json and apps.json mtimes, plus the viewer's profile and role: an edit to either file,
+   * or a role change (which `when` filters on), re-runs the checks on the next request.
+   */
   _configSig() {
-    return ["machine.json", "apps.json"].map((f) => {
+    const me = readProfile(LEDGER_DIR);
+    return ["machine.json", "apps.json"].map((f): number | string => {
       try { return fs.statSync(path.join(this.root, ".claude", "dashboard", f)).mtimeMs; } catch { return 0; }
-    }).join(":");
+    }).concat([me.profile, me.current.id]).join(":");
   }
 
   async get(force = false) {
@@ -399,6 +403,21 @@ class Machine {
           install: !ok || tooOld ? installFor(s.install, vars) : signedOut ? installFor(s.auth.signIn, vars, "Sign in") : undefined,
           fix: fixOf(),
         };
+      }
+
+      case "claude-connector": {
+        // A claude.ai connector (e.g. Atlassian): connected once in the browser, it reaches Claude Code in
+        // every folder and in the dashboard's runs, with no tokens or /mcp.
+        const name = String(s.connector || "");
+        if (!name) return null;
+        const r = await p.probe("claude", ["mcp", "list"], { timeout: 60000 });
+        if (!r.ok && !r.out) return { ...base, label, status: "warn", detail: "Couldn't run `claude mcp list` to check it." };
+        const c = connectorState(r.out, name);
+        const install = installFor(s.install, vars, "Open claude.ai");
+        if (c.state === "connected") return { ...base, label, status: "ok", detail: detail.ok || `Connected through claude.ai.` };
+        if (c.state === "disabled") return { ...base, label, status: "warn", detail: `Turned off for this workspace. In a Claude session, run /mcp and enable "claude.ai ${name}".` };
+        if (c.state === "signed-out") return { ...base, label, status: "warn", detail: `Not connected (${c.text}). Connect it at claude.ai → Settings → Connectors.`, install };
+        return { ...base, label, status: "warn", detail: detail.missing || `Your claude.ai account doesn't have the ${name} connector. An org admin adds it in claude.ai's admin settings; then connect it at claude.ai → Settings → Connectors.`, install };
       }
 
       case "claude-code": {

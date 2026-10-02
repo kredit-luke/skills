@@ -406,7 +406,7 @@ export interface DocSite {
 export interface ExternalDocsStatus {
   site: string; name: string; provider: string; label: string; url: string | null;
   connected: boolean; source: 'env' | 'file' | 'tracker' | null; viewer: string | null;
-  help: { title: string; steps: string[]; placeholder: string; needsKey: boolean } | null;
+  help: { title: string; steps: string[]; placeholder: string; needsKey: boolean; keyFields?: 'email-token' } | null;
   spaces: { key: string; name: string; url: string }[];
   error: string | null;
 }
@@ -505,10 +505,12 @@ export interface Issue {
   lastRun: { id: string; status: RunStatus; startedAt: string } | null;
 }
 /** How to connect the tracker when it needs a personal key (steps are markdown). */
-export interface ConnectHelp { title: string; steps: string[]; placeholder: string; needsKey: boolean; method?: 'key' | 'oauth' }
+export interface ConnectHelp { title: string; steps: string[]; placeholder: string; needsKey: boolean; method?: 'key' | 'oauth'; keyFields?: 'email-token' }
 /** GET /api/issues[?force=1]  (/api/linear/issues still works) */
 export interface IssuesResponse {
   connected: boolean; issues: Issue[]; states: string[]; teams: string[]; viewer: string | null; fetchedAt?: number; error?: string;
+  /** Where the tracker's key comes from: 'env' can't be disconnected from the dashboard. */
+  keySource?: 'env' | 'file' | 'cli' | null;
   tracker: { kind: string; label: string; configured: boolean; supported: boolean };
   /** Set when not connected and the tracker takes a key. */
   connect: ConnectHelp | null;

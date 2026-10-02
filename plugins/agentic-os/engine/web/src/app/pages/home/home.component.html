@@ -1,4 +1,4 @@
-<dash-page-header eyebrow="Home" title="What's happening" sub="Runs in flight, what needs you, and one-click skills." />
+<dash-page-header eyebrow="Home" title="What's happening" sub="What Claude is working on, what needs you, and one-click skills." />
 
 @if (machineBanner(); as b) {
   <a class="machine-banner" [class.warn]="!b.problems" routerLink="/machine">
@@ -13,8 +13,10 @@
 <div class="stats">
   <div class="stat-card"><div class="k">Running</div><div class="v" [class.accent]="ov()?.stats?.running">{{ ov()?.stats?.running ?? 0 }}<small>/ {{ ov()?.stats?.maxConcurrentRuns ?? '—' }} slots</small></div>
     @if (data.waitingCount()) { <div class="extra"><b>{{ data.waitingCount() }}</b> waiting for your answer</div> }</div>
-  <div class="stat-card"><div class="k">Runs · 7 days</div><div class="v">{{ ov()?.stats?.weekRuns ?? 0 }}<small>{{ weekLine() }}</small></div></div>
-  <div class="stat-card"><div class="k">Apps up</div><div class="v" [class.green]="apps().up">{{ apps().up }}<small>/ {{ apps().total }}</small></div></div>
+  <div class="stat-card"><div class="k">Activity · 7 days</div><div class="v">{{ ov()?.stats?.weekRuns ?? 0 }}<small>{{ weekLine() }}</small></div></div>
+  @if (showApps()) {
+    <div class="stat-card"><div class="k">Apps up</div><div class="v" [class.green]="apps().up">{{ apps().up }}<small>/ {{ apps().total }}</small></div></div>
+  }
 </div>
 
 <div class="grid3">
@@ -76,7 +78,7 @@
       </div>
     </div>
     <div class="panel">
-      <div class="panel-h"><h2>Recent runs</h2><a class="btn ghost sm" routerLink="/runs">History →</a></div>
+      <div class="panel-h"><h2>Recent activity</h2><a class="btn ghost sm" routerLink="/runs">History →</a></div>
       <div class="panel-b">
         @for (r of recent(); track r.id) { <dash-run-row [run]="r" /> } @empty { <div class="empty">No runs yet.</div> }
       </div>
@@ -110,17 +112,19 @@
         </div>
       }
     </div>
-    <div class="panel">
-      <div class="panel-h"><h2>Workspaces</h2><a class="btn ghost sm" routerLink="/workspaces">Details →</a></div>
-      <div class="panel-b">
-        @for (w of wsDots(); track w.name) {
-          <a class="row" routerLink="/workspaces">
-            <div class="main"><div class="title">{{ w.name }}@if (w.ticketId) { <span class="tag">{{ w.ticketId }}</span> }</div>
-              <div class="sub dots">@for (d of w.dots; track $index) { <span class="sdot" [class]="'sdot ' + d.cls" [title]="d.title"></span> }</div></div>
-            <div class="right">{{ w.up }}/{{ w.total }} up</div>
-          </a>
-        }
+    @if (showWorkspaces()) {
+      <div class="panel">
+        <div class="panel-h"><h2>Workspaces</h2><a class="btn ghost sm" routerLink="/workspaces">Details →</a></div>
+        <div class="panel-b">
+          @for (w of wsDots(); track w.name) {
+            <a class="row" routerLink="/workspaces">
+              <div class="main"><div class="title">{{ w.name }}@if (w.ticketId) { <span class="tag">{{ w.ticketId }}</span> }</div>
+                <div class="sub dots">@for (d of w.dots; track $index) { <span class="sdot" [class]="'sdot ' + d.cls" [title]="d.title"></span> }</div></div>
+              <div class="right">{{ w.up }}/{{ w.total }} up</div>
+            </a>
+          }
+        </div>
       </div>
-    </div>
+    }
   </div>
 </div>

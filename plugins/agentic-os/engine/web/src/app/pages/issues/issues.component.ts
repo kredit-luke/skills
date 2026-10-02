@@ -1,3 +1,4 @@
+import { KeyFieldsComponent } from '../../shared/key-fields.component';
 import { ChangeDetectionStrategy, Component, OnDestroy, OnInit, computed, inject, linkedSignal, signal } from '@angular/core';
 import { Router, RouterLink } from '@angular/router';
 import type { Issue, IssueDetail, IssuesResponse, RunMeta } from '../../../../../shared/api';
@@ -13,7 +14,7 @@ import { PageHeaderComponent } from '../../shared/page-header.component';
 
 @Component({
   selector: 'dash-issues',
-  imports: [PageHeaderComponent, RouterLink, IssueSummaryComponent, MdPipe, TrustedHtmlPipe],
+  imports: [PageHeaderComponent, RouterLink, IssueSummaryComponent, MdPipe, TrustedHtmlPipe, KeyFieldsComponent],
   changeDetection: ChangeDetectionStrategy.OnPush,
   styleUrl: './issues.component.scss',
   templateUrl: './issues.component.html',
@@ -100,6 +101,21 @@ export class IssuesComponent implements OnInit, OnDestroy {
   priCls(i: Issue): string { return i.priority === 1 ? 'pri urgent' : i.priority === 2 ? 'pri high' : 'pri'; }
   claudeQueued(i: Issue): boolean { return i.labels.some((l) => l.name.toLowerCase() === 'claude'); }
   running(i: Issue): boolean { return !!i.lastRun && (i.lastRun.status === 'running' || i.lastRun.status === 'waiting'); }
+
+  /** A saved Atlassian key (not one from env vars) that Disconnect can remove. */
+  readonly canForgetAtlassian = computed(() => {
+    const d = this.resp();
+    return !!d && d.connected && d.tracker.kind === 'jira' && d.keySource === 'file';
+  });
+
+  async forgetAtlassian(): Promise<void> {
+    if (!confirm("Remove your saved Atlassian API key? The Issues and Docs pages stop using it until you connect a key again. (Claude's own Atlassian connector isn't affected.)")) return;
+    try {
+      const r = await this.api.post<{ envKeys: string[] }>('/api/atlassian/disconnect', {});
+      this.toast.show(r.envKeys.length ? `Saved key removed. ${r.envKeys.join(', ')} is still set in your environment.` : 'Atlassian key removed');
+      this.load(true);
+    } catch (e) { this.toast.show((e as Error).message); }
+  }
 
   async connect(): Promise<void> {
     this.connectErr.set('');

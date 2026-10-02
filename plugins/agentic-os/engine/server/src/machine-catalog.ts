@@ -18,6 +18,8 @@
  *   env-var            an environment variable is set
  *   port               something answers on a local port
  *   package-manager    winget (Windows) / Homebrew (macOS), which the Install buttons use
+ *   claude-connector   a claude.ai connector (`connector`: its name, e.g. "Atlassian") connected
+ *                      for this person, from `claude mcp list`; the button opens claude.ai's connectors
  *   claude-code        Claude Code installed and signed in (`claude auth status`); Sign in
  *                      opens a terminal running `claude auth login`
  *
@@ -85,6 +87,10 @@ export const CATALOG: Record<string, CatalogEntry> = {
     kind: "claude-code", label: "Claude Code", probe: cmd("claude", ["--version"]),
     detail: { missing: "The dashboard's runs, usage meters and autocomplete all use it. Sign in once it's installed." },
     install: { win: "irm https://claude.ai/install.ps1 | iex", mac: "curl -fsSL https://claude.ai/install.sh | bash", linux: "curl -fsSL https://claude.ai/install.sh | bash" },
+  },
+  "claude-connector": {
+    kind: "claude-connector", label: "claude.ai connector",
+    install: { label: "Open claude.ai", win: "Start-Process https://claude.ai/settings/connectors", mac: "open https://claude.ai/settings/connectors", linux: "xdg-open https://claude.ai/settings/connectors" },
   },
   curl: { kind: "command", label: "curl", probe: cmd("curl", ["--version"]), fix: { win: "Ships with Windows 10+ (curl.exe)", mac: "Ships with macOS", linux: "sudo apt-get install -y curl" } },
   az: { kind: "command", label: "Azure CLI", probe: cmd("az", ["--version"]), install: { win: "winget install --id Microsoft.AzureCLI -e", mac: "brew install azure-cli", linux: null }, fix: { linux: "See https://learn.microsoft.com/cli/azure/install-azure-cli-linux" } },

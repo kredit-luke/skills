@@ -158,3 +158,18 @@ export function spawnClaude(args: string[], opts: SpawnOptions): ChildProcess {
   const line = [file, ...args].map(quoteWin).join(" ");
   return spawn(process.env.ComSpec || "cmd.exe", ["/d", "/s", "/c", `"${line}"`], { ...opts, windowsVerbatimArguments: true });
 }
+
+/**
+ * A claude.ai connector's state from `claude mcp list` output, e.g.
+ *   "claude.ai Atlassian: https://mcp.atlassian.com/v1/mcp - ✔ Connected"
+ * "absent" means the person's claude.ai account doesn't have that connector at all.
+ */
+export function connectorState(listOutput: string, name: string): { state: "connected" | "disabled" | "signed-out" | "absent"; text: string } {
+  const prefix = `claude.ai ${name}:`.toLowerCase();
+  const line = listOutput.split(/\r?\n/).map((l) => l.trim()).find((l) => l.toLowerCase().startsWith(prefix));
+  if (!line) return { state: "absent", text: "" };
+  const text = line.replace(/^.*? - /, "").replace(/^[^\p{L}]+/u, "").trim();
+  if (/\bconnected\b/i.test(text) && !/not connected|failed/i.test(text)) return { state: "connected", text };
+  if (/disabled/i.test(text)) return { state: "disabled", text };
+  return { state: "signed-out", text };
+}

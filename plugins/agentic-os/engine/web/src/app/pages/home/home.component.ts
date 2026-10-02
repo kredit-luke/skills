@@ -29,6 +29,10 @@ export class HomeComponent {
   readonly inboxBusy = signal(false);
 
   readonly ov = this.data.overview;
+  // A role that hides the Apps or Workspaces page (readers) doesn't get their Home tiles either.
+  private readonly hiddenPages = computed(() => new Set(this.api.boot()?.profile?.hiddenPages || []));
+  readonly showApps = computed(() => !this.hiddenPages().has('apps'));
+  readonly showWorkspaces = computed(() => !this.hiddenPages().has('workspaces'));
   readonly apps = computed(() => {
     let up = 0, total = 0;
     for (const w of this.data.status()?.workspaces || []) for (const a of w.apps) { if (!a.available) continue; total++; if (a.running) up++; }

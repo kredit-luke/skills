@@ -26,6 +26,8 @@ export interface ConnectHelp {
   placeholder: string;
   /** false: nothing to paste (e.g. the gh CLI's own login); the card shows only the steps. */
   needsKey: boolean;
+  /** 'email-token': the key is an email and an API token, asked for in two fields and sent as "email:token". */
+  keyFields?: "email-token";
 }
 
 /** query: this person's own extra filter in the tracker's language (Jira JQL, GitHub search), if it has one. */
