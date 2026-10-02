@@ -39,10 +39,12 @@
       @if (r.status === 'failed' && r.error) { <div class="err-note">{{ r.error }}</div> }
       <div class="actions">
         @if (r.status === 'running' || r.status === 'waiting') { <button class="btn danger" (click)="cancel()">{{ r.status === 'waiting' ? 'Cancel run' : 'Cancel turn' }}</button> }
-        @if (r.status !== 'handedOff') {
-          <button class="btn" (click)="terminal()" title="Open this conversation in a terminal and keep going interactively. The dashboard stops driving it.">Continue in terminal</button>
+        @if (!api.hosted()) {
+          @if (r.status !== 'handedOff') {
+            <button class="btn" (click)="terminal()" title="Open this conversation in a terminal and keep going interactively. The dashboard stops driving it.">Continue in terminal</button>
+          }
+          <button class="btn ghost" (click)="copyResume()" [title]="resumeCmd()">Copy resume cmd</button>
         }
-        <button class="btn ghost" (click)="copyResume()" [title]="resumeCmd()">Copy resume cmd</button>
         <span class="grow"></span>
         <button class="btn" [class.flag-on]="r.flagged" [attr.aria-pressed]="!!r.flagged" (click)="toggleFlag()"
           title="Keep this run in Focus until you clear the flag or rate it">{{ r.flagged ? '⚑ Needs me' : '⚐ Needs me' }}</button>
@@ -91,7 +93,7 @@
       }
       <button type="button" role="tab" [class.on]="view() === 'transcript'" [attr.aria-selected]="view() === 'transcript'" (click)="tab.set('transcript')">Transcript</button>
       <button type="button" role="tab" [class.on]="view() === 'changes'" [attr.aria-selected]="view() === 'changes'" (click)="tab.set('changes')">Changes @if (changedFiles()) { <span class="n">{{ changedFiles() }}</span> }</button>
-      @if (workWs()) {
+      @if (workWs() && !api.hosted()) {
         <button type="button" role="tab" [class.on]="view() === 'apps'" [attr.aria-selected]="view() === 'apps'" (click)="tab.set('apps')">Apps @if (appsBadge(); as b) { <span class="n" [class.up]="b.up">{{ b.text }}</span> }</button>
       }
     </div>

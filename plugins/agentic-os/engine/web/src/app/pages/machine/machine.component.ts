@@ -39,7 +39,27 @@ const ICON: Record<string, string> = { ok: '✓', warn: '!', missing: '✕', inf
                 <span class="ver">{{ c.version || '' }}@if (c.required) { <span class="req"> need {{ c.required }}</span> }</span>
                 @if (c.detail) { <div class="dt">{{ c.detail }}</div> }
                 @if (c.status !== 'ok' && c.apps.length) { <div class="needs">Needed by {{ appNames(c) }}</div> }
-                @if (c.status !== 'ok') {
+                @if (c.status !== 'ok' && hosted()) {
+                  <!-- Hosted: the container's tools are the image's job; only Claude's sign-in is the person's. -->
+                  @if (c.id === 'claude-code' && c.install) {
+                    <div class="fx signin">
+                      @if (!signInUrl()) {
+                        <button class="btn primary sm" [disabled]="signingIn()" (click)="startSignIn()">{{ signingIn() ? 'Starting…' : c.install.label }}</button>
+                      } @else {
+                        <ol>
+                          <li><a [href]="signInUrl()" target="_blank" rel="noopener">Open the Claude sign-in page ↗</a> and sign in with your work account.</li>
+                          <li>Paste the code it shows you:
+                            <span class="row">
+                              <input #code type="text" autocomplete="off" spellcheck="false" placeholder="Sign-in code" (keydown.enter)="finishSignIn(code.value)">
+                              <button class="btn primary sm" [disabled]="signingIn()" (click)="finishSignIn(code.value)">{{ signingIn() ? 'Signing in…' : 'Finish sign-in' }}</button>
+                              <button class="btn ghost sm" (click)="cancelSignIn()">Cancel</button>
+                            </span>
+                          </li>
+                        </ol>
+                      }
+                    </div>
+                  }
+                } @else if (c.status !== 'ok') {
                   <div class="fx">
                     @if (c.fix) { <code title="Click to copy" (click)="copy(c.fix)">{{ c.fix }}</code> }
                     @if (c.install) { <button class="btn primary sm" [disabled]="installing() === c.id" (click)="install(c)" title="Opens a terminal running this command, so you can see and approve any prompts">{{ c.install.label }}</button> }
@@ -60,10 +80,14 @@ export class MachineComponent implements OnInit {
   private readonly toast = inject(ToastService);
   readonly busy = signal(false);
   readonly installing = signal<string | null>(null);
+  readonly hosted = this.api.hosted;
+  /** Hosted Claude sign-in: the URL to open once started, and whether a step is in flight. */
+  readonly signInUrl = signal<string | null>(null);
+  readonly signingIn = signal(false);
 
   readonly sub = computed(() => {
     const m = this.data.machine();
-    const what = "Everything this computer needs to run the workspace's apps.";
+    const what = this.hosted() ? 'What your hosted dashboard has set up, including your Claude sign-in.' : "Everything this computer needs to run the workspace's apps.";
     return m ? `${m.os} ${m.osVersion} · ${m.arch} · ${m.cpus} CPUs · ${m.memoryGb} GB RAM. ${what}` : what;
   });
   readonly meta = computed(() => {
@@ -108,6 +132,33 @@ export class MachineComponent implements OnInit {
       else { await copyText(r.command); this.toast.error('Couldn\'t open a terminal; copied the command instead.'); }
     } catch (e) { this.toast.error((e as Error).message); }
     finally { setTimeout(() => this.installing.set(null), 3000); }
+  }
+
+  /** Hosted: start `claude auth login` on the server and show its sign-in URL. */
+  async startSignIn(): Promise<void> {
+    this.signingIn.set(true);
+    try {
+      const r = await this.api.post<{ url: string }>('/api/claude/login', { action: 'start' });
+      this.signInUrl.set(r.url);
+    } catch (e) { this.toast.error((e as Error).message); }
+    finally { this.signingIn.set(false); }
+  }
+
+  /** Hosted: hand the code from the sign-in page to the waiting `claude auth login`. */
+  async finishSignIn(code: string): Promise<void> {
+    if (!code.trim() || this.signingIn()) return;
+    this.signingIn.set(true);
+    try {
+      const r = await this.api.post<{ ok: boolean; message: string }>('/api/claude/login', { action: 'code', code });
+      if (r.ok) { this.toast.show(r.message); this.signInUrl.set(null); await this.recheck(); }
+      else { this.toast.error(r.message); if (/start again/i.test(r.message)) this.signInUrl.set(null); }
+    } catch (e) { this.toast.error((e as Error).message); }
+    finally { this.signingIn.set(false); }
+  }
+
+  cancelSignIn(): void {
+    this.signInUrl.set(null);
+    this.api.post('/api/claude/login', { action: 'cancel' }).catch(() => {});
   }
 
   /** Coming back from an install terminal: re-check without making you click. */

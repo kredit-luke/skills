@@ -80,7 +80,9 @@
                   <a class="btn sm" [routerLink]="['/runs', i.lastRun!.id]"><span class="spin"></span> Implementing… view run</a>
                 } @else {
                   <button class="btn primary sm" (click)="implementAuto(i)" title="Runs /implement here. Its questions come to you as Needs your answer, unless you tick “decide on its own” in the dialog">Implement</button>
-                  <button class="btn sm" (click)="implementTerminal(i)" title="Opens an interactive claude session in a terminal so it can ask you questions">In terminal</button>
+                  @if (!api.hosted()) {
+                    <button class="btn sm" (click)="implementTerminal(i)" title="Opens an interactive claude session in a terminal so it can ask you questions">In terminal</button>
+                  }
                 }
               }
               <button class="btn ghost sm" (click)="explain(i)" [disabled]="busyTicket() === i.id" title="A read-only Claude run that explains the issue and the code it touches">{{ busyTicket() === i.id ? 'Starting…' : 'Explain' }}</button>

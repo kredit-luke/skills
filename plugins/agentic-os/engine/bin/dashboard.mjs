@@ -5,6 +5,7 @@
  *   node dashboard/bin/dashboard.mjs start [--port N] [--restart] [--open] [--skip-build]
  *   node dashboard/bin/dashboard.mjs stop
  *   node dashboard/bin/dashboard.mjs status
+ *   node dashboard/bin/dashboard.mjs run        (foreground, for a container: references/hosting.md)
  *
  * Port: --port, else the DASHBOARD_PORT env var, else .claude/dashboard/workspace.json
  * dashboard.port, else 3333.
@@ -317,9 +318,26 @@ async function status() {
   process.exitCode = up ? 0 : 1;
 }
 
-const commands = { start, stop, status, restart: () => { flags.restart = true; return start(); } };
+/**
+ * The server in the foreground, logging to this terminal: what a container runs as its
+ * main process (hosted mode, references/hosting.md). Builds first like start, passes
+ * SIGTERM/SIGINT on so a stopping container ends runs cleanly, and exits when it does.
+ */
+async function run() {
+  const floor = nodeFloor();
+  const dir = nodeDir(floor);
+  if (dir === null) { console.error(`The dashboard needs Node.js ${floor} or newer.`); process.exit(1); }
+  const env = cleanEnv(dir);
+  ensureBuilt(env);
+  const node = dir ? path.join(dir, IS_WIN ? "node.exe" : "node") : "node";
+  const child = spawn(node, ["--disable-warning=ExperimentalWarning", path.join("server", "src", "main.ts"), "--port", String(PORT)], { cwd: DASH_DIR, stdio: "inherit", env });
+  for (const sig of ["SIGTERM", "SIGINT"]) process.on(sig, () => child.kill(sig));
+  child.on("exit", (code, signal) => process.exit(code ?? (signal ? 0 : 1)));
+}
+
+const commands = { start, stop, status, run, restart: () => { flags.restart = true; return start(); } };
 if (!commands[cmd]) {
-  console.error("Usage: node dashboard/bin/dashboard.mjs <start|stop|restart|status> [--port N] [--restart] [--open] [--skip-build]");
+  console.error("Usage: node dashboard/bin/dashboard.mjs <start|stop|restart|status|run> [--port N] [--restart] [--open] [--skip-build]");
   process.exit(2);
 }
 await commands[cmd]();

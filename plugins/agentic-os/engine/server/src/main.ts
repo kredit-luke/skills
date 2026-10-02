@@ -5,8 +5,10 @@
  *   Port: --port, else the DASHBOARD_PORT env var, else workspace.json dashboard.port, else 3333.
  *
  * Serves the JSON API under /api (contract: dashboard/shared/api.ts) and the
- * built Angular app from dashboard/dist/browser. Local only: binds 127.0.0.1,
+ * built Angular app from dashboard/dist/browser. Local by default: binds 127.0.0.1,
  * rejects non-loopback Host headers, and every POST needs the per-install token.
+ * Hosted mode (DASHBOARD_HOSTED, see hosted.ts) serves one person from a container
+ * behind the company's login proxy instead.
  *
  * Config: .claude/dashboard/*.json + brand/ (the team's; see config.ts).
  * State:  .claude/ledger/ (gitignored): runs, app jobs, token, tracker key, personal links.
@@ -65,6 +67,8 @@ import type { RunWorktree } from "./run-changes.ts";
 import { Attachments, MAX_ATTACHMENT_BYTES, contentTypeOf } from "./attachments.ts";
 import { Explore, MAX_SAVE_BYTES, rawType, resolveSafe } from "./explore.ts";
 import { forgetAtlassianKeys } from "./atlassian.ts";
+import { HOSTED_HIDDEN_PAGES, NOT_HOSTED, checkHostedRequest, hostedConfig } from "./hosted.ts";
+import { ClaudeLogin } from "./claude-login.ts";
 
 const DIST_DIR = path.join(DASHBOARD_DIR, "dist", "browser");
 const VERSION = JSON.parse(fs.readFileSync(path.join(DASHBOARD_DIR, "package.json"), "utf-8")).version;
@@ -74,6 +78,10 @@ const GIT_CACHE_TTL_MS = 3000;
 const GIT_DIFF_MAX_BYTES = 512 * 1024;
 
 const DASHBOARD_PORT = dashboardPort();
+/** Hosted mode's settings (hosted.ts), or null when running on someone's own machine. */
+const HOSTED = (() => {
+  try { return hostedConfig(); } catch (e) { console.error(e.message); process.exit(1); }
+})();
 const screenshotsSubdir = () => workspaceConfig().worktrees.screenshots;
 
 const IMAGE_CONTENT_TYPES: Record<string, string> = {
@@ -368,7 +376,8 @@ cleanupAttachments();
 setInterval(cleanupAttachments, 6 * 3600 * 1000).unref();
 const inbox = new Inbox(runs);
 const trackers = new Trackers(LEDGER_DIR);
-const machine = new Machine(MAIN_WORKSPACE_PATH);
+const machine = new Machine(MAIN_WORKSPACE_PATH, { hosted: !!HOSTED });
+const claudeLogin = new ClaudeLogin();
 const docSites = new DocSites(MAIN_WORKSPACE_PATH);
 const docsProviders = new DocsProviders(() => ({ ledgerDir: LEDGER_DIR, issues: workspaceConfig().issues }));
 const snapshotSources = new SnapshotSources(() => ({ ledgerDir: LEDGER_DIR, issues: workspaceConfig().issues }));
@@ -518,7 +527,11 @@ function launchBlocker(): string | null {
   const auth = claudeAuthCached();
   if (!auth || Date.now() - auth.checkedAt > 60000) claudeAuth().catch(() => {}); // refresh for next time
   if (auth && !auth.installed) return "Claude Code isn't installed on this machine. Open the Machine page to install it.";
-  if (auth && !auth.loggedIn) return "Claude Code isn't signed in. Open the Machine page and click Sign in (it opens a terminal for the browser sign-in), then try again.";
+  if (auth && !auth.loggedIn) {
+    return HOSTED
+      ? "You aren't signed in to Claude yet. Open the Machine page and click Sign in to Claude, then try again."
+      : "Claude Code isn't signed in. Open the Machine page and click Sign in (it opens a terminal for the browser sign-in), then try again.";
+  }
   const { limits } = deck.config();
   if (runs.runningCount() >= limits.maxConcurrentRuns) {
     return `Already ${runs.runningCount()} runs in flight (limit ${limits.maxConcurrentRuns}).`;
@@ -761,6 +774,8 @@ function explainPrompt(issue: any) {
 //      can't read it (GET /api/boot is same-origin only) and can't send the header
 //      without a CORS preflight we never approve.
 // The token persists in the gitignored ledger so open tabs survive a restart.
+// Hosted mode swaps 1 and 2 for hosted.ts's checks (the proxy's secret, the public Host
+// and Origin, the signed-in owner); the token stays.
 function loadDashToken() {
   const file = path.join(LEDGER_DIR, "dashboard-token");
   try {
@@ -779,8 +794,8 @@ function originAllowed(origin: string) {
   return ["http://localhost", "http://127.0.0.1"].some((o) => ports.some((port) => origin === `${o}:${port}`));
 }
 
-/** GET /api/boot: the token plus who this workspace is (name, brand, tracker) for the UI. */
-function bootInfo(): Boot {
+/** GET /api/boot: the token plus who this workspace is (name, brand, tracker) for the UI. `user`: hosted mode's signed-in email. */
+function bootInfo(user: string | null): Boot {
   const ws = workspaceConfig();
   const tracker = trackers.get();
   const tcfg = trackers.config();
@@ -809,8 +824,10 @@ function bootInfo(): Boot {
     profile: (() => {
       const me = readProfile(LEDGER_DIR, ws.roles);
       // ask: the team has roles and this person hasn't picked one yet (the first-start question).
-      return { current: me.profile, role: me.current.id, roleLabel: me.current.label, ask: ws.rolesConfigured && !me.roleChosen, hiddenPages: me.current.hiddenPages };
+      const hiddenPages = HOSTED ? [...new Set([...me.current.hiddenPages, ...HOSTED_HIDDEN_PAGES])] : me.current.hiddenPages;
+      return { current: me.profile, role: me.current.id, roleLabel: me.current.label, ask: ws.rolesConfigured && !me.roleChosen, hiddenPages };
     })(),
+    hosted: HOSTED ? { user } : null,
   };
 }
 
@@ -960,7 +977,10 @@ function serveExploreRaw(res: http.ServerResponse, pathname: string) {
   fs.createReadStream(full).pipe(res);
 }
 
-async function handleApi(req: http.IncomingMessage, res: http.ServerResponse, url: URL) {
+/** POSTs that open something on the server's own screen or ports, refused when hosted. */
+const LOCAL_ONLY_POSTS = new Set(["/api/machine/install", "/api/docs/preview", "/api/apps/action"]);
+
+async function handleApi(req: http.IncomingMessage, res: http.ServerResponse, url: URL, user: string | null) {
   const p = url.pathname;
   const q = (k: string) => url.searchParams.get(k);
   const force = q("force") === "1";
@@ -973,7 +993,7 @@ async function handleApi(req: http.IncomingMessage, res: http.ServerResponse, ur
     if (p.startsWith("/api/explore/raw/")) return serveExploreRaw(res, p);
     if (p === "/api/explore/list") return sendJson(res, explore.list(q("path")));
     if (p === "/api/explore/file") return sendJson(res, explore.read(q("path")));
-    if (p === "/api/boot") return sendJson(res, bootInfo());
+    if (p === "/api/boot") return sendJson(res, bootInfo(user));
     if (p === "/api/events") return live.subscribe(res);
     if (p === "/api/status") return sendJson(res, await sharedStatus());
     if (p === "/api/overview") return sendJson(res, await getOverview());
@@ -1139,6 +1159,16 @@ async function handleApi(req: http.IncomingMessage, res: http.ServerResponse, ur
   }
   const body = await readJsonBody(req);
 
+  if (HOSTED && (LOCAL_ONLY_POSTS.has(p) || (runMatch && runMatch[2] === "terminal") || (body.mode === "terminal" && /^\/api\/(issues|linear)\/implement$/.test(p)))) {
+    return sendError(res, 400, NOT_HOSTED);
+  }
+  if (p === "/api/claude/login") {
+    // { action: "start" } → { url } to open; { action: "code", code } → { ok, message }.
+    if (body.action === "start") return sendJson(res, await claudeLogin.start(user));
+    if (body.action === "code") return sendJson(res, await claudeLogin.finish(String(body.code || "")));
+    if (body.action === "cancel") { claudeLogin.cancel(); return sendJson(res, { ok: true }); }
+    return sendError(res, 400, "Unknown action");
+  }
   if (p === "/api/runs") return sendJson(res, { run: launchRun(body, "manual") }, 201);
   if (runMatch && runMatch[2] === "reply") {
     const blocker = launchBlocker();
@@ -1360,19 +1390,34 @@ async function handleApi(req: http.IncomingMessage, res: http.ServerResponse, ur
 }
 
 const server = http.createServer(async (req, res) => {
-  if (!ALLOWED_HOSTS.has(String(req.headers.host || "").toLowerCase())) {
-    res.writeHead(421);
-    return res.end("Misdirected request");
+  // For a container platform's liveness/readiness probe, which sends no Host, secret or login.
+  if (req.method === "GET" && req.url === "/healthz") {
+    res.writeHead(200, { "Content-Type": "text/plain" });
+    return res.end("ok");
   }
-  // A browser POST from another site carries its Origin; only our own is allowed.
-  const origin = req.headers.origin;
-  if (origin && !originAllowed(origin)) {
-    res.writeHead(403);
-    return res.end("Cross-origin request refused");
+  let user: string | null = null;
+  if (HOSTED) {
+    const verdict = checkHostedRequest(HOSTED, req.headers);
+    if (verdict.ok === false) {
+      res.writeHead(verdict.status, { "Content-Type": "text/plain; charset=utf-8" });
+      return res.end(verdict.message);
+    }
+    user = verdict.user;
+  } else {
+    if (!ALLOWED_HOSTS.has(String(req.headers.host || "").toLowerCase())) {
+      res.writeHead(421);
+      return res.end("Misdirected request");
+    }
+    // A browser POST from another site carries its Origin; only our own is allowed.
+    const origin = req.headers.origin;
+    if (origin && !originAllowed(origin)) {
+      res.writeHead(403);
+      return res.end("Cross-origin request refused");
+    }
   }
   const url = new URL(req.url || "/", `http://localhost:${DASHBOARD_PORT}`);
   try {
-    if (url.pathname.startsWith("/api/")) return await handleApi(req, res, url);
+    if (url.pathname.startsWith("/api/")) return await handleApi(req, res, url, user);
     if (url.pathname.startsWith("/screenshots/")) return serveScreenshot(req, res);
     if (url.pathname.startsWith("/ds/") && serveBrand(res, url.pathname)) return;
     return serveApp(res, url.pathname);
@@ -1383,15 +1428,16 @@ const server = http.createServer(async (req, res) => {
   }
 });
 
-server.listen(DASHBOARD_PORT, "127.0.0.1", () => {
-  console.log(`Workspace dashboard running at http://localhost:${DASHBOARD_PORT}`);
+server.listen(DASHBOARD_PORT, HOSTED ? HOSTED.bind : "127.0.0.1", () => {
+  if (HOSTED) console.log(`Hosted dashboard listening on ${HOSTED.bind}:${DASHBOARD_PORT}, opened at ${HOSTED.publicOrigin}${HOSTED.owner ? ` by ${HOSTED.owner}` : ""}`);
+  else console.log(`Workspace dashboard running at http://localhost:${DASHBOARD_PORT}`);
 });
 
 // workspace.json dashboard.legacyRedirects: old tools' ports that now answer with a
 // redirect, so their bookmarks land on the matching dashboard page. Each is
 // { port, routes: { "/old": "/new" }, prefixes: { "/old/": "/new" }, fallback }.
-// Best effort: skipped if the port is taken.
-for (const r of workspaceConfig().dashboard.legacyRedirects) {
+// Best effort: skipped if the port is taken. Local only: a hosted container has no old tools.
+for (const r of HOSTED ? [] : workspaceConfig().dashboard.legacyRedirects) {
   const legacy = http.createServer((req, res) => {
     const p = new URL(req.url || "/", "http://x").pathname.replace(/\/+$/, "") || "/";
     const prefix = Object.keys(r.prefixes || {}).find((k) => p.startsWith(k));
@@ -1407,6 +1453,7 @@ for (const r of workspaceConfig().dashboard.legacyRedirects) {
 for (const sig of ["SIGINT", "SIGTERM"] as const) {
   process.on(sig, () => {
     for (const id of runs.live.keys()) runs.cancel(id);
+    claudeLogin.cancel();
     setTimeout(() => process.exit(0), 300);
   });
 }

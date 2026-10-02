@@ -1,0 +1,183 @@
+# One person's hosted dashboard on any Kubernetes (GKE, EKS, AKS, on-prem): a starting
+# point, see references/hosting.md. Replace the placeholders per person and apply:
+#
+#   PERSON=ana EMAIL=ana@example.com HOST=ana.dashboard.example.com \
+#     envsubst '$PERSON $EMAIL $HOST' < kubernetes.yaml | kubectl apply -n dashboards -f -
+#
+# Once per namespace, before the first person:
+#   - the Secret `dashboard-hosted` (keys below) and the ConfigMap `dashboard-oauth2-proxy`
+#     at the bottom of this file;
+#   - TLS for the hosts (cert-manager, or your cloud's managed certificates), and DNS for
+#     each HOST (or one wildcard record) pointing at the ingress.
+#
+# Sign-in: oauth2-proxy runs next to the dashboard in the same pod. It signs the person in
+# with your identity provider, lets only $EMAIL through, and adds the email and the proxy
+# secret to every request. The dashboard listens on 127.0.0.1, so only that sidecar reaches it.
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: dashboard-${PERSON}-emails
+data:
+  emails.txt: |
+    ${EMAIL}
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: dashboard-${PERSON}
+  labels: { app: agentic-dashboard, person: "${PERSON}" }
+spec:
+  replicas: 1
+  serviceName: dashboard-${PERSON}
+  selector:
+    matchLabels: { app: agentic-dashboard, person: "${PERSON}" }
+  template:
+    metadata:
+      labels: { app: agentic-dashboard, person: "${PERSON}" }
+    spec:
+      # The pod runs whatever Claude decides to run: give it no cloud or cluster credentials.
+      automountServiceAccountToken: false
+      securityContext: { runAsNonRoot: true, runAsUser: 1000, runAsGroup: 1000, fsGroup: 1000 }
+      # Optional: keep these pods on their own nodes, away from production workloads.
+      # nodeSelector: { pool: dashboards }
+      # tolerations: [{ key: dedicated, value: dashboards, effect: NoSchedule }]
+      terminationGracePeriodSeconds: 30
+      containers:
+        - name: dashboard
+          image: REGISTRY/agentic-dashboard:1   # built from templates/hosted/Dockerfile
+          env:
+            - { name: DASHBOARD_PUBLIC_URL, value: "https://${HOST}" }
+            - { name: DASHBOARD_OWNER, value: "${EMAIL}" }
+            - { name: DASHBOARD_BIND, value: "127.0.0.1" }
+            - { name: DASHBOARD_PROXY_SECRET, valueFrom: { secretKeyRef: { name: dashboard-hosted, key: proxy-secret } } }
+            - { name: WORKSPACE_REPO, value: "https://git.example.com/acme/workspace.git" }
+            - { name: GIT_TOKEN, valueFrom: { secretKeyRef: { name: dashboard-hosted, key: git-token, optional: true } } }
+          resources:
+            # Measured: ~115 MB idle, ~300 MB per Claude run (subagents run inside it).
+            # The limit covers the first start's npm ci + ng build (~1.6 GB for a minute).
+            requests: { cpu: 100m, memory: 512Mi }
+            limits: { cpu: "1", memory: 2Gi }
+          # exec, not httpGet: the dashboard only listens on 127.0.0.1 inside the pod.
+          startupProbe: { exec: { command: [curl, -fsS, "http://127.0.0.1:3333/healthz"] }, periodSeconds: 10, failureThreshold: 60 }
+          livenessProbe: { exec: { command: [curl, -fsS, "http://127.0.0.1:3333/healthz"] }, periodSeconds: 30 }
+          volumeMounts:
+            - { name: data, mountPath: /data }
+        - name: oauth2-proxy
+          image: quay.io/oauth2-proxy/oauth2-proxy:VERSION   # pin a release
+          args:
+            - --alpha-config=/etc/oauth2-proxy/alpha.yaml
+            - --authenticated-emails-file=/etc/oauth2-proxy-emails/emails.txt
+            - --reverse-proxy=true
+            - --cookie-secure=true
+            - --skip-provider-button=true
+            - --redirect-url=https://${HOST}/oauth2/callback
+          env:
+            - { name: OAUTH2_PROXY_COOKIE_SECRET, valueFrom: { secretKeyRef: { name: dashboard-hosted, key: cookie-secret } } }
+            - { name: DASHBOARD_PROXY_SECRET, valueFrom: { secretKeyRef: { name: dashboard-hosted, key: proxy-secret } } }
+          ports: [{ name: http, containerPort: 4180 }]
+          readinessProbe: { httpGet: { path: /ping, port: 4180 } }
+          resources:
+            requests: { cpu: 10m, memory: 32Mi }
+            limits: { memory: 128Mi }
+          volumeMounts:
+            - { name: oauth2-proxy-config, mountPath: /etc/oauth2-proxy, readOnly: true }
+            - { name: emails, mountPath: /etc/oauth2-proxy-emails, readOnly: true }
+            - { name: oidc-client, mountPath: /etc/oauth2-proxy-secret, readOnly: true }
+      volumes:
+        - { name: oauth2-proxy-config, configMap: { name: dashboard-oauth2-proxy } }
+        - { name: emails, configMap: { name: dashboard-${PERSON}-emails } }
+        - { name: oidc-client, secret: { secretName: dashboard-hosted, items: [{ key: client-secret, path: client-secret }] } }
+  volumeClaimTemplates:
+    - metadata: { name: data }
+      spec:
+        accessModes: [ReadWriteOnce]
+        # storageClassName: your cluster's default is fine (GKE pd-balanced, EKS gp3, AKS managed-csi).
+        resources: { requests: { storage: 10Gi } }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: dashboard-${PERSON}
+spec:
+  selector: { app: agentic-dashboard, person: "${PERSON}" }
+  ports: [{ name: http, port: 80, targetPort: http }]
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: dashboard-${PERSON}
+  annotations:
+    # Runs stream over server-sent events: don't let the ingress cut a quiet stream short
+    # (ingress-nginx shown; ALB, Application Gateway and GKE have their own timeout settings).
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "3600"
+    nginx.ingress.kubernetes.io/proxy-buffering: "off"
+spec:
+  # ingressClassName: nginx   # or alb (EKS), azure-application-gateway (AKS), gce (GKE)
+  tls: [{ hosts: ["${HOST}"], secretName: dashboard-${PERSON}-tls }]
+  rules:
+    - host: "${HOST}"
+      http:
+        paths: [{ path: /, pathType: Prefix, backend: { service: { name: dashboard-${PERSON}, port: { name: http } } } }]
+---
+# Once per namespace (not per person) from here down.
+#
+# kubectl create secret generic dashboard-hosted \
+#   --from-literal=proxy-secret=$(openssl rand -hex 32) \
+#   --from-literal=cookie-secret=$(openssl rand -hex 16) \
+#   --from-literal=client-secret=<your OIDC app's client secret> \
+#   --from-literal=git-token=<optional read token for the workspace repo>
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: dashboard-oauth2-proxy
+data:
+  alpha.yaml: |
+    server:
+      bindAddress: "0.0.0.0:4180"
+    upstreamConfig:
+      upstreams:
+        - id: dashboard
+          path: /
+          uri: http://127.0.0.1:3333
+          # Run streams stay open for a long time; the default 30s would cut them.
+          timeout: 1h
+    injectRequestHeaders:
+      - name: X-Forwarded-Email
+        values: [{ claim: email }]
+      - name: X-Dashboard-Proxy-Secret
+        values: [{ fromEnv: DASHBOARD_PROXY_SECRET }]
+    providers:
+      # Generic OIDC covers Google Workspace (https://accounts.google.com), Microsoft
+      # Entra ID (https://login.microsoftonline.com/<tenant id>/v2.0), Okta, Auth0,
+      # Amazon Cognito and Keycloak: register a web app with redirect URI
+      # https://<each HOST>/oauth2/callback (or a wildcard, where the provider allows one).
+      - id: idp
+        provider: oidc
+        clientID: YOUR_CLIENT_ID
+        clientSecretFile: /etc/oauth2-proxy-secret/client-secret
+        scope: "openid email profile"
+        oidcConfig:
+          issuerURL: https://accounts.google.com
+---
+# Keep the pod off the cluster's own network and the cloud metadata endpoint (no cloud
+# credentials through it); allow DNS and HTTPS out (Claude, your tracker, your code host).
+# Needs a CNI that enforces NetworkPolicy (Calico, Cilium, GKE Dataplane V2, AKS/EKS network policy).
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: agentic-dashboards
+spec:
+  podSelector: { matchLabels: { app: agentic-dashboard } }
+  policyTypes: [Ingress, Egress]
+  ingress:
+    - ports: [{ port: 4180 }]
+  egress:
+    - to: [{ namespaceSelector: {}, podSelector: { matchLabels: { k8s-app: kube-dns } } }]
+      ports: [{ port: 53, protocol: UDP }, { port: 53, protocol: TCP }]
+    - to:
+        - ipBlock:
+            cidr: 0.0.0.0/0
+            # Replace with your cluster's pod and service ranges and private networks.
+            except: [10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16, 169.254.0.0/16]
+      ports: [{ port: 443 }]

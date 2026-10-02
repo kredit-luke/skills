@@ -27,6 +27,7 @@ import { LEDGER_DIR, readConfigFile } from "./config.ts";
 import { readProfile } from "./profile.ts";
 import { CATALOG } from "./machine-catalog.ts";
 import { claudeAuth, connectorState } from "./claude.ts";
+import { NOT_HOSTED } from "./hosted.ts";
 
 const IS_WIN = process.platform === "win32";
 const IS_MAC = process.platform === "darwin";
@@ -231,9 +232,12 @@ class Machine {
   inflight: any;
   /** The _configSig the in-flight run was started for. */
   inflightSig: string | null;
+  /** Hosted mode (hosted.ts): no terminal to open; Claude's sign-in happens in the page (claude-login.ts). */
+  hosted: boolean;
 
-  constructor(workspaceRoot) {
+  constructor(workspaceRoot, opts: { hosted?: boolean } = {}) {
     this.root = workspaceRoot;
+    this.hosted = !!opts.hosted;
     this.cache = null;
     this.inflight = null;
     this.inflightSig = null;
@@ -271,6 +275,7 @@ class Machine {
 
   /** Run a check's install in a visible terminal. Only commands from the config can run. */
   async install(id) {
+    if (this.hosted) throw new Error(NOT_HOSTED);
     const report = await this.get();
     const check = report.checks.find((c) => c.id === id);
     if (!check || !check.install) throw new Error("Nothing to install for that item on this OS.");
@@ -441,9 +446,11 @@ class Machine {
         return {
           ...base, label, version: ver,
           status: auth.loggedIn ? "ok" : "missing",
-          detail: auth.loggedIn ? `Signed in with ${how}.` : "Installed but not signed in, so dashboard runs can't start. Sign in opens a terminal; finish in the browser, then Re-check.",
-          install: auth.loggedIn ? undefined : installFor({ label: "Sign in", win: "claude auth login", mac: "claude auth login", linux: "claude auth login" }),
-          fix: auth.loggedIn ? fixOf() : "claude auth login",
+          detail: auth.loggedIn ? `Signed in with ${how}.` : this.hosted
+            ? "Not signed in yet, so runs can't start. Click Sign in to Claude and follow the two steps."
+            : "Installed but not signed in, so dashboard runs can't start. Sign in opens a terminal; finish in the browser, then Re-check.",
+          install: auth.loggedIn ? undefined : installFor({ label: this.hosted ? "Sign in to Claude" : "Sign in", win: "claude auth login", mac: "claude auth login", linux: "claude auth login" }),
+          fix: auth.loggedIn || this.hosted ? fixOf() : "claude auth login",
         };
       }
 

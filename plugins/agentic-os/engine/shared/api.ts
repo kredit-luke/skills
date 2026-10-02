@@ -37,6 +37,12 @@ export interface Boot {
    * `ask`: the team has roles and this person hasn't picked one (the first-start question).
    */
   profile: { current: 'developer' | 'reader'; role: string; roleLabel: string; ask: boolean; hiddenPages: string[] };
+  /**
+   * Hosted mode (server/src/hosted.ts): this dashboard runs in a container behind the company's
+   * login proxy, so nothing opens on "this computer" (terminals, apps, local previews).
+   * `user` is the signed-in email the proxy passed on. null when it runs on the person's own machine.
+   */
+  hosted: { user: string | null } | null;
 }
 
 /** The configured issue tracker, as the UI needs it everywhere (badges, links, ticket ids). */

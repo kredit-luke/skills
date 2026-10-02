@@ -1,0 +1,115 @@
+# Hosting the dashboard for people without a dev machine
+
+The dashboard normally runs on each person's own computer. Hosted mode runs it on the company's own infrastructure instead, for people who don't have a dev machine: product, operations, support. Engineers keep running it locally; the same workspace serves both.
+
+It is not multi-user: **each person gets their own container**, with their own disk, Claude sign-in, chat history and tracker key. Claude runs can use a shell, so separate containers are what keeps one person's runs away from another person's credentials.
+
+```
+browser ── login proxy (oauth2-proxy or a cloud identity-aware proxy; your company's
+        │   identity provider: Google Workspace, Entra ID, Okta, Cognito, Keycloak...)
+        │   adds X-Forwarded-Email and X-Dashboard-Proxy-Secret
+        └─ this person's container: dashboard + claude CLI + git
+              volume /data: workspace/ (clone; .claude/ledger = runs, tracker key)
+                            claude/    (Claude sign-in, transcripts, memory)
+```
+
+Nothing in it is tied to a cloud: it needs a container platform with a persistent volume and a login proxy in front. `templates/hosted/` has an image and a Kubernetes starting point.
+
+## One address, or one per person
+
+- **One per person** (`ana.dashboard.example.com`): what the templates set up. Each person's pod has its own login proxy sidecar that lets only them in. Needs a DNS record and TLS for each host (or one wildcard record and certificate), and each host registered as a redirect URI with the identity provider (or a wildcard, where it allows one).
+- **One for everyone** (`dashboard.example.com`): needs a router behind the login proxy that sends each signed-in email to that person's container, and starts it if it's stopped. The engine supports it (set `DASHBOARD_ALLOWED_HOSTS` if the router rewrites Host), but the router itself isn't part of the plugin yet.
+
+## Settings
+
+Hosted mode is set by the container's environment, never by `workspace.json`:
+
+| Variable | Default | Notes |
+|---|---|---|
+| `DASHBOARD_HOSTED` | off | `1` turns hosted mode on. |
+| `DASHBOARD_PUBLIC_URL` | (required) | The address people open, e.g. `https://ana.dashboard.example.com`. Its host is the only `Host` accepted and its origin the only `Origin`. |
+| `DASHBOARD_PROXY_SECRET` | (required) | 32+ characters. The login proxy sends it as `X-Dashboard-Proxy-Secret` on every request; anything without it gets 401. It's what makes the email header trustworthy. |
+| `DASHBOARD_OWNER` | none | The one email this container serves; anyone else gets 403. Set it: it guards against a misrouted request. |
+| `DASHBOARD_IDENTITY_HEADER` | `X-Forwarded-Email` | Where the proxy puts the signed-in email. |
+| `DASHBOARD_ALLOWED_HOSTS` | none | Extra `Host` values, comma-separated, for a proxy or router that rewrites Host. |
+| `DASHBOARD_BIND` | `0.0.0.0` | `127.0.0.1` when the proxy is a sidecar in the same pod (the Kubernetes template does this). |
+| `DASHBOARD_CLAUDE_BIN` | `claude` on PATH | The exact CLI to run. The image sets it. |
+
+The dashboard refuses to start when `DASHBOARD_HOSTED` is on and the URL or secret is missing. `GET /healthz` answers `ok` without any of the checks, for liveness probes.
+
+What changes for the person:
+- The Apps and Workspaces pages are hidden, and the server refuses app actions, Machine-page installs, "Continue in terminal", "Implement in terminal" and local docs previews. All of those open something on the server's own screen or ports.
+- The Machine page's Claude Code check gets an in-page sign-in (below). The container's tools are the image's job, so it has no install buttons.
+
+## The image
+
+`templates/hosted/Dockerfile` is Node 24 plus git and the Claude CLI, with everything personal on a volume at `/data`. Build it once per workspace and run one container per person:
+
+```sh
+docker build -t <registry>/agentic-dashboard:1 plugins/agentic-os/templates/hosted
+```
+
+On start, `entrypoint.sh` clones `WORKSPACE_REPO` to `/data/workspace` the first time (with `GIT_TOKEN` if the repo is private, through `GIT_ASKPASS`, so it's never written to disk), pulls it afterwards, and runs `node dashboard/bin/dashboard.mjs run`, which is the server in the foreground. The first start runs `npm ci` and `ng build` on the volume, which takes a minute or two and about 1.6 GB of memory. Later starts skip the build.
+
+The person's app repos get onto the volume the usual ways: the Repos page clones them (with a token the container can use), or, for people who shouldn't have code-host access, the read-only snapshots (`repos.json` `snapshot`).
+
+## Signing in to Claude
+
+Each person signs in with their own seat on the company's Claude Team or Enterprise plan. On the Machine page, **Sign in to Claude** runs `claude auth login` in the container and shows two steps:
+1. Open the sign-in page, which is pre-filled with the proxy's email, and sign in.
+2. Paste the code the page shows back into the dashboard.
+
+This works without a browser in the container: when the CLI's local callback can't be reached, the sign-in page shows a code instead of redirecting.
+
+The login lands in `/data/claude`, so it survives restarts, and it's a full claude.ai login, so the person's claude.ai connectors (Atlassian, Google Drive, ...) work in their runs with nothing to set up in the container. They connect those once on claude.ai. Don't use `claude setup-token` instead: its token can only make model requests and doesn't get connectors.
+
+To refuse personal accounts, put managed settings in the image (commented lines in the Dockerfile): `"forceLoginMethod": "claudeai"` and `"forceLoginOrgUUID": ["<org id>"]`. The org id is in `claude auth status` on a signed-in machine.
+
+The tracker key for the dashboard's own Issues page is pasted on its Connect card, as locally, or injected per person (`JIRA_EMAIL` + `JIRA_API_TOKEN` for Jira, for example).
+
+## Running it
+
+### Kubernetes (GKE, EKS, AKS, or your own)
+
+`templates/hosted/kubernetes.yaml` has one person's StatefulSet with a 10 GB volume, an oauth2-proxy sidecar, a Service, an Ingress, and a NetworkPolicy. Fill in the placeholders per person with `envsubst`. The parts that differ by cloud:
+
+| | GKE | EKS | AKS |
+|---|---|---|---|
+| Volume (`storageClassName`) | default `standard-rwo` / pd-balanced | `gp3` (EBS CSI driver) | `managed-csi` |
+| Ingress and TLS | GKE Ingress + managed certificates, or ingress-nginx + cert-manager | AWS Load Balancer Controller (ALB) + ACM, or ingress-nginx + cert-manager | Application Gateway for Containers, or ingress-nginx + cert-manager |
+| Identity provider (oauth2-proxy `oidc`) | Google Workspace | any: Cognito, Okta, Entra ID, Google | Entra ID |
+| No cloud credentials in the pod | no Workload Identity binding | no IRSA / Pod Identity role | no workload identity |
+
+On every cloud:
+- **Separate nodes.** Put the pods on their own node pool with a taint, away from production workloads.
+- **Network policy.** Keep the NetworkPolicy, and check your CNI enforces it. It blocks the cluster's own network and the metadata endpoint, and allows HTTPS out.
+- **Long streams.** Raise the ingress read timeout: runs stream over server-sent events.
+
+### Without Kubernetes
+
+- **A VM with Docker:** one container per person, each with its own volume, behind Caddy or Traefik with oauth2-proxy in front. This is the simplest setup for a handful of people.
+- **Azure App Service** (Web App for Containers, Linux): one app per person, with the person's own `*.azurewebsites.net` or custom-domain address.
+  - Run the image with oauth2-proxy as a sidecar container in front of it, and point the app's port (`WEBSITES_PORT`) at the sidecar's 4180. App Service's built-in sign-in (Easy Auth) passes the person's identity in `X-MS-CLIENT-PRINCIPAL-NAME`, but it can't add the proxy secret, so on its own it isn't enough.
+  - Mount an Azure Files share at `/data` (path mappings).
+  - Turn on **Always On**, or idle apps are unloaded mid-run.
+  - Pick a plan with 2 GB+ per app for the first start's build.
+- **Managed container services** (Cloud Run, ECS on Fargate, Azure Container Apps) work if they can keep a persistent volume (a filesystem mount; EFS for Fargate, Azure Files for Container Apps) and keep the CPU allocated between requests. Runs carry on in the background after the page closes, so don't let the platform throttle or scale the container to zero while a run is going.
+
+## Sizing (measured)
+
+| | Memory | Notes |
+|---|---|---|
+| Dashboard, idle | ~115 MB | CPU near zero. |
+| One Claude run | ~300 MB more | Subagents run inside the same process, so a run with three parallel subagents peaked at 444 MB in total. |
+| First start | ~1.6 GB for a minute or two | The `npm ci` + `ng build` on the volume. |
+| Disk | under 1 GB | The workspace and its repos (11 repos were 445 MB), plus transcripts. 10 GB is plenty. |
+
+So: request 100m CPU and 512 MiB, limit 1 CPU and 2 GiB, and keep `deck.json` `limits.maxConcurrentRuns` at its default of 3. Twenty people then reserve about 2 vCPU and 10 GiB, one 4 vCPU / 16 GB node.
+
+## Security checklist
+
+- The proxy secret is set, long and random, and only the login proxy has it.
+- `DASHBOARD_OWNER` is set on every container.
+- The containers have no cloud or cluster credentials, and can't reach the cluster network or the metadata endpoint.
+- The dashboard is reachable only through the login proxy, not directly from the network.
+- Each person's volume is theirs alone. Back it up if losing chat history matters.

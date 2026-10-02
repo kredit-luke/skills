@@ -121,7 +121,7 @@ export class RunDetailComponent implements OnDestroy {
   readonly view = computed<Tab>(() => {
     const t = this.tab();
     if (t === 'issue' && !this.issue()) return 'transcript';
-    if (t === 'apps' && !this.workWs()) return 'transcript';
+    if (t === 'apps' && (!this.workWs() || this.api.hosted())) return 'transcript';
     return t;
   });
   readonly ranAs = computed(() => {
