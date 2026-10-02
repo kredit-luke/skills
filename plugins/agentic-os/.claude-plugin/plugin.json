@@ -1,6 +1,6 @@
 {
   "name": "agentic-os",
-  "version": "0.4.0",
+  "version": "0.5.0",
   "description": "Set up an agentic OS for your team: a multi-repo Claude Code workspace with a local dashboard (runs, issues, apps, machine setup, docs, links) tailored to your stack, tools and brand.",
   "author": {
     "name": "Luke Hoezee"
