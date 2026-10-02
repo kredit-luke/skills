@@ -7,7 +7,7 @@ import fs from "node:fs";
 import net from "node:net";
 import os from "node:os";
 import path from "node:path";
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
 
 const CLI = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..", "bin", "dashboard.mjs");
@@ -67,4 +67,20 @@ test("after a port change, restart moves the dashboard and start doesn't run a s
 
   cli("stop");
   assert.ok(await until(async () => !(await listening(b))), "stop stops it");
+});
+
+test("stop after a reboot leaves alone whatever has the recorded pid now", { timeout: 180_000 }, async () => {
+  setPort(await freePort());
+  const other = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], { stdio: "ignore" });
+  try {
+    fs.mkdirSync(LEDGER, { recursive: true });
+    const pidFile = path.join(LEDGER, "dashboard.pid");
+    fs.writeFileSync(pidFile, `${other.pid}\n`);
+    const beforeBoot = (Date.now() - os.uptime() * 1000 - 3600_000) / 1000;
+    fs.utimesSync(pidFile, beforeBoot, beforeBoot);
+
+    assert.match(cli("stop"), /No dashboard running/);
+    await new Promise((r) => setTimeout(r, 500));
+    assert.equal(other.exitCode, null, "the process that has the pid now is still running");
+  } finally { other.kill("SIGKILL"); }
 });

@@ -171,11 +171,14 @@ function ensureBuilt(env) {
 
 // dashboard.pid: the pid on the first line, the port it serves on the second (older
 // files have only the pid). The port is how a start after a port change finds the old one.
+// A file written before the machine last booted names a pid the OS may have given to
+// something else since, and killDashboard kills the tree under it: its pid doesn't count.
 const pidFile = path.join(LEDGER, "dashboard.pid");
 function readRecord() {
   try {
     const [pid, port] = fs.readFileSync(pidFile, "utf-8").trim().split(/\s+/).map((s) => parseInt(s, 10));
-    return { pid: pid > 0 ? pid : null, port: port > 0 ? port : null };
+    const beforeBoot = fs.statSync(pidFile).mtimeMs < Date.now() - os.uptime() * 1000 - 30_000; // 30s for uptime's rounding
+    return { pid: pid > 0 && !beforeBoot ? pid : null, port: port > 0 ? port : null };
   } catch { return { pid: null, port: null }; }
 }
 const readPid = () => readRecord().pid;

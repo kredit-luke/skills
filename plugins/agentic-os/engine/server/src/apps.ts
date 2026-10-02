@@ -222,8 +222,8 @@ class AppLauncher {
 
   /** Pid of the process tree this dashboard started for an app, if it's still alive. */
   runningPid(ws, key): number | null {
-    const pid = this._pids()[`${ws.slug}:${key}`];
-    return pid && treeAlive(pid) ? pid : null;
+    const rec = this._pids()[`${ws.slug}:${key}`];
+    return rec && stillOurs(rec, key) ? rec.pid : null;
   }
 
   busy(wsSlug, key) {
@@ -412,8 +412,16 @@ class AppLauncher {
       return async (log) => {
         const pids = this._pids();
         const id = `${ws.slug}:${key}`;
-        const pid = pids[id];
-        if (!pid) { log(`${app.name}: nothing started from here to stop.`); return; }
+        const rec = pids[id];
+        if (!rec) { log(`${app.name}: nothing started from here to stop.`); return; }
+        const { pid } = rec;
+        if (!stillOurs(rec, key)) {
+          // Killing the tree under that pid now could take down whatever has it since.
+          log(`${app.name}: pid ${pid} has already exited (or the machine restarted since); nothing to stop.`);
+          delete pids[id];
+          this._savePids(pids);
+          return;
+        }
         log(`Stopping process tree ${pid}`);
         // Forget the pid only once the tree is gone, so a failed stop can be retried.
         await stopTree(pid, this.stopGraceMs, log);
@@ -517,15 +525,24 @@ class AppLauncher {
     const cmd = expand(app.launch.cmd!, ws, app.key, portFor);
     const env: Record<string, string> = {};
     for (const [k, v] of Object.entries(app.launch.env || {})) if (/^[A-Za-z_][A-Za-z0-9_]*$/.test(k)) env[k] = expand(String(v), ws, app.key, portFor);
+    let logFrom = 0;
+    try { logFrom = fs.statSync(log.file).size; } catch {}
     const pid = twoHop({ file: cmd, args: [], cwd, env, shell: true }, log.file, app.key);
     const pids = this._pids();
-    pids[`${ws.slug}:${app.key}`] = pid;
+    pids[`${ws.slug}:${app.key}`] = { pid, startedAt: Date.now(), log: log.file, logFrom };
     this._savePids(pids);
     log(`$ ${cmd}  (in ${path.relative(ws.path, cwd) || "."}, detached, pid ${pid})`);
   }
 
-  _pids(): Record<string, number> {
-    try { return JSON.parse(fs.readFileSync(this.pidFile, "utf-8")); } catch { return {}; }
+  _pids(): Record<string, PidRecord> {
+    let raw = {};
+    try { raw = JSON.parse(fs.readFileSync(this.pidFile, "utf-8")); } catch {}
+    const out: Record<string, PidRecord> = {};
+    for (const [id, v] of Object.entries<any>(raw || {})) {
+      if (typeof v === "number") out[id] = { pid: v }; // written by an older dashboard: the pid alone
+      else if (v && typeof v.pid === "number") out[id] = v;
+    }
+    return out;
   }
 
   _savePids(pids) {
@@ -630,6 +647,36 @@ export function killTree(pid: number, signal: NodeJS.Signals = "SIGTERM") {
 export function treeAlive(pid: number): boolean {
   const probe = (p: number) => { try { process.kill(p, 0); return true; } catch (e) { return e.code === "EPERM"; } };
   return (process.platform !== "win32" && probe(-pid)) || probe(pid);
+}
+
+/** What pids.json keeps per app: the launcher's pid, when it started, and the log it appends "[key exited ...]" to from logFrom (bytes). */
+export interface PidRecord { pid: number; startedAt?: number; log?: string; logFrom?: number }
+
+/**
+ * Is the process at rec.pid still the launcher we started? A live pid alone doesn't say:
+ * pids.json outlives a reboot, the OS hands pids out again, and Stop kills the tree under
+ * whatever has it. Started before the machine last booted = gone. On Windows a launcher that
+ * logged its app's exit is gone too (taskkill can't reach what it left behind anyway); on
+ * Linux and macOS the app's process group can outlive it, so treeAlive decides there.
+ */
+export function stillOurs(rec: PidRecord, key: string): boolean {
+  const bootedAt = Date.now() - os.uptime() * 1000;
+  if (rec.startedAt && rec.startedAt < bootedAt - 30_000) return false; // 30s for uptime's rounding
+  if (process.platform === "win32" && rec.log && logTail(rec.log, rec.logFrom || 0).includes(`[${key} exited with code`)) return false;
+  return treeAlive(rec.pid);
+}
+
+/** The last 4 KB of a log from byte `from` on: the exit line is the last thing a launcher writes, and app logs get big. */
+function logTail(file: string, from: number): string {
+  let fd: number | null = null;
+  try {
+    fd = fs.openSync(file, "r");
+    const size = fs.fstatSync(fd).size;
+    const start = Math.max(from, size - 4096);
+    const buf = Buffer.alloc(Math.max(0, size - start));
+    fs.readSync(fd, buf, 0, buf.length, start);
+    return buf.toString("utf-8");
+  } catch { return ""; } finally { if (fd !== null) try { fs.closeSync(fd); } catch {} }
 }
 
 /**
