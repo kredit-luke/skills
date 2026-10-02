@@ -71,6 +71,10 @@ test("an app with no port that exits straight away fails its start", async () =>
   assert.equal(job.status, "failed");
   assert.match(job.error, /Crasher exited right after starting/);
   assert.equal(launcher.runningPid(ws, "crasher"), null);
+  // The launcher leaves its own exit file, which no job-log pruning or shared stack log can lose.
+  const { exitFile } = JSON.parse(fs.readFileSync(launcher.pidFile, "utf-8"))["main:crasher"];
+  for (let i = 0; i < 20 && !fs.existsSync(exitFile); i++) await new Promise((r) => setTimeout(r, 100));
+  assert.equal(fs.readFileSync(exitFile, "utf-8"), "3");
 });
 
 test("a stack's wait \"all\" only waits for apps already started", async () => {
@@ -135,15 +139,29 @@ test("a pid recorded before the machine last booted isn't ours: not running, and
   } finally { other.end(); }
 });
 
-test("on Windows, a launcher that logged its app's exit isn't ours, whoever has its pid now", { skip: process.platform !== "win32" }, async () => {
+test("on Windows, a launcher that wrote its exit file isn't ours, whoever has its pid now", { skip: process.platform !== "win32" }, async () => {
   const other = bystander();
   try {
-    const log = path.join(ROOT, "logs", "ghost-launch.log");
-    fs.writeFileSync(log, "[ghost exited with code 1]\n"); // an earlier launch in the same log: not this one
-    record("ghost", { pid: other.pid, startedAt: Date.now(), log, logFrom: fs.statSync(log).size });
+    const exitFile = path.join(ROOT, "logs", "exited-ghost");
+    record("ghost", { pid: other.pid, startedAt: Date.now(), exitFile });
     assert.equal(launcher.runningPid(ws, "ghost"), other.pid);
 
-    fs.appendFileSync(log, "\n[ghost exited with code 0]\n");
+    fs.writeFileSync(exitFile, "0");
     assert.equal(launcher.runningPid(ws, "ghost"), null);
+  } finally { other.end(); }
+});
+
+test("on Windows, Stop won't taskkill a pid whose process started at another time than our launch", { skip: process.platform !== "win32" }, async () => {
+  const other = bystander();
+  try {
+    // No exit file (say something else killed the launcher), and the pid is alive again.
+    record("ghost", { pid: other.pid, startedAt: Date.now() + 600_000, exitFile: path.join(ROOT, "logs", "exited-none") });
+    assert.equal(launcher.runningPid(ws, "ghost"), other.pid);
+
+    const stop = await finished(launcher.stopApp(ws, "ghost"));
+    assert.equal(stop.status, "succeeded", stop.error);
+    assert.match(fs.readFileSync(stop._log, "utf-8"), /nothing to stop/);
+    await new Promise((r) => setTimeout(r, 500));
+    assert.equal(treeAlive(other.pid), true, "the process that has the pid now is still running");
   } finally { other.end(); }
 });
