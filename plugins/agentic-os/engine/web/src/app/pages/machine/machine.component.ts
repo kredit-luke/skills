@@ -50,7 +50,7 @@ const ICON: Record<string, string> = { ok: '✓', warn: '!', missing: '✕', inf
                           <li><a [href]="signInUrl()" target="_blank" rel="noopener">Open the Claude sign-in page ↗</a> and sign in with your work account.</li>
                           <li>Paste the code it shows you:
                             <span class="row">
-                              <input #code type="text" autocomplete="off" spellcheck="false" placeholder="Sign-in code" (keydown.enter)="finishSignIn(code.value)">
+                              <input #code type="text" autocomplete="off" spellcheck="false" placeholder="Sign-in code" aria-label="Sign-in code from the Claude sign-in page" (keydown.enter)="finishSignIn(code.value)">
                               <button class="btn primary sm" [disabled]="signingIn()" (click)="finishSignIn(code.value)">{{ signingIn() ? 'Signing in…' : 'Finish sign-in' }}</button>
                               <button class="btn ghost sm" (click)="cancelSignIn()">Cancel</button>
                             </span>

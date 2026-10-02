@@ -331,8 +331,14 @@ async function run() {
   ensureBuilt(env);
   const node = dir ? path.join(dir, IS_WIN ? "node.exe" : "node") : "node";
   const child = spawn(node, ["--disable-warning=ExperimentalWarning", path.join("server", "src", "main.ts"), "--port", String(PORT)], { cwd: DASH_DIR, stdio: "inherit", env });
-  for (const sig of ["SIGTERM", "SIGINT"]) process.on(sig, () => child.kill(sig));
-  child.on("exit", (code, signal) => process.exit(code ?? (signal ? 0 : 1)));
+  // A stop we passed on is a clean exit; any other signal (the kernel's OOM kill, say)
+  // is a crash, reported the shell way (128 + its number) so the platform restarts it.
+  let stopping = false;
+  for (const sig of ["SIGTERM", "SIGINT"]) process.on(sig, () => { stopping = true; child.kill(sig); });
+  child.on("exit", (code, signal) => {
+    if (code !== null) process.exit(code);
+    process.exit(stopping ? 0 : 128 + (os.constants.signals[signal] || 1));
+  });
 }
 
 const commands = { start, stop, status, run, restart: () => { flags.restart = true; return start(); } };
