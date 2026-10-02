@@ -104,3 +104,6 @@
 .chip .resume, .agent-h .resume { color: var(--brand-700); font-size: 12px; }
 .chip .pass { color: var(--ink-soft); }
 .agent-h .pass { font-family: var(--font-mono); font-size: 11px; color: var(--ink-soft); background: var(--paper-2); border-radius: 6px; padding: 0 5px; flex: none; }
+
+.watch-note { display: flex; align-items: center; gap: 0.6rem; justify-content: space-between; }
+.watch-note .watch-err { display: block; color: var(--red); margin-top: 0.2rem; }

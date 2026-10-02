@@ -68,9 +68,10 @@ const SKIP_TYPES = new Set(['rate_limit_event', 'tool_progress', 'stream_event',
 const SKIP_SYSTEM = new Set(['hook_started', 'hook_response', 'commands_changed', 'thinking_tokens', 'background_tasks_changed', 'status', 'compact_boundary', 'api_retry']);
 const FINISHED: AgentStatus[] = ['completed', 'failed', 'stopped'];
 const QUESTION_RE = /<<QUESTION>>[\s\S]*?(<<\/QUESTION>>|$)/g;
+const WATCH_RE = /<<WATCH>>[\s\S]*?(<<\/WATCH>>|$)/g;
 
 export function stripQuestion(text: string): string {
-  return String(text || '').replace(QUESTION_RE, '').trim();
+  return String(text || '').replace(QUESTION_RE, '').replace(WATCH_RE, '').trim();
 }
 
 function base(p: string | null | undefined): string {

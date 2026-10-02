@@ -40,6 +40,7 @@ for (const key of CLAUDE_SESSION_ENV) delete process.env[key];
 import { RunManager, httpError } from "./runs.ts";
 import { Deck, Scheduler } from "./deck.ts";
 import { Inbox } from "./inbox.ts";
+import { Watcher } from "./watches.ts";
 import { Usage } from "./usage.ts";
 import { UsageHistory } from "./usage-history.ts";
 import { AppLauncher, appsConfig } from "./apps.ts";
@@ -635,6 +636,21 @@ const scheduler = new Scheduler(deck, path.join(LEDGER_DIR, "scheduler-state.jso
 });
 scheduler.start();
 
+// PR watches (<<WATCH>> blocks): a change on a watched PR is a reply to its run, under the same limits as yours.
+const watcher = new Watcher(runs, {
+  wake: (id, text) => {
+    const blocker = launchBlocker();
+    if (blocker) return blocker;
+    try {
+      runs.reply(id, text, { budgetUsd: deck.config().limits.runBudget ? undefined : null });
+      return null;
+    } catch (e) {
+      return e.message;
+    }
+  },
+});
+watcher.start();
+
 // /api/events: the shared data each page used to poll. Cadences are the old poll
 // intervals; runs and jobs also refresh the moment they change (hooks above).
 live.register("jobs", jobsView, 10000);
@@ -934,7 +950,7 @@ async function openTerminalForRun(run: RunMeta) {
   return { opened: r.opened, command: `cd "${run.cwd}"; ${command}` };
 }
 
-const RUN_ROUTE = /^\/api\/runs\/([a-z0-9-]+)(?:\/(stream|cancel|verdict|flag|terminal|continuation|reply|plan-mode|changes|diff|rename))?$/i;
+const RUN_ROUTE = /^\/api\/runs\/([a-z0-9-]+)(?:\/(stream|cancel|verdict|flag|terminal|continuation|reply|plan-mode|changes|diff|rename|watch-stop))?$/i;
 const RUN_FILE_ROUTE = /^\/api\/runs\/([a-z0-9-]+)\/files\/([^/]+)$/i;
 
 /** One of a run's attached files: images and PDFs inline, anything else as a download. */
@@ -1200,6 +1216,7 @@ async function handleApi(req: http.IncomingMessage, res: http.ServerResponse, ur
     return meta ? sendJson(res, { run: meta }) : sendError(res, 409, "Run not found or still running");
   }
   if (runMatch && runMatch[2] === "flag") return sendJson(res, { run: runs.setFlag(runMatch[1], !!body.flagged) });
+  if (runMatch && runMatch[2] === "watch-stop") return sendJson(res, { run: runs.stopWatch(runMatch[1]) });
   if (runMatch && runMatch[2] === "terminal") {
     const meta = runs.handOff(runMatch[1]);
     // Give a just-killed turn a moment to release the session before the terminal resumes it.

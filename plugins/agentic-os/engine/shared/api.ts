@@ -129,6 +129,58 @@ export interface RunMeta {
   attachments?: Attachment[];
   /** When the run's files were deleted (keepAttachmentsDays after it was done). */
   attachmentsRemovedAt?: string | null;
+  /** Pull requests the dashboard watches for this run (a <<WATCH>> block); null when there never was one. */
+  watch?: RunWatch | null;
+}
+
+/** One watched pull request and what the last check saw. */
+export interface WatchedPr {
+  repo: string;                // owner/name
+  number: number;
+  /** null until the first check (that check only records, it never wakes). */
+  seen: PrSnapshot | null;
+}
+
+/** What a check reads from GitHub. Activity is only what other people did. */
+export interface PrSnapshot {
+  state: string;               // OPEN | MERGED | CLOSED
+  reviewDecision: string;      // APPROVED | CHANGES_REQUESTED | REVIEW_REQUIRED | ''
+  mergeStateStatus: string;    // CLEAN | BEHIND | DIRTY | BLOCKED | UNSTABLE | UNKNOWN | ...
+  checks: 'passing' | 'failing' | 'pending' | 'none';
+  /** Newest review by someone else: submittedAt, or '' for none. */
+  lastReviewAt: string;
+  lastReviewBy: string;
+  lastReviewState: string;
+  /** Highest inline review comment id by someone else, 0 for none. */
+  lastCommentId: number;
+  /** Newest top-level comment by someone else: createdAt, or ''. */
+  lastIssueCommentAt: string;
+}
+
+/**
+ * A run's PR watch. Claude starts one by ending a turn with a <<WATCH>> block; the
+ * server checks the PRs every `everyMinutes` while the run is idle and done
+ * (status 'succeeded'), and replies to the run when something changed.
+ * Active while `endedAt` is null.
+ */
+export interface RunWatch {
+  kind: 'github-pr';
+  prs: WatchedPr[];
+  everyMinutes: number;
+  /** Sent after the list of changes when the watch wakes the run. */
+  prompt: string;
+  startedAt: string;
+  expiresAt: string;
+  nextCheckAt: string;
+  lastCheckAt: string | null;
+  lastChangeAt: string | null;
+  /** The changes the last wake-up reported, one line. */
+  lastChange: string | null;
+  wakes: number;
+  /** The last check's failure (gh missing, not signed in, ...); cleared by a good check. */
+  error: string | null;
+  endedAt: string | null;
+  endReason: string | null;
 }
 
 /**
@@ -178,7 +230,7 @@ export interface RunDetail { run: RunMeta; events: RunEvent[] }
  *  - { type: 'human', text, uuid, timestamp, turn }  — a reply sent from the dashboard (turn >= 2)
  *    or typed in a terminal after hand-off (from /continuation; no turn)
  *  - { type: 'turn', turn, uuid, timestamp, planMode }  — marks the start of turn N (N >= 2)
- * The server strips <<QUESTION>>…<</QUESTION>> blocks from main-session text before saving.
+ * The server strips <<QUESTION>>…<</QUESTION>> and <<WATCH>>…<</WATCH>> blocks from main-session text before saving.
  */
 export type RunEvent = { type: string; uuid?: string; [k: string]: any };
 
@@ -212,6 +264,7 @@ export interface PlanModeRequest { on: boolean }
 /** POST /api/runs/:id/cancel → { ok: true }   works on running (kills) and waiting (clears the question) */
 /** POST /api/runs/:id/verdict  { verdict: 'good' | 'needed-fix' | null } → { run }   (a verdict clears `flagged`) */
 /** POST /api/runs/:id/flag  { flagged: boolean } → { run }   (any time, even mid-turn) */
+/** POST /api/runs/:id/watch-stop → { run }   ends the run's PR watch (409 when there's none running) */
 /**
  * POST /api/runs/:id/terminal → TerminalResponse
  * Kills a running turn first, marks the run handedOff and opens `claude --resume <sessionId>`

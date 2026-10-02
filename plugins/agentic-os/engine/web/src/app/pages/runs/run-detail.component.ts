@@ -406,6 +406,19 @@ export class RunDetailComponent implements OnDestroy {
     } catch (e) { this.toast.error((e as Error).message); }
   }
 
+  readonly watchedPrs = computed(() => (this.run()?.watch?.prs || []).map((p) => p.repo + '#' + p.number).join(', '));
+
+  async stopWatch(): Promise<void> {
+    const r = this.run();
+    if (!r) return;
+    try {
+      const res = await this.api.post<{ run: RunMeta }>('/api/runs/' + r.id + '/watch-stop');
+      this.setRun(res.run);
+      this.toast.show('Stopped watching');
+      this.data.loadRuns();
+    } catch (e) { this.toast.error((e as Error).message); }
+  }
+
   async toggleFlag(): Promise<void> {
     const r = this.run();
     if (!r) return;
