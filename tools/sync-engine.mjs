@@ -42,10 +42,13 @@ const dirty = execFileSync("git", ["status", "--porcelain", "."], { cwd: SRC, en
 
 // ---- denylist check before touching the destination
 const DENYLIST = path.resolve(process.env.AGENTIC_OS_DENYLIST || path.join(REPO, "tools", "denylist.local.txt"));
+const skipDenylist = args.includes("--no-denylist");
 let deny = [];
-if (fs.existsSync(DENYLIST)) {
+if (skipDenylist) {
+  console.warn("--no-denylist: syncing without the denylist check.");
+} else if (fs.existsSync(DENYLIST)) {
   deny = fs.readFileSync(DENYLIST, "utf-8").split(/\r?\n/).map((l) => l.trim()).filter((l) => l && !l.startsWith("#"));
-} else if (!args.includes("--no-denylist")) {
+} else {
   console.error(`No denylist at ${DENYLIST}. Set AGENTIC_OS_DENYLIST or create tools/denylist.local.txt (see tools/denylist.example.txt), or pass --no-denylist to sync without the check.`);
   process.exit(1);
 }
