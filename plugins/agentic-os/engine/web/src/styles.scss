@@ -173,6 +173,7 @@ textarea { font-family: var(--mono); font-size: 0.75rem; resize: vertical; width
 .hint { font-size: 0.68rem; color: var(--text-faint); padding: 0.4rem 0.6rem 0.6rem; }
 .hint code { font-family: var(--mono); color: var(--text-muted); }
 .warn-note { font-size: 0.72rem; color: var(--yellow); background: var(--yellow-bg); border-radius: 7px; padding: 0.45rem 0.6rem; }
+.info-note { font-size: 0.72rem; color: var(--brand-700); background: var(--blue-bg); border-radius: 7px; padding: 0.45rem 0.6rem; }
 .err-note { font-size: 0.72rem; color: var(--red); background: var(--red-bg); border-radius: 7px; padding: 0.45rem 0.6rem; }
 .group-title { font-family: var(--font-mono); font-size: 11px; text-transform: uppercase; letter-spacing: .14em; color: var(--ink-soft); font-weight: 500; margin: 22px 0 10px; display: flex; align-items: center; gap: 8px; }
 .group-title::before { content: ""; width: 14px; height: 2px; background: var(--ok); }

@@ -17,6 +17,7 @@ import { runStatus, toReview } from './run-status';
           @if (r.flagged) { <span class="tag amber" title="You flagged this run as needing you">⚑ needs me</span> }
           @if (r.status === 'waiting') { <span class="tag amber">needs answer</span> }
           @if (review()) { <span class="tag review" title="Finished and not rated yet: open it and mark it Good or Needed fix (it leaves Focus after a day anyway)">to review</span> }
+          @if (r.watch && !r.watch.endedAt) { <span class="tag routine" [title]="'Watching ' + watchedPrs() + ': the dashboard resumes this run when they change'">watching</span> }
           @if (r.warning) { <span class="tag amber" [title]="r.warning">bg stopped</span> }
           @if (r.trigger && r.trigger.startsWith('routine:')) { <span class="tag routine">routine</span> }
           @if (r.planMode) { <span class="tag" title="Read-only">plan</span> }
@@ -47,6 +48,7 @@ export class RunRowComponent {
     if (r.status === 'succeeded') return (r.resultText || '').split('\n')[0];
     return (r.error || r.status || '').split('\n')[0];
   });
+  readonly watchedPrs = computed(() => (this.run().watch?.prs || []).map((p) => p.repo.split('/').pop() + '#' + p.number).join(', '));
   readonly elapsed = computed(() => dur(Date.now() - Date.parse(this.run().turnStartedAt || this.run().startedAt)));
   readonly ago = computed(() => relTime(this.run().endedAt || this.run().startedAt));
   readonly duration = computed(() => dur(this.run().durationMs));

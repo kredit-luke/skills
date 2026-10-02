@@ -36,6 +36,22 @@
       @if (r.warning) {
         <div class="warn-note"><b>Background work stopped.</b> {{ r.warning }} Headless runs end when Claude's turn ends; for long or ongoing work, continue in a terminal.</div>
       }
+      @if (r.watch; as w) {
+        @if (!w.endedAt) {
+          <div class="info-note watch-note">
+            <span><b>Watching {{ watchedPrs() }}.</b>
+              @if (r.status === 'succeeded') { Next check {{ rel(w.nextCheckAt) }}, every {{ w.everyMinutes }} min; this run resumes when something changes. }
+              @else { Paused while the run is {{ st()!.label.toLowerCase() }}; it carries on once the last turn ends fine. }
+              @if (w.lastChange) { Last change {{ rel(w.lastChangeAt) }}: {{ w.lastChange }}. }
+              @if (w.wakes) { Woken {{ w.wakes }}×. }
+              @if (w.error) { <span class="watch-err">{{ w.error }}</span> }
+            </span>
+            <button class="btn sm" (click)="stopWatch()">Stop watching</button>
+          </div>
+        } @else if (w.endReason) {
+          <div class="hint">PR watch ended {{ rel(w.endedAt) }}: {{ w.endReason }}</div>
+        }
+      }
       @if (r.status === 'failed' && r.error) { <div class="err-note">{{ r.error }}</div> }
       <div class="actions">
         @if (r.status === 'running' || r.status === 'waiting') { <button class="btn danger" (click)="cancel()">{{ r.status === 'waiting' ? 'Cancel run' : 'Cancel turn' }}</button> }

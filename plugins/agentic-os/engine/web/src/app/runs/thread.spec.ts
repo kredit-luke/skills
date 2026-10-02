@@ -102,6 +102,7 @@ describe('buildThread basics', () => {
     const sub = t.agents[0].items[0];
     expect(sub.kind === 'text' && sub.text).toBe('sub says <<QUESTION>>');
     expect(stripQuestion('a <<QUESTION>> {"x":1}')).toBe('a');
+    expect(stripQuestion('watching now <<WATCH>>{"prs":["a/b#1"]}<</WATCH>>')).toBe('watching now');
   });
 
   it('nests agents inside agents', () => {

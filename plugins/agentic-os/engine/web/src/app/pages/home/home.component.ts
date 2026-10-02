@@ -40,12 +40,12 @@ export class HomeComponent {
   });
   readonly weekLine = computed(() => { const s = this.ov()?.stats; return s ? pct(s.weekSucceeded, s.weekRuns) + ' succeeded' : ''; });
 
-  readonly active = computed(() => this.data.runs().filter((r) => r.status === 'running' || r.status === 'waiting'));
+  readonly active = computed(() => this.data.runs().filter((r) => r.status === 'running' || r.status === 'waiting' || (r.watch && !r.watch.endedAt)));
   readonly sessions = computed(() => {
     const mine = new Set(this.data.runs().map((r) => r.sessionId));
     return (this.ov()?.sessions || []).filter((s) => !mine.has(s.sessionId));
   });
-  readonly recent = computed(() => this.data.runs().filter((r) => r.status !== 'running' && r.status !== 'waiting').slice(0, 8));
+  readonly recent = computed(() => this.data.runs().filter((r) => r.status !== 'running' && r.status !== 'waiting' && !(r.watch && !r.watch.endedAt)).slice(0, 8));
 
   readonly routines = computed(() => {
     const rs = this.ov()?.routines || [];
