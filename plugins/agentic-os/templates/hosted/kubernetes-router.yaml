@@ -1,0 +1,168 @@
+# One address for everyone (https://dashboard.example.com): the router and its login
+# proxy, applied once per namespace. People's dashboards are kubernetes-person.yaml.
+# See references/hosting.md. Works on any Kubernetes (GKE, EKS, AKS, on-prem).
+#
+# Before applying, once:
+#   kubectl create secret generic dashboard-router \
+#     --from-literal=proxy-secret=$(openssl rand -hex 32) \
+#     --from-literal=backend-secret=$(openssl rand -hex 32) \
+#     --from-literal=cookie-secret=$(openssl rand -hex 16) \
+#     --from-literal=client-secret=<your OIDC app's client secret> \
+#     --from-literal=git-token=<optional read token for the workspace repo>
+# and set the placeholders below: dashboard.example.com, example.com, YOUR_CLIENT_ID,
+# the issuer, REGISTRY and VERSION.
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: agentic-router
+---
+# Just enough to find each person's StatefulSet and scale it between 0 and 1.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: agentic-router
+rules:
+  - apiGroups: [apps]
+    resources: [statefulsets]
+    verbs: [list]
+  - apiGroups: [apps]
+    resources: [statefulsets/scale]
+    verbs: [patch]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: agentic-router
+roleRef: { apiGroup: rbac.authorization.k8s.io, kind: Role, name: agentic-router }
+subjects: [{ kind: ServiceAccount, name: agentic-router }]
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: agentic-router
+  labels: { app: agentic-router }
+spec:
+  replicas: 1
+  selector:
+    matchLabels: { app: agentic-router }
+  template:
+    metadata:
+      labels: { app: agentic-router }
+    spec:
+      serviceAccountName: agentic-router
+      securityContext: { runAsNonRoot: true, runAsUser: 1000 }
+      containers:
+        - name: router
+          image: REGISTRY/agentic-router:1   # built from router/Dockerfile
+          env:
+            - { name: ROUTER_PUBLIC_URL, value: "https://dashboard.example.com" }
+            - { name: ROUTER_BACKEND, value: kubernetes }
+            - { name: ROUTER_BIND, value: "127.0.0.1" }   # only the sidecar below reaches it
+            - { name: ROUTER_IDLE_MINUTES, value: "60" }
+            - { name: ROUTER_ADMIN, value: "the platform team" }
+            - { name: ROUTER_PROXY_SECRET, valueFrom: { secretKeyRef: { name: dashboard-router, key: proxy-secret } } }
+            - { name: ROUTER_BACKEND_SECRET, valueFrom: { secretKeyRef: { name: dashboard-router, key: backend-secret } } }
+          resources:
+            requests: { cpu: 20m, memory: 48Mi }
+            limits: { memory: 256Mi }
+          livenessProbe: { exec: { command: [node, -e, "fetch('http://127.0.0.1:8080/healthz').then(r=>process.exit(r.ok?0:1),()=>process.exit(1))"] }, periodSeconds: 30 }
+        - name: oauth2-proxy
+          image: quay.io/oauth2-proxy/oauth2-proxy:VERSION   # pin a release
+          args:
+            - --alpha-config=/etc/oauth2-proxy/alpha.yaml
+            # Anyone in your domain may sign in; the router turns away people without a dashboard.
+            - --email-domain=example.com
+            - --reverse-proxy=true
+            - --cookie-secure=true
+            - --skip-provider-button=true
+            - --redirect-url=https://dashboard.example.com/oauth2/callback
+          env:
+            - { name: OAUTH2_PROXY_COOKIE_SECRET, valueFrom: { secretKeyRef: { name: dashboard-router, key: cookie-secret } } }
+            - { name: ROUTER_PROXY_SECRET, valueFrom: { secretKeyRef: { name: dashboard-router, key: proxy-secret } } }
+          ports: [{ name: http, containerPort: 4180 }]
+          readinessProbe: { httpGet: { path: /ping, port: 4180 } }
+          resources:
+            requests: { cpu: 10m, memory: 32Mi }
+            limits: { memory: 128Mi }
+          volumeMounts:
+            - { name: oauth2-proxy-config, mountPath: /etc/oauth2-proxy, readOnly: true }
+            - { name: oidc-client, mountPath: /etc/oauth2-proxy-secret, readOnly: true }
+      volumes:
+        - { name: oauth2-proxy-config, configMap: { name: agentic-router-oauth2-proxy } }
+        - { name: oidc-client, secret: { secretName: dashboard-router, items: [{ key: client-secret, path: client-secret }] } }
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: agentic-router-oauth2-proxy
+data:
+  alpha.yaml: |
+    server:
+      bindAddress: "0.0.0.0:4180"
+    upstreamConfig:
+      upstreams:
+        - id: router
+          path: /
+          uri: http://127.0.0.1:8080
+          timeout: 1h   # run streams stay open
+    injectRequestHeaders:
+      - name: X-Forwarded-Email
+        values: [{ claim: email }]
+      - name: X-Dashboard-Proxy-Secret
+        values: [{ fromEnv: ROUTER_PROXY_SECRET }]
+    providers:
+      # Generic OIDC: Google Workspace (https://accounts.google.com), Entra ID
+      # (https://login.microsoftonline.com/<tenant id>/v2.0), Okta, Auth0, Cognito, Keycloak.
+      - id: idp
+        provider: oidc
+        clientID: YOUR_CLIENT_ID
+        clientSecretFile: /etc/oauth2-proxy-secret/client-secret
+        scope: "openid email profile"
+        oidcConfig:
+          issuerURL: https://accounts.google.com
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: agentic-router
+spec:
+  selector: { app: agentic-router }
+  ports: [{ name: http, port: 80, targetPort: http }]
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: agentic-router
+  annotations:
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "3600"
+    nginx.ingress.kubernetes.io/proxy-buffering: "off"
+spec:
+  # ingressClassName: nginx   # or alb (EKS), azure-application-gateway (AKS), gce (GKE)
+  tls: [{ hosts: [dashboard.example.com], secretName: agentic-router-tls }]
+  rules:
+    - host: dashboard.example.com
+      http:
+        paths: [{ path: /, pathType: Prefix, backend: { service: { name: agentic-router, port: { name: http } } } }]
+---
+# The dashboards: reachable only from the router, and kept off the cluster network and
+# the cloud metadata endpoint. Needs a CNI that enforces NetworkPolicy.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: agentic-dashboards
+spec:
+  podSelector: { matchLabels: { app: agentic-dashboard } }
+  policyTypes: [Ingress, Egress]
+  ingress:
+    - from: [{ podSelector: { matchLabels: { app: agentic-router } } }]
+      ports: [{ port: 3333 }]
+  egress:
+    - to: [{ namespaceSelector: {}, podSelector: { matchLabels: { k8s-app: kube-dns } } }]
+      ports: [{ port: 53, protocol: UDP }, { port: 53, protocol: TCP }]
+    - to:
+        - ipBlock:
+            cidr: 0.0.0.0/0
+            # Replace with your cluster's pod and service ranges and private networks.
+            except: [10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16, 169.254.0.0/16]
+      ports: [{ port: 443 }]

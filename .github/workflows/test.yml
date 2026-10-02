@@ -39,3 +39,8 @@ jobs:
           npm ci
           npm run typecheck
           npm test
+      - name: Router (no packages of its own; tsc and @types/node come from the engine's install)
+        working-directory: plugins/agentic-os/router
+        run: |
+          ../engine/node_modules/.bin/tsc -p tsconfig.json
+          npm test
