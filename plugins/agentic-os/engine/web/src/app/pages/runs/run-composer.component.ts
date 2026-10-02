@@ -43,7 +43,7 @@ const REPLYABLE = new Set(['waiting', 'succeeded', 'failed', 'cancelled', 'inter
                 </div>
                 @if (isOpen(qi)) {
                   <input class="q-other" [id]="'q-other-' + qi" type="text" [value]="notes()[qi] || ''" [disabled]="busy()"
-                    (input)="setNote(qi, $any($event.target).value)" (keydown.enter)="$event.preventDefault(); sendPicks()"
+                    (input)="setNote(qi, $any($event.target).value)" (keydown.enter)="onOtherEnter($any($event))"
                     [placeholder]="q.multiSelect ? 'Add your own answer…' : 'Your answer…'" />
                 }
                 @if (q.multiSelect) { <div class="q-note">Pick any that apply.</div> }
@@ -101,10 +101,10 @@ export class RunComposerComponent {
   private readonly att = viewChild<AttachComponent>('att');
 
   constructor() {
-    // New question → clear old picks.
+    // New run or new question → clear old picks and typed answers.
     let lastQ = '';
     effect(() => {
-      const q = JSON.stringify(this.run().question || null);
+      const q = this.run().id + ' ' + JSON.stringify(this.run().question || null);
       if (q !== lastQ) { lastQ = q; this.clearAnswers(); }
     });
   }
@@ -149,12 +149,19 @@ export class RunComposerComponent {
   sendPicks(): void {
     if (!this.anyPicked()) return;
     const extra = this.text().trim();
-    const body = answerText(this.questions(), this.picks(), this.notes()) +(extra ? '\n\n' + extra : '');
+    const body = answerText(this.questions(), this.picks(), this.notes()) + (extra ? '\n\n' + extra : '');
     this.reply(body, !!extra);
   }
 
   onKey(e: KeyboardEvent): void {
-    if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); this.send(); }
+    if (e.key === 'Enter' && !e.shiftKey && !e.isComposing) { e.preventDefault(); this.send(); }
+  }
+
+  /** Enter in an "Other" input sends, unless it's confirming an IME candidate. */
+  onOtherEnter(e: KeyboardEvent): void {
+    if (e.isComposing) return;
+    e.preventDefault();
+    this.sendPicks();
   }
 
   send(): void {
