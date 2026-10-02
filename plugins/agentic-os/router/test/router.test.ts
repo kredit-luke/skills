@@ -9,6 +9,7 @@ import path from "node:path";
 import { spawn, type ChildProcess } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { routerConfig } from "../src/config.ts";
+import { backendUrl } from "../src/backends.ts";
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const ROUTER_MAIN = path.join(HERE, "..", "src", "main.ts");
@@ -17,10 +18,17 @@ const TMP = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "dash-router-"
 const HOST = "dash.example.com";
 const FRONT = "f".repeat(40), BACK = "b".repeat(40);
 const base = 40000 + Math.floor(Math.random() * 900) * 10;
-const P = { dash: base, stream: base + 1, dead: base + 2, k8s: base + 3, routerStatic: base + 4, routerK8s: base + 5, busy: base + 6 };
+const P = { dash: base, stream: base + 1, dead: base + 2, k8s: base + 3, routerStatic: base + 4, routerK8s: base + 5, busy: base + 6, evil: base + 7, crashy: base + 8 };
 const kids: ChildProcess[] = [];
+let evilHits = 0;
 const servers: http.Server[] = [];
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
+test("backendUrl: only the request's path and query; the host is always the backend's", () => {
+  assert.equal(backendUrl("http://127.0.0.1:3333", "/api/runs?limit=5").href, "http://127.0.0.1:3333/api/runs?limit=5");
+  assert.equal(backendUrl("http://dash:3333", "//evil.example/collect?x=1").href, "http://dash:3333/collect?x=1");
+  assert.equal(backendUrl("http://dash:3333/base/", "/a").href, "http://dash:3333/base/a");
+});
 
 test("routerConfig: refuses an unsafe or incomplete setup", () => {
   assert.throws(() => routerConfig({}), /ROUTER_PUBLIC_URL[\s\S]*ROUTER_PROXY_SECRET[\s\S]*ROUTER_BACKEND_SECRET[\s\S]*ROUTER_BACKEND/);
@@ -90,6 +98,20 @@ before(async () => {
   busy.listen(P.busy, "127.0.0.1");
   servers.push(busy);
 
+  // Somewhere a request must never reach: it would get the backend secret and an email.
+  const evil = http.createServer((req, res) => { evilHits++; res.end("got it"); });
+  evil.listen(P.evil, "127.0.0.1");
+  servers.push(evil);
+
+  // A dashboard that dies mid-response (restart, OOM kill).
+  const crashy = http.createServer((req, res) => {
+    res.writeHead(200, { "Content-Type": "text/event-stream" });
+    res.write("data: 1\n\n");
+    setTimeout(() => req.socket.destroy(), 50);
+  });
+  crashy.listen(P.crashy, "127.0.0.1");
+  servers.push(crashy);
+
   const api = http.createServer((req, res) => {
     let body = "";
     req.on("data", (d) => (body += d));
@@ -130,6 +152,7 @@ before(async () => {
     "ana@example.com": `http://127.0.0.1:${P.dash}`,
     "bo@example.com": `http://127.0.0.1:${P.stream}`,
     "cy@example.com": `http://127.0.0.1:${P.dead}`,
+    "fay@example.com": `http://127.0.0.1:${P.crashy}`,
     // A mistake: eve pointed at ana's dashboard. Ana's dashboard must refuse her.
     "eve@example.com": `http://127.0.0.1:${P.dash}`,
   }));
@@ -183,6 +206,27 @@ test("router: streams pass through as they come, with the backend secret and ema
     req.end();
   });
   assert.deepEqual(JSON.parse(first.replace(/^data: /, "")), { secret: BACK, email: "bo@example.com" });
+});
+
+test("router: a protocol-relative request target can't send the request (and secret) elsewhere", async () => {
+  await request(P.routerStatic, `//127.0.0.1:${P.evil}/collect`, as("ana@example.com"));
+  assert.equal(evilHits, 0);
+});
+
+test("router: a dashboard dying mid-stream ends that response, not the router", async () => {
+  const ended = await new Promise<boolean>((resolve) => {
+    const req = http.request({ host: "127.0.0.1", port: P.routerStatic, path: "/api/events", headers: as("fay@example.com") }, (res) => {
+      res.on("data", () => {});
+      res.on("close", () => resolve(true));
+      res.on("error", () => resolve(true));
+    });
+    req.on("error", () => resolve(true));
+    setTimeout(() => { req.destroy(); resolve(false); }, 3000);
+    req.end();
+  });
+  assert.ok(ended, "the browser's response ended when the dashboard died");
+  await sleep(200);
+  assert.equal((await request(P.routerStatic, "/healthz")).status, 200, "the router is still up");
 });
 
 test("router: a dashboard that isn't answering shows the starting page", async () => {

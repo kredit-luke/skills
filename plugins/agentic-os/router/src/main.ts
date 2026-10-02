@@ -16,7 +16,7 @@ import http from "node:http";
 import https from "node:https";
 import { SECRET_HEADER, checkHostedRequest } from "../../engine/server/src/hosted.ts";
 import { routerConfig } from "./config.ts";
-import { makeBackend, type Backend } from "./backends.ts";
+import { backendUrl, makeBackend, type Backend } from "./backends.ts";
 
 const cfg = (() => {
   try { return routerConfig(process.env, (f) => { try { return fs.readFileSync(f, "utf-8"); } catch { return null; } }); }
@@ -75,7 +75,7 @@ function backendHeaders(req: http.IncomingMessage, email: string): http.Outgoing
 }
 
 function proxy(req: http.IncomingMessage, res: http.ServerResponse, base: string, email: string) {
-  const target = new URL(req.url || "/", base + "/");
+  const target = backendUrl(base, req.url || "/");
   const lib = target.protocol === "https:" ? https : http;
   touch(email, +1);
   let done = false;
@@ -87,8 +87,11 @@ function proxy(req: http.IncomingMessage, res: http.ServerResponse, base: string
     for (const [k, v] of Object.entries(r.headers)) if (!HOP.has(k)) headers[k] = v;
     res.writeHead(r.statusCode || 502, headers);
     res.flushHeaders(); // a run's event stream must reach the browser before its first event
+    // A dashboard that stops mid-response (restarted, OOM-killed): end this response, not the router.
+    r.on("error", () => res.destroy());
     r.pipe(res);
   });
+  req.on("error", () => up.destroy()); // the browser went away mid-upload
   up.on("error", (e: NodeJS.ErrnoException) => {
     if (res.headersSent) return res.destroy();
     // Not answering yet: a container that's starting (or was just stopped).
@@ -129,20 +132,23 @@ server.keepAliveTimeout = 65_000;
 
 /** Is a Claude run going in this person's dashboard? (A run waiting for an answer can stop: it resumes.) */
 async function hasRunningRun(base: string, email: string): Promise<boolean> {
-  const target = new URL("/api/runs?limit=50", base + "/");
+  const target = backendUrl(base, "/api/runs?limit=50");
   const lib = target.protocol === "https:" ? https : http;
   const headers = { [SECRET_HEADER]: cfg.backendSecret, [cfg.backendIdentityHeader]: email, host: [...cfg.front.hosts][0], accept: "application/json" };
   return new Promise((resolve) => {
     const req = lib.request(target, { headers, timeout: 10000 }, (r) => {
       let text = "";
       r.on("data", (d) => (text += d));
+      r.on("error", () => resolve(true)); // cut off: can't tell, leave it running
       r.on("end", () => {
         try { resolve((JSON.parse(text).runs || []).some((x) => x.status === "running")); }
         catch { resolve(true); } // can't tell: leave it running
       });
     });
-    req.on("timeout", () => req.destroy());
-    req.on("error", () => resolve(false)); // not answering: nothing to keep alive
+    // Slow to answer: can't tell (a busy dashboard is slow), so leave it running.
+    req.on("timeout", () => { resolve(true); req.destroy(); });
+    // Nothing listening: there's no run to keep alive.
+    req.on("error", (e: NodeJS.ErrnoException) => resolve(!["ECONNREFUSED", "ENOTFOUND", "EHOSTUNREACH", "EAI_AGAIN"].includes(e.code || "")));
     req.end();
   });
 }

@@ -28,6 +28,21 @@ export interface Backend {
   running?(): Promise<string[]>;
 }
 
+/**
+ * The dashboard URL for a request: always the backend's scheme, host and port, with only
+ * the request's path and query. (Resolving the request target against the base would let
+ * a protocol-relative one like //elsewhere.example/x replace the host, and the backend
+ * secret and the person's email would go there.)
+ */
+export function backendUrl(base: string, reqUrl: string): URL {
+  const inbound = new URL(reqUrl || "/", "http://router.invalid");
+  const target = new URL(base);
+  target.pathname = target.pathname.replace(/\/+$/, "") + inbound.pathname;
+  target.search = inbound.search;
+  target.hash = "";
+  return target;
+}
+
 export function makeBackend(cfg: RouterConfig): Backend {
   return cfg.backend === "kubernetes" ? new KubernetesBackend(cfg.kubernetes) : new StaticBackend(cfg.staticFile);
 }
@@ -106,6 +121,7 @@ export class KubernetesBackend implements Backend {
       }, (res) => {
         let text = "";
         res.on("data", (d) => (text += d));
+        res.on("error", reject);
         res.on("end", () => {
           if ((res.statusCode || 0) >= 300) return reject(new Error(`Kubernetes API ${method} ${u.pathname}: ${res.statusCode} ${text.slice(0, 200)}`));
           try { resolve(text ? JSON.parse(text) : {}); } catch { reject(new Error(`Kubernetes API ${u.pathname}: not JSON`)); }

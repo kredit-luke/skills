@@ -41,6 +41,8 @@ spec:
             limits: { cpu: "1", memory: 2Gi }
           startupProbe: { httpGet: { path: /healthz, port: 3333 }, periodSeconds: 5, failureThreshold: 120 }
           readinessProbe: { httpGet: { path: /healthz, port: 3333 }, periodSeconds: 10 }
+          # A hung dashboard is restarted: the router only scales 0 → 1, so it can't fix one that's stuck at 1.
+          livenessProbe: { httpGet: { path: /healthz, port: 3333 }, periodSeconds: 30, failureThreshold: 3 }
           volumeMounts:
             - { name: data, mountPath: /data }
   volumeClaimTemplates:
