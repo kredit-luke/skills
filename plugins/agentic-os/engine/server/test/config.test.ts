@@ -227,6 +227,27 @@ test("Machine re-runs its checks when the viewer's profile changes (no stale rol
   }
 });
 
+test("Machine: a request after a role change never gets the report of a run started for the old role", async () => {
+  const { Machine } = await import("../src/machine.ts");
+  const ledger = process.env.DASHBOARD_LEDGER_DIR!;
+  const profileFile = path.join(ledger, "profile.json");
+  // A slow probe keeps the warm-up in flight after it has picked the developer's checks.
+  const slow = { kind: "command", id: "slow", label: "slow", probe: { cmd: process.execPath, args: ["-e", "setTimeout(() => {}, 800)"] } };
+  write("machine.json", { checks: [slow, { use: "env-var", id: "dev", name: "DASH_TEST_B", when: { profile: "developer" } }] });
+  const m = new Machine(ROOT);
+  try {
+    const warmUp = m.get(); // started as the developer, like the startup warm-up
+    await new Promise((r) => setTimeout(r, 300));
+    fs.mkdirSync(ledger, { recursive: true });
+    fs.writeFileSync(profileFile, JSON.stringify({ role: null, profile: "reader" }));
+    assert.deepEqual((await m.get()).checks.map((c) => c.id), ["slow"], "the reader's report, not the warm-up's");
+    assert.deepEqual((await warmUp).checks.map((c) => c.id), ["slow"], "the warm-up's caller also gets the current role's report");
+  } finally {
+    fs.rmSync(profileFile, { force: true });
+    write("machine.json", { checks: [] });
+  }
+});
+
 test("claude.ai connector state from `claude mcp list`: connected, disabled, signed out, absent", async () => {
   const { connectorState } = await import("../src/claude.ts");
   const out = [
@@ -243,6 +264,17 @@ test("claude.ai connector state from `claude mcp list`: connected, disabled, sig
   assert.deepEqual(connectorState(out, "Notion"), { state: "signed-out", text: "Needs authentication" });
   assert.equal(connectorState(out, "Slack").state, "absent");
   assert.equal(connectorState("claude.ai Atlassian: https://mcp.atlassian.com/v1/mcp - ✘ Failed to connect", "Atlassian").state, "signed-out");
+});
+
+test("Disconnect Atlassian reports a key it couldn't delete instead of claiming it's gone", async () => {
+  const { forgetAtlassianKeys } = await import("../src/atlassian.ts");
+  const ledger = fs.mkdtempSync(path.join(os.tmpdir(), "dash-forget-"));
+  try {
+    fs.mkdirSync(path.join(ledger, "jira-api-token")); // can't be unlinked like a file
+    assert.throws(() => forgetAtlassianKeys(ledger));
+    fs.rmSync(path.join(ledger, "jira-api-token"), { recursive: true });
+    assert.doesNotThrow(() => forgetAtlassianKeys(ledger), "keys that are already gone are fine");
+  } finally { fs.rmSync(ledger, { recursive: true, force: true }); }
 });
 
 test("Disconnect Atlassian removes both saved keys and names env keys it can't clear", async () => {

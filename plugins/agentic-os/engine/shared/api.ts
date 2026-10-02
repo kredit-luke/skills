@@ -406,6 +406,8 @@ export interface DocSite {
 export interface ExternalDocsStatus {
   site: string; name: string; provider: string; label: string; url: string | null;
   connected: boolean; source: 'env' | 'file' | 'tracker' | null; viewer: string | null;
+  /** The key in use is a saved file Disconnect can delete. */
+  removable?: boolean;
   help: { title: string; steps: string[]; placeholder: string; needsKey: boolean; keyFields?: 'email-token' } | null;
   spaces: { key: string; name: string; url: string }[];
   error: string | null;

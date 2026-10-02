@@ -54,13 +54,24 @@ test("key lookup: its own env vars, then its pasted key, then Jira's key only fo
   const p = new ConfluenceProvider(source, ctx());
   assert.equal(p.site, "acme.atlassian.net");
   assert.deepEqual(p.spaceFilter, ["ENG"]);
-  assert.deepEqual(p.status(), { connected: false, source: null, viewer: null });
+  assert.deepEqual(p.status(), { connected: false, source: null, removable: false, viewer: null });
 
   // Jira on the same site: its key is used.
   fs.writeFileSync(path.join(LEDGER, "jira-api-token"), "me@acme.com:jira-token-123");
   const same = new ConfluenceProvider(source, ctx({ kind: "jira", site: "https://acme.atlassian.net/" }));
   assert.equal(same.status().source, "tracker");
   assert.equal(same._cred()!.cred, "me@acme.com:jira-token-123");
+  assert.equal(same.status().removable, true, "the tracker's saved key can be disconnected");
+  // ...but not the tracker's env key.
+  process.env.JIRA_EMAIL = "env@acme.com";
+  process.env.JIRA_API_TOKEN = "jira-env-token";
+  try {
+    fs.renameSync(path.join(LEDGER, "jira-api-token"), path.join(LEDGER, "jira-api-token.bak"));
+    assert.deepEqual(same.status(), { connected: true, source: "tracker", removable: false, viewer: null });
+  } finally {
+    delete process.env.JIRA_EMAIL; delete process.env.JIRA_API_TOKEN;
+    fs.renameSync(path.join(LEDGER, "jira-api-token.bak"), path.join(LEDGER, "jira-api-token"));
+  }
   // Jira on another site: not used.
   assert.equal(new ConfluenceProvider(source, ctx({ kind: "jira", site: "other.atlassian.net" })).status().connected, false);
 
@@ -69,7 +80,7 @@ test("key lookup: its own env vars, then its pasted key, then Jira's key only fo
   assert.equal(same._cred()!.source, "file");
   process.env.CONFLUENCE_EMAIL = "env@acme.com";
   process.env.CONFLUENCE_API_TOKEN = "env-token-789";
-  try { assert.deepEqual(same._cred(), { cred: "env@acme.com:env-token-789", source: "env" }); }
+  try { assert.deepEqual(same._cred(), { cred: "env@acme.com:env-token-789", source: "env", removable: false }); }
   finally { delete process.env.CONFLUENCE_EMAIL; delete process.env.CONFLUENCE_API_TOKEN; }
 
   same.disconnect();

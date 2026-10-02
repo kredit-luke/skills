@@ -70,15 +70,18 @@ export async function atlassianRequest<T>(
   }
 }
 
+/** Delete a saved key file. Already gone is fine; any other failure is reported, never passed off as removed. */
+export function removeKeyFile(file: string): void {
+  try { fs.unlinkSync(file); } catch (e) { if ((e as NodeJS.ErrnoException).code !== "ENOENT") throw e; }
+}
+
 /**
  * Forget the Atlassian keys the dashboard saved for its Issues and Docs pages. Both go, since each
  * page falls back to the other's key. Returns the env vars that still supply a key: only the
  * person can unset those.
  */
 export function forgetAtlassianKeys(ledgerDir: string): { envKeys: string[] } {
-  for (const f of ["jira-api-token", "confluence-api-token"]) {
-    try { fs.unlinkSync(path.join(ledgerDir, f)); } catch {}
-  }
+  for (const f of ["jira-api-token", "confluence-api-token"]) removeKeyFile(path.join(ledgerDir, f));
   const envKeys = [["JIRA_EMAIL", "JIRA_API_TOKEN"], ["CONFLUENCE_EMAIL", "CONFLUENCE_API_TOKEN"]]
     .filter(([e, t]) => process.env[e] && process.env[t]).map(([, t]) => t);
   return { envKeys };

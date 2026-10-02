@@ -160,6 +160,7 @@ export class RunDetailComponent implements OnDestroy {
   // ------------------------------------------------------------ loading + live
 
   private async load(id: string): Promise<void> {
+    this.stripOpen.set(false); // the detail component is reused across runs: each one starts collapsed
     const seq = ++this.loadSeq;
     this.closeStream();
     if (this.contTimer) { clearInterval(this.contTimer); this.contTimer = null; }

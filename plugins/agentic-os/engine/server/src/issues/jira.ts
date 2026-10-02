@@ -15,7 +15,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import https from "node:https";
-import { atlassianRequest } from "../atlassian.ts";
+import { atlassianRequest, removeKeyFile } from "../atlassian.ts";
 import { readConfigFile, type IssuesConfig } from "../config.ts";
 
 const REFUSED = "Jira rejected the email/API token. A scoped token needs at least the read:jira-work and read:jira-user scopes.";
@@ -123,16 +123,24 @@ class JiraTracker implements IssueTracker {
     });
   }
 
-  /** "email:token", from the env or the ledger file, else the same site's Confluence key (docs-providers/confluence.ts does the reverse). */
-  _cred(): string | null {
-    if (process.env.JIRA_API_TOKEN && process.env.JIRA_EMAIL) return `${process.env.JIRA_EMAIL.trim()}:${process.env.JIRA_API_TOKEN.trim()}`;
-    try { const k = fs.readFileSync(this.keyFile, "utf-8").trim(); if (k) return k; } catch {}
+  /**
+   * "email:token" and where it came from: the env or the ledger file, else the same site's Confluence
+   * key (docs-providers/confluence.ts does the reverse). A Confluence env key is still "env".
+   */
+  _credWithSource(): { cred: string; source: "env" | "file" } | null {
+    const env = (e: string, t: string) => (process.env[t] && process.env[e] ? `${process.env[e]!.trim()}:${process.env[t]!.trim()}` : null);
+    const file = (f: string) => { try { return fs.readFileSync(f, "utf-8").trim() || null; } catch { return null; } };
+    let k = env("JIRA_EMAIL", "JIRA_API_TOKEN");
+    if (k) return { cred: k, source: "env" };
+    if ((k = file(this.keyFile))) return { cred: k, source: "file" };
     if (this.sameSiteConfluence) {
-      if (process.env.CONFLUENCE_API_TOKEN && process.env.CONFLUENCE_EMAIL) return `${process.env.CONFLUENCE_EMAIL.trim()}:${process.env.CONFLUENCE_API_TOKEN.trim()}`;
-      try { return fs.readFileSync(this.confluenceKeyFile, "utf-8").trim() || null; } catch {}
+      if ((k = env("CONFLUENCE_EMAIL", "CONFLUENCE_API_TOKEN"))) return { cred: k, source: "env" };
+      if ((k = file(this.confluenceKeyFile))) return { cred: k, source: "file" };
     }
     return null;
   }
+
+  _cred(): string | null { return this._credWithSource()?.cred ?? null; }
 
   _get(cred: string, pathAndQuery: string, body?: object): Promise<any> {
     const site = this.site;
@@ -166,8 +174,8 @@ class JiraTracker implements IssueTracker {
   }
 
   status(): TrackerStatus {
-    const fromEnv = !!(process.env.JIRA_API_TOKEN && process.env.JIRA_EMAIL);
-    return { connected: !!this._cred() && !!this.site, source: fromEnv ? "env" : this._cred() ? "file" : null, viewer: this.viewer };
+    const c = this._credWithSource();
+    return { connected: !!c && !!this.site, source: c ? c.source : null, viewer: this.viewer };
   }
 
   connectHelp(): ConnectHelp {
@@ -198,7 +206,7 @@ class JiraTracker implements IssueTracker {
   }
 
   disconnect(): TrackerStatus {
-    try { fs.unlinkSync(this.keyFile); } catch {}
+    removeKeyFile(this.keyFile);
     this.viewer = null;
     this.cache = null;
     return this.status();

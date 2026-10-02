@@ -1,4 +1,3 @@
-import { KeyFieldsComponent } from '../../shared/key-fields.component';
 import { ChangeDetectionStrategy, Component, computed, effect, inject, input, signal, untracked } from '@angular/core';
 import { toSignal } from '@angular/core/rxjs-interop';
 import { ActivatedRoute, Router } from '@angular/router';
@@ -6,8 +5,10 @@ import type { DocSite, ExternalDocHit, ExternalDocPage, ExternalDocsStatus } fro
 import { ApiService } from '../../core/api.service';
 import { LaunchService } from '../../core/launch.service';
 import { MdPipe } from '../../core/md.pipe';
+import { ToastService } from '../../core/toast.service';
 import { TrustedHtmlPipe } from '../../core/trusted-html.pipe';
 import { relTime } from '../../core/util';
+import { KeyFieldsComponent } from '../../shared/key-fields.component';
 
 /**
  * An external docs source with a provider adapter (Confluence, …): search it and read
@@ -63,7 +64,7 @@ import { relTime } from '../../core/util';
     } @else {
       <div class="docs-layout">
         <aside class="panel side">
-          @if (st.provider === 'confluence' && st.source !== 'env') {
+          @if (st.provider === 'confluence' && st.removable) {
             <button class="btn ghost sm forget" type="button" (click)="forgetAtlassian()" title="Remove your saved Atlassian API key (used by the Docs and Issues pages) so you can connect a different one">Disconnect Atlassian</button>
           }
           <div class="search-box">
@@ -115,6 +116,7 @@ export class ExternalDocsComponent {
   private readonly launch = inject(LaunchService);
   private readonly route = inject(ActivatedRoute);
   private readonly router = inject(Router);
+  private readonly toast = inject(ToastService);
   private readonly query = toSignal(this.route.queryParamMap);
 
   readonly status = signal<ExternalDocsStatus | null>(null);
@@ -171,9 +173,10 @@ export class ExternalDocsComponent {
   async forgetAtlassian(): Promise<void> {
     if (!confirm("Remove your saved Atlassian API key? The Docs and Issues pages stop using it until you connect a key again. (Claude's own Atlassian connector isn't affected.)")) return;
     try {
-      await this.api.post('/api/atlassian/disconnect', {});
+      const r = await this.api.post<{ envKeys: string[] }>('/api/atlassian/disconnect', {});
+      this.toast.show(r.envKeys.length ? `Saved key removed. ${r.envKeys.join(', ')} is still set in your environment.` : 'Atlassian key removed');
       await this.loadStatus(this.site().key);
-    } catch (e) { this.connectError.set((e as Error).message); }
+    } catch (e) { this.toast.show((e as Error).message); }
   }
 
   onQuery(v: string): void {

@@ -111,6 +111,13 @@ test("jira key lookup: its own env vars, then its pasted key, then Confluence's 
 
   same.disconnect();
   assert.equal(same._cred(), "me@acme.com:wiki-token-456", "disconnect drops only its own key");
+
+  // A Confluence key from the env is still an env key: nothing for Disconnect to remove.
+  fs.rmSync(path.join(ledger, "confluence-api-token"));
+  process.env.CONFLUENCE_EMAIL = "env@acme.com";
+  process.env.CONFLUENCE_API_TOKEN = "wiki-env-token";
+  try { assert.deepEqual(same.status(), { connected: true, source: "env", viewer: null }); }
+  finally { delete process.env.CONFLUENCE_EMAIL; delete process.env.CONFLUENCE_API_TOKEN; }
 });
 
 test("atlassian: a classic key stays on the site; a key the site refuses goes through the gateway and stays there", async () => {

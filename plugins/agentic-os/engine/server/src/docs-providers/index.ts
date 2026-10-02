@@ -36,6 +36,8 @@ export interface ProviderStatus {
   connected: boolean;
   /** Where the key came from: an env var, the pasted key, or the issue tracker's key for the same site. */
   source: "env" | "file" | "tracker" | null;
+  /** The key in use is a saved file that Disconnect can delete (false for env vars, including the tracker's). */
+  removable?: boolean;
   viewer: string | null;
 }
 /**

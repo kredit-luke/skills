@@ -15,7 +15,7 @@
 import fs from "node:fs";
 import https from "node:https";
 import path from "node:path";
-import { atlassianRequest } from "../atlassian.ts";
+import { atlassianRequest, removeKeyFile } from "../atlassian.ts";
 import type { DocSiteDef } from "../docs.ts";
 import type {
   DocHit, DocPage, DocSpace, DocsProvider, ExcerptPart, ProviderContext, ProviderHelp, ProviderStatus,
@@ -115,14 +115,15 @@ export class ConfluenceProvider implements DocsProvider {
     return i.kind === "jira" && !!host && host === this.site;
   }
 
-  _cred(): { cred: string; source: ProviderStatus["source"] } | null {
+  /** The key, where it came from, and whether it's a saved file Disconnect can delete (env keys aren't). */
+  _cred(): { cred: string; source: ProviderStatus["source"]; removable: boolean } | null {
     if (process.env.CONFLUENCE_API_TOKEN && process.env.CONFLUENCE_EMAIL) {
-      return { cred: `${process.env.CONFLUENCE_EMAIL.trim()}:${process.env.CONFLUENCE_API_TOKEN.trim()}`, source: "env" };
+      return { cred: `${process.env.CONFLUENCE_EMAIL.trim()}:${process.env.CONFLUENCE_API_TOKEN.trim()}`, source: "env", removable: false };
     }
-    try { const k = fs.readFileSync(this.keyFile, "utf-8").trim(); if (k) return { cred: k, source: "file" }; } catch {}
+    try { const k = fs.readFileSync(this.keyFile, "utf-8").trim(); if (k) return { cred: k, source: "file", removable: true }; } catch {}
     if (this.sameSiteJira) {
-      if (process.env.JIRA_API_TOKEN && process.env.JIRA_EMAIL) return { cred: `${process.env.JIRA_EMAIL.trim()}:${process.env.JIRA_API_TOKEN.trim()}`, source: "tracker" };
-      try { const k = fs.readFileSync(path.join(this.ctx.ledgerDir, "jira-api-token"), "utf-8").trim(); if (k) return { cred: k, source: "tracker" }; } catch {}
+      if (process.env.JIRA_API_TOKEN && process.env.JIRA_EMAIL) return { cred: `${process.env.JIRA_EMAIL.trim()}:${process.env.JIRA_API_TOKEN.trim()}`, source: "tracker", removable: false };
+      try { const k = fs.readFileSync(path.join(this.ctx.ledgerDir, "jira-api-token"), "utf-8").trim(); if (k) return { cred: k, source: "tracker", removable: true }; } catch {}
     }
     return null;
   }
@@ -156,7 +157,7 @@ export class ConfluenceProvider implements DocsProvider {
 
   status(): ProviderStatus {
     const c = this._cred();
-    return { connected: !!c && !!this.site, source: c ? c.source : null, viewer: this.viewer };
+    return { connected: !!c && !!this.site, source: c ? c.source : null, removable: !!c && c.removable, viewer: this.viewer };
   }
 
   connectHelp(): ProviderHelp | null {
@@ -187,7 +188,7 @@ export class ConfluenceProvider implements DocsProvider {
   }
 
   disconnect(): ProviderStatus {
-    try { fs.unlinkSync(this.keyFile); } catch {}
+    removeKeyFile(this.keyFile);
     this.viewer = null;
     this.spacesCache = null;
     return this.status();

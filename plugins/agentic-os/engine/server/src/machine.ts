@@ -229,11 +229,14 @@ class Machine {
   root: any;
   cache: any;
   inflight: any;
+  /** The _configSig the in-flight run was started for. */
+  inflightSig: string | null;
 
   constructor(workspaceRoot) {
     this.root = workspaceRoot;
     this.cache = null;
     this.inflight = null;
+    this.inflightSig = null;
   }
 
   /**
@@ -248,15 +251,22 @@ class Machine {
   }
 
   async get(force = false) {
-    const sig = this._configSig();
-    if (this.cache && !force && this.cache._sig === sig && Date.now() - this.cache.checkedAt < CACHE_TTL_MS) return this.cache;
-    if (!this.inflight) {
-      this.inflight = this._check()
-        .then((c) => { Object.defineProperty(c, "_sig", { value: sig, enumerable: false }); this.cache = c; })
-        .finally(() => { this.inflight = null; });
+    for (;;) {
+      const sig = this._configSig();
+      if (this.cache && !force && this.cache._sig === sig && Date.now() - this.cache.checkedAt < CACHE_TTL_MS) return this.cache;
+      // A run started for another role or config (e.g. the startup warm-up before a role change):
+      // let it finish, then look again rather than hand back its report.
+      if (this.inflight && this.inflightSig !== sig) { await this.inflight.catch(() => {}); continue; }
+      if (!this.inflight) {
+        this.inflightSig = sig;
+        this.inflight = this._check()
+          .then((c) => { Object.defineProperty(c, "_sig", { value: sig, enumerable: false }); this.cache = c; })
+          .finally(() => { this.inflight = null; this.inflightSig = null; });
+      }
+      await this.inflight;
+      if (this.cache && this.cache._sig === sig) return this.cache;
+      // The config or role changed while it ran: go round for the current one.
     }
-    await this.inflight;
-    return this.cache;
   }
 
   /** Run a check's install in a visible terminal. Only commands from the config can run. */

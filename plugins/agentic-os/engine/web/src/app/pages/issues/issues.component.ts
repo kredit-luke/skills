@@ -1,4 +1,3 @@
-import { KeyFieldsComponent } from '../../shared/key-fields.component';
 import { ChangeDetectionStrategy, Component, OnDestroy, OnInit, computed, inject, linkedSignal, signal } from '@angular/core';
 import { Router, RouterLink } from '@angular/router';
 import type { Issue, IssueDetail, IssuesResponse, RunMeta } from '../../../../../shared/api';
@@ -11,6 +10,7 @@ import { MdPipe } from '../../core/md.pipe';
 import { TrustedHtmlPipe } from '../../core/trusted-html.pipe';
 import { IssueSummaryComponent } from '../../shared/issue-summary.component';
 import { PageHeaderComponent } from '../../shared/page-header.component';
+import { KeyFieldsComponent } from '../../shared/key-fields.component';
 
 @Component({
   selector: 'dash-issues',

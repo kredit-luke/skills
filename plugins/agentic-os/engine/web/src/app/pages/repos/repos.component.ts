@@ -1,4 +1,3 @@
-import { KeyFieldsComponent } from '../../shared/key-fields.component';
 import { ChangeDetectionStrategy, Component, OnInit, computed, effect, inject, signal, untracked } from '@angular/core';
 import type { Job, PublishPlanResponse, RepoInfo, ReposResponse, SnapshotRepo, SnapshotStatus } from '../../../../../shared/api';
 import { ApiService } from '../../core/api.service';
@@ -9,6 +8,7 @@ import { TrustedHtmlPipe } from '../../core/trusted-html.pipe';
 import { copyText, relTime } from '../../core/util';
 import { LogsService } from '../../shared/logs-dialog.component';
 import { PageHeaderComponent } from '../../shared/page-header.component';
+import { KeyFieldsComponent } from '../../shared/key-fields.component';
 
 const EXAMPLE = `{
   "$schema": "./dashboard/shared/repos.schema.json",
