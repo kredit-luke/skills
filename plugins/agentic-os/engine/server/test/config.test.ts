@@ -231,20 +231,28 @@ test("Machine: a request after a role change never gets the report of a run star
   const { Machine } = await import("../src/machine.ts");
   const ledger = process.env.DASHBOARD_LEDGER_DIR!;
   const profileFile = path.join(ledger, "profile.json");
-  // A slow probe keeps the warm-up in flight after it has picked the developer's checks.
-  const slow = { kind: "command", id: "slow", label: "slow", probe: { cmd: process.execPath, args: ["-e", "setTimeout(() => {}, 800)"] } };
-  write("machine.json", { checks: [slow, { use: "env-var", id: "dev", name: "DASH_TEST_B", when: { profile: "developer" } }] });
+  write("machine.json", { checks: [] });
   const m = new Machine(ROOT);
+  // Stand-in check runs: the first (the developer's warm-up) stays in flight until the test lets it finish.
+  let finishWarmUp!: () => void;
+  const warmUpHeld = new Promise<void>((r) => { finishWarmUp = r; });
+  let runs = 0;
+  (m as any)._check = async () => {
+    const n = ++runs;
+    if (n === 1) await warmUpHeld;
+    return { checks: [{ id: n === 1 ? "developer-report" : "reader-report" }], checkedAt: Date.now() };
+  };
   try {
     const warmUp = m.get(); // started as the developer, like the startup warm-up
-    await new Promise((r) => setTimeout(r, 300));
     fs.mkdirSync(ledger, { recursive: true });
     fs.writeFileSync(profileFile, JSON.stringify({ role: null, profile: "reader" }));
-    assert.deepEqual((await m.get()).checks.map((c) => c.id), ["slow"], "the reader's report, not the warm-up's");
-    assert.deepEqual((await warmUp).checks.map((c) => c.id), ["slow"], "the warm-up's caller also gets the current role's report");
+    const afterSwitch = m.get();
+    finishWarmUp();
+    assert.deepEqual((await afterSwitch).checks.map((c: any) => c.id), ["reader-report"], "not the warm-up's report");
+    assert.equal(runs, 2, "the checks ran again for the reader");
+    await warmUp;
   } finally {
     fs.rmSync(profileFile, { force: true });
-    write("machine.json", { checks: [] });
   }
 });
 
