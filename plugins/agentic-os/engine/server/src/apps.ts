@@ -222,8 +222,8 @@ class AppLauncher {
 
   /** Pid of the process tree this dashboard started for an app, if it's still alive. */
   runningPid(ws, key): number | null {
-    const pid = this._pids()[`${ws.slug}:${key}`];
-    return pid && treeAlive(pid) ? pid : null;
+    const rec = this._pids()[`${ws.slug}:${key}`];
+    return rec && stillOurs(rec) ? rec.pid : null;
   }
 
   busy(wsSlug, key) {
@@ -412,14 +412,25 @@ class AppLauncher {
       return async (log) => {
         const pids = this._pids();
         const id = `${ws.slug}:${key}`;
-        const pid = pids[id];
-        if (!pid) { log(`${app.name}: nothing started from here to stop.`); return; }
+        const rec = pids[id];
+        if (!rec) { log(`${app.name}: nothing started from here to stop.`); return; }
+        const { pid } = rec;
+        const forget = () => {
+          const now = this._pids();
+          unlinkQuiet(now[id]?.exitFile);
+          delete now[id];
+          this._savePids(now);
+        };
+        // Killing the tree under that pid now could take down whatever has it since.
+        if (!stillOurs(rec) || !(await launchedAt(pid, rec.startedAt))) {
+          log(`${app.name}: pid ${pid} has already exited (or the machine restarted since); nothing to stop.`);
+          forget();
+          return;
+        }
         log(`Stopping process tree ${pid}`);
         // Forget the pid only once the tree is gone, so a failed stop can be retried.
         await stopTree(pid, this.stopGraceMs, log);
-        const now = this._pids();
-        delete now[id];
-        this._savePids(now);
+        forget();
       };
     }
     const launcher = this.cfg.launcher;
@@ -517,15 +528,25 @@ class AppLauncher {
     const cmd = expand(app.launch.cmd!, ws, app.key, portFor);
     const env: Record<string, string> = {};
     for (const [k, v] of Object.entries(app.launch.env || {})) if (/^[A-Za-z_][A-Za-z0-9_]*$/.test(k)) env[k] = expand(String(v), ws, app.key, portFor);
-    const pid = twoHop({ file: cmd, args: [], cwd, env, shell: true }, log.file, app.key);
+    const id = `${ws.slug}:${app.key}`;
+    const exitFile = path.join(this.logDir, `exited-${crypto.randomBytes(4).toString("hex")}`);
+    const pid = twoHop({ file: cmd, args: [], cwd, env, shell: true }, log.file, app.key, exitFile);
     const pids = this._pids();
-    pids[`${ws.slug}:${app.key}`] = pid;
+    unlinkQuiet(pids[id]?.exitFile);
+    pids[id] = { pid, startedAt: Date.now(), exitFile };
     this._savePids(pids);
     log(`$ ${cmd}  (in ${path.relative(ws.path, cwd) || "."}, detached, pid ${pid})`);
   }
 
-  _pids(): Record<string, number> {
-    try { return JSON.parse(fs.readFileSync(this.pidFile, "utf-8")); } catch { return {}; }
+  _pids(): Record<string, PidRecord> {
+    let raw = {};
+    try { raw = JSON.parse(fs.readFileSync(this.pidFile, "utf-8")); } catch {}
+    const out: Record<string, PidRecord> = {};
+    for (const [id, v] of Object.entries<any>(raw || {})) {
+      if (typeof v === "number") out[id] = { pid: v }; // written by an older dashboard: the pid alone
+      else if (v && typeof v.pid === "number") out[id] = v;
+    }
+    return out;
   }
 
   _savePids(pids) {
@@ -588,7 +609,7 @@ class AppLauncher {
  * to logFile and appending "[key exited with code N]" when it ends. Returns the
  * launcher's pid (the root of the app's process tree).
  */
-export function twoHop(p: { file: string; args: string[]; cwd: string; env: Record<string, string> | null; shell: boolean }, logFile: string, key: string): number {
+export function twoHop(p: { file: string; args: string[]; cwd: string; env: Record<string, string> | null; shell: boolean }, logFile: string, key: string, exitFile: string | null = null): number {
   const launcher = `
     const { spawn } = require("child_process");
     const fs = require("fs");
@@ -600,7 +621,10 @@ export function twoHop(p: { file: string; args: string[]; cwd: string; env: Reco
       stdio: ["ignore", out, out],
       windowsHide: true,
     });
-    c.on("exit", (code) => fs.appendFileSync(${JSON.stringify(logFile)}, "\\n[${key} exited with code " + code + "]\\n"));
+    c.on("exit", (code) => {
+      fs.appendFileSync(${JSON.stringify(logFile)}, "\\n[${key} exited with code " + code + "]\\n");
+      ${exitFile ? `try { fs.writeFileSync(${JSON.stringify(exitFile)}, String(code)); } catch {}` : ""}
+    });
   `;
   const child = spawn(process.execPath, ["-e", launcher], {
     cwd: p.cwd,
@@ -630,6 +654,47 @@ export function killTree(pid: number, signal: NodeJS.Signals = "SIGTERM") {
 export function treeAlive(pid: number): boolean {
   const probe = (p: number) => { try { process.kill(p, 0); return true; } catch (e) { return e.code === "EPERM"; } };
   return (process.platform !== "win32" && probe(-pid)) || probe(pid);
+}
+
+/** What pids.json keeps per app: the launcher's pid, when it started, and the file it writes when its app exits. */
+export interface PidRecord { pid: number; startedAt?: number; exitFile?: string }
+
+/**
+ * Is the process at rec.pid still the launcher we started? A live pid alone doesn't say:
+ * pids.json outlives a reboot, the OS hands pids out again, and Stop kills the tree under
+ * whatever has it. Started before the machine last booted = gone. On Windows a launcher that
+ * wrote its exit file is gone too (taskkill can't reach what it left behind anyway); on
+ * Linux and macOS the app's process group can outlive it, so treeAlive decides there.
+ * Cheap enough for every status poll; Stop also asks launchedAt before it kills.
+ */
+export function stillOurs(rec: PidRecord): boolean {
+  const bootedAt = Date.now() - os.uptime() * 1000;
+  if (rec.startedAt && rec.startedAt < bootedAt - 30_000) return false; // 30s for uptime's rounding
+  if (process.platform === "win32" && rec.exitFile && fs.existsSync(rec.exitFile)) return false;
+  return treeAlive(rec.pid);
+}
+
+/**
+ * Windows, before taskkill /T: did the process at `pid` start when we launched it? The exit
+ * file is missing when something else killed the launcher, and taskkill /T would then take
+ * the whole tree of whatever has the pid now. Throws when it can't tell, so Stop fails (and
+ * can be retried) rather than guessing either way. Elsewhere, and for records from older
+ * dashboards (no startedAt), there's nothing to compare: true.
+ */
+export async function launchedAt(pid: number, startedAt?: number): Promise<boolean> {
+  if (process.platform !== "win32" || !startedAt) return true;
+  const script = `$p = Get-Process -Id ${pid} -ErrorAction SilentlyContinue; if (-not $p) { 'gone' } elseif (-not $p.StartTime) { 'other' } else { $p.StartTime.ToUniversalTime().ToString('o') }`;
+  const out = await new Promise<string>((resolve) =>
+    execFile("powershell.exe", ["-NoProfile", "-NonInteractive", "-Command", script], { windowsHide: true, timeout: 30_000 },
+      (err, stdout) => resolve(err ? "" : String(stdout).trim())));
+  if (out === "gone" || out === "other") return false;
+  const t = Date.parse(out);
+  if (!Number.isFinite(t)) throw new Error(`Couldn't check that pid ${pid} is still the process we started, so it was left running. Try again.`);
+  return Math.abs(t - startedAt) < 15_000;
+}
+
+function unlinkQuiet(file?: string) {
+  if (file) try { fs.unlinkSync(file); } catch {}
 }
 
 /**
