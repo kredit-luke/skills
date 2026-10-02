@@ -38,7 +38,15 @@ jobs:
         run: |
           npm ci
           npm run typecheck
-          npm test
+          # Windows runs the server test files one at a time. In parallel, the tests that
+          # start, wait on and kill real processes miss their timing windows on a busy
+          # runner (a different one fails each time). Same commands as `npm test`.
+          if [ "$RUNNER_OS" = "Windows" ]; then
+            node --disable-warning=ExperimentalWarning --test --test-concurrency=1 "server/test/*.test.ts"
+            npx vitest run --config web/vitest.config.ts
+          else
+            npm test
+          fi
       - name: Router (no packages of its own; tsc and @types/node come from the engine's install)
         working-directory: plugins/agentic-os/router
         run: |
