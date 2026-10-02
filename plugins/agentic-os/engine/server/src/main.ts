@@ -1123,7 +1123,8 @@ async function handleApi(req: http.IncomingMessage, res: http.ServerResponse, ur
       if (!runs.get(runMatch[1])) return sendError(res, 404, "Unknown run");
       res.writeHead(200, { "Content-Type": "text/event-stream", "Cache-Control": "no-cache", Connection: "keep-alive", "X-Accel-Buffering": "no" });
       res.write(": connected\n\n");
-      const lastId = parseInt(String(req.headers["last-event-id"] ?? ""), 10); // a reconnect: send only what came after
+      // A reconnect (Last-Event-ID) or a client that already has the events up to ?after: send only what came after.
+      const lastId = parseInt(String(req.headers["last-event-id"] ?? q("after") ?? ""), 10);
       runs.subscribe(runMatch[1], res, Number.isFinite(lastId) ? lastId : -1);
       const ping = setInterval(() => res.write(": ping\n\n"), 25000);
       res.on("close", () => clearInterval(ping));
