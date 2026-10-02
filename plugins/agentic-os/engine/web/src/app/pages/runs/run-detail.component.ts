@@ -140,7 +140,7 @@ export class RunDetailComponent implements OnDestroy {
    */
   private readonly onVisibility = (): void => {
     if (document.hidden) this.closeStream();
-    else if (!this.es && this.run()) this.connect(this.runId());
+    else if (!this.es) this.connect(this.runId());
   };
 
   constructor() {
@@ -197,7 +197,7 @@ export class RunDetailComponent implements OnDestroy {
     this.streamOpened = false;
     this.eventsFetched = false;
     // The stream replays the saved events, so this GET only needs the run (a big run's events are megabytes).
-    if (!document.hidden) this.connect(id);
+    this.connect(id);
     try {
       const d = await this.api.get<RunDetail>('/api/runs/' + encodeURIComponent(id) + '?events=0');
       if (seq !== this.loadSeq) return;
@@ -212,6 +212,7 @@ export class RunDetailComponent implements OnDestroy {
 
   private connect(id: string): void {
     this.closeStream();
+    if (document.hidden) return; // onVisibility connects when the tab is shown
     const cur = this.cur;
     // A browser retry sends Last-Event-ID itself; ?after covers a new connection to a run we already have events for.
     const es = new EventSource('/api/runs/' + encodeURIComponent(id) + '/stream' + (cur.next ? '?after=' + (cur.next - 1) : ''));
@@ -220,7 +221,7 @@ export class RunDetailComponent implements OnDestroy {
       if (this.es !== es) return;
       const { data, lastEventId } = m as MessageEvent<string>;
       if (lastEventId !== '') cur.next = Math.max(cur.next, Number(lastEventId) + 1);
-      cur.bytes += data.length;
+      eventCache.grow(id, data.length);
       this.addEvents([JSON.parse(data)]);
     });
     es.addEventListener('meta', (m) => { if (this.es === es) this.setRun(JSON.parse((m as MessageEvent).data)); });
@@ -252,7 +253,9 @@ export class RunDetailComponent implements OnDestroy {
       const d = await this.api.get<RunDetail>('/api/runs/' + encodeURIComponent(id));
       if (this.runId() !== id) return;
       this.addEvents(d.events);
-      this.cur.bytes += JSON.stringify(d.events).length;
+      // The GET's events and the stream's ids share one order: resume the stream after them.
+      this.cur.next = Math.max(this.cur.next, d.events.length);
+      eventCache.grow(id, JSON.stringify(d.events).length);
     } catch { /* the error state is set by load() */ }
   }
 

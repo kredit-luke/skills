@@ -23,7 +23,7 @@ export class RunEventCache {
   maxBytes = 40_000_000;
   private runs = new Map<string, RunEvents>();
 
-  /** The run's entry (made empty if new), marked most recently opened. The caller fills it in place. */
+  /** The run's entry (made empty if new), marked most recently opened. The caller fills it in place and reports its growth with grow(). */
   open(id: string): RunEvents {
     const entry = this.runs.get(id) || { events: [], seen: new Set<string>(), next: 0, bytes: 0 };
     this.runs.delete(id);
@@ -33,6 +33,14 @@ export class RunEventCache {
   }
 
   has(id: string): boolean { return this.runs.has(id); }
+
+  /** The run's entry got `bytes` more events: count them and drop other runs if that passes the cap. */
+  grow(id: string, bytes: number): void {
+    const entry = this.runs.get(id);
+    if (!entry) return;
+    entry.bytes += bytes;
+    this.trim(id);
+  }
 
   private trim(keep: string): void {
     let total = 0;

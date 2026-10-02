@@ -19,10 +19,12 @@ describe('RunEventCache', () => {
   it('drops old runs past maxBytes but always keeps the one being opened', () => {
     const c = new RunEventCache();
     c.maxBytes = 100;
-    c.open('a').bytes = 60;
-    c.open('b').bytes = 60;
-    c.open('c').bytes = 500;
-    c.open('c');
-    expect([c.has('a'), c.has('b'), c.has('c')]).toEqual([false, false, true]);
+    c.open('a'); c.grow('a', 60);
+    c.open('b'); c.grow('b', 30);
+    expect([c.has('a'), c.has('b')]).toEqual([true, true]);
+    c.grow('b', 30);
+    expect([c.has('a'), c.has('b')]).toEqual([false, true]);
+    c.open('c'); c.grow('c', 500);
+    expect([c.has('b'), c.has('c')]).toEqual([false, true]);
   });
 });
