@@ -8,6 +8,7 @@ import { ToastService } from '../../core/toast.service';
 import { TrustedHtmlPipe } from '../../core/trusted-html.pipe';
 import { copyText, dur, relTime, tokens, usd } from '../../core/util';
 import { buildThread, countSteps, stripAgents, stripSummary, type AgentCard, type ThreadItem } from '../../runs/thread';
+import { RunEventCache, type RunEvents } from '../../runs/event-cache';
 import { runTicket } from '../../../../../shared/run-ticket';
 import { runWorkspace } from '../../../../../shared/run-workspace';
 import { runStatus, toReview } from '../../shared/run-status';
@@ -24,6 +25,8 @@ type Tab = 'issue' | 'transcript' | 'changes' | 'apps';
 type IssueLookup = { detail: IssueDetail } | { error: string };
 
 const STICK_PX = 80;
+/** Shared by every run page, so it outlives leaving Activity. */
+const eventCache = new RunEventCache();
 
 /**
  * One run: header, agent strip, transcript tree and composer. Live via SSE on
@@ -68,7 +71,8 @@ export class RunDetailComponent implements OnDestroy {
   private streamOpened = false;
   /** The full events were fetched over plain GET: done at most once per run. */
   private eventsFetched = false;
-  private seen = new Set<string>();
+  /** The open run's events: its entry in the cache, filled in place. */
+  private cur: RunEvents = { events: [], seen: new Set(), next: 0, bytes: 0 };
   private contTimer: ReturnType<typeof setInterval> | null = null;
   private tick: ReturnType<typeof setInterval> | null = null;
   private stick = true;
@@ -129,7 +133,18 @@ export class RunDetailComponent implements OnDestroy {
     return r && r.effectivePermissionMode && r.effectivePermissionMode !== (r.planMode ? 'plan' : r.permissionMode) ? r.effectivePermissionMode : null;
   });
 
+  /**
+   * A hidden tab holds no run stream: the browser allows about 6 connections per host
+   * across all its tabs, and a new run's stream queues behind the held ones. Shown
+   * again, the stream resumes after the last event it sent.
+   */
+  private readonly onVisibility = (): void => {
+    if (document.hidden) this.closeStream();
+    else if (!this.es) this.connect(this.runId());
+  };
+
   constructor() {
+    document.addEventListener('visibilitychange', this.onVisibility);
     effect(() => {
       const id = this.runId();
       untracked(() => this.load(id));
@@ -156,6 +171,7 @@ export class RunDetailComponent implements OnDestroy {
   }
 
   ngOnDestroy(): void {
+    document.removeEventListener('visibilitychange', this.onVisibility);
     this.closeStream();
     if (this.contTimer) clearInterval(this.contTimer);
     if (this.tick) clearInterval(this.tick);
@@ -169,13 +185,14 @@ export class RunDetailComponent implements OnDestroy {
     this.closeStream();
     if (this.contTimer) { clearInterval(this.contTimer); this.contTimer = null; }
     this.run.set(this.data.runs().find((r) => r.id === id) || null);
-    this.events.set([]);
+    // A run opened recently shows its cached events now; its stream sends only the newer ones.
+    this.cur = eventCache.open(id);
+    this.events.set(this.cur.events);
     this.cont.set(null);
     this.loadError.set(null);
     this.terminalCmd.set(null);
     this.titleDraft.set(null);
     this.expanded.set(new Set());
-    this.seen = new Set();
     this.stick = true;
     this.streamOpened = false;
     this.eventsFetched = false;
@@ -195,9 +212,18 @@ export class RunDetailComponent implements OnDestroy {
 
   private connect(id: string): void {
     this.closeStream();
-    const es = new EventSource('/api/runs/' + encodeURIComponent(id) + '/stream');
+    if (document.hidden) return; // onVisibility connects when the tab is shown
+    const cur = this.cur;
+    // A browser retry sends Last-Event-ID itself; ?after covers a new connection to a run we already have events for.
+    const es = new EventSource('/api/runs/' + encodeURIComponent(id) + '/stream' + (cur.next ? '?after=' + (cur.next - 1) : ''));
     this.es = es;
-    es.addEventListener('event', (m) => { if (this.es === es) this.addEvents([JSON.parse((m as MessageEvent).data)]); });
+    es.addEventListener('event', (m) => {
+      if (this.es !== es) return;
+      const { data, lastEventId } = m as MessageEvent<string>;
+      if (lastEventId !== '') cur.next = Math.max(cur.next, Number(lastEventId) + 1);
+      eventCache.grow(id, data.length);
+      this.addEvents([JSON.parse(data)]);
+    });
     es.addEventListener('meta', (m) => { if (this.es === es) this.setRun(JSON.parse((m as MessageEvent).data)); });
     es.onopen = () => { if (this.es === es) this.streamOpened = true; };
     // Older server: the stream ends when the run's process does.
@@ -225,7 +251,11 @@ export class RunDetailComponent implements OnDestroy {
     this.eventsFetched = true;
     try {
       const d = await this.api.get<RunDetail>('/api/runs/' + encodeURIComponent(id));
-      if (this.runId() === id) this.addEvents(d.events);
+      if (this.runId() !== id) return;
+      this.addEvents(d.events);
+      // The GET's events and the stream's ids share one order: resume the stream after them.
+      this.cur.next = Math.max(this.cur.next, d.events.length);
+      eventCache.grow(id, JSON.stringify(d.events).length);
     } catch { /* the error state is set by load() */ }
   }
 
@@ -244,16 +274,18 @@ export class RunDetailComponent implements OnDestroy {
     for (const ev of list) {
       if (!ev) continue;
       const k = ev.uuid || (ev.type + ':' + JSON.stringify(ev).length + ':' + JSON.stringify(ev).slice(0, 160));
-      if (this.seen.has(k)) continue;
-      this.seen.add(k);
+      if (this.cur.seen.has(k)) continue;
+      this.cur.seen.add(k);
       fresh.push(ev);
     }
-    if (fresh.length) this.events.set([...this.events(), ...fresh]);
+    if (!fresh.length) return;
+    this.cur.events = [...this.cur.events, ...fresh];
+    this.events.set(this.cur.events);
   }
 
   private async pollContinuation(id: string): Promise<void> {
     const r = this.run();
-    if (!r || r.status === 'running' || this.runId() !== id) return;
+    if (!r || r.status === 'running' || this.runId() !== id || document.hidden) return;
     try {
       const c = await this.api.get<Continuation>('/api/runs/' + encodeURIComponent(id) + '/continuation');
       if (this.runId() !== id) return;
