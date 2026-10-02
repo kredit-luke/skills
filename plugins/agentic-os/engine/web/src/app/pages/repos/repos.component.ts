@@ -8,6 +8,7 @@ import { TrustedHtmlPipe } from '../../core/trusted-html.pipe';
 import { copyText, relTime } from '../../core/util';
 import { LogsService } from '../../shared/logs-dialog.component';
 import { PageHeaderComponent } from '../../shared/page-header.component';
+import { KeyFieldsComponent } from '../../shared/key-fields.component';
 
 const EXAMPLE = `{
   "$schema": "./dashboard/shared/repos.schema.json",
@@ -21,7 +22,7 @@ const STALE_DAYS = 3;
 
 @Component({
   selector: 'dash-repos',
-  imports: [PageHeaderComponent, MdPipe, TrustedHtmlPipe],
+  imports: [PageHeaderComponent, MdPipe, TrustedHtmlPipe, KeyFieldsComponent],
   changeDetection: ChangeDetectionStrategy.OnPush,
   styleUrl: './repos.component.scss',
   template: `
@@ -68,7 +69,7 @@ const STALE_DAYS = 3;
                   <ol>@for (st of help.steps; track $index) { <li class="md tight" [innerHTML]="st | md | trustedHtml"></li> }</ol>
                   @if (help.needsKey) {
                     <form (submit)="$event.preventDefault(); connect()">
-                      <input type="password" [placeholder]="help.placeholder" [value]="key()" (input)="key.set($any($event.target).value)" autocomplete="off">
+                      <dash-key-fields [fields]="help.keyFields" [placeholder]="help.placeholder" [(value)]="key" />
                       <button class="btn primary" type="submit" [disabled]="connecting() || !key().trim()">Connect</button>
                     </form>
                   }

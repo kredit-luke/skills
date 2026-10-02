@@ -59,14 +59,18 @@
     </div>
 
     @if (thread().agents.length) {
-      <div class="agent-strip" aria-label="Subagents">
+      @let st = strip();
+      <div class="agent-strip" [class.open]="stripOpen()" aria-label="Subagents">
         <span class="strip-lbl">Subagents <b>{{ thread().agents.length }}</b></span>
-        @for (a of thread().agents; track a.id; let last = $last) {
+        @if (st.collapsible) { <span class="strip-sum">{{ st.summary }}</span> }
+        @if (st.collapsible && !stripOpen()) { <button type="button" class="strip-more" (click)="stripOpen.set(true)" title="Show every subagent in run order">{{ st.hidden }} earlier · show all</button> }
+        @for (a of st.agents; track a.id; let last = $last) {
           <button type="button" class="chip" [class]="'chip ' + a.status" (click)="jumpTo(a)" [title]="a.description + (a.resumed ? ' (pass ' + a.pass + ', resumed with SendMessage)' : '')">
             @if (a.resumed) { <span class="resume" aria-label="resumed">↻</span> }{{ a.agentType || 'agent' }}@if (a.pass > 1) { <span class="pass">· {{ a.pass }}</span> } <span class="ic">{{ agentIcon(a) }}</span>
           </button>
           @if (!last) { <span class="arrow-sep">→</span> }
         }
+        @if (st.collapsible && stripOpen()) { <button type="button" class="strip-more" (click)="stripOpen.set(false)">Show less</button> }
       </div>
     }
 

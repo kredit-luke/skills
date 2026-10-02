@@ -72,7 +72,7 @@ interface NumberRow { key: LimitKey; label: string; help: string; min: number; m
     }
     @if (s(); as s) {
       <div class="panel">
-        <div class="panel-h"><h2>Runs</h2></div>
+        <div class="panel-h"><h2>Activity</h2></div>
         <div class="rows">
           @for (row of numberRows.slice(0, 3); track row.key) {
             <ng-container *ngTemplateOutlet="num; context: { $implicit: row }" />

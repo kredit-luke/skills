@@ -5,8 +5,10 @@ import type { DocSite, ExternalDocHit, ExternalDocPage, ExternalDocsStatus } fro
 import { ApiService } from '../../core/api.service';
 import { LaunchService } from '../../core/launch.service';
 import { MdPipe } from '../../core/md.pipe';
+import { ToastService } from '../../core/toast.service';
 import { TrustedHtmlPipe } from '../../core/trusted-html.pipe';
 import { relTime } from '../../core/util';
+import { KeyFieldsComponent } from '../../shared/key-fields.component';
 
 /**
  * An external docs source with a provider adapter (Confluence, …): search it and read
@@ -16,7 +18,7 @@ import { relTime } from '../../core/util';
  */
 @Component({
   selector: 'dash-external-docs',
-  imports: [MdPipe, TrustedHtmlPipe],
+  imports: [MdPipe, TrustedHtmlPipe, KeyFieldsComponent],
   changeDetection: ChangeDetectionStrategy.OnPush,
   styleUrl: './docs.component.scss',
   styles: [`
@@ -38,6 +40,7 @@ import { relTime } from '../../core/util';
     .labels span { font-size: 11px; padding: 1px 8px; border-radius: var(--r-pill); background: var(--paper-2); color: var(--ink-soft); }
     .ext-body :is(img) { max-width: 100%; height: auto; }
     .ext-body :is(table) { border-collapse: collapse; }
+    .forget { align-self: flex-start; margin-bottom: 8px; }
     .ext-body :is(td, th) { border: 1px solid var(--line); padding: 4px 8px; vertical-align: top; }
   `],
   template: `
@@ -51,7 +54,7 @@ import { relTime } from '../../core/util';
           <ol>@for (s of help.steps; track $index) { <li class="md tight" [innerHTML]="s | md | trustedHtml"></li> }</ol>
           @if (help.needsKey) {
             <form (submit)="$event.preventDefault(); connect()">
-              <input type="password" [placeholder]="help.placeholder" [value]="key()" (input)="key.set($any($event.target).value)" autocomplete="off">
+              <dash-key-fields [fields]="help.keyFields" [placeholder]="help.placeholder" [(value)]="key" />
               <button class="btn primary" type="submit" [disabled]="busy() || !key().trim()">Connect</button>
             </form>
           }
@@ -61,6 +64,9 @@ import { relTime } from '../../core/util';
     } @else {
       <div class="docs-layout">
         <aside class="panel side">
+          @if (st.provider === 'confluence' && st.removable) {
+            <button class="btn ghost sm forget" type="button" (click)="forgetAtlassian()" title="Remove your saved Atlassian API key (used by the Docs and Issues pages) so you can connect a different one">Disconnect Atlassian</button>
+          }
           <div class="search-box">
             <input placeholder="Search {{ st.name }}…" [value]="q()" (input)="onQuery($any($event.target).value)" autocomplete="off">
             @if (st.spaces.length > 1) {
@@ -110,6 +116,7 @@ export class ExternalDocsComponent {
   private readonly launch = inject(LaunchService);
   private readonly route = inject(ActivatedRoute);
   private readonly router = inject(Router);
+  private readonly toast = inject(ToastService);
   private readonly query = toSignal(this.route.queryParamMap);
 
   readonly status = signal<ExternalDocsStatus | null>(null);
@@ -161,6 +168,15 @@ export class ExternalDocsComponent {
       this.key.set('');
     } catch (e) { this.connectError.set((e as Error).message); }
     finally { this.busy.set(false); }
+  }
+
+  async forgetAtlassian(): Promise<void> {
+    if (!confirm("Remove your saved Atlassian API key? The Docs and Issues pages stop using it until you connect a key again. (Claude's own Atlassian connector isn't affected.)")) return;
+    try {
+      const r = await this.api.post<{ envKeys: string[] }>('/api/atlassian/disconnect', {});
+      this.toast.show(r.envKeys.length ? `Saved key removed. ${r.envKeys.join(', ')} is still set in your environment.` : 'Atlassian key removed');
+      await this.loadStatus(this.site().key);
+    } catch (e) { this.toast.show((e as Error).message); }
   }
 
   onQuery(v: string): void {

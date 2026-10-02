@@ -7,7 +7,7 @@ import { MdPipe } from '../../core/md.pipe';
 import { ToastService } from '../../core/toast.service';
 import { TrustedHtmlPipe } from '../../core/trusted-html.pipe';
 import { copyText, dur, relTime, tokens, usd } from '../../core/util';
-import { buildThread, countSteps, type AgentCard, type ThreadItem } from '../../runs/thread';
+import { buildThread, countSteps, stripAgents, stripSummary, type AgentCard, type ThreadItem } from '../../runs/thread';
 import { runTicket } from '../../../../../shared/run-ticket';
 import { runWorkspace } from '../../../../../shared/run-workspace';
 import { runStatus, toReview } from '../../shared/run-status';
@@ -82,6 +82,13 @@ export class RunDetailComponent implements OnDestroy {
       : [];
     return buildThread([...this.events(), ...extra], { runActive: this.active() });
   });
+  /** The subagent strip: collapsed to what's working, what failed and the last few once a run has many. */
+  readonly stripOpen = signal(false);
+  readonly strip = computed(() => {
+    const agents = this.thread().agents;
+    const { shown, hidden } = stripAgents(agents);
+    return { agents: this.stripOpen() ? agents : shown, hidden, collapsible: hidden > 0, summary: stripSummary(agents) };
+  });
   readonly elapsed = computed(() => {
     const r = this.run();
     if (!r) return '';
@@ -153,6 +160,7 @@ export class RunDetailComponent implements OnDestroy {
   // ------------------------------------------------------------ loading + live
 
   private async load(id: string): Promise<void> {
+    this.stripOpen.set(false); // the detail component is reused across runs: each one starts collapsed
     const seq = ++this.loadSeq;
     this.closeStream();
     if (this.contTimer) { clearInterval(this.contTimer); this.contTimer = null; }

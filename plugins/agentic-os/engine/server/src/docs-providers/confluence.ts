@@ -15,6 +15,7 @@
 import fs from "node:fs";
 import https from "node:https";
 import path from "node:path";
+import { atlassianRequest, removeKeyFile } from "../atlassian.ts";
 import type { DocSiteDef } from "../docs.ts";
 import type {
   DocHit, DocPage, DocSpace, DocsProvider, ExcerptPart, ProviderContext, ProviderHelp, ProviderStatus,
@@ -114,14 +115,15 @@ export class ConfluenceProvider implements DocsProvider {
     return i.kind === "jira" && !!host && host === this.site;
   }
 
-  _cred(): { cred: string; source: ProviderStatus["source"] } | null {
+  /** The key, where it came from, and whether it's a saved file Disconnect can delete (env keys aren't). */
+  _cred(): { cred: string; source: ProviderStatus["source"]; removable: boolean } | null {
     if (process.env.CONFLUENCE_API_TOKEN && process.env.CONFLUENCE_EMAIL) {
-      return { cred: `${process.env.CONFLUENCE_EMAIL.trim()}:${process.env.CONFLUENCE_API_TOKEN.trim()}`, source: "env" };
+      return { cred: `${process.env.CONFLUENCE_EMAIL.trim()}:${process.env.CONFLUENCE_API_TOKEN.trim()}`, source: "env", removable: false };
     }
-    try { const k = fs.readFileSync(this.keyFile, "utf-8").trim(); if (k) return { cred: k, source: "file" }; } catch {}
+    try { const k = fs.readFileSync(this.keyFile, "utf-8").trim(); if (k) return { cred: k, source: "file", removable: true }; } catch {}
     if (this.sameSiteJira) {
-      if (process.env.JIRA_API_TOKEN && process.env.JIRA_EMAIL) return { cred: `${process.env.JIRA_EMAIL.trim()}:${process.env.JIRA_API_TOKEN.trim()}`, source: "tracker" };
-      try { const k = fs.readFileSync(path.join(this.ctx.ledgerDir, "jira-api-token"), "utf-8").trim(); if (k) return { cred: k, source: "tracker" }; } catch {}
+      if (process.env.JIRA_API_TOKEN && process.env.JIRA_EMAIL) return { cred: `${process.env.JIRA_EMAIL.trim()}:${process.env.JIRA_API_TOKEN.trim()}`, source: "tracker", removable: false };
+      try { const k = fs.readFileSync(path.join(this.ctx.ledgerDir, "jira-api-token"), "utf-8").trim(); if (k) return { cred: k, source: "tracker", removable: true }; } catch {}
     }
     return null;
   }
@@ -130,8 +132,8 @@ export class ConfluenceProvider implements DocsProvider {
     const site = this.site;
     if (!site) return Promise.reject(new Error("The Confluence source needs a url like https://acme.atlassian.net/wiki in docs.json."));
     if (!cred) return Promise.reject(new HttpStatusError(401, "Connect Confluence first."));
-    return new Promise((resolve, reject) => {
-      const req = https.request(`https://${site}${pathAndQuery}`, {
+    const send = (url: string) => new Promise<any>((resolve, reject) => {
+      const req = https.request(url, {
         headers: { Authorization: `Basic ${Buffer.from(cred).toString("base64")}`, Accept: "application/json" },
         timeout: 20000,
       }, (res) => {
@@ -139,7 +141,7 @@ export class ConfluenceProvider implements DocsProvider {
         res.on("data", (c) => (out += c));
         res.on("end", () => {
           const status = res.statusCode || 0;
-          if (status === 401 || status === 403) return reject(new HttpStatusError(status, "Confluence rejected the email/API token."));
+          if (status === 401 || status === 403) return reject(new HttpStatusError(status, "Confluence rejected the email/API token. A scoped token needs Confluence read scopes (e.g. read:confluence-content.all, search:confluence, read:confluence-space.summary)."));
           let json;
           try { json = out ? JSON.parse(out) : {}; } catch { return reject(new HttpStatusError(status, `Confluence returned HTTP ${status}`)); }
           if (status >= 400) return reject(new HttpStatusError(status, json.message || (json.data && json.data.errors && json.data.errors[0] && json.data.errors[0].message) || `Confluence returned HTTP ${status}`));
@@ -150,11 +152,12 @@ export class ConfluenceProvider implements DocsProvider {
       req.on("error", reject);
       req.end();
     });
+    return atlassianRequest("confluence", site, cred, pathAndQuery, send);
   }
 
   status(): ProviderStatus {
     const c = this._cred();
-    return { connected: !!c && !!this.site, source: c ? c.source : null, viewer: this.viewer };
+    return { connected: !!c && !!this.site, source: c ? c.source : null, removable: !!c && c.removable, viewer: this.viewer };
   }
 
   connectHelp(): ProviderHelp | null {
@@ -165,17 +168,18 @@ export class ConfluenceProvider implements DocsProvider {
       title: "Connect Confluence",
       steps: [
         "Create an API token at [id.atlassian.com → Security → API tokens](https://id.atlassian.com/manage-profile/security/api-tokens) (a Jira token for this site works too).",
-        "Paste it below as `your-email:token`.",
+        "Enter it below with the email you sign in to Atlassian with. A classic token (no scopes) covers both Confluence and Issues; a scoped one needs Confluence read scopes.",
         "It stays on this machine (in `.claude/ledger/`, never committed), and search only shows what your account can see.",
       ],
       placeholder: "you@company.com:ATATT…",
       needsKey: true,
+      keyFields: "email-token",
     };
   }
 
   async connect(key: string): Promise<ProviderStatus> {
     const cred = String(key || "").trim();
-    if (!/^[^:\s]+@[^:\s]+:\S{10,}$/.test(cred)) throw new Error("Paste it as your-email:api-token.");
+    if (!/^[^:\s]+@[^:\s]+:\S{10,}$/.test(cred)) throw new Error("Enter the email you sign in with and an API token.");
     const me = await this._get("/wiki/rest/api/user/current", cred);
     fs.writeFileSync(this.keyFile, cred, { mode: 0o600 });
     this.viewer = me.displayName || me.publicName || null;
@@ -184,7 +188,7 @@ export class ConfluenceProvider implements DocsProvider {
   }
 
   disconnect(): ProviderStatus {
-    try { fs.unlinkSync(this.keyFile); } catch {}
+    removeKeyFile(this.keyFile);
     this.viewer = null;
     this.spacesCache = null;
     return this.status();

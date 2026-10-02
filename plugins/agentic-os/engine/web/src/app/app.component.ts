@@ -80,7 +80,7 @@ export class AppComponent implements OnInit {
     { path: '/reference', label: 'Reference', icon: 'reference' },
     { path: '/issues', label: 'Issues', icon: 'issues' },
     { path: '/ask', label: 'Ask', icon: 'ask', group: 'Claude' },
-    { path: '/runs', label: 'Runs', icon: 'runs' },
+    { path: '/runs', label: 'Activity', icon: 'runs' },
     { path: '/skills', label: 'Skills', icon: 'skills' },
     { path: '/usage', label: 'Usage', icon: 'usage' },
     { path: '/apps', label: 'Apps', icon: 'apps', group: 'Workspace' },

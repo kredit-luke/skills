@@ -1,6 +1,9 @@
 <dash-page-header [eyebrow]="api.trackerLabel()" title="Issues" [sub]="api.copy('issuesSub', 'Issues in flight. Implement the ones ready for work, or ask Claude to explain any issue (read-only).')">
   <span class="ty">{{ meta() }}</span>
   <button class="btn ghost sm" (click)="load(true)" [disabled]="loading()">{{ loading() ? 'Refreshing…' : 'Refresh' }}</button>
+  @if (canForgetAtlassian()) {
+    <button class="btn ghost sm" (click)="forgetAtlassian()" title="Remove your saved Atlassian API key (used by the Issues and Docs pages) so you can connect a different one">Disconnect Atlassian</button>
+  }
 </dash-page-header>
 
 @if (error() && !resp()) {
@@ -28,8 +31,8 @@
       </ol>
       @if (help.needsKey) {
         <form class="row-in" (submit)="$event.preventDefault(); connect()">
-          <input type="password" [value]="key()" (input)="key.set($any($event.target).value)" [placeholder]="help.placeholder" autocomplete="off" spellcheck="false">
-          <button class="btn primary" type="submit">Connect</button>
+          <dash-key-fields [fields]="help.keyFields" [placeholder]="help.placeholder" [(value)]="key" />
+          <button class="btn primary" type="submit" [disabled]="!key().trim()">Connect</button>
         </form>
         <div class="form-err">{{ connectErr() }}</div>
       } @else {

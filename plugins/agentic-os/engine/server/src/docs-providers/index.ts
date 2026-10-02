@@ -36,6 +36,8 @@ export interface ProviderStatus {
   connected: boolean;
   /** Where the key came from: an env var, the pasted key, or the issue tracker's key for the same site. */
   source: "env" | "file" | "tracker" | null;
+  /** The key in use is a saved file that Disconnect can delete (false for env vars, including the tracker's). */
+  removable?: boolean;
   viewer: string | null;
 }
 /**
@@ -43,7 +45,11 @@ export interface ProviderStatus {
  * reserved for a sign-in-with flow (an adapter that has one returns its authorize URL
  * from connect) and nothing uses it yet.
  */
-export interface ProviderHelp { title: string; steps: string[]; placeholder: string; needsKey: boolean; method?: "key" | "oauth" }
+export interface ProviderHelp {
+  title: string; steps: string[]; placeholder: string; needsKey: boolean; method?: "key" | "oauth";
+  /** 'email-token': the key is an email and an API token, asked for in two fields and sent as "email:token". */
+  keyFields?: "email-token";
+}
 
 export interface DocsProvider {
   kind: string;

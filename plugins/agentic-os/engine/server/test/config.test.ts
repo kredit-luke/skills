@@ -207,3 +207,94 @@ test("Machine re-runs its checks when machine.json changes (no manual Re-check)"
   assert.deepEqual((await m.get()).checks.map((c) => c.id), ["a", "b"]);
   write("machine.json", { checks: [] });
 });
+
+test("Machine re-runs its checks when the viewer's profile changes (no stale role for 60s)", async () => {
+  const { Machine } = await import("../src/machine.ts");
+  const ledger = process.env.DASHBOARD_LEDGER_DIR!;
+  const profileFile = path.join(ledger, "profile.json");
+  write("machine.json", { checks: [{ use: "env-var", id: "all", name: "DASH_TEST_A" }, { use: "env-var", id: "dev", name: "DASH_TEST_B", when: { profile: "developer" } }] });
+  const m = new Machine(ROOT);
+  try {
+    assert.deepEqual((await m.get()).checks.map((c) => c.id), ["all", "dev"]);
+    fs.mkdirSync(ledger, { recursive: true });
+    fs.writeFileSync(profileFile, JSON.stringify({ role: null, profile: "reader" }));
+    assert.deepEqual((await m.get()).checks.map((c) => c.id), ["all"], "a reader doesn't get the developer's cached report");
+    fs.rmSync(profileFile);
+    assert.deepEqual((await m.get()).checks.map((c) => c.id), ["all", "dev"]);
+  } finally {
+    fs.rmSync(profileFile, { force: true });
+    write("machine.json", { checks: [] });
+  }
+});
+
+test("Machine: a request after a role change never gets the report of a run started for the old role", async () => {
+  const { Machine } = await import("../src/machine.ts");
+  const ledger = process.env.DASHBOARD_LEDGER_DIR!;
+  const profileFile = path.join(ledger, "profile.json");
+  write("machine.json", { checks: [] });
+  const m = new Machine(ROOT);
+  // Stand-in check runs: the first (the developer's warm-up) stays in flight until the test lets it finish.
+  let finishWarmUp!: () => void;
+  const warmUpHeld = new Promise<void>((r) => { finishWarmUp = r; });
+  let runs = 0;
+  (m as any)._check = async () => {
+    const n = ++runs;
+    if (n === 1) await warmUpHeld;
+    return { checks: [{ id: n === 1 ? "developer-report" : "reader-report" }], checkedAt: Date.now() };
+  };
+  try {
+    const warmUp = m.get(); // started as the developer, like the startup warm-up
+    fs.mkdirSync(ledger, { recursive: true });
+    fs.writeFileSync(profileFile, JSON.stringify({ role: null, profile: "reader" }));
+    const afterSwitch = m.get();
+    finishWarmUp();
+    assert.deepEqual((await afterSwitch).checks.map((c: any) => c.id), ["reader-report"], "not the warm-up's report");
+    assert.equal(runs, 2, "the checks ran again for the reader");
+    await warmUp;
+  } finally {
+    fs.rmSync(profileFile, { force: true });
+  }
+});
+
+test("claude.ai connector state from `claude mcp list`: connected, disabled, signed out, absent", async () => {
+  const { connectorState } = await import("../src/claude.ts");
+  const out = [
+    "Checking MCP server health…",
+    "",
+    "claude.ai Google Drive: https://drivemcp.googleapis.com/mcp/v1 - ⊘ Disabled for this project (re-enable via /mcp)",
+    "claude.ai Atlassian: https://mcp.atlassian.com/v1/mcp - ✔ Connected",
+    "claude.ai Notion: https://mcp.notion.com/mcp - ! Needs authentication",
+    "atlassian: https://mcp.atlassian.com/v1/mcp (HTTP) - ✘ Failed to connect",
+  ].join("\r\n");
+  assert.equal(connectorState(out, "Atlassian").state, "connected");
+  assert.equal(connectorState(out, "atlassian").state, "connected", "the name matches whatever its case");
+  assert.equal(connectorState(out, "Google Drive").state, "disabled");
+  assert.deepEqual(connectorState(out, "Notion"), { state: "signed-out", text: "Needs authentication" });
+  assert.equal(connectorState(out, "Slack").state, "absent");
+  assert.equal(connectorState("claude.ai Atlassian: https://mcp.atlassian.com/v1/mcp - ✘ Failed to connect", "Atlassian").state, "signed-out");
+});
+
+test("Disconnect Atlassian reports a key it couldn't delete instead of claiming it's gone", async () => {
+  const { forgetAtlassianKeys } = await import("../src/atlassian.ts");
+  const ledger = fs.mkdtempSync(path.join(os.tmpdir(), "dash-forget-"));
+  try {
+    fs.mkdirSync(path.join(ledger, "jira-api-token")); // can't be unlinked like a file
+    assert.throws(() => forgetAtlassianKeys(ledger));
+    fs.rmSync(path.join(ledger, "jira-api-token"), { recursive: true });
+    assert.doesNotThrow(() => forgetAtlassianKeys(ledger), "keys that are already gone are fine");
+  } finally { fs.rmSync(ledger, { recursive: true, force: true }); }
+});
+
+test("Disconnect Atlassian removes both saved keys and names env keys it can't clear", async () => {
+  const { forgetAtlassianKeys } = await import("../src/atlassian.ts");
+  const ledger = process.env.DASHBOARD_LEDGER_DIR!;
+  fs.mkdirSync(ledger, { recursive: true });
+  const files = ["jira-api-token", "confluence-api-token"].map((f) => path.join(ledger, f));
+  for (const f of files) fs.writeFileSync(f, "me@acme.com:token");
+  process.env.JIRA_EMAIL = "env@acme.com";
+  process.env.JIRA_API_TOKEN = "env-token";
+  try {
+    assert.deepEqual(forgetAtlassianKeys(ledger), { envKeys: ["JIRA_API_TOKEN"] });
+    for (const f of files) assert.equal(fs.existsSync(f), false, path.basename(f));
+  } finally { delete process.env.JIRA_EMAIL; delete process.env.JIRA_API_TOKEN; }
+});

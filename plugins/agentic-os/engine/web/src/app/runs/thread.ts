@@ -402,3 +402,25 @@ function mapStatus(s: string): AgentStatus {
 export function countSteps(c: AgentCard): number {
   return Math.max(c.steps, c.toolUses);
 }
+
+/** The subagent strip shows every card up to this many; past it, it collapses. */
+export const STRIP_COLLAPSE_AT = 8;
+
+/**
+ * The subagent strip, collapsed: every card still working or that failed (what needs a look),
+ * plus the last `recent` cards, in run order. `hidden` is how many were left out.
+ */
+export function stripAgents(agents: readonly AgentCard[], recent = 4): { shown: AgentCard[]; hidden: number } {
+  if (agents.length <= STRIP_COLLAPSE_AT) return { shown: [...agents], hidden: 0 };
+  const keep = new Set(agents.slice(-recent));
+  for (const a of agents) if (a.status === 'running' || a.status === 'starting' || a.status === 'failed') keep.add(a);
+  const shown = agents.filter((a) => keep.has(a));
+  return { shown, hidden: agents.length - shown.length };
+}
+
+/** "1 running · 41 done · 1 failed": the strip's one-line summary. */
+export function stripSummary(agents: readonly AgentCard[]): string {
+  const n = (s: AgentStatus[]) => agents.filter((a) => s.includes(a.status)).length;
+  return [[n(['running', 'starting']), 'running'], [n(['completed']), 'done'], [n(['failed']), 'failed'], [n(['stopped']), 'stopped']]
+    .filter(([c]) => c).map(([c, l]) => `${c} ${l}`).join(' · ');
+}
