@@ -13,6 +13,15 @@ describe('answerText', () => {
   it('skips unanswered questions', () => {
     expect(answerText(qs, { 1: ['B'] })).toBe('Q: Which features?\nA: B');
   });
+  it('uses a typed answer on its own', () => {
+    expect(answerText(qs, { 0: ['Postgres'] }, { 1: ' Neither, use C ' })).toBe('Q: Database\nA: Postgres\n\nQ: Which features?\nA: Neither, use C');
+  });
+  it('adds a typed answer after the picks', () => {
+    expect(answerText(qs, { 1: ['A'] }, { 1: 'and C later' })).toBe('Q: Which features?\nA: A, and C later');
+  });
+  it('skips a blank typed answer', () => {
+    expect(answerText(qs, { 0: ['SQLite'] }, { 1: '   ' })).toBe('Q: Database\nA: SQLite');
+  });
 });
 
 describe('markdown', () => {

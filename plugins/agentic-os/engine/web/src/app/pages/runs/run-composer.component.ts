@@ -37,11 +37,19 @@ const REPLYABLE = new Set(['waiting', 'succeeded', 'failed', 'cancelled', 'inter
                       <span class="ol">{{ o.label }}</span>@if (o.description) { <span class="od">{{ o.description }}</span> }
                     </button>
                   }
+                  <button type="button" class="opt" [class.on]="isOpen(qi)" [disabled]="busy()" (click)="toggleOther(qi, !!q.multiSelect)" title="Type your own answer">
+                    <span class="ol">Other…</span><span class="od">Type your own answer.</span>
+                  </button>
                 </div>
+                @if (isOpen(qi)) {
+                  <input class="q-other" [id]="'q-other-' + qi" type="text" [value]="notes()[qi] || ''" [disabled]="busy()"
+                    (input)="setNote(qi, $any($event.target).value)" (keydown.enter)="onOtherEnter($any($event))"
+                    [placeholder]="q.multiSelect ? 'Add your own answer…' : 'Your answer…'" />
+                }
                 @if (q.multiSelect) { <div class="q-note">Pick any that apply.</div> }
               </div>
             }
-            @if (!single()) {
+            @if (!single() || isOpen(0)) {
               <div class="q-send"><button class="btn primary sm" type="button" [disabled]="busy() || !anyPicked()" (click)="sendPicks()">Send answers</button></div>
             }
           </div>
@@ -82,22 +90,49 @@ export class RunComposerComponent {
   readonly text = signal('');
   readonly busy = signal(false);
   readonly picks = signal<Record<number, string[]>>({});
+  /** Typed "Other" answers, and which questions have that input open. */
+  readonly notes = signal<Record<number, string>>({});
+  readonly open = signal<Record<number, boolean>>({});
   readonly questions = computed<Question[]>(() => this.run().question || []);
   readonly single = computed(() => this.questions().length === 1 && !this.questions()[0].multiSelect);
-  readonly anyPicked = computed(() => Object.values(this.picks()).some((a) => a.length));
+  readonly anyPicked = computed(() =>
+    Object.values(this.picks()).some((a) => a.length) || Object.values(this.notes()).some((n) => n.trim()));
   readonly canReply = computed(() => REPLYABLE.has(this.run().status));
   private readonly att = viewChild<AttachComponent>('att');
 
   constructor() {
-    // New question → clear old picks.
+    // New run or new question → clear old picks and typed answers.
     let lastQ = '';
     effect(() => {
-      const q = JSON.stringify(this.run().question || null);
-      if (q !== lastQ) { lastQ = q; this.picks.set({}); }
+      const q = this.run().id + ' ' + JSON.stringify(this.run().question || null);
+      if (q !== lastQ) { lastQ = q; this.clearAnswers(); }
     });
   }
 
   picked(qi: number, label: string): boolean { return (this.picks()[qi] || []).includes(label); }
+
+  isOpen(qi: number): boolean { return !!this.open()[qi]; }
+
+  setNote(qi: number, value: string): void { this.notes.set({ ...this.notes(), [qi]: value }); }
+
+  /** "Other…": a typed answer. On a single-select question it replaces the pick; on multi-select it's added to them. */
+  toggleOther(qi: number, multi: boolean): void {
+    if (this.isOpen(qi)) { this.closeOther(qi); return; }
+    this.open.set({ ...this.open(), [qi]: true });
+    if (!multi) this.picks.set({ ...this.picks(), [qi]: [] });
+    setTimeout(() => (document.getElementById('q-other-' + qi) as HTMLInputElement | null)?.focus());
+  }
+
+  private closeOther(qi: number): void {
+    this.open.set({ ...this.open(), [qi]: false });
+    this.notes.set({ ...this.notes(), [qi]: '' });
+  }
+
+  private clearAnswers(): void {
+    this.picks.set({});
+    this.notes.set({});
+    this.open.set({});
+  }
 
   pick(qi: number, label: string, multi: boolean): void {
     if (this.single()) {
@@ -108,19 +143,30 @@ export class RunComposerComponent {
     const cur = this.picks()[qi] || [];
     const next = multi ? (cur.includes(label) ? cur.filter((x) => x !== label) : [...cur, label]) : [label];
     this.picks.set({ ...this.picks(), [qi]: next });
+    if (!multi && this.isOpen(qi)) this.closeOther(qi);
   }
 
   sendPicks(): void {
+    if (!this.anyPicked()) return;
     const extra = this.text().trim();
-    const body = answerText(this.questions(), this.picks()) + (extra ? '\n\n' + extra : '');
+    const body = answerText(this.questions(), this.picks(), this.notes()) + (extra ? '\n\n' + extra : '');
     this.reply(body, !!extra);
   }
 
   onKey(e: KeyboardEvent): void {
-    if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); this.send(); }
+    if (e.key === 'Enter' && !e.shiftKey && !e.isComposing) { e.preventDefault(); this.send(); }
+  }
+
+  /** Enter in an "Other" input sends, unless it's confirming an IME candidate. */
+  onOtherEnter(e: KeyboardEvent): void {
+    if (e.isComposing) return;
+    e.preventDefault();
+    this.sendPicks();
   }
 
   send(): void {
+    // Picks or typed answers waiting above go with the text, never dropped.
+    if (this.anyPicked()) { this.sendPicks(); return; }
     const t = this.text().trim();
     const att = this.att();
     if (att?.uploading()) { this.toast.error('Wait for the files to finish uploading.'); return; }
@@ -138,7 +184,7 @@ export class RunComposerComponent {
       const res = await this.api.post<{ run: RunMeta }>('/api/runs/' + this.run().id + '/reply', { text, attachments });
       if (clearText) this.text.set('');
       att?.clear();
-      this.picks.set({});
+      this.clearAnswers();
       this.changed.emit(res.run);
     } catch (e) {
       this.toast.error((e as Error).message);
