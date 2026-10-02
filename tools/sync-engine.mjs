@@ -6,10 +6,13 @@
  *   node tools/sync-engine.mjs <path to a workspace's dashboard/ folder> [--version X.Y.Z]
  *
  * Copies only what git tracks there (no node_modules, dist, caches), then refuses
- * to finish if any file names a specific team, product or person (tools/denylist.txt):
- * the engine must stay generic, with everything team-specific in the workspace's
- * .claude/dashboard/ config. Writes engine/ENGINE.json with the version and the
- * source commit. Tag the release afterwards (see README "Releasing"), so upgrades
+ * to finish if any file names a specific team, product or person on the maintainer's
+ * denylist: the engine must stay generic, with everything team-specific in the
+ * workspace's .claude/dashboard/ config. The denylist names private teams and
+ * products, so it is never committed: AGENTIC_OS_DENYLIST=<file>, else
+ * tools/denylist.local.txt (gitignored; format in tools/denylist.example.txt).
+ * Without one it refuses, unless --no-denylist says to skip the check. Writes
+ * engine/ENGINE.json with the version and the source commit. Tag the release afterwards (see README "Releasing"), so upgrades
  * can find this version as a merge base.
  */
 
@@ -24,7 +27,7 @@ const args = process.argv.slice(2);
 const src = args.find((a) => !a.startsWith("--"));
 const vIdx = args.indexOf("--version");
 if (!src) {
-  console.error("Usage: node tools/sync-engine.mjs <workspace>/dashboard [--version X.Y.Z]");
+  console.error("Usage: node tools/sync-engine.mjs <workspace>/dashboard [--version X.Y.Z] [--no-denylist]");
   process.exit(2);
 }
 const SRC = path.resolve(src);
@@ -38,8 +41,17 @@ const commit = execFileSync("git", ["rev-parse", "HEAD"], { cwd: SRC, encoding: 
 const dirty = execFileSync("git", ["status", "--porcelain", "."], { cwd: SRC, encoding: "utf-8" }).trim();
 
 // ---- denylist check before touching the destination
-const deny = fs.readFileSync(path.join(REPO, "tools", "denylist.txt"), "utf-8")
-  .split(/\r?\n/).map((l) => l.trim()).filter((l) => l && !l.startsWith("#"));
+const DENYLIST = path.resolve(process.env.AGENTIC_OS_DENYLIST || path.join(REPO, "tools", "denylist.local.txt"));
+const skipDenylist = args.includes("--no-denylist");
+let deny = [];
+if (skipDenylist) {
+  console.warn("--no-denylist: syncing without the denylist check.");
+} else if (fs.existsSync(DENYLIST)) {
+  deny = fs.readFileSync(DENYLIST, "utf-8").split(/\r?\n/).map((l) => l.trim()).filter((l) => l && !l.startsWith("#"));
+} else {
+  console.error(`No denylist at ${DENYLIST}. Set AGENTIC_OS_DENYLIST or create tools/denylist.local.txt (see tools/denylist.example.txt), or pass --no-denylist to sync without the check.`);
+  process.exit(1);
+}
 const TEXT = /\.(ts|mjs|js|json|html|scss|css|md|svg|txt)$/i;
 const hits = [];
 for (const rel of files) {
@@ -51,7 +63,7 @@ for (const rel of files) {
   }
 }
 if (hits.length) {
-  console.error(`The engine still names something team-specific (tools/denylist.txt). Move it into config, then sync again:\n`);
+  console.error(`The engine still names something team-specific (${DENYLIST}). Move it into config, then sync again:\n`);
   for (const h of hits) console.error("  " + h);
   process.exit(1);
 }
