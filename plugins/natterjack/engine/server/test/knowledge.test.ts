@@ -268,3 +268,53 @@ test("repo notes: read-only here, and Mark reviewed edits the file", async () =>
   await kb.markReviewed("hb", "Onboarding.md", "2026-10-03");
   assert.equal(fs.readFileSync(path.join(ROOT, "handbook", "Onboarding.md"), "utf-8"), "---\nreviewed: 2026-10-03\n---\n\n# Onboarding\n");
 });
+
+// ------------------------------------------------------------------ setup: the team's tools
+
+test("saveTools: docs.json sources and connections.json requirements for the picked tools, nothing else touched", async () => {
+  const { saveTools, addStoreSource, chosenTools } = await import("../src/knowledge/tools.ts");
+  writeDocs({ $comment: "keep me", areas: [{ key: "company", label: "Company" }], sources: [{ key: "hb", name: "Handbook", kind: "notes", dir: "handbook" }] });
+  const cf = path.join(CFG, "connections.json");
+  fs.writeFileSync(cf, JSON.stringify({ required: [{ name: "claude.ai Linear", why: "Issues" }] }));
+  fs.utimesSync(cf, new Date(Date.now() + 1000 * bump), new Date(Date.now() + 1000 * bump++));
+
+  saveTools({ tools: [
+    { tool: "notion", url: "https://www.notion.so/acme", area: "company" },
+    { tool: "confluence", url: "https://acme.atlassian.net/wiki" },
+    { tool: "other", name: "Guru", url: "https://app.getguru.com", connection: "guru" },
+  ] });
+  let docs = JSON.parse(fs.readFileSync(path.join(CFG, "docs.json"), "utf-8"));
+  assert.equal(docs.$comment, "keep me");
+  assert.deepEqual(docs.sources.map((s: any) => s.key), ["hb", "notion", "confluence", "guru"]);
+  const notion = docs.sources[1];
+  assert.deepEqual([notion.kind, notion.tool, notion.url, notion.area, notion.connection], ["external", "notion", "https://www.notion.so/acme", "company", ["claude.ai Notion", "notion"]]);
+  assert.equal(docs.sources[2].provider, "confluence", "Confluence is searchable from the page too");
+  let conns = JSON.parse(fs.readFileSync(cf, "utf-8"));
+  assert.deepEqual(conns.required, [
+    { name: "claude.ai Linear", why: "Issues" },
+    { name: "claude.ai Notion", why: "Knowledge: Notion", knowledge: "notion", alternatives: ["notion"] },
+    { name: "claude.ai Atlassian", why: "Knowledge: Confluence", knowledge: "confluence", alternatives: ["atlassian"] },
+    { name: "guru", why: "Knowledge: Guru", knowledge: "other" },
+  ]);
+  assert.deepEqual(chosenTools().map((t: any) => t.tool), ["notion", "confluence", "other"]);
+
+  // Saving again replaces only what setup wrote; keys are kept.
+  saveTools({ tools: [{ tool: "notion" }] });
+  docs = JSON.parse(fs.readFileSync(path.join(CFG, "docs.json"), "utf-8"));
+  assert.deepEqual(docs.sources.map((s: any) => s.key), ["hb", "notion"]);
+  assert.equal(docs.sources[1].url, "https://www.notion.so", "a cleared link falls back to the tool's home");
+  conns = JSON.parse(fs.readFileSync(cf, "utf-8"));
+  assert.deepEqual(conns.required.map((r: any) => r.name), ["claude.ai Linear", "claude.ai Notion"]);
+
+  assert.throws(() => saveTools({ tools: [{ tool: "confluence" }] }), /add the site/);
+  assert.throws(() => saveTools({ tools: [{ tool: "confluence", url: "https://example.com" }] }), /doesn't look like a Confluence site/);
+  assert.throws(() => saveTools({ tools: [{ tool: "dropbox" }] }), /Unknown tool/);
+  assert.throws(() => saveTools({ tools: [{ tool: "other", name: "X" }] }), /add its link/);
+
+  // A store from the setup panel: never a key in config.
+  addStoreSource({ name: "Company handbook", area: "company", store: { type: "gcs", bucket: "acme-kb", prefix: "company/", secret: "nope" } });
+  docs = JSON.parse(fs.readFileSync(path.join(CFG, "docs.json"), "utf-8"));
+  assert.deepEqual(docs.sources.at(-1), { key: "company-handbook", name: "Company handbook", kind: "store", area: "company", store: { type: "gcs", bucket: "acme-kb", prefix: "company/" } });
+  assert.throws(() => addStoreSource({ name: "Company handbook", store: { type: "s3", bucket: "x" } }), /already a source/);
+  assert.throws(() => addStoreSource({ name: "Y", store: { type: "azure-blob", account: "a" } }), /account and container/);
+});

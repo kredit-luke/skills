@@ -61,6 +61,7 @@ describe('knowledge filters and sources', () => {
     expect(reach(site({ connection: 'claude.ai Slack' }), c)).toBe('bad');
     expect(reach(site({ connection: 'claude.ai Notion' }), { checkedAt: null, connections: [] } as any)).toBe('checking');
     expect(reach(site({}), c)).toBe('none');
+    expect(reach(site({ connection: 'claude.ai Atlassian', connectionAny: ['claude.ai Atlassian', 'claude.ai Notion'] }), c)).toBe('ok');
   });
   it('groups by area, unknown areas last', () => {
     const areas = [{ key: 'fin', label: 'Finance', owner: null, reviewEvery: 90, description: null }];

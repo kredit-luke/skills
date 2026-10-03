@@ -191,7 +191,8 @@ export function validate(root) {
       if (keys.has(s.key)) err("docs.json", `key "${s.key}" is used twice`);
       keys.add(s.key);
       if (s.area !== undefined && !areaKeys.has(s.area)) err("docs.json", `${s.key}: area "${s.area}" isn't in areas`);
-      if (s.connection !== undefined && (typeof s.connection !== "string" || !s.connection.trim())) err("docs.json", `${s.key}: connection is the MCP server's name as the Connections page shows it, e.g. "claude.ai Notion"`);
+      const connNames = Array.isArray(s.connection) ? s.connection : [s.connection];
+      if (s.connection !== undefined && (!connNames.length || connNames.some((c) => typeof c !== "string" || !c.trim()))) err("docs.json", `${s.key}: connection is the MCP server's name as the Connections page shows it, e.g. "claude.ai Notion" (or a list of names, any one of which works)`);
       if (s.kind === "store") {
         const st = s.store || {};
         const where = `${s.key}: store`;
@@ -243,6 +244,7 @@ export function validate(root) {
       if (seen.has(r.name.toLowerCase())) err("connections.json", `"${r.name}" is listed twice`);
       seen.add(r.name.toLowerCase());
       if (!r.why) warn("connections.json", `"${r.name}" has no "why": say what needs it, so people know why to connect it`);
+      if (r.alternatives !== undefined && !(Array.isArray(r.alternatives) && r.alternatives.every((a) => typeof a === "string" && a.trim()))) err("connections.json", `"${r.name}": alternatives is a list of other server names that meet it, e.g. ["notion"]`);
       const a = r.add;
       if (a === undefined) continue;
       if (/^claude\.ai |^plugin:/i.test(r.name)) err("connections.json", `"${r.name}": claude.ai connectors and plugin servers can't be added from here; drop "add"`);

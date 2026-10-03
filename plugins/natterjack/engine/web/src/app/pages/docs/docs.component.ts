@@ -14,6 +14,7 @@ import { vscodeUrl } from '../../core/util';
 import { PageHeaderComponent } from '../../shared/page-header.component';
 import { ExternalDocsComponent } from './external-docs.component';
 import { byArea, reach } from './knowledge.util';
+import { KnowledgeSetupComponent } from './knowledge-setup.component';
 import { NotesViewComponent } from './notes-view.component';
 
 type View = 'page' | 'text';
@@ -28,13 +29,16 @@ type View = 'page' | 'text';
  */
 @Component({
   selector: 'dash-docs',
-  imports: [PageHeaderComponent, RouterLink, TrustedHtmlPipe, ExternalDocsComponent, NotesViewComponent],
+  imports: [PageHeaderComponent, RouterLink, TrustedHtmlPipe, ExternalDocsComponent, NotesViewComponent, KnowledgeSetupComponent],
   changeDetection: ChangeDetectionStrategy.OnPush,
   styleUrl: './docs.component.scss',
   template: `
-    <dash-page-header eyebrow="Company" title="Knowledge" [sub]="api.copy('knowledgeSub', api.copy('docsSub', 'What the business knows, by area: notes in your own storage, docs in the repos, and the tools where the rest lives. Claude reads all of it.'))" />
+    <dash-page-header eyebrow="Company" title="Knowledge" [sub]="api.copy('knowledgeSub', api.copy('docsSub', 'What the business knows, by area: notes in your own storage, docs in the repos, and the tools where the rest lives. Claude reads all of it.'))" >
+      @if (!siteKey()) { <button class="btn ghost sm" type="button" (click)="showSetup.set(!showSetup())">Set up tools</button> }
+    </dash-page-header>
 
     @if (!siteKey()) {
+      @if (setupOpen()) { <dash-knowledge-setup (closed)="showSetup.set(false); dismissed.set(true)" (saved)="showSetup.set(true)" /> }
       @for (g of groups(); track g.area?.key || '_other') {
         <section class="area">
           @if (groups().length > 1 || g.area) {
@@ -167,6 +171,10 @@ export class DocsComponent implements OnInit {
   /** Docs sites in the workspace (the static-site view's tabs). */
   readonly localSites = computed(() => this.data.docSites().filter((s) => s.kind === 'site'));
   readonly groups = computed(() => byArea(this.data.docSites(), this.data.docAreas()));
+  /** The setup panel: asked for, or opened by itself while the team has no tools or stores set up. */
+  readonly showSetup = signal(false);
+  readonly dismissed = signal(false);
+  readonly setupOpen = computed(() => this.showSetup() || (this.data.docsLoaded() && !this.dismissed() && !this.data.docSites().some((s) => !!s.tool || s.kind === 'store')));
   readonly site = computed(() => this.data.docSites().find((s) => s.key === this.siteKey()) || this.pages()?.site || null);
   readonly filteredPages = computed(() => {
     const q = this.q().trim().toLowerCase();

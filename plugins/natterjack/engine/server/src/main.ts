@@ -60,6 +60,7 @@ import type { SnapshotSource } from "./snapshot-sources/index.ts";
 import { readProfile, reapplyProfile, setRole } from "./profile.ts";
 import { DocSites, docAreas, docSources } from "./docs.ts";
 import { Knowledge } from "./knowledge/index.ts";
+import { KNOWLEDGE_TOOLS, addStoreSource, chosenTools, saveTools } from "./knowledge/tools.ts";
 import { DocsProviders } from "./docs-providers/index.ts";
 import { Memory } from "./memory.ts";
 import { Connections, listedName } from "./connections.ts";
@@ -458,6 +459,15 @@ async function externalDocsStatus(key: unknown) {
   return {
     site: source.key, name: source.name, provider: provider.kind, label: provider.label, url: source.url || null,
     ...st, help: st.connected ? null : provider.connectHelp(), spaces, error,
+  };
+}
+
+/** The Knowledge setup panel: the catalog, what the team picked, its stores, and whether this dashboard can change it. */
+function knowledgeSetup() {
+  return {
+    catalog: KNOWLEDGE_TOOLS, chosen: chosenTools(),
+    stores: docSources().sources.filter((s) => s.kind === "store").map((s) => s.key),
+    canEdit: !HOSTED,
   };
 }
 
@@ -1017,7 +1027,7 @@ function serveExploreRaw(res: http.ServerResponse, pathname: string) {
 }
 
 /** POSTs that open something on the server's own screen or ports, refused when hosted. */
-const LOCAL_ONLY_POSTS = new Set(["/api/machine/install", "/api/docs/preview", "/api/apps/action", "/api/restart"]);
+const LOCAL_ONLY_POSTS = new Set(["/api/machine/install", "/api/knowledge/setup", "/api/knowledge/store-source", "/api/docs/preview", "/api/apps/action", "/api/restart"]);
 
 async function handleApi(req: http.IncomingMessage, res: http.ServerResponse, url: URL, user: string | null) {
   const p = url.pathname;
@@ -1105,6 +1115,7 @@ async function handleApi(req: http.IncomingMessage, res: http.ServerResponse, ur
       return sendJson(res, { source: key, notes, tags, store: src.kind === "store" ? knowledge.storeStatus(key) : null });
     }
     if (p === "/api/knowledge/note") return sendJson(res, knowledge.read(q("source"), q("rel")));
+    if (p === "/api/knowledge/setup") return sendJson(res, knowledgeSetup());
     if (p === "/api/knowledge/image") {
       const img = knowledge.imageFile(q("source"), q("rel"));
       if (!img) return sendError(res, 404, "No such image");
@@ -1462,6 +1473,8 @@ async function handleApi(req: http.IncomingMessage, res: http.ServerResponse, ur
     if (what === "connect") return done(await knowledge.connect(body.source, String(body.key || "")));
     if (what === "disconnect") return done(knowledge.disconnect(body.source));
     if (what === "claude-access") return sendJson(res, knowledge.setClaudeAccess(body.source, body.on !== false));
+    if (what === "setup") { saveTools(body); return done(knowledgeSetup()); }
+    if (what === "store-source") { addStoreSource(body); return done(knowledgeSetup()); }
     return sendError(res, 404, "Unknown knowledge action");
   }
   if (p === "/api/docs/external/disconnect") {

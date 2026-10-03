@@ -79,12 +79,12 @@ export function relFromDocId(id: string, site: DocSite): string | null {
   return id.startsWith(prefix) ? id.slice(prefix.length) : null;
 }
 
-/** Whether Claude can reach an external source's MCP server, from the Connections page's check. */
+/** Whether Claude can reach an external source through any of its connectors, from the Connections page's check. */
 export function reach(site: DocSite, c: ConnectionsResponse | null): 'ok' | 'bad' | 'checking' | 'none' {
-  if (!site.connection) return 'none';
+  const names = (site.connectionAny?.length ? site.connectionAny : site.connection ? [site.connection] : []).map((n) => n.toLowerCase());
+  if (!names.length) return 'none';
   if (!c || !c.checkedAt) return 'checking';
-  const row = c.connections.find((x) => x.name.toLowerCase() === site.connection!.toLowerCase());
-  return row && !row.missing && row.state === 'connected' && row.approval !== 'pending' && row.approval !== 'rejected' ? 'ok' : 'bad';
+  return c.connections.some((x) => names.includes(x.name.toLowerCase()) && !x.missing && x.state === 'connected' && x.approval !== 'pending' && x.approval !== 'rejected') ? 'ok' : 'bad';
 }
 
 /** Sources grouped by area, in docs.json order; sources without a (known) area last. */

@@ -33,7 +33,9 @@ import { ago, buildTree, filterNotes, joinNote, relFromDocId, resolveWiki, type 
         @if (st.help; as h) {
           <h3>{{ h.title }}</h3>
           <ol>@for (s of h.steps; track $index) { <li [innerHTML]="inline(s) | trustedHtml"></li> }</ol>
-          @if (h.needsKey) {
+          @if (h.needsKey && api.hosted()) {
+            <p class="hint">Your admin connects this in the dashboard's deployment (the <code>KNOWLEDGE_{{ envKey() }}_KEY</code> secret), so nobody has to paste a key. Ask them to set it.</p>
+          } @else if (h.needsKey) {
             <div class="row">
               <input #key type="password" autocomplete="off" spellcheck="false" [placeholder]="h.placeholder" aria-label="Access key" (keydown.enter)="connect(key.value)">
               <button class="btn primary sm" [disabled]="busy()" (click)="connect(key.value)">{{ busy() ? 'Connecting…' : 'Connect' }}</button>
@@ -248,6 +250,8 @@ export class NotesViewComponent {
       if (this.current()?.rel === rel) this.text.set(t);
     } catch (e) { this.text.set(null); this.toast.error((e as Error).message); }
   }
+
+  envKey(): string { return this.site().key.toUpperCase().replace(/[^A-Z0-9]/g, '_'); }
 
   noteHref(rel: string): string { return `/knowledge/${encodeURIComponent(this.site().key)}?note=${encodeURIComponent(rel)}`; }
   open(rel: string): void { this.router.navigate(['/knowledge', this.site().key], { queryParams: { note: rel } }); }

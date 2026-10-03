@@ -21,7 +21,8 @@
  * `areas` group sources by part of the business (Company, Customers, Finance, ...), each
  * with an owner and how often its notes should be reviewed; a source names its `area`.
  * `connection` names the MCP server Claude reaches an external source through, as the
- * Connections page shows it (e.g. "claude.ai Notion").
+ * Connections page shows it (e.g. "claude.ai Notion"), or a list of names any one of which
+ * works (the same tool reached another way). `tool` marks a source the Knowledge setup wrote.
  */
 
 import fs from "node:fs";
@@ -33,7 +34,7 @@ import type { StoreConfig } from "./knowledge/store.ts";
 export type DocKind = "site" | "notes" | "external" | "store";
 export type DocSiteDef = {
   key: string; name: string; kind: DocKind; dir?: string; live?: string; port?: number; url?: string; provider?: string; description?: string; spaces?: string[];
-  area?: string; connection?: string; store?: StoreConfig;
+  area?: string; connection?: string[]; store?: StoreConfig; tool?: string;
 };
 export interface AreaDef { key: string; label: string; owner: string | null; reviewEvery: number | null; description: string | null }
 
@@ -93,7 +94,8 @@ export function docSources(): { sources: DocSiteDef[]; error: string | null; con
       description: typeof s.description === "string" ? s.description : undefined,
       spaces: Array.isArray(s.spaces) ? s.spaces.filter((k) => typeof k === "string") : undefined,
       area: typeof s.area === "string" ? s.area : undefined,
-      connection: typeof s.connection === "string" && s.connection.trim() ? s.connection.trim() : undefined,
+      connection: (Array.isArray(s.connection) ? s.connection : [s.connection]).filter((c) => typeof c === "string" && c.trim()).map((c) => c.trim()),
+      tool: typeof s.tool === "string" ? s.tool : undefined,
       store: kind === "store" ? s.store : undefined,
     });
   }
@@ -125,7 +127,7 @@ class DocSites {
 
   list() {
     return docSources().sources.map((s) => {
-      const common = { area: s.area || null, connection: s.connection || null };
+      const common = { area: s.area || null, connection: s.connection?.[0] || null, connectionAny: s.connection || [], tool: s.tool || null };
       if (s.kind === "external") {
         return {
           key: s.key, name: s.name, repo: null, kind: s.kind,

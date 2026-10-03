@@ -478,6 +478,10 @@ export interface DocSite {
   /** docs.json area key, and the MCP server Claude reaches it through (as the Connections page names it). */
   area?: string | null;
   connection?: string | null;
+  /** Every connector name that reaches it (any one is enough); `connection` is the first. */
+  connectionAny?: string[];
+  /** The Knowledge setup wrote it (a catalog tool id, or "other"). */
+  tool?: string | null;
   /** Notes past their area's review interval. */
   stale?: number;
   store?: KnowledgeStoreStatus | null;
@@ -499,6 +503,19 @@ export interface KnowledgeStoreStatus {
   /** This person's Claude sessions in the workspace can read the copy (additionalDirectories). */
   claudeAccess: boolean;
 }
+/** A tool teams keep knowledge in, and how Claude reaches it. GET /api/knowledge/setup → KnowledgeSetup. */
+export interface KnowledgeTool {
+  id: string; label: string; description: string; urlLabel: string; urlPlaceholder: string; urlRequired: boolean; urlPattern: string | null;
+  connections: string[]; provider: string | null; connectHelp: string;
+}
+export interface KnowledgeChosenTool { tool: string; key: string; name: string; url: string | null; area: string | null; connection: string[] }
+/**
+ * POST /api/knowledge/setup { tools: [{ tool, url?, name?, area?, connection? }] } → KnowledgeSetup (rewrites the tools in docs.json + connections.json).
+ * POST /api/knowledge/store-source { name, area?, store: { type, bucket | account+container, region?, prefix?, endpoint? } } → KnowledgeSetup.
+ * Both refused when hosted (the config is the workspace repo's).
+ */
+export interface KnowledgeSetup { catalog: KnowledgeTool[]; chosen: KnowledgeChosenTool[]; stores: string[]; canEdit: boolean }
+
 /** A note of a Markdown source (repo folder or store), with its links and freshness. */
 export interface KnowledgeNote {
   rel: string; title: string; owner: string | null; reviewed: string | null; tags: string[]; updatedAt: string | null;
@@ -630,6 +647,8 @@ export interface ConnectionRequired {
   add: McpServerConfig | null;
   /** The ${VAR} names in `add`. */
   vars: string[];
+  /** Other names that meet it (the same tool reached another way); the first connected one carries the requirement. */
+  alternatives: string[];
 }
 export interface Connection {
   name: string;
