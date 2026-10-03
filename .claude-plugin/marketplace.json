@@ -6,9 +6,9 @@
   },
   "plugins": [
     {
-      "name": "agentic-os",
-      "source": "./plugins/agentic-os",
-      "description": "Set up an agentic OS for your team: a multi-repo Claude Code workspace with a local dashboard (runs, issues, apps, machine setup, docs, links) tailored to your stack, tools and brand."
+      "name": "natterjack",
+      "source": "./plugins/natterjack",
+      "description": "Set up Natterjack for your team: a multi-repo Claude Code workspace with a local dashboard (runs, issues, apps, machine setup, docs, links) tailored to your stack, tools and brand."
     }
   ]
 }

@@ -1,0 +1,69 @@
+{
+  "$comment": "Links page tiles for the team (personal ones: .claude/ledger/links.local.json). Edit them from the Links page. Schema: references/config.md.",
+  "categories": [
+    {
+      "title": "Repo",
+      "description": "The plugin's source on GitHub.",
+      "tiles": [
+        {
+          "title": "lhoezee/skills",
+          "icon": "📦",
+          "links": [
+            {
+              "label": "Code",
+              "url": "https://github.com/lhoezee/skills"
+            },
+            {
+              "label": "Pull requests",
+              "url": "https://github.com/lhoezee/skills/pulls"
+            },
+            {
+              "label": "Issues",
+              "url": "https://github.com/lhoezee/skills/issues"
+            },
+            {
+              "label": "Actions",
+              "url": "https://github.com/lhoezee/skills/actions"
+            },
+            {
+              "label": "Releases",
+              "url": "https://github.com/lhoezee/skills/releases"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "title": "Dashboard",
+      "description": "Inside this dashboard.",
+      "tiles": [
+        {
+          "title": "References",
+          "icon": "📚",
+          "url": "/docs"
+        }
+      ]
+    },
+    {
+      "title": "Claude Code",
+      "description": "What the plugin builds on.",
+      "tiles": [
+        {
+          "title": "Plugins",
+          "icon": "🧩",
+          "url": "https://code.claude.com/docs/en/plugins"
+        },
+        {
+          "title": "Skills",
+          "icon": "🛠️",
+          "url": "https://code.claude.com/docs/en/skills"
+        },
+        {
+          "title": "Headless mode",
+          "icon": "🤖",
+          "url": "https://code.claude.com/docs/en/headless"
+        }
+      ]
+    }
+  ]
+}

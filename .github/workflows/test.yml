@@ -1,6 +1,6 @@
 name: test
 
-# The agentic-os plugin runs on Windows and macOS laptops (and Linux boxes, whose
+# The natterjack plugin runs on Windows and macOS laptops (and Linux boxes, whose
 # case-sensitive file system catches its own class of bugs), so every change is
 # tested on all three: the plugin's scripts, and the dashboard engine's server,
 # end-to-end and UI tests.
@@ -25,16 +25,16 @@ jobs:
         with:
           node-version: "24.15"
           cache: npm
-          cache-dependency-path: plugins/agentic-os/engine/package-lock.json
+          cache-dependency-path: plugins/natterjack/engine/package-lock.json
       - name: Git identity (the tests make throwaway repos and worktrees)
         run: |
           git config --global user.email "ci@example.com"
           git config --global user.name "CI"
           git config --global init.defaultBranch main
       - name: Plugin scripts
-        run: node --test "plugins/agentic-os/scripts/test/*.test.mjs"
+        run: node --test "plugins/natterjack/scripts/test/*.test.mjs"
       - name: Engine
-        working-directory: plugins/agentic-os/engine
+        working-directory: plugins/natterjack/engine
         run: |
           npm ci
           npm run typecheck
@@ -48,7 +48,7 @@ jobs:
             npm test
           fi
       - name: Router (no packages of its own; tsc and @types/node come from the engine's install)
-        working-directory: plugins/agentic-os/router
+        working-directory: plugins/natterjack/router
         run: |
           ../engine/node_modules/.bin/tsc -p tsconfig.json
           npm test

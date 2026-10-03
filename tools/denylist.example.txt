@@ -1,4 +1,4 @@
-# Copy to tools/denylist.local.txt (gitignored) or point AGENTIC_OS_DENYLIST at a copy
+# Copy to tools/denylist.local.txt (gitignored) or point NATTERJACK_DENYLIST at a copy
 # kept elsewhere. Never commit the real list: it names the private teams, products and
 # repos the engine must not mention, which is exactly what a public repo can't hold.
 #

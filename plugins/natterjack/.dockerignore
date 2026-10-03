@@ -1,0 +1,5 @@
+# Images build from plugins/natterjack (templates/hosted, router): keep a developer's
+# installs and builds out of the context.
+**/node_modules
+engine/dist
+engine/.angular

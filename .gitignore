@@ -2,3 +2,8 @@ node_modules/
 # The maintainer's denylist names private teams and products (tools/sync-engine.mjs).
 tools/denylist.local.txt
 .DS_Store
+
+# Dogfood dashboard: dashboard/ is a local link to plugins/natterjack/engine (see CLAUDE.md)
+/dashboard
+.claude/ledger/
+.claude/dashboard/engine.json

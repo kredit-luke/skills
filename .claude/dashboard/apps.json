@@ -1,0 +1,22 @@
+{
+  "$comment": "Apps and stacks for the Apps / Workspaces pages: folder, port, and how each starts ({ cmd } or your launcher script). Schema: references/config.md.",
+  "groups": [
+    {
+      "id": "engine",
+      "label": "Engine"
+    }
+  ],
+  "apps": {
+    "ui-dev": {
+      "name": "Dashboard UI (dev server)",
+      "type": "Angular",
+      "dir": "plugins/natterjack/engine",
+      "group": "engine",
+      "port": 4339,
+      "mainOnly": true,
+      "launch": {
+        "cmd": "npm run dev"
+      }
+    }
+  }
+}

@@ -1,0 +1,40 @@
+{
+  "$comment": "Who this workspace is, for the dashboard: name, dashboard port (DASHBOARD_PORT overrides it per machine), worktrees, issue tracker, code host, brand, wording. Schema: the natterjack skill's references/config.md.",
+  "name": "natterjack",
+  "dashboard": {
+    "title": "natterjack dev",
+    "port": 3335,
+    "devPort": 4339
+  },
+  "brand": {
+    "logo": "logo.svg",
+    "logoAlt": "Ask Natterjack",
+    "favicon": "favicon.svg"
+  },
+  "issues": {
+    "kind": "github",
+    "label": "GitHub Issues",
+    "repos": [
+      "lhoezee/skills"
+    ],
+    "implementStates": [
+      "Open"
+    ]
+  },
+  "codeHost": {
+    "kind": "github",
+    "ciRepos": [
+      "lhoezee/skills"
+    ],
+    "ciBranch": "main"
+  },
+  "copy": {
+    "searchExamples": [
+      "machine catalog",
+      "snapshot",
+      "adapter",
+      "hosted mode"
+    ],
+    "askPlaceholder": "e.g. How does the Issues page pick its tracker adapter?"
+  }
+}

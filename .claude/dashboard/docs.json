@@ -1,0 +1,24 @@
+{
+  "$comment": "Docs page sources: site repos, Markdown folders, or external (Confluence, Notion, ...). Schema: references/config.md.",
+  "sources": [
+    {
+      "key": "references",
+      "name": "natterjack references",
+      "kind": "notes",
+      "dir": "plugins/natterjack/references"
+    },
+    {
+      "key": "skills",
+      "name": "Plugin skills",
+      "kind": "notes",
+      "dir": "plugins/natterjack/skills"
+    },
+    {
+      "key": "claude-code",
+      "name": "Claude Code docs",
+      "kind": "external",
+      "url": "https://code.claude.com/docs",
+      "description": "Plugins, skills, hooks, headless runs"
+    }
+  ]
+}

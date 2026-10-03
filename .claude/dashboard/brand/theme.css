@@ -1,0 +1,44 @@
+/* Natterjack brand (asknatterjack.com): toad #5E8F3E, shade #4A7530, ink #1E2A16,
+   stripe #F2C230, cream #FFF8E7. Values from the site's src/styles/global.css. */
+@import url("https://fonts.googleapis.com/css2?family=Nunito:wght@700;800;900&family=Nunito+Sans:wght@400;600;700&family=JetBrains+Mono:wght@400;500&display=swap");
+
+:root {
+  --paper:      #FFFCF3;
+  --paper-2:    #FFF5DC;
+  --paper-3:    #F7F1E0;
+  --ink:        #1E2A16;
+  --ink-soft:   #4F5D44;
+  --ink-faint:  #6F7A64;
+  --line:       #E7DFC7;
+  --line-soft:  #F2ECD9;
+  --link:       #3F6A27;
+
+  --brand-900:     #1E2A16;
+  --brand-800:     #4A7530;
+  --brand-700:     #5E8F3E;
+  --brand-line:    #2F3F25;
+  --on-brand:      #FFF8E7;
+  --on-brand-soft: #C9D2B8;
+
+  --ok:        #8FC068;
+  --ok-strong: #3F6A27;
+  --ok-soft:   #E6F0DC;
+  --risk:      #B4452F;
+  --warn:      #9A6A00;
+
+  --font-body:    "Nunito Sans", system-ui, -apple-system, "Segoe UI", sans-serif;
+  --font-display: "Nunito", ui-rounded, system-ui, sans-serif;
+  --font-mono:    "JetBrains Mono", ui-monospace, "Cascadia Code", Consolas, monospace;
+  --ls-display:   -0.01em;
+
+  --r:      14px;
+  --r-sm:   8px;
+  --r-lg:   22px;
+  --shadow-sm:        0 1px 2px rgb(30 42 22 / .06);
+  --shadow:           0 1px 2px rgb(30 42 22 / .06), 0 8px 24px -8px rgb(30 42 22 / .18);
+  --shadow-md:        0 2px 4px rgb(30 42 22 / .06), 0 12px 32px -12px rgb(30 42 22 / .25);
+  --shadow-lg:        0 2px 4px rgb(30 42 22 / .06), 0 24px 60px -20px rgb(30 42 22 / .35);
+  --shadow-btn:       0 1px 2px rgb(30 42 22 / .12);
+  --shadow-btn-hover: 0 4px 10px rgb(74 117 48 / .25);
+  --ring:     0 0 0 4px rgb(242 194 48 / .45);
+}
