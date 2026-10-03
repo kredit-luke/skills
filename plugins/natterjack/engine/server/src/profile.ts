@@ -77,13 +77,13 @@ function writeJsonAtomic(file: string, data: unknown) {
 }
 
 /** Read settings.local.json, let `edit` change it, and write it back if it did. Refuses a file that isn't a JSON object. */
-function editSettings<T>(root: string, edit: (settings: any) => { changed: boolean; result: T }): T {
+export function editSettings<T>(root: string, edit: (settings: any) => { changed: boolean; result: T }, doing = "changing your role"): T {
   const file = settingsFile(root);
   let settings: any = {};
   let text: string | null = null;
   try { text = fs.readFileSync(file, "utf-8"); } catch {}
   if (text !== null && text.trim()) {
-    try { settings = JSON.parse(text.replace(/^﻿/, "")); } catch { throw new Error(".claude/settings.local.json isn't valid JSON; fix it before changing your role."); }
+    try { settings = JSON.parse(text.replace(/^﻿/, "")); } catch { throw new Error(`.claude/settings.local.json isn't valid JSON; fix it before ${doing}.`); }
     if (!settings || typeof settings !== "object" || Array.isArray(settings)) throw new Error(".claude/settings.local.json isn't a JSON object.");
   }
   const { changed, result } = edit(settings);

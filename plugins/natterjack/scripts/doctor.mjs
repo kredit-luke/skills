@@ -20,8 +20,8 @@ import { TAG_PREFIX, args, compareVersions as cmp, engineDirOf, engineVersion, i
 import { validate } from "./validate.mjs";
 
 const listening = (port) => new Promise((res) => { const s = new net.Socket(); s.setTimeout(800); s.once("connect", () => { s.destroy(); res(true); }); s.once("timeout", () => { s.destroy(); res(false); }); s.once("error", () => res(false)); s.connect(port, "127.0.0.1"); });
-const getJson = (port, p) => new Promise((res) => {
-  const req = http.get({ host: "127.0.0.1", port, path: p, headers: { Host: `localhost:${port}` }, timeout: 20000 }, (r) => {
+const getJson = (port, p, timeout = 20000) => new Promise((res) => {
+  const req = http.get({ host: "127.0.0.1", port, path: p, headers: { Host: `localhost:${port}` }, timeout }, (r) => {
     let d = ""; r.on("data", (c) => (d += c)); r.on("end", () => { try { res(JSON.parse(d)); } catch { res(null); } });
   });
   req.on("error", () => res(null)); req.on("timeout", () => { req.destroy(); res(null); });
@@ -74,6 +74,15 @@ export async function doctor(root) {
       if (m && m.checks) {
         const missing = m.checks.filter((c) => c.status === "missing");
         add(missing.length ? "warn" : "ok", "machine", missing.length ? `missing: ${missing.map((c) => c.label).join(", ")}` : `${m.checks.length} checks pass`, missing.length ? "Open the Machine page: each one has an Install button or the command to run." : "");
+      }
+      if (fs.existsSync(path.join(root, ".claude", "dashboard", "connections.json"))) {
+        // Waits for `claude mcp list`, which connects to every server.
+        const cn = await getJson(port, "/api/connections?wait=1", 150000);
+        if (cn && cn.connections) {
+          const bad = cn.connections.filter((c) => c.required && (c.missing || c.approval === "pending" || c.approval === "rejected" || (c.state && c.state !== "connected")));
+          add(bad.length ? "warn" : "ok", "connections", bad.length ? `not working for you: ${bad.map((c) => c.name).join(", ")}` : `${cn.connections.filter((c) => c.required).length} required MCP servers connected`,
+            bad.length ? "Open the Connections page: each one has a Sign in, Approve or Add button, or says what to do." : "");
+        }
       }
       if (boot.issues && boot.issues.configured) {
         const iss = await getJson(port, "/api/issues");

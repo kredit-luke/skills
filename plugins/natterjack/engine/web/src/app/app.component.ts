@@ -46,6 +46,7 @@ interface NavItem { path: string; label: string; icon: string; exact?: boolean; 
                   @if (data.runningCount()) { <span class="pill" title="Running">{{ data.runningCount() }}</span> }
                 }
                 @case ('/apps') { @if (data.runningJobs()) { <span class="pill">{{ data.runningJobs() }}</span> } }
+                @case ('/connections') { @if (connectionProblems()) { <span class="pill red" title="Servers your team relies on that aren't working for you">{{ connectionProblems() }}</span> } }
                 @case ('/machine') { @if (machineProblems()) { <span class="pill red" title="Missing requirements">{{ machineProblems() }}</span> } }
               }
             </a>
@@ -95,6 +96,7 @@ export class AppComponent implements OnInit {
     { path: '/ask', label: 'Ask', icon: 'ask', group: 'Claude' },
     { path: '/runs', label: 'Activity', icon: 'runs' },
     { path: '/skills', label: 'Skills', icon: 'skills' },
+    { path: '/connections', label: 'Connections', icon: 'connections' },
     { path: '/usage', label: 'Usage', icon: 'usage' },
     { path: '/apps', label: 'Apps', icon: 'apps', group: 'Workspace' },
     { path: '/workspaces', label: 'Workspaces', icon: 'workspaces' },
@@ -118,6 +120,7 @@ export class AppComponent implements OnInit {
     return out;
   });
   readonly machineProblems = computed(() => this.data.machine()?.problems || 0);
+  readonly connectionProblems = computed(() => this.data.connections()?.problems || 0);
 
   /** The Restart link in the sidebar footer: idle, waiting for the new server, or it didn't come back. */
   readonly restarting = signal<'idle' | 'restarting' | 'failed'>('idle');

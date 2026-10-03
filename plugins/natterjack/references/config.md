@@ -49,7 +49,7 @@ Running it on company infrastructure for people without a dev machine (hosted mo
 | `codeHost.kind` | `github` | The Home page's Needs-you inbox (your PRs, reviews requested, red CI). `github` uses the `gh` CLI; `none` turns it off. |
 | `codeHost.ciRepos` / `ciBranch` | `[]` / `main` | Repos (`owner/name`) that get a CI health dot. |
 | `brand.logo` / `favicon` | none | Files in `brand/`. Use a light logo: the sidebar is dark. No logo = the `name` as text. |
-| `copy` | none | Wording overrides: `linksSub`, `docsSub`, `infrastructureSub`, `issuesSub`, `searchExamples` (array), `askPlaceholder`. |
+| `copy` | none | Wording overrides: `linksSub`, `docsSub`, `infrastructureSub`, `issuesSub`, `connectionsSub`, `searchExamples` (array), `askPlaceholder`. |
 | `roles` | Developer, Reader | The roles people pick from, in order: `{ "<id>": { label, description?, profile?, outputStyle?, hiddenPages?, hiddenSkills? } }`. See **Roles** below. With `roles` set, everyone is asked which is theirs (the Windows installer asks first; the dashboard asks on first start); without it nobody is asked. |
 | `profiles.reader` | `{ hiddenPages: ["apps", "workspaces"], hiddenSkills: [] }` | What every role on the **reader** profile hides (people who read and ask about the code but don't build or run it); each role adds its own. `hiddenPages`: nav routes (Home also drops the tiles of a hidden page: Apps up, Workspaces). `hiddenSkills`: project skills. Readers never get Implement. |
 
@@ -194,6 +194,24 @@ The page shows the groups as click-to-copy fact tables, then the whole doc. Grou
 
 A tile has one `url` or several `links`. `url`s are `https://…`, `http://…` or a dashboard page (`/docs`, `/infrastructure`). `repo` (a top-level workspace folder) adds Info (its README); `edit: true` adds Make edits (a Claude run in that repo). Users add, edit and delete tiles from the page, for the team (this file) or just themselves (`.claude/ledger/links.local.json`). Seed it from discovery: each app's prod/staging URLs (deploy configs, README), the code host org, the tracker, CI, cloud consoles, monitoring.
 
+## connections.json: the Connections page
+
+The Connections page lists every MCP server Claude reaches from the workspace (claude.ai connectors, plugins' servers, servers in `~/.claude.json` and the workspace's `.mcp.json`) with its live state from `claude mcp list`, and the fixes it can make for that person: **Sign in** (in the page: the server runs `claude mcp login --no-browser` under `script` for a pseudo-terminal, the person opens the sign-in page in their own browser, and the CLI finishes when the browser comes back to its `localhost` callback; when hosted, they paste that address into the page and it is typed at the CLI's prompt; on Windows, which has no `script`, it opens a terminal instead), **Approve** a `.mcp.json` server (`enabledMcpjsonServers` in their `.claude/settings.local.json`), **Add** and **Remove** their own servers (`claude mcp add-json` / `remove`, scope local or user), **Sign out**, and **Runs can use it**. Dashboard runs never ask for permission, so an MCP tool without an allow rule is denied; the checkbox adds `mcp__<server>` (the name with anything but letters, digits, `_` and `-` as `_`) to their `permissions.allow`. Header and env values never reach the browser.
+
+The file is optional and names the servers the team relies on. They show first, with a count in the sidebar for anyone they don't work for, and doctor reports them:
+
+```json
+{
+  "required": [
+    { "name": "claude.ai Linear", "why": "Issues page and Implement runs" },
+    { "name": "notion", "why": "Product specs", "add": { "type": "http", "url": "https://mcp.notion.com/mcp" } },
+    { "name": "internal-api", "why": "Order lookups", "add": { "type": "http", "url": "https://mcp.acme.dev/mcp", "headers": { "Authorization": "Bearer ${ACME_TOKEN}" } } }
+  ]
+}
+```
+
+`name` is the name `claude mcp list` shows (`claude.ai <Connector>` for claude.ai connectors, `plugin:<plugin>:<server>` for plugins'). `add` (only for plain names; not for connectors or plugins) is what the page's **Add** button sets up for someone who doesn't have it: `type` `http`/`sse` with `url` and optional `headers`, or `stdio` with `command`, `args`, `env`. Never put a secret in it: write `${VAR}` and the Add dialog asks each person for theirs. A claude.ai connector that's missing points the person at claude.ai's connector settings (an org admin adds it to the organization first). If the team shares servers through a committed `.mcp.json`, list them here too, so people see the ones they haven't approved.
+
 ## deck.json: skill cards, routines, limits, Issues view
 
 ```json
@@ -297,7 +315,7 @@ In these docs `<engine>/` means that folder.
 
 ```json
 {
-  "workspace": { … }, "apps": { … }, "machine": { … }, "docs": { … }, "infrastructure": { … }, "links": { … }, "deck": { … },
+  "workspace": { … }, "apps": { … }, "machine": { … }, "docs": { … }, "infrastructure": { … }, "links": { … }, "connections": { … }, "deck": { … },
   "repos": [{ "name": "API", "relativePath": "api", "remote": "https://github.com/acme/api.git", "dependencies": [] }],
   "engineDir": "natterjack",
   "skillName": "natterjack",

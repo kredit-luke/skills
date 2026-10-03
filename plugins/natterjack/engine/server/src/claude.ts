@@ -154,6 +154,16 @@ function quoteWin(arg: string): string {
   return out + "\\".repeat(slashes * 2) + '"';
 }
 
+/** The `claude` executable spawnClaude runs (for wrapping it in another command, e.g. `script`). */
+export function claudeFile(): string {
+  return resolveClaude().file;
+}
+
+/** `claude` is an npm .cmd shim, so its arguments pass through cmd.exe (which treats & | < > ^ % ! as its own). */
+export function claudeIsShim(): boolean {
+  return resolveClaude().shim;
+}
+
 /** spawn("claude", args) that works for both the native binary and a Windows .cmd shim. */
 export function spawnClaude(args: string[], opts: SpawnOptions): ChildProcess {
   const { file, shim } = resolveClaude();
@@ -162,17 +172,62 @@ export function spawnClaude(args: string[], opts: SpawnOptions): ChildProcess {
   return spawn(process.env.ComSpec || "cmd.exe", ["/d", "/s", "/c", `"${line}"`], { ...opts, windowsVerbatimArguments: true });
 }
 
+// ------------------------------------------------------------------ `claude mcp list`
+
+export type McpState = "connected" | "needs-auth" | "failed" | "disabled" | "pending" | "not-configured" | "unknown";
+export interface McpListEntry { name: string; target: string; transport: string | null; state: McpState; text: string }
+
+// "<name>: <target> - <symbol> <status>"; the symbol varies (✔ ✘ ! ⏸ ⊘ -), so anything that isn't a letter or digit.
+const STATUS_RE = /^(.*?) - ([^\p{L}\p{N}\s]+\s.*)$/u;
+const TRANSPORT_RE = /\s*\((HTTP|SSE|stdio|WS|WebSocket)\)\s*$/i;
+
 /**
- * A claude.ai connector's state from `claude mcp list` output, e.g.
- *   "claude.ai Atlassian: https://mcp.atlassian.com/v1/mcp - ✔ Connected"
- * "absent" means the person's claude.ai account doesn't have that connector at all.
+ * The state a status text describes, e.g. "Connected", "Needs authentication", "Pending approval".
+ * Only its head counts: the detail after " — " is the server's own error text, which can say anything
+ * ("Failed to connect — … OAuth fallback is disabled …").
  */
+export function mcpState(text: string): McpState {
+  const head = String(text || "").split(/\s+[—–]\s+/)[0];
+  if (/^fail|error|timed? ?out/i.test(head)) return "failed";
+  if (/pending approval/i.test(head)) return "pending";
+  if (/disabled/i.test(head)) return "disabled";
+  if (/not configured/i.test(head)) return "not-configured";
+  if (/needs auth|authenticat|sign.?in/i.test(head)) return "needs-auth";
+  if (/^connected\b/i.test(head)) return "connected";
+  return "unknown";
+}
+
+/**
+ * Every server line of `claude mcp list`:
+ *   "claude.ai Linear: https://mcp.linear.app/mcp - ✔ Connected"
+ *   "plugin:engineering:gmail:  (HTTP) - - Not configured"
+ *   "github: npx -y @modelcontextprotocol/server-github - ✘ Failed to connect"
+ * Anything else (the "Checking…" banner, SDK warnings) is skipped.
+ */
+export function parseMcpList(out: string): McpListEntry[] {
+  const entries: McpListEntry[] = [];
+  for (const raw of String(out || "").split(/\r?\n/)) {
+    const line = raw.trim();
+    if (!line || line.startsWith("[")) continue;
+    const m = STATUS_RE.exec(line);
+    if (!m) continue;
+    const colon = m[1].indexOf(": ");
+    const head = colon > 0 ? m[1] : m[1].replace(/:$/, "");
+    const name = (colon > 0 ? head.slice(0, colon) : head).trim();
+    if (!name) continue;
+    let target = colon > 0 ? head.slice(colon + 2).trim() : "";
+    const t = TRANSPORT_RE.exec(target);
+    if (t) target = target.slice(0, t.index).trim();
+    const text = m[2].replace(/^[^\p{L}]+/u, "").trim();
+    entries.push({ name, target, transport: t ? t[1].toLowerCase() : null, state: mcpState(text), text });
+  }
+  return entries;
+}
+
+/** A claude.ai connector's state from `claude mcp list` output ("absent": the account doesn't have it). */
 export function connectorState(listOutput: string, name: string): { state: "connected" | "disabled" | "signed-out" | "absent"; text: string } {
-  const prefix = `claude.ai ${name}:`.toLowerCase();
-  const line = listOutput.split(/\r?\n/).map((l) => l.trim()).find((l) => l.toLowerCase().startsWith(prefix));
-  if (!line) return { state: "absent", text: "" };
-  const text = line.replace(/^.*? - /, "").replace(/^[^\p{L}]+/u, "").trim();
-  if (/\bconnected\b/i.test(text) && !/not connected|failed/i.test(text)) return { state: "connected", text };
-  if (/disabled/i.test(text)) return { state: "disabled", text };
-  return { state: "signed-out", text };
+  const want = `claude.ai ${name}`.toLowerCase();
+  const e = parseMcpList(listOutput).find((x) => x.name.toLowerCase() === want);
+  if (!e) return { state: "absent", text: "" };
+  return { state: e.state === "connected" ? "connected" : e.state === "disabled" ? "disabled" : "signed-out", text: e.text };
 }

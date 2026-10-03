@@ -12,6 +12,7 @@ const PATHS: Record<string, string> = {
   repos: '<path d="M5 4a2 2 0 012-2h11v16H7a2 2 0 00-2 2zM5 20a2 2 0 002 2h11v-4M9 6h5"/>',
   skills: '<path d="M13 2L4 14h7l-1 8 9-12h-7l1-8z"/>',
   memory: '<path d="M9 4a3 3 0 00-3 3 3 3 0 00-2 5 3 3 0 002 5 3 3 0 006 1V5a3 3 0 00-3-1zM15 4a3 3 0 013 3 3 3 0 012 5 3 3 0 01-2 5 3 3 0 01-6 1"/>',
+  connections: '<path d="M9 7V3M15 7V3M7 7h10v4a5 5 0 01-10 0zM12 16v5"/>',
   machine: '<rect x="3" y="4" width="18" height="12" rx="2"/><path d="M8 20h8M12 16v4"/>',
   search: '<circle cx="11" cy="11" r="7"/><path d="M20 20l-3.5-3.5"/>',
   usage: '<path d="M4 20V10M10 20V4M16 20v-7M22 20H2"/>',

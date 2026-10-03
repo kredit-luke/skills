@@ -577,6 +577,76 @@ export interface MemoryItem { file: string; name: string; description: string; t
 /** GET /api/memory ;  POST /api/memory/delete { file } → { ok, file } */
 export interface MemoryList { dir: string; exists: boolean; memories: MemoryItem[]; orphanIndexLines: string[] }
 
+// ---------------------------------------------------------------- connections (MCP servers)
+
+/** Where an MCP server is configured: a claude.ai connector, a plugin, ~/.claude.json (user: every folder; local: this workspace only) or the workspace's .mcp.json (project). */
+export type McpScope = 'claude.ai' | 'plugin' | 'user' | 'local' | 'project' | 'unknown';
+/** From `claude mcp list`: null = not checked yet. */
+export type McpState = 'connected' | 'needs-auth' | 'failed' | 'disabled' | 'pending' | 'not-configured' | 'unknown';
+/** A server definition as `claude mcp add-json` takes it. Secrets live in headers/env values. */
+export interface McpServerConfig { type: 'http' | 'sse' | 'stdio'; url?: string; headers?: Record<string, string>; command?: string; args?: string[]; env?: Record<string, string> }
+export interface ConnectionRequired {
+  why: string;
+  /** How to add it (connections.json), with `${VAR}` placeholders asked for in the Add dialog. */
+  add: McpServerConfig | null;
+  /** The ${VAR} names in `add`. */
+  vars: string[];
+}
+export interface Connection {
+  name: string;
+  scope: McpScope;
+  transport: string | null;
+  /** URL or command line, with secret-looking arguments masked. */
+  target: string | null;
+  /** Names only: values are never sent to the browser. */
+  envKeys: string[];
+  headerKeys: string[];
+  state: McpState | null;
+  /** The CLI's status text, e.g. "Failed to connect — …". */
+  status: string | null;
+  /** Project (.mcp.json) servers: approved for this person, rejected, or not decided yet. */
+  approval: 'approved' | 'rejected' | 'pending' | null;
+  /** Its tool prefix (mcp__<id>) is in permissions.allow, so dashboard runs can use it without asking. */
+  allowed: boolean;
+  /** The allow rule for its tools, e.g. "mcp__claude_ai_Linear". */
+  rule: string;
+  /** Listed in connections.json `required`. */
+  required: ConnectionRequired | null;
+  /** In connections.json but not configured anywhere for this person. */
+  missing: boolean;
+  /** What the page can do: login, logout, remove, approve, allow. */
+  actions: Array<'login' | 'logout' | 'remove' | 'approve' | 'allow'>;
+  /** A sentence on what to do when there's no button for it. */
+  hint: string | null;
+}
+/**
+ * GET /api/connections[?wait=1][&force=1]: config right away; `wait` waits for the health check (`claude mcp list`, slow).
+ * POST /api/connections/{logout,remove,approve,allow,add} { name, ... } → ConnectionsResponse.
+ * POST /api/connections/login { name, action: 'start' } → McpLoginStart; { action: 'status' | 'finish', url? } → McpLoginStatus; { action: 'cancel' }.
+ */
+export interface ConnectionsResponse {
+  connections: Connection[];
+  /** Health check: when the last one finished (null = never), and whether one is running. */
+  checkedAt: number | null;
+  checking: boolean;
+  /** `claude mcp list` failed. */
+  checkError: string | null;
+  /** connections.json is broken. */
+  configError: string | null;
+  configured: boolean;
+  /** How many need attention (required and missing, or required/allowed and not connected). */
+  problems: number;
+}
+/** Signing in from the page: open `url`; `callback` (loopback) is where the browser ends up, pasted back when hosted. Null: it finishes on claude.ai. */
+export interface McpLoginStart {
+  url: string; callback: string | null;
+  /** Windows: no pseudo-terminal, so sign-in opened a terminal window instead (opened: false = run `command` yourself). */
+  terminal?: { opened: boolean; command: string };
+}
+export interface McpLoginStatus { pending: boolean; done: boolean; ok: boolean; message: string }
+/** POST /api/connections/add */
+export interface ConnectionAddRequest { name: string; scope: 'local' | 'user'; config: McpServerConfig; allow?: boolean }
+
 // ---------------------------------------------------------------- issues (tracker adapters)
 
 export interface IssueLabel { name: string; color: string }

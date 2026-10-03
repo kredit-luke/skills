@@ -210,6 +210,32 @@ export function validate(root) {
     }
   }
 
+  // ---- connections.json
+  const conns = load("connections.json");
+  if (conns) {
+    if (!Array.isArray(conns.required)) err("connections.json", "needs a \"required\" list");
+    const seen = new Set();
+    for (const r of Array.isArray(conns.required) ? conns.required : []) {
+      if (!r || typeof r.name !== "string" || !r.name.trim()) { err("connections.json", "every required server needs a \"name\" (as `claude mcp list` shows it, e.g. \"claude.ai Linear\")"); continue; }
+      if (seen.has(r.name.toLowerCase())) err("connections.json", `"${r.name}" is listed twice`);
+      seen.add(r.name.toLowerCase());
+      if (!r.why) warn("connections.json", `"${r.name}" has no "why": say what needs it, so people know why to connect it`);
+      const a = r.add;
+      if (a === undefined) continue;
+      if (/^claude\.ai |^plugin:/i.test(r.name)) err("connections.json", `"${r.name}": claude.ai connectors and plugin servers can't be added from here; drop "add"`);
+      else if (!/^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$/.test(r.name)) err("connections.json", `"${r.name}": a server with "add" needs a plain name (letters, digits, . _ -)`);
+      const type = a && (a.type || (a.url ? "http" : "stdio"));
+      if (!a || typeof a !== "object") err("connections.json", `"${r.name}": "add" must be an object`);
+      else if (type === "http" || type === "sse") { if (!/^https?:\/\//.test(a.url || "")) err("connections.json", `"${r.name}": add.url must start with https://`); }
+      else if (type === "stdio") { if (!a.command) err("connections.json", `"${r.name}": add.command is missing`); }
+      else err("connections.json", `"${r.name}": add.type must be http, sse or stdio`);
+      const secret = (v) => typeof v === "string" && v.trim() && !/\$\{[A-Z_][A-Z0-9_]*\}/.test(v);
+      for (const [k, v] of Object.entries({ ...(a && a.headers), ...(a && a.env) })) {
+        if (/key|token|secret|password|authorization/i.test(k) && secret(v)) err("connections.json", `"${r.name}": ${k} looks like a secret; use a placeholder such as "\${${k.toUpperCase().replace(/[^A-Z0-9]/g, "_")}}" (each person types theirs in when adding it)`);
+      }
+    }
+  }
+
   // ---- deck.json
   const deck = load("deck.json");
   if (deck) {

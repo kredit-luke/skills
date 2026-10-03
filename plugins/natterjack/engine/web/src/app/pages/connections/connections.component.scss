@@ -1,0 +1,27 @@
+.conn-groups { display: grid; grid-template-columns: repeat(auto-fill, minmax(520px, 1fr)); gap: 16px; align-items: start; }
+@media (max-width: 760px) { .conn-groups { grid-template-columns: 1fr; } }
+.n.bad { background: var(--red-bg) !important; color: var(--risk) !important; }
+.check { display: grid; grid-template-columns: 22px 1fr auto; gap: 4px 10px; padding: 11px 14px; border-bottom: 1px solid var(--line-soft); align-items: start; }
+.check:last-child { border-bottom: 0; }
+.ic { width: 18px; height: 18px; border-radius: 50%; display: grid; place-items: center; font-size: 11px; font-weight: 700; margin-top: 1px; }
+.check.ok .ic { background: var(--ok-soft); color: var(--ok-strong); }
+.check.warn .ic { background: var(--yellow-bg); color: var(--yellow); }
+.check.missing .ic { background: var(--red-bg); color: var(--risk); }
+.check.info .ic { background: var(--paper-2); color: var(--ink-faint); }
+.nm { font-weight: 600; font-size: 13.5px; color: var(--ink); display: flex; align-items: center; gap: 6px; flex-wrap: wrap; overflow-wrap: anywhere; }
+.st { font-size: 12px; color: var(--ink-soft); white-space: nowrap; text-align: right; }
+.check.ok .st { color: var(--ok-strong); }
+.check.missing .st { color: var(--risk); }
+.tg { grid-column: 2 / -1; font-family: var(--font-mono); font-size: 11.5px; color: var(--ink-faint); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.dt { grid-column: 2 / -1; font-size: 12.5px; color: var(--ink-soft); line-height: 1.45; word-break: break-word; }
+.fx { grid-column: 2 / -1; display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-top: 4px; }
+.fx .sp { flex: 1; }
+.fx .chk { font-size: 12.5px; }
+textarea { font-family: var(--font-mono); font-size: 12px; text-transform: none; letter-spacing: 0; }
+.signin { grid-column: 2 / -1; margin-top: 6px; padding: 10px 12px; border: 1px solid var(--line); border-radius: 8px; background: var(--paper-2); font-size: 13px; color: var(--ink); }
+.signin ol { margin: 0; padding-left: 18px; line-height: 1.6; }
+.signin li + li { margin-top: 6px; }
+.signin .row { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; margin-top: 4px; }
+.signin .sp { flex: 1; }
+.signin .msg { font-size: 12px; color: var(--risk); }
+.signin input { font-family: var(--font-mono); font-size: 12px; padding: 4px 8px; border: 1px solid var(--line); border-radius: 6px; min-width: 320px; flex: 1; background: var(--surface); color: var(--ink); }
