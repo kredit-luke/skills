@@ -1,6 +1,7 @@
-import { ChangeDetectionStrategy, Component, HostListener, OnInit, computed, inject } from '@angular/core';
+import { ChangeDetectionStrategy, Component, HostListener, OnInit, computed, inject, signal } from '@angular/core';
 import { RouterLink, RouterLinkActive, RouterOutlet } from '@angular/router';
 import { ApiService } from './core/api.service';
+import { bootStartedAt, waitForRestart } from './core/restart';
 import { DataService } from './core/data.service';
 import { LaunchService } from './core/launch.service';
 import { SearchService } from './core/search.service';
@@ -53,6 +54,18 @@ interface NavItem { path: string; label: string; icon: string; exact?: boolean; 
         <div class="side-foot">
           <div class="live"><span class="dot" [class.off]="!api.connected()"></span><span class="txt">{{ api.connected() ? 'Live' : 'Disconnected' }}</span></div>
           <div class="txt">{{ data.runsToday() }} run{{ data.runsToday() === 1 ? '' : 's' }} today</div>
+          @if (api.boot()?.version; as v) {
+            <div class="txt ver">
+              <span title="Engine version">v{{ v }}</span>
+              @if (!api.hosted()) {
+                @switch (restarting()) {
+                  @case ('restarting') { <span class="restarting"><span class="spin"></span> restarting…</span> }
+                  @case ('failed') { <button type="button" class="restart" (click)="restart()" title="It didn't come back: see .claude/ledger/dashboard-restart.log">retry restart</button> }
+                  @default { <button type="button" class="restart" (click)="restart()" title="Restart the dashboard server (picks up engine updates)">restart</button> }
+                }
+              }
+            </div>
+          }
         </div>
       </aside>
       <main class="content"><div class="wrap"><router-outlet /></div></main>
@@ -105,6 +118,33 @@ export class AppComponent implements OnInit {
     return out;
   });
   readonly machineProblems = computed(() => this.data.machine()?.problems || 0);
+
+  /** The Restart link in the sidebar footer: idle, waiting for the new server, or it didn't come back. */
+  readonly restarting = signal<'idle' | 'restarting' | 'failed'>('idle');
+
+  async restart(): Promise<void> {
+    if (this.restarting() === 'restarting') return;
+    const running = this.data.runningCount();
+    const warn = running
+      ? `Restart the dashboard? ${running} run${running === 1 ? ' is' : 's are'} in progress and will be interrupted (reply to one to carry on). Apps keep running.`
+      : 'Restart the dashboard? It comes back in a few seconds (longer if the engine changed and the UI needs rebuilding). Apps keep running.';
+    if (!confirm(warn)) return;
+    const before = this.api.boot()?.startedAt || '';
+    try {
+      await this.api.post('/api/restart');
+    } catch (e) {
+      this.toast.error((e as Error).message);
+      return;
+    }
+    this.restarting.set('restarting');
+    this.toast.show('Restarting the dashboard…');
+    if (await waitForRestart(before, bootStartedAt)) {
+      location.reload();
+      return;
+    }
+    this.restarting.set('failed');
+    this.toast.error("The dashboard didn't come back. Start it in a terminal; .claude/ledger/dashboard-restart.log says what happened.");
+  }
 
   ngOnInit(): void {
     this.api.loadBoot().then(() => {

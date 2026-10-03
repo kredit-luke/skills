@@ -8,6 +8,7 @@ import { markTerms } from '../../core/markdown';
 import { ToastService } from '../../core/toast.service';
 import { TrustedHtmlPipe } from '../../core/trusted-html.pipe';
 import { askPrompt } from '../../shared/ask-prompt';
+import { SlashInputComponent } from '../../shared/slash-input.component';
 import { AttachComponent } from '../../shared/attach.component';
 import { PageHeaderComponent } from '../../shared/page-header.component';
 import { RunRowComponent } from '../../shared/run-row.component';
@@ -23,7 +24,7 @@ function readDocsPref(): string[] {
  */
 @Component({
   selector: 'dash-ask',
-  imports: [PageHeaderComponent, TrustedHtmlPipe, RunRowComponent, AttachComponent],
+  imports: [PageHeaderComponent, TrustedHtmlPipe, RunRowComponent, AttachComponent, SlashInputComponent],
   changeDetection: ChangeDetectionStrategy.OnPush,
   styleUrl: './ask.component.scss',
   template: `
@@ -32,8 +33,8 @@ function readDocsPref(): string[] {
       <div class="col">
         <form class="panel ask-box" (submit)="$event.preventDefault(); submit()"
           (paste)="att.paste($event)" (dragover)="att.dragOver($event)" (drop)="att.drop($event)">
-          <textarea rows="5" [value]="q()" (input)="onInput($any($event.target).value)" (keydown)="onKey($event)"
-            [placeholder]="api.copy('askPlaceholder', 'e.g. How does sign-in work, end to end? Where is the session timeout set?')" autofocus></textarea>
+          <dash-slash-input [multiline]="true" [rows]="5" [value]="q()" (valueChange)="onInput($event)" (keys)="onKey($event)" [autofocus]="true"
+            [placeholder]="api.copy('askPlaceholder', 'e.g. How does sign-in work, end to end? Where is the session timeout set?')" />
           <dash-attach #att />
           <div class="ask-opts">
             <label>Workspace

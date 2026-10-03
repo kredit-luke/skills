@@ -1,6 +1,6 @@
 /**
- * The dashboard's HTTP contract, shared by the server (dashboard/server) and the
- * Angular app (dashboard/web). Type-only: both sides import it with `import type`,
+ * The dashboard's HTTP contract, shared by the server (server/) and the
+ * Angular app (web/). Type-only: both sides import it with `import type`,
  * so it never exists at runtime.
  *
  * Conventions
@@ -18,7 +18,11 @@ export interface Boot {
   token: string;
   platform: 'win32' | 'darwin' | 'linux' | string;
   workspaceRoot: string;
+  /** The engine's folder in the workspace, relative to it with forward slashes (engine.json `dir`; "dashboard" in older workspaces). */
+  engineDir: string;
   version: string;
+  /** When this server process started (a restart changes it). */
+  startedAt: string;
   port: number;
   /** Who this workspace is: from .claude/dashboard/workspace.json and brand/. */
   workspace: {
@@ -131,6 +135,24 @@ export interface RunMeta {
   attachmentsRemovedAt?: string | null;
   /** Pull requests the dashboard watches for this run (a <<WATCH>> block); null when there never was one. */
   watch?: RunWatch | null;
+  /**
+   * Messages typed while Claude was working. When a turn ends as succeeded or failed they
+   * go together as the next turn (also when it ends with a question, if queueAutoSend is
+   * on); otherwise, and after a cancel or restart, they stay here until sent (Send now)
+   * or removed.
+   */
+  queued?: QueuedMessage[];
+  /** Why the queue didn't go out on its own (a run limit, Claude signed out); null once it's sent. It's retried every 30 s. */
+  queueBlocked?: string | null;
+  /** Auto-send: the queue also goes out when Claude ends a turn with a question, as the answer (for when you've walked away). */
+  queueAutoSend?: boolean;
+}
+
+/** A message queued on a run (RunMeta.queued). Editable and removable until it's sent. */
+export interface QueuedMessage {
+  id: string;
+  text: string;
+  at: string;
 }
 
 /** One watched pull request and what the last check saw. */

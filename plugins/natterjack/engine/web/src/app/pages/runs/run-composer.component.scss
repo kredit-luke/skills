@@ -22,5 +22,18 @@
 .plan-bar.on { background: var(--blue-bg); border: 1px solid #D6DBF2; border-radius: 8px; padding: 6px 10px; color: var(--brand-800); }
 .plan-bar span { flex: 1; min-width: 200px; }
 .reply { display: flex; gap: 8px; align-items: flex-end; }
-.reply textarea { font-family: var(--font-body); font-size: 13.5px; min-height: 42px; }
+.reply dash-slash-input { flex: 1; min-width: 0; }
+.reply ::ng-deep textarea { width: 100%; font-family: var(--font-body); font-size: 13.5px; min-height: 42px; }
 .hint { padding: 0; }
+
+.queue { display: flex; flex-direction: column; gap: 6px; background: #fff; border: 1px solid var(--line); border-left: 3px solid var(--brand-700); border-radius: 10px; padding: 10px 12px; }
+.queue.held { border-left-color: var(--warn); }
+.queue-h { display: flex; align-items: center; gap: 10px; font-size: 12.5px; color: var(--ink-soft); }
+.queue-h span { flex: 1; }
+.queue-item { display: flex; align-items: flex-start; gap: 10px; padding: 6px 0 0; border-top: 1px dashed var(--line-soft); }
+.queue-h + .queue-item { border-top: 0; }
+.queue-t { flex: 1; font-size: 13.5px; white-space: pre-wrap; overflow-wrap: anywhere; }
+.queue-item textarea { flex: 1; font-family: var(--font-body); font-size: 13.5px; min-height: 42px; }
+.queue-acts { display: flex; gap: 10px; align-items: center; flex: none; font-size: 12.5px; }
+.queue-h .auto { display: inline-flex; align-items: center; gap: 5px; font-size: 12px; color: var(--ink-soft); cursor: pointer; white-space: nowrap; }
+.queue-h .auto input { margin: 0; }

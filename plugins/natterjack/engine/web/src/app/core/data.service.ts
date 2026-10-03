@@ -211,6 +211,9 @@ export function normaliseRun(r: RunMeta): RunMeta {
     turns: r.turns || 1,
     question: r.question || null,
     warning: r.warning || null,
+    queued: r.queued || [],
+    queueBlocked: r.queueBlocked || null,
+    queueAutoSend: !!r.queueAutoSend,
     turnStartedAt: r.turnStartedAt || null,
   };
 }

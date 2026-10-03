@@ -1,11 +1,11 @@
 /**
  * Workspace dashboard server: a local console for a multi-repo workspace.
  *
- *   node --disable-warning=ExperimentalWarning dashboard/server/src/main.ts [--port N]
+ *   node --disable-warning=ExperimentalWarning <engine>/server/src/main.ts [--port N]
  *   Port: --port, else the DASHBOARD_PORT env var, else workspace.json dashboard.port, else 3333.
  *
- * Serves the JSON API under /api (contract: dashboard/shared/api.ts) and the
- * built Angular app from dashboard/dist/browser. Local by default: binds 127.0.0.1,
+ * Serves the JSON API under /api (contract: <engine>/shared/api.ts) and the
+ * built Angular app from <engine>/dist/browser. Local by default: binds 127.0.0.1,
  * rejects non-loopback Host headers, and every POST needs the per-install token.
  * Hosted mode (DASHBOARD_HOSTED, see hosted.ts) serves one person from a container
  * behind the company's login proxy instead.
@@ -21,12 +21,13 @@ import os from "node:os";
 import path from "node:path";
 import crypto from "node:crypto";
 import { execFile } from "node:child_process";
+import { restartSelf } from "./self-restart.ts";
 import type { Boot, LaunchRequest, ProfileInfo, PublishPlanResponse, RunEvent, RunMeta } from "../../shared/api.ts";
 import { runTicket } from "../../shared/run-ticket.ts";
 import { runWorkspace } from "../../shared/run-workspace.ts";
 import { CLAUDE_SESSION_ENV } from "./claude.ts";
 import {
-  BRAND_DIR, DASHBOARD_DIR, LEDGER_DIR, WORKSPACE_ROOT,
+  BRAND_DIR, DASHBOARD_DIR, ENGINE_FOLDER, LEDGER_DIR, WORKSPACE_ROOT,
   dashboardPort, portsFile, ticketInTextRe, ticketRe, workspaceConfig, worktreeRoot,
 } from "./config.ts";
 import * as workspaces from "./workspaces.ts";
@@ -73,6 +74,8 @@ import { ClaudeLogin } from "./claude-login.ts";
 
 const DIST_DIR = path.join(DASHBOARD_DIR, "dist", "browser");
 const VERSION = JSON.parse(fs.readFileSync(path.join(DASHBOARD_DIR, "package.json"), "utf-8")).version;
+/** When this server process started: the page compares it to tell a restarted server from the old one. */
+const STARTED_AT = new Date().toISOString();
 
 const MAIN_WORKSPACE_PATH: string = WORKSPACE_ROOT;
 const GIT_CACHE_TTL_MS = 3000;
@@ -362,6 +365,8 @@ const runs = new RunManager(LEDGER_DIR, {
   onFinish: () => { usage.invalidate(); live.refresh("runs"); live.refresh("overview"); }, // a finished turn moves the meters and preset stats
   onTurnStart: (meta) => { runChanges.snapshot({ ...meta }).catch(() => {}); },
   onChange: (meta) => live.publish("run", meta), // one run, not the whole list: a live run saves every 1.5 s
+  // Messages queued during a turn go out under the same limits as a reply you send.
+  queueGate: () => ({ blocker: launchBlocker(), budgetUsd: deck.config().limits.runBudget ? undefined : null }),
   attachments,
 });
 const deck = new Deck(MAIN_WORKSPACE_PATH, path.join(LEDGER_DIR, "settings.json"));
@@ -819,7 +824,9 @@ function bootInfo(user: string | null): Boot {
     token: DASH_TOKEN,
     platform: process.platform,
     workspaceRoot: MAIN_WORKSPACE_PATH,
+    engineDir: ENGINE_FOLDER,
     version: VERSION,
+    startedAt: STARTED_AT,
     port: DASHBOARD_PORT,
     workspace: {
       name: ws.name,
@@ -897,14 +904,16 @@ function readJsonBody(req: http.IncomingMessage): Promise<any> {
   });
 }
 
+const esc = (s: string) => s.replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[c]!);
+
 /** The built Angular app, read from disk on each request (a rebuild needs no restart). */
 function serveApp(res: http.ServerResponse, pathname: string) {
   const index = path.join(DIST_DIR, "index.html");
   if (!fs.existsSync(index)) {
     res.writeHead(503, { "Content-Type": "text/html; charset=utf-8" });
     return res.end(`<!doctype html><title>Dashboard not built</title><body style="font-family:sans-serif;padding:2rem">
-      <h1>The dashboard UI isn't built yet</h1><p>Run <code>node dashboard/bin/dashboard.mjs restart</code>
-      (it builds the UI when needed), or <code>npm ci &amp;&amp; npm run build</code> in <code>dashboard/</code>.</p>`);
+      <h1>The dashboard UI isn't built yet</h1><p>Run <code>node ${esc(ENGINE_FOLDER)}/bin/dashboard.mjs restart</code>
+      (it builds the UI when needed), or <code>npm ci &amp;&amp; npm run build</code> in <code>${esc(ENGINE_FOLDER)}/</code>.</p>`);
   }
   let rel: string;
   try { rel = decodeURIComponent(pathname); } catch { res.writeHead(400); return res.end(); }
@@ -950,7 +959,7 @@ async function openTerminalForRun(run: RunMeta) {
   return { opened: r.opened, command: `cd "${run.cwd}"; ${command}` };
 }
 
-const RUN_ROUTE = /^\/api\/runs\/([a-z0-9-]+)(?:\/(stream|cancel|verdict|flag|terminal|continuation|reply|plan-mode|changes|diff|rename|watch-stop))?$/i;
+const RUN_ROUTE = /^\/api\/runs\/([a-z0-9-]+)(?:\/(stream|cancel|verdict|flag|terminal|continuation|reply|plan-mode|changes|diff|rename|watch-stop|queue|queue-edit|queue-remove|queue-send|queue-auto))?$/i;
 const RUN_FILE_ROUTE = /^\/api\/runs\/([a-z0-9-]+)\/files\/([^/]+)$/i;
 
 /** One of a run's attached files: images and PDFs inline, anything else as a download. */
@@ -994,7 +1003,7 @@ function serveExploreRaw(res: http.ServerResponse, pathname: string) {
 }
 
 /** POSTs that open something on the server's own screen or ports, refused when hosted. */
-const LOCAL_ONLY_POSTS = new Set(["/api/machine/install", "/api/docs/preview", "/api/apps/action"]);
+const LOCAL_ONLY_POSTS = new Set(["/api/machine/install", "/api/docs/preview", "/api/apps/action", "/api/restart"]);
 
 async function handleApi(req: http.IncomingMessage, res: http.ServerResponse, url: URL, user: string | null) {
   const p = url.pathname;
@@ -1186,6 +1195,11 @@ async function handleApi(req: http.IncomingMessage, res: http.ServerResponse, ur
     if (body.action === "cancel") { claudeLogin.cancel(); return sendJson(res, { ok: true }); }
     return sendError(res, 400, "Unknown action");
   }
+  if (p === "/api/restart") {
+    // The restart stops this server, ending any turn in flight (it shows as interrupted; replying carries on).
+    restartSelf({ script: path.join(DASHBOARD_DIR, "bin", "dashboard.mjs"), ledgerDir: LEDGER_DIR, env: { ...process.env, WORKSPACE_ROOT } });
+    return sendJson(res, { ok: true, interrupted: runs.runningCount() }, 202);
+  }
   if (p === "/api/runs") return sendJson(res, { run: launchRun(body, "manual") }, 201);
   if (runMatch && runMatch[2] === "reply") {
     const blocker = launchBlocker();
@@ -1196,6 +1210,16 @@ async function handleApi(req: http.IncomingMessage, res: http.ServerResponse, ur
     return sendJson(res, { run: runs.reply(runMatch[1], body.text, { budgetUsd, attachments: ids }) });
   }
   if (runMatch && runMatch[2] === "rename") return sendJson(res, { run: runs.rename(runMatch[1], body.label) });
+  // Queued messages: typed while Claude works, sent when the turn ends (shared/api.ts RunMeta.queued).
+  if (runMatch && runMatch[2] === "queue") return sendJson(res, { run: runs.enqueue(runMatch[1], body.text, typeof body.autoSend === "boolean" ? body.autoSend : undefined) });
+  if (runMatch && runMatch[2] === "queue-auto") return sendJson(res, { run: runs.setQueueAutoSend(runMatch[1], !!body.on) });
+  if (runMatch && runMatch[2] === "queue-edit") return sendJson(res, { run: runs.editQueued(runMatch[1], String(body.id || ""), body.text) });
+  if (runMatch && runMatch[2] === "queue-remove") return sendJson(res, { run: runs.removeQueued(runMatch[1], String(body.id || "")) });
+  if (runMatch && runMatch[2] === "queue-send") {
+    const blocker = launchBlocker();
+    if (blocker) return sendError(res, 429, blocker);
+    return sendJson(res, { run: runs.sendQueued(runMatch[1], { budgetUsd: deck.config().limits.runBudget ? undefined : null }) });
+  }
   if (p === "/api/settings") {
     try {
       deck.savePersonal({ limits: body.limits, defaults: body.defaults, issues: body.issues }, { models: (m) => MODEL_RE.test(m), efforts: EFFORTS });

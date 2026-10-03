@@ -8,6 +8,8 @@ import type { Boot } from '../../../../shared/api';
 @Injectable({ providedIn: 'root' })
 export class ApiService {
   readonly boot = signal<Boot | null>(null);
+  /** The engine's folder in the workspace ("natterjack", "tools/ops"; "dashboard" in older workspaces), for paths shown to people. */
+  readonly engineDir = computed(() => this.boot()?.engineDir || 'dashboard');
   /** False after a request fails at the network level (server restarting). */
   readonly connected = signal(true);
   private bootPromise: Promise<Boot | null> | null = null;
@@ -20,7 +22,7 @@ export class ApiService {
         .then((b) => {
           // No /api/boot (server restarting): POSTs go without a token until a reload.
           this.boot.set(b || {
-            token: '', platform: navigator.platform.toLowerCase().startsWith('win') ? 'win32' : 'darwin', workspaceRoot: '', version: '', port: 0,
+            token: '', platform: navigator.platform.toLowerCase().startsWith('win') ? 'win32' : 'darwin', workspaceRoot: '', engineDir: 'dashboard', version: '', startedAt: '', port: 0,
             workspace: { name: '', title: 'Workspace Dashboard', logo: null, logoAlt: '', favicon: null, copy: {} },
             issues: { kind: 'none', label: 'Issues', configured: false, ticketPattern: '^[A-Z][A-Z0-9]*-\\d+$', urlTemplate: null },
             profile: { current: 'developer', role: 'developer', roleLabel: 'Developer', ask: false, hiddenPages: [] },

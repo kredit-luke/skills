@@ -7,7 +7,9 @@ import { TrustedHtmlPipe } from '../core/trusted-html.pipe';
 /**
  * A text input (or textarea) with slash-command autocomplete: typing "/" lists
  * matching skills and commands; ↑↓ move, Tab/Enter pick, Esc closes. Once a
- * command is picked its argument hint stays visible underneath.
+ * command is picked its argument hint stays visible underneath. Every chat box uses
+ * it (Home, Ask, the launch dialog, a run's reply box); keys the list doesn't take go
+ * out on `keys`, so a box keeps its own Enter-to-send and shortcuts.
  */
 @Component({
   selector: 'dash-slash-input',
@@ -16,16 +18,17 @@ import { TrustedHtmlPipe } from '../core/trusted-html.pipe';
   template: `
     <div class="ac-wrap">
       @if (multiline()) {
-        <textarea #box [rows]="rows()" [value]="value()" [placeholder]="placeholder()" [readOnly]="readonly()"
+        <textarea #box [rows]="rows()" [value]="value()" [placeholder]="placeholder()" [readOnly]="readonly()" [disabled]="disabled()"
+          [attr.autofocus]="autofocus() ? '' : null"
           autocomplete="off" spellcheck="false" role="combobox" aria-autocomplete="list" [attr.aria-expanded]="open()"
           (input)="onInput($event)" (keydown)="onKey($event)" (focus)="onFocus()" (blur)="onBlur()"></textarea>
       } @else {
-        <input #box [value]="value()" [placeholder]="placeholder()" autocomplete="off" spellcheck="false"
+        <input #box [value]="value()" [placeholder]="placeholder()" [disabled]="disabled()" autocomplete="off" spellcheck="false"
           role="combobox" aria-autocomplete="list" [attr.aria-expanded]="open()"
           (input)="onInput($event)" (keydown)="onKey($event)" (focus)="onFocus()" (blur)="onBlur()">
       }
       @if (open()) {
-        <div class="ac-list" role="listbox" (mousedown)="$event.preventDefault()">
+        <div class="ac-list" [class.up]="above()" role="listbox" (mousedown)="$event.preventDefault()">
           @if (loadingCmds()) {
             <div class="ac-empty">Loading commands…</div>
           } @else if (!items().length) {
@@ -56,8 +59,14 @@ export class SlashInputComponent {
   readonly multiline = input(false);
   readonly rows = input(4);
   readonly readonly = input(false);
+  readonly disabled = input(false);
+  readonly autofocus = input(false);
+  /** Open the list above the box (a box at the bottom of the page). */
+  readonly above = input(false);
   /** Enter with the list closed (single-line mode only). */
   readonly submitted = output<void>();
+  /** Keydowns the list didn't use (Enter to send, Shift+Enter, ↑ to edit...): the host's own shortcuts. */
+  readonly keys = output<KeyboardEvent>();
 
   private readonly box = viewChild<ElementRef<HTMLInputElement | HTMLTextAreaElement>>('box');
   readonly open = signal(false);
@@ -124,7 +133,9 @@ export class SlashInputComponent {
       if (e.key === 'Enter' || e.key === 'Tab') { e.preventDefault(); this.accept(this.index()); return; }
     }
     if (e.key === 'Escape' && this.open()) { e.stopPropagation(); this.open.set(false); return; }
-    if (e.key === 'Enter' && !this.multiline()) { e.preventDefault(); this.open.set(false); this.submitted.emit(); }
+    if (e.key === 'Enter' && !this.multiline()) { e.preventDefault(); this.open.set(false); this.submitted.emit(); return; }
+    if (e.key === 'Enter') this.open.set(false);
+    this.keys.emit(e);
   }
 
   accept(i: number): void {

@@ -1,7 +1,7 @@
 .ask-layout { display: grid; grid-template-columns: minmax(0, 1.6fr) minmax(300px, 1fr); gap: 1rem; align-items: start; }
 @media (max-width: 1100px) { .ask-layout { grid-template-columns: 1fr; } }
 .ask-box { padding: 14px 16px 6px; display: flex; flex-direction: column; gap: 10px; overflow: visible; }
-.ask-box textarea { font-family: var(--font-body); font-size: 15px; line-height: 1.5; min-height: 120px; }
+.ask-box ::ng-deep textarea { font-family: var(--font-body); font-size: 15px; line-height: 1.5; min-height: 120px; }
 .ask-opts { display: flex; gap: 10px; align-items: flex-end; flex-wrap: wrap; }
 .ask-opts label:not(.chk) { display: flex; flex-direction: column; gap: 4px; font-family: var(--font-mono); font-size: 10.5px; color: var(--ink-soft); text-transform: uppercase; letter-spacing: .12em; }
 .ask-opts .chk { padding-bottom: 8px; }

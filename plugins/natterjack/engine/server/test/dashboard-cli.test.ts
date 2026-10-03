@@ -4,6 +4,7 @@
 import { test, after } from "node:test";
 import assert from "node:assert/strict";
 import fs from "node:fs";
+import http from "node:http";
 import net from "node:net";
 import os from "node:os";
 import path from "node:path";
@@ -67,6 +68,36 @@ test("after a port change, restart moves the dashboard and start doesn't run a s
 
   cli("stop");
   assert.ok(await until(async () => !(await listening(b))), "stop stops it");
+});
+
+/** A request to the dashboard as its own page makes it (loopback Host and Origin). */
+function call(port: number, method: string, p: string, token = ""): Promise<{ status: number; body: any }> {
+  return new Promise((resolve, reject) => {
+    const req = http.request({ host: "127.0.0.1", port, method, path: p, headers: { host: `localhost:${port}`, origin: `http://localhost:${port}`, "content-type": "application/json", "x-dash-token": token } }, (res) => {
+      let d = "";
+      res.on("data", (c) => (d += c));
+      res.on("end", () => { let body: any = null; try { body = JSON.parse(d); } catch {} resolve({ status: res.statusCode || 0, body }); });
+    });
+    req.on("error", reject);
+    req.end(method === "POST" ? "{}" : undefined);
+  });
+}
+
+test("the page's restart brings up a new server on the same port", { timeout: 180_000 }, async () => {
+  const port = await freePort();
+  setPort(port);
+  cli("start");
+  const before = (await call(port, "GET", "/api/boot")).body;
+  assert.ok(before && before.startedAt, "boot says when the server started");
+
+  const res = await call(port, "POST", "/api/restart", before.token);
+  assert.equal(res.status, 202);
+  const startedAt = async () => { try { return (await call(port, "GET", "/api/boot")).body?.startedAt || null; } catch { return null; } };
+  assert.ok(await until(async () => { const s = await startedAt(); return !!s && s !== before.startedAt; }, 90_000), "a new server answers");
+  assert.match(fs.readFileSync(path.join(LEDGER, "dashboard-restart.log"), "utf-8"), /restart requested from the dashboard/);
+
+  cli("stop");
+  assert.ok(await until(async () => !(await listening(port))), "stop stops the new one");
 });
 
 test("stop after a reboot leaves alone whatever has the recorded pid now", { timeout: 180_000 }, async () => {

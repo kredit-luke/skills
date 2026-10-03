@@ -1,19 +1,24 @@
 import { ChangeDetectionStrategy, Component, computed, effect, inject, input, output, signal, viewChild } from '@angular/core';
-import type { Question, RunMeta } from '../../../../../shared/api';
+import type { Question, QueuedMessage, RunMeta } from '../../../../../shared/api';
 import { ApiService } from '../../core/api.service';
 import { ToastService } from '../../core/toast.service';
 import { answerText } from '../../runs/answer';
 import { AttachComponent } from '../../shared/attach.component';
+import { SlashInputComponent } from '../../shared/slash-input.component';
 
 const REPLYABLE = new Set(['waiting', 'succeeded', 'failed', 'cancelled', 'interrupted']);
+/** Your last auto-send choice (localStorage), the default for the next queue. */
+const AUTO_SEND_KEY = 'dash.queueAutoSend';
 
 /**
  * Bottom of a run: questions Claude asked (option buttons), a free-text reply box,
- * and the plan-mode bar. Replies resume the same session as a new turn.
+ * and the plan-mode bar. Replies resume the same session as a new turn. While Claude
+ * works, what you type is queued (as in the CLI): it goes out when the turn ends, and
+ * can be edited or removed until then.
  */
 @Component({
   selector: 'dash-run-composer',
-  imports: [AttachComponent],
+  imports: [AttachComponent, SlashInputComponent],
   changeDetection: ChangeDetectionStrategy.OnPush,
   styleUrl: './run-composer.component.scss',
   template: `
@@ -65,13 +70,58 @@ const REPLYABLE = new Set(['waiting', 'succeeded', 'failed', 'cancelled', 'inter
           }
         </div>
 
+        @if (queued().length) {
+          <div class="queue" [class.held]="held()">
+            <div class="queue-h">
+              @if (r.status === 'running') {
+                <span><b>Queued</b> · sent when Claude finishes this turn</span>
+              } @else if (r.queueBlocked) {
+                <span><b>Queued, not sent:</b> {{ r.queueBlocked }}</span>
+              } @else if (r.status === 'waiting') {
+                <span><b>Queued</b> · held while Claude waits for your answer</span>
+              } @else {
+                <span><b>Queued</b> · held because the turn was {{ r.status }}</span>
+              }
+              <label class="auto" title="Send the queue even if Claude ends the turn with a question. It goes first, with a note asking Claude to ask its question again afterwards, so you can walk away without Claude deciding for you.">
+                <input type="checkbox" [checked]="!!r.queueAutoSend" [disabled]="busy()" (change)="setAutoSend($any($event.target).checked)" /> Auto-send
+              </label>
+              @if (held()) {
+                <button class="btn primary sm" type="button" [disabled]="busy()" (click)="sendQueued()" title="Send the queued messages as your reply">Send now</button>
+              }
+            </div>
+            @for (q of queued(); track q.id) {
+              <div class="queue-item">
+                @if (editing() === q.id) {
+                  <textarea rows="2" [id]="'q-edit-' + q.id" [value]="draft()" (input)="draft.set($any($event.target).value)" (keydown)="onEditKey($event, q)" [disabled]="busy()"></textarea>
+                  <div class="queue-acts">
+                    <button class="btn primary sm" type="button" [disabled]="busy()" (click)="saveEdit(q)">Save</button>
+                    <button class="linkish" type="button" (click)="editing.set(null)">Cancel</button>
+                  </div>
+                } @else {
+                  <div class="queue-t">{{ q.text }}</div>
+                  <div class="queue-acts">
+                    <button class="linkish" type="button" [disabled]="busy()" (click)="startEdit(q)">Edit</button>
+                    <button class="linkish" type="button" [disabled]="busy()" (click)="removeQueued(q)">Remove</button>
+                  </div>
+                }
+              </div>
+            }
+          </div>
+        }
+
         @if (r.status === 'running') {
-          <div class="note working"><span class="spin"></span> Claude is working… Cancel the turn to interrupt, or wait and reply when it's done.</div>
+          <div class="note working"><span class="spin"></span> Claude is working… Type ahead to queue a message for when it's done, or cancel the turn to interrupt.</div>
+          <form class="reply" (submit)="$event.preventDefault(); queue()">
+            <dash-slash-input [multiline]="true" [rows]="2" [above]="true" [value]="text()" (valueChange)="text.set($event)" (keys)="onKey($event)"
+              placeholder="Queue a message for when this turn ends, or type / for skills…" [disabled]="busy()" />
+            <button class="btn primary" type="submit" [disabled]="busy() || !text().trim()">{{ busy() ? 'Queueing…' : 'Queue' }}</button>
+          </form>
+          <div class="hint">Enter to queue · ↑ in an empty box edits the last queued message. Queued messages go out together as your next reply.</div>
         } @else if (canReply()) {
           <form class="reply" (submit)="$event.preventDefault(); send()"
             (paste)="att.paste($event)" (dragover)="att.dragOver($event)" (drop)="att.drop($event)">
-            <textarea rows="2" [value]="text()" (input)="text.set($any($event.target).value)" (keydown)="onKey($event)"
-              [placeholder]="r.status === 'waiting' ? 'Answer in your own words…' : 'Reply to continue this conversation…'" [disabled]="busy()"></textarea>
+            <dash-slash-input [multiline]="true" [rows]="2" [above]="true" [value]="text()" (valueChange)="text.set($event)" (keys)="onKey($event)"
+              [placeholder]="r.status === 'waiting' ? 'Answer in your own words…' : 'Reply to continue this conversation, or type / for skills…'" [disabled]="busy()" />
             <button class="btn primary" type="submit" [disabled]="busy() || att.uploading() || (!text().trim() && !att.ids().length)">{{ busy() ? 'Sending…' : 'Send' }}</button>
           </form>
           <dash-attach #att [compact]="true" />
@@ -98,6 +148,12 @@ export class RunComposerComponent {
   readonly anyPicked = computed(() =>
     Object.values(this.picks()).some((a) => a.length) || Object.values(this.notes()).some((n) => n.trim()));
   readonly canReply = computed(() => REPLYABLE.has(this.run().status));
+  readonly queued = computed<QueuedMessage[]>(() => this.run().queued || []);
+  /** The queue isn't going out by itself (a question, a cancel or restart, or a limit): offer Send now. */
+  readonly held = computed(() => this.run().status !== 'running' && this.queued().length > 0);
+  /** The queued message being edited, and its text so far. */
+  readonly editing = signal<string | null>(null);
+  readonly draft = signal('');
   private readonly att = viewChild<AttachComponent>('att');
 
   constructor() {
@@ -154,7 +210,65 @@ export class RunComposerComponent {
   }
 
   onKey(e: KeyboardEvent): void {
-    if (e.key === 'Enter' && !e.shiftKey && !e.isComposing) { e.preventDefault(); this.send(); }
+    const running = this.run().status === 'running';
+    if (e.key === 'Enter' && !e.shiftKey && !e.isComposing) { e.preventDefault(); if (running) this.queue(); else this.send(); }
+    // As in the CLI: up in an empty box brings back the last queued message to change it.
+    if (e.key === 'ArrowUp' && !this.text() && this.queued().length) { e.preventDefault(); this.startEdit(this.queued()[this.queued().length - 1]); }
+  }
+
+  // ---- queued messages
+
+  async queue(): Promise<void> {
+    const t = this.text().trim();
+    if (!t) return;
+    // A new queue takes your last auto-send choice; an existing one keeps its own.
+    const autoSend = this.queued().length ? undefined : localStorage.getItem(AUTO_SEND_KEY) === '1';
+    if (await this.queuePost('queue', { text: t, autoSend })) this.text.set('');
+  }
+
+  async setAutoSend(on: boolean): Promise<void> {
+    localStorage.setItem(AUTO_SEND_KEY, on ? '1' : '0');
+    await this.queuePost('queue-auto', { on });
+  }
+
+  startEdit(q: QueuedMessage): void {
+    this.editing.set(q.id);
+    this.draft.set(q.text);
+    setTimeout(() => (document.getElementById('q-edit-' + q.id) as HTMLTextAreaElement | null)?.focus());
+  }
+
+  onEditKey(e: KeyboardEvent, q: QueuedMessage): void {
+    if (e.key === 'Enter' && !e.shiftKey && !e.isComposing) { e.preventDefault(); this.saveEdit(q); }
+    if (e.key === 'Escape') { e.preventDefault(); this.editing.set(null); }
+  }
+
+  async saveEdit(q: QueuedMessage): Promise<void> {
+    if (await this.queuePost('queue-edit', { id: q.id, text: this.draft() })) this.editing.set(null);
+  }
+
+  async removeQueued(q: QueuedMessage): Promise<void> {
+    if (this.editing() === q.id) this.editing.set(null);
+    await this.queuePost('queue-remove', { id: q.id });
+  }
+
+  async sendQueued(): Promise<void> {
+    this.editing.set(null);
+    await this.queuePost('queue-send', {});
+  }
+
+  private async queuePost(action: string, body: object): Promise<boolean> {
+    if (this.busy()) return false;
+    this.busy.set(true);
+    try {
+      const res = await this.api.post<{ run: RunMeta }>('/api/runs/' + this.run().id + '/' + action, body);
+      this.changed.emit(res.run);
+      return true;
+    } catch (e) {
+      this.toast.error((e as Error).message);
+      return false;
+    } finally {
+      this.busy.set(false);
+    }
   }
 
   /** Enter in an "Other" input sends, unless it's confirming an IME candidate. */

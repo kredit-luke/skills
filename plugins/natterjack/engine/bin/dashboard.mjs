@@ -2,10 +2,14 @@
 /**
  * Start, stop or check the workspace dashboard, with nothing else installed:
  *
- *   node dashboard/bin/dashboard.mjs start [--port N] [--restart] [--open] [--skip-build]
- *   node dashboard/bin/dashboard.mjs stop
- *   node dashboard/bin/dashboard.mjs status
- *   node dashboard/bin/dashboard.mjs run        (foreground, for a container: references/hosting.md)
+ *   node <engine>/bin/dashboard.mjs start [--port N] [--restart] [--open] [--skip-build]
+ *   node <engine>/bin/dashboard.mjs stop
+ *   node <engine>/bin/dashboard.mjs status
+ *   node <engine>/bin/dashboard.mjs run        (foreground, for a container: references/hosting.md)
+ *
+ * <engine> is the folder the engine is installed in: natterjack/ by default, dashboard/
+ * in older workspaces (.claude/dashboard/engine.json `dir` says which). The workspace is
+ * the nearest folder above it with .claude/dashboard/, or WORKSPACE_ROOT.
  *
  * Port: --port, else the DASHBOARD_PORT env var, else .claude/dashboard/workspace.json
  * dashboard.port, else 3333.
@@ -16,7 +20,7 @@
  * started it closes. Running start when it's already up does nothing; --restart
  * replaces it (and ends any Claude run in progress; those show as interrupted).
  *
- * The server needs Node >= the "engines" floor in dashboard/package.json. If the
+ * The server needs Node >= the "engines" floor in the engine's package.json. If the
  * default node is older, a newer version installed with nvm is used for it.
  *
  * Plain JavaScript on purpose: this runs before anything is installed, on whatever
@@ -30,8 +34,23 @@ import path from "node:path";
 import { execFileSync, execSync, spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
 
-const DASH_DIR = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
-const ROOT = path.resolve(process.env.WORKSPACE_ROOT || path.join(DASH_DIR, ".."));
+// Where this was started from, not its real path: the engine folder can be a symlink or
+// junction to a shared engine checkout, and the workspace is the one that holds the link.
+const SELF = process.argv[1] && /dashboard\.mjs$/i.test(process.argv[1]) ? path.resolve(process.argv[1]) : fileURLToPath(import.meta.url);
+const DASH_DIR = path.resolve(path.dirname(SELF), "..");
+
+/** The nearest folder above the engine with .claude/dashboard/, else its parent (as server/src/workspace-root.ts). */
+function findWorkspaceRoot(engineDir) {
+  const parent = path.dirname(path.resolve(engineDir));
+  for (let dir = parent; ; dir = path.dirname(dir)) {
+    if (fs.existsSync(path.join(dir, ".claude", "dashboard"))) return dir;
+    if (path.dirname(dir) === dir) return parent;
+  }
+}
+const ROOT = path.resolve(process.env.WORKSPACE_ROOT || findWorkspaceRoot(DASH_DIR));
+// Builds and the server run in the real folder (Angular's compiler can't follow a link),
+// which may not be inside the workspace, so the server is always told it (WORKSPACE_ROOT).
+const ENGINE_DIR = fs.realpathSync(DASH_DIR);
 const LEDGER = path.resolve(process.env.DASHBOARD_LEDGER_DIR || path.join(ROOT, ".claude", "ledger"));
 const IS_WIN = process.platform === "win32";
 
@@ -53,6 +72,9 @@ for (let i = 0; i < rest.length; i++) {
   const key = a.slice(2);
   flags[key] = rest[i + 1] && !rest[i + 1].startsWith("--") ? rest[++i] : true;
 }
+// A server started with --skip-build has DASHBOARD_SKIP_BUILD set (cleanEnv), so a
+// restart from its page skips the build too.
+if (process.env.DASHBOARD_SKIP_BUILD === "1") flags["skip-build"] = true;
 
 function workspacePort() {
   const fromFlag = parseInt(flags.port || "", 10);
@@ -111,7 +133,7 @@ function nodeFloor() {
  */
 function nodeDir(required) {
   try {
-    if (cmpVer(execFileSync("node", ["-v"], { encoding: "utf-8" }), required) >= 0) return "";
+    if (cmpVer(execFileSync("node", ["-v"], { encoding: "utf-8", windowsHide: true }), required) >= 0) return "";
   } catch {}
   const root = IS_WIN
     ? process.env.NVM_HOME || path.join(os.homedir(), "AppData", "Roaming", "nvm")
@@ -131,6 +153,8 @@ function cleanEnv(prependDir) {
   const env = { ...process.env };
   for (const k of CLAUDE_SESSION_ENV) delete env[k];
   delete env.ANTHROPIC_API_KEY;
+  env.WORKSPACE_ROOT = ROOT;
+  if (flags["skip-build"]) env.DASHBOARD_SKIP_BUILD = "1";
   if (prependDir) {
     const key = Object.keys(env).find((k) => k.toLowerCase() === "path") || "PATH";
     env[key] = prependDir + path.delimiter + (env[key] || "");
@@ -160,12 +184,12 @@ function ensureBuilt(env) {
   const installed = path.join(DASH_DIR, "node_modules", ".package-lock.json");
   if (!fs.existsSync(installed) || newest(path.join(DASH_DIR, "package-lock.json")) > newest(installed)) {
     console.log("Installing the dashboard's packages (npm ci)...");
-    execSync("npm ci --no-audit --no-fund", { cwd: DASH_DIR, stdio: "inherit", env });
+    execSync("npm ci --no-audit --no-fund", { cwd: ENGINE_DIR, stdio: "inherit", env, windowsHide: true });
   }
   if (flags["skip-build"]) return;
   if (!fs.existsSync(index) || sources() > newest(index)) {
     console.log("Building the dashboard UI (ng build)...");
-    execSync("npx ng build", { cwd: DASH_DIR, stdio: "inherit", env });
+    execSync("npx ng build", { cwd: ENGINE_DIR, stdio: "inherit", env, windowsHide: true });
   }
 }
 
@@ -192,7 +216,7 @@ function killDashboard(port = PORT) {
     if (IS_WIN) {
       const out = execFileSync("powershell.exe", ["-NoProfile", "-NonInteractive", "-Command",
         `Get-NetTCPConnection -LocalPort ${port} -State Listen -ErrorAction SilentlyContinue | Select-Object -ExpandProperty OwningProcess -Unique`],
-        { encoding: "utf-8", stdio: ["ignore", "pipe", "ignore"] });
+        { encoding: "utf-8", stdio: ["ignore", "pipe", "ignore"], windowsHide: true });
       for (const s of out.split(/\r?\n/)) if (Number(s.trim())) pids.add(Number(s.trim()));
     } else {
       const out = execFileSync("lsof", ["-ti", `tcp:${port}`, "-sTCP:LISTEN"], { encoding: "utf-8", stdio: ["ignore", "pipe", "ignore"] });
@@ -201,7 +225,7 @@ function killDashboard(port = PORT) {
   } catch {}
   for (const pid of pids) {
     try {
-      if (IS_WIN) execFileSync("taskkill", ["/PID", String(pid), "/T", "/F"], { stdio: "ignore" });
+      if (IS_WIN) execFileSync("taskkill", ["/PID", String(pid), "/T", "/F"], { stdio: "ignore", windowsHide: true });
       else process.kill(pid, "SIGTERM");
     } catch {}
   }
@@ -223,12 +247,12 @@ function openBrowser(url) {
 function warnIfClaudeNotReady() {
   let out = null;
   try {
-    out = execFileSync(IS_WIN ? "claude.exe" : "claude", ["auth", "status"], { encoding: "utf-8", stdio: ["ignore", "pipe", "ignore"], timeout: 20000, env: cleanEnv("") });
+    out = execFileSync(IS_WIN ? "claude.exe" : "claude", ["auth", "status"], { encoding: "utf-8", stdio: ["ignore", "pipe", "ignore"], timeout: 20000, env: cleanEnv(""), windowsHide: true });
   } catch (e) {
     // Non-zero exit (e.g. signed out) still prints the status JSON; no output at all = not installed.
     out = e && e.stdout ? String(e.stdout) : null;
     if (out === null && IS_WIN) {
-      try { out = execFileSync("claude auth status", { encoding: "utf-8", stdio: ["ignore", "pipe", "ignore"], timeout: 20000, shell: true, env: cleanEnv("") }); } catch (e2) { out = e2 && e2.stdout ? String(e2.stdout) : null; }
+      try { out = execFileSync("claude auth status", { encoding: "utf-8", stdio: ["ignore", "pipe", "ignore"], timeout: 20000, shell: true, env: cleanEnv(""), windowsHide: true }); } catch (e2) { out = e2 && e2.stdout ? String(e2.stdout) : null; }
     }
   }
   if (!out) {
@@ -276,7 +300,7 @@ async function start() {
   const dir = nodeDir(floor);
   if (dir === null) {
     let current = "none";
-    try { current = execFileSync("node", ["-v"], { encoding: "utf-8" }).trim(); } catch {}
+    try { current = execFileSync("node", ["-v"], { encoding: "utf-8", windowsHide: true }).trim(); } catch {}
     console.error(`The dashboard needs Node.js ${floor} or newer (found: ${current}).`);
     console.error(IS_WIN ? "Install it: winget install OpenJS.NodeJS.LTS  (then open a new terminal)" : "Install it: brew install node  (or nvm install --lts)");
     process.exit(1);
@@ -288,7 +312,7 @@ async function start() {
   const log = fs.openSync(path.join(LEDGER, "dashboard.log"), "a");
   const node = dir ? path.join(dir, IS_WIN ? "node.exe" : "node") : "node";
   const child = spawn(node, ["--disable-warning=ExperimentalWarning", path.join("server", "src", "main.ts"), "--port", String(PORT)], {
-    cwd: DASH_DIR,
+    cwd: ENGINE_DIR,
     detached: true,
     stdio: ["ignore", log, log],
     windowsHide: true,
@@ -333,7 +357,7 @@ async function run() {
   const env = cleanEnv(dir);
   ensureBuilt(env);
   const node = dir ? path.join(dir, IS_WIN ? "node.exe" : "node") : "node";
-  const child = spawn(node, ["--disable-warning=ExperimentalWarning", path.join("server", "src", "main.ts"), "--port", String(PORT)], { cwd: DASH_DIR, stdio: "inherit", env });
+  const child = spawn(node, ["--disable-warning=ExperimentalWarning", path.join("server", "src", "main.ts"), "--port", String(PORT)], { cwd: ENGINE_DIR, stdio: "inherit", env });
   // A stop we passed on is a clean exit; any other signal (the kernel's OOM kill, say)
   // is a crash, reported the shell way (128 + its number) so the platform restarts it.
   let stopping = false;
@@ -346,7 +370,7 @@ async function run() {
 
 const commands = { start, stop, status, run, restart: () => { flags.restart = true; return start(); } };
 if (!commands[cmd]) {
-  console.error("Usage: node dashboard/bin/dashboard.mjs <start|stop|restart|status|run> [--port N] [--restart] [--open] [--skip-build]");
+  console.error(`Usage: node ${path.relative(process.cwd(), SELF) || SELF} <start|stop|restart|status|run> [--port N] [--restart] [--open] [--skip-build]`);
   process.exit(2);
 }
 await commands[cmd]();

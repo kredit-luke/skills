@@ -26,13 +26,16 @@ import path from "node:path";
 import crypto from "node:crypto";
 import { execFile, type ChildProcess } from "node:child_process";
 import type { ServerResponse } from "node:http";
-import type { Attachment, Effort, PermissionMode, Question, RunEvent, RunMeta, RunWatch, WatchedPr } from "../../shared/api.ts";
+import type { Attachment, Effort, PermissionMode, QueuedMessage, Question, RunEvent, RunMeta, RunWatch, WatchedPr } from "../../shared/api.ts";
 import { claudeEnv, spawnClaude } from "./claude.ts";
 import { promptWithAttachments, type Attachments } from "./attachments.ts";
 
 const RESULT_TEXT_MAX = 4000;
 const REPLY_MAX = 20000;
 const LABEL_MAX = 120;
+const QUEUE_MAX = 10;
+/** How often a queue a limit held back is tried again. */
+const QUEUE_RETRY_MS = 30000;
 /** Backstop for run files edited outside this server (a file added or removed is caught by name). */
 const LIST_TTL_MS = 10000;
 const QUESTION_RE = /<<QUESTION>>([\s\S]*?)(?:<<\/QUESTION>>|$)/;
@@ -98,6 +101,12 @@ export interface StartSpec {
   extraPrompt?: string | null;
 }
 
+/**
+ * Whether queued messages may go out now, and the reply options to send them with;
+ * main.ts applies the same limits as a reply you send (concurrent runs, usage, budget).
+ */
+export type QueueGate = () => { blocker: string | null; budgetUsd?: number | null };
+
 export interface ReplyOptions {
   /** A new per-turn cap; null removes it, undefined keeps the run's. */
   budgetUsd?: number | null;
@@ -128,6 +137,7 @@ export class RunManager {
   onTurnStart: (meta: RunMeta) => void;
   /** A run's meta was written (any change the run list shows). */
   onChange: (meta: RunMeta) => void;
+  queueGate: QueueGate;
   attachments: Attachments | null;
   private _cont = new Map<string, any>();
   private _paths = new Map<string, string>();
@@ -136,14 +146,19 @@ export class RunManager {
   /** Events in each streamed run's file: the SSE id of its next live event. */
   private _counts = new Map<string, number>();
 
-  constructor(ledgerDir: string, { onFinish, onTurnStart, onChange, attachments }: { onFinish?: (meta: RunMeta) => void; onTurnStart?: (meta: RunMeta) => void; onChange?: (meta: RunMeta) => void; attachments?: Attachments } = {}) {
+  constructor(ledgerDir: string, { onFinish, onTurnStart, onChange, queueGate, attachments }: { onFinish?: (meta: RunMeta) => void; onTurnStart?: (meta: RunMeta) => void; onChange?: (meta: RunMeta) => void; queueGate?: QueueGate; attachments?: Attachments } = {}) {
     this.runsDir = path.join(ledgerDir, "runs");
     fs.mkdirSync(this.runsDir, { recursive: true });
     this.onFinish = onFinish || (() => {});
     this.onTurnStart = onTurnStart || (() => {});
     this.onChange = onChange || (() => {});
+    this.queueGate = queueGate || (() => ({ blocker: null }));
     this.attachments = attachments || null;
     this._markOrphansInterrupted();
+    // A queue held back by a limit (concurrent runs, usage) goes out once the limit clears.
+    setInterval(() => {
+      for (const r of this.list()) if (r.queueBlocked && drainable(r) && !this.live.has(r.id)) this._drain(r.id);
+    }, QUEUE_RETRY_MS).unref();
   }
 
   // ------------------------------------------------------------ storage
@@ -281,6 +296,101 @@ export class RunManager {
     return meta;
   }
 
+  // ------------------------------------------------------------ queued messages
+
+  /**
+   * Queue a message to send when the current turn ends (like typing ahead in the
+   * CLI). Works mid-turn: it goes on the live turn's copy, which the turn saves.
+   * Queued on a run that has already finished, it goes out straight away.
+   */
+  enqueue(id: string, text: string, autoSend?: boolean): RunMeta {
+    text = String(text || "").trim();
+    if (!text) throw httpError(400, "The message is empty.");
+    if (text.length > REPLY_MAX) throw httpError(400, "The message is too long.");
+    const meta = this._queueOwner(id);
+    if (meta.status === "handedOff") throw httpError(409, "This run continued in a terminal; reply there.");
+    const queued = meta.queued || (meta.queued = []);
+    if (queued.length >= QUEUE_MAX) throw httpError(409, `Up to ${QUEUE_MAX} messages can wait in the queue.`);
+    queued.push({ id: crypto.randomBytes(4).toString("hex"), text, at: new Date().toISOString() });
+    if (autoSend !== undefined) meta.queueAutoSend = !!autoSend;
+    meta.queueBlocked = null;
+    this._save(meta);
+    if (!this.live.has(id) && drainable(meta)) this._drain(id);
+    return this.live.get(id)?.meta || this.get(id) || meta;
+  }
+
+  /** Change a queued message that hasn't gone out yet (empty text removes it). Works mid-turn. */
+  editQueued(id: string, qid: string, text: string): RunMeta {
+    text = String(text || "").trim();
+    if (!text) return this.removeQueued(id, qid);
+    if (text.length > REPLY_MAX) throw httpError(400, "The message is too long.");
+    const meta = this._queueOwner(id);
+    const item = (meta.queued || []).find((q) => q.id === qid);
+    if (!item) throw httpError(409, "That message was already sent.");
+    item.text = text;
+    this._save(meta);
+    return meta;
+  }
+
+  /** Turn auto-send on or off (send the queue as the answer when Claude asks a question). Works mid-turn. */
+  setQueueAutoSend(id: string, on: boolean): RunMeta {
+    const meta = this._queueOwner(id);
+    meta.queueAutoSend = !!on;
+    this._save(meta);
+    if (!this.live.has(id) && drainable(meta)) this._drain(id);
+    return this.live.get(id)?.meta || this.get(id) || meta;
+  }
+
+  /** Take a message out of the queue. Works mid-turn. */
+  removeQueued(id: string, qid: string): RunMeta {
+    const meta = this._queueOwner(id);
+    const before = (meta.queued || []).length;
+    meta.queued = (meta.queued || []).filter((q) => q.id !== qid);
+    if (meta.queued.length === before) throw httpError(409, "That message was already sent.");
+    if (!meta.queued.length) meta.queueBlocked = null;
+    this._save(meta);
+    return meta;
+  }
+
+  /**
+   * Send the whole queue now, as one reply: for a run that's waiting on a question,
+   * was cancelled or interrupted (those hold the queue), or whose queue was blocked.
+   */
+  sendQueued(id: string, opts: ReplyOptions = {}): RunMeta {
+    const meta = this.get(id);
+    if (!meta) throw httpError(404, "Unknown run");
+    if (!meta.queued || !meta.queued.length) throw httpError(409, "Nothing is queued.");
+    // Sent while a question is open (auto-send), say so: Claude shouldn't read it as the answer.
+    const text = (meta.status === "waiting" ? QUEUED_OVER_QUESTION + "\n\n" : "") + queuedText(meta.queued);
+    const sent = this.reply(id, text, opts); // throws, leaving the queue as it was, if the run can't take a reply
+    sent.queued = [];
+    sent.queueBlocked = null;
+    this._save(sent);
+    return sent;
+  }
+
+  private _queueOwner(id: string): RunMeta {
+    const live = this.live.get(id);
+    const meta = live ? live.meta : this.get(id);
+    if (!meta) throw httpError(404, "Unknown run");
+    return meta;
+  }
+
+  /** Send the queue as the next turn if the run is idle and the limits allow it; otherwise say why it's held. */
+  private _drain(id: string) {
+    if (this.live.has(id)) return;
+    const meta = this.get(id);
+    if (!meta || !drainable(meta)) return;
+    const gate = this.queueGate();
+    try {
+      if (gate.blocker) throw new Error(gate.blocker);
+      this.sendQueued(id, gate.budgetUsd === undefined ? {} : { budgetUsd: gate.budgetUsd });
+    } catch (e: any) {
+      const latest = this.get(id);
+      if (latest && !this.live.has(id)) { latest.queueBlocked = e.message; this._save(latest); }
+    }
+  }
+
   /** Change a run's title. Works mid-turn: the live turn's copy is updated too. */
   rename(id: string, label: string): RunMeta {
     label = String(label || "").replace(/\s+/g, " ").trim();
@@ -352,6 +462,8 @@ export class RunManager {
     }
     meta.status = "handedOff";
     meta.question = null;
+    meta.queued = [];
+    meta.queueBlocked = null;
     meta.handedOffAt = new Date().toISOString();
     endWatch(meta, "Continued in a terminal.");
     this._save(meta);
@@ -582,6 +694,8 @@ export class RunManager {
       else applyWatchBlock(meta, rawFinalText);
       this._save(meta);
       this.onFinish(meta);
+      // Messages typed during the turn are the next turn (once finish's own work has settled).
+      if (drainable(meta)) setImmediate(() => this._drain(meta.id));
 
       // Give killed background tasks a moment to write their [killed] marker, then report them.
       setTimeout(() => {
@@ -683,7 +797,30 @@ export function normaliseMeta(m: any): RunMeta {
   if (m.flagged === undefined) m.flagged = false;
   if (m.turnStartedAt === undefined) m.turnStartedAt = m.startedAt;
   if (m.watch === undefined) m.watch = null;
+  if (!Array.isArray(m.queued)) m.queued = [];
+  if (m.queueBlocked === undefined) m.queueBlocked = null;
   return m;
+}
+
+// ------------------------------------------------------------------ queued messages
+
+/**
+ * Whether a run's queue goes out by itself: after a turn that simply ended, or with
+ * auto-send on, also one that ended with a question. Otherwise a question waits for
+ * your answer, and a cancel or restart means you stepped in: those hold the queue
+ * until you send it.
+ */
+export function drainable(meta: Pick<RunMeta, "status" | "queued" | "queueAutoSend">): boolean {
+  const ended = meta.status === "succeeded" || meta.status === "failed" || (meta.status === "waiting" && !!meta.queueAutoSend);
+  return ended && !!meta.queued && meta.queued.length > 0;
+}
+
+/** Leads a queue auto-sent over an open question. */
+export const QUEUED_OVER_QUESTION = "(Sent from my queue: I typed this before you asked your question, so it isn't my answer. Work on this first, then ask your question again when you're done.)";
+
+/** Queued messages as one reply, in the order they were typed (the CLI sends a backlog the same way). */
+export function queuedText(queued: QueuedMessage[]): string {
+  return queued.map((q) => q.text).join("\n\n");
 }
 
 // ------------------------------------------------------------------ PR watch
