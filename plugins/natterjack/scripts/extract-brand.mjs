@@ -24,7 +24,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { isEngineFolder } from "./lib.mjs";
 
-const SKIP = new Set(["node_modules", ".git", "dist", "build", "out", "bin", "obj", "vendor", "target", ".next", ".nuxt", ".angular", "coverage", "worktrees", ".claude", "dashboard", "natterjack"]);
+const SKIP = new Set(["node_modules", ".git", "dist", "build", "out", "bin", "obj", "vendor", "target", ".next", ".nuxt", ".angular", "coverage", "worktrees", ".claude"]);
 const read = (f) => { try { return fs.readFileSync(f, "utf-8"); } catch { return null; } };
 
 function walk(dir, test, depth = 6, out = []) {

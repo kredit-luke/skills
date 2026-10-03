@@ -4,8 +4,9 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { execFileSync } from "node:child_process";
 import { brandCandidates, contrast, isHashedBuild, mapToContract, parseColor, themeCss, tokensOnly, withoutVendorVars } from "../extract-brand.mjs";
-import { compareVersions, engineVersion, normalizeRepo, pluginVersion, readRepos, releaseCheck } from "../lib.mjs";
+import { compareVersions, engineVersion, fetchEngine, latestRelease, normalizeRepo, pluginVersion, readRepos, releaseCheck } from "../lib.mjs";
 import { listRepos } from "../discover.mjs";
 import { scaffold } from "../scaffold.mjs";
 import { upgrade } from "../upgrade.mjs";
@@ -390,4 +391,34 @@ test("brand scans skip the engine, whatever its folder is called", () => {
   fs.mkdirSync(path.join(root, "app", "styles"), { recursive: true });
   fs.writeFileSync(path.join(root, "app", "styles", "brand.css"), tokens);
   assert.deepEqual(brandCandidates(root).map((c) => c.file), ["app/styles/brand.css"]);
+});
+
+test("brand scans still read a team's own folder called dashboard (only an engine is skipped)", () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "aos-own-dashboard-"));
+  fs.mkdirSync(path.join(root, "dashboard", "src", "styles"), { recursive: true });
+  fs.writeFileSync(path.join(root, "dashboard", "src", "styles", "brand.css"), ":root { --brand-900: #082310; --brand-700: #104620; --cream: #fef6e7; --ink: #111; }");
+  assert.deepEqual(brandCandidates(root).map((c) => c.file), ["dashboard/src/styles/brand.css"]);
+});
+
+test("releases before the rename: latestRelease and fetchEngine read agentic-os-v tags and plugins/agentic-os", () => {
+  const repo = fs.mkdtempSync(path.join(os.tmpdir(), "aos-releases-"));
+  const git = (...a) => execFileSync("git", a, { cwd: repo, stdio: "ignore" });
+  const release = (plugin, version, tag) => {
+    fs.rmSync(path.join(repo, "plugins"), { recursive: true, force: true });
+    fs.mkdirSync(path.join(repo, "plugins", plugin, "engine"), { recursive: true });
+    fs.writeFileSync(path.join(repo, "plugins", plugin, "engine", "ENGINE.json"), JSON.stringify({ version }));
+    git("add", "-A");
+    git("-c", "user.email=t@example.com", "-c", "user.name=T", "commit", "-q", "-m", version);
+    git("tag", tag);
+  };
+  git("init", "-q");
+  release("agentic-os", "0.6.0", "agentic-os-v0.6.0");
+  release("natterjack", "0.9.0", "natterjack-v0.9.0");
+
+  assert.equal(latestRelease(repo), "0.9.0", "the newest across both tag names");
+  const old = fetchEngine("0.6.0", repo);
+  assert.ok(old, "an agentic-os release is still a merge base");
+  assert.equal(engineVersion(old), "0.6.0");
+  assert.equal(engineVersion(fetchEngine("0.9.0", repo)), "0.9.0");
+  assert.equal(fetchEngine("0.5.0", repo), null, "a version with no tag");
 });
