@@ -5,6 +5,10 @@
  *
  *   node dashboard/bin/snapshot.mjs publish [--clone] [--out <dir>] [--dry] [--no-workspace]
  *
+ * and to install or update a whole workspace from them, with no git (the hosted image's boot):
+ *
+ *   node dashboard/bin/snapshot.mjs install [--into <dir>] [--repos]
+ *
  * Runs server/src/snapshot-cli.ts on this Node (it needs the engine's Node floor,
  * like the server). Usually from CI; see references/config.md "Snapshots".
  */

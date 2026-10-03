@@ -199,7 +199,12 @@ test("repos.json: both field styles read the same; scaffold writes the standard 
 
   // snapshot: the source must be an adapter the installed engine has, with its required settings.
   const snap = (snapshot) => { fs.writeFileSync(path.join(ws, "repos.json"), JSON.stringify({ snapshot, repos: [] })); return validate(ws).errors.join("\n"); };
-  assert.match(snap({ source: "dropbox" }), /snapshot\.source "dropbox" has no adapter in this engine \(known: confluence, http\)/);
+  assert.match(snap({ source: "dropbox" }), /snapshot\.source "dropbox" has no adapter in this engine \(known: confluence, http, azure-blob, s3\)/);
+  assert.match(snap({ source: "azure-blob", account: "acme" }), /needs "container"/);
+  assert.match(snap({ source: "azure-blob", container: "snapshots" }), /needs "account" \(or "endpoint"\)/);
+  assert.match(snap({ source: "azure-blob", account: "Acme_Code", container: "snapshots" }), /3-24 lowercase letters and digits/);
+  assert.match(snap({ source: "s3", region: "us-east-1" }), /needs "bucket"/);
+  assert.equal(snap({ source: "s3", bucket: "acme-code" }), "");
   assert.match(snap({ source: "confluence", site: "acme.atlassian.net" }), /needs "pageId"/);
   assert.match(snap({ source: "confluence", site: "acme.atlassian.net", pageId: "abc" }), /the number in the page's URL/);
   assert.match(snap({ source: "http", baseUrl: "https://x", auth: "token" }), /snapshot\.auth must be/);

@@ -51,11 +51,17 @@ spec:
             - { name: DASHBOARD_OWNER, value: "${EMAIL}" }
             - { name: DASHBOARD_BIND, value: "127.0.0.1" }
             - { name: DASHBOARD_PROXY_SECRET, valueFrom: { secretKeyRef: { name: dashboard-hosted, key: proxy-secret } } }
+            # The workspace from git...
             - { name: WORKSPACE_REPO, value: "https://git.example.com/acme/workspace.git" }
             - { name: GIT_TOKEN, valueFrom: { secretKeyRef: { name: dashboard-hosted, key: git-token, optional: true } } }
+            # ...or from a published snapshot (no git or code-host account; replaces the two above):
+            # - { name: SNAPSHOT_CONFIG, value: '{"source":"s3","bucket":"acme-code","region":"eu-west-1"}' }
+            # - { name: SNAPSHOT_S3_ACCESS_KEY_ID, valueFrom: { secretKeyRef: { name: dashboard-hosted, key: snapshot-key-id } } }
+            # - { name: SNAPSHOT_S3_SECRET_ACCESS_KEY, valueFrom: { secretKeyRef: { name: dashboard-hosted, key: snapshot-secret } } }
           resources:
             # Measured: ~115 MB idle, ~300 MB per Claude run (subagents run inside it).
-            # The limit covers the first start's npm ci + ng build (~1.6 GB for a minute).
+            # The limit covers the first start's npm ci + ng build (~1.6 GB for a minute;
+            # a snapshot with the prebuilt UI skips it).
             requests: { cpu: 100m, memory: 512Mi }
             limits: { cpu: "1", memory: 2Gi }
           # exec, not httpGet: the dashboard only listens on 127.0.0.1 inside the pod.

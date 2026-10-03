@@ -35,8 +35,30 @@
         },
         {
           "type": "object",
+          "required": ["source", "container"],
+          "properties": {
+            "source": { "const": "azure-blob" },
+            "account": { "type": "string", "pattern": "^[a-z0-9]{3,24}$", "description": "The storage account's name." },
+            "container": { "type": "string", "description": "The blob container the archives go in." },
+            "prefix": { "type": "string", "description": "A folder in the container, e.g. code/." },
+            "endpoint": { "type": "string", "description": "Instead of https://<account>.blob.core.windows.net (Azurite, sovereign clouds)." }
+          }
+        },
+        {
+          "type": "object",
+          "required": ["source", "bucket"],
+          "properties": {
+            "source": { "const": "s3" },
+            "bucket": { "type": "string" },
+            "region": { "type": "string", "description": "e.g. us-east-1 (the default); auto for Cloudflare R2." },
+            "prefix": { "type": "string", "description": "A folder in the bucket, e.g. snapshots/." },
+            "endpoint": { "type": "string", "description": "An S3-compatible store's address (R2, MinIO, GCS interop...): path-style." }
+          }
+        },
+        {
+          "type": "object",
           "required": ["source"],
-          "properties": { "source": { "type": "string", "not": { "enum": ["confluence", "http"] } } },
+          "properties": { "source": { "type": "string", "not": { "enum": ["confluence", "http", "azure-blob", "s3"] } } },
           "description": "Another source adapter the engine has."
         }
       ]

@@ -5,6 +5,8 @@
  *
  *   "snapshot": { "source": "confluence", "site": "acme.atlassian.net", "pageId": "123456" }
  *   "snapshot": { "source": "http", "baseUrl": "https://files.acme.com/code", "auth": "bearer" }
+ *   "snapshot": { "source": "azure-blob", "account": "acmecode", "container": "snapshots" }
+ *   "snapshot": { "source": "s3", "bucket": "acme-code", "region": "eu-west-1" }
  *
  * An adapter only moves files by name. What's in them is snapshot.ts's business: one
  * <repo>.tar.gz per repo plus snapshot-manifest.json (names → commit, size, date),
@@ -18,6 +20,8 @@ import type { ProviderContext, ProviderHelp, ProviderStatus } from "../docs-prov
 import type { SnapshotConfig } from "../repos.ts";
 import { ConfluenceSource } from "./confluence.ts";
 import { HttpSource } from "./http.ts";
+import { AzureBlobSource } from "./azure-blob.ts";
+import { S3Source } from "./s3.ts";
 
 export interface SnapshotFile { id: string; name: string; size: number | null; updatedAt: string | null }
 
@@ -46,6 +50,8 @@ type Factory = (cfg: SnapshotConfig, ctx: ProviderContext) => SnapshotSource;
 const SOURCES: Record<string, Factory> = {
   confluence: (cfg, ctx) => new ConfluenceSource(cfg, ctx),
   http: (cfg, ctx) => new HttpSource(cfg, ctx),
+  "azure-blob": (cfg, ctx) => new AzureBlobSource(cfg, ctx),
+  s3: (cfg, ctx) => new S3Source(cfg, ctx),
 };
 
 export function snapshotSourceKinds(): string[] {

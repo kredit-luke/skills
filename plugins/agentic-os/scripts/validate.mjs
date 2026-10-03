@@ -239,13 +239,15 @@ export function validate(root) {
       const snap = manifest.snapshot;
       if (snap !== undefined) {
         const kinds = literalKeys(path.join(engine, "server", "src", "snapshot-sources", "index.ts"), "const SOURCES");
-        const need = { confluence: ["site", "pageId"], http: ["baseUrl"] };
+        const need = { confluence: ["site", "pageId"], http: ["baseUrl"], "azure-blob": ["container"], s3: ["bucket"] };
         if (!snap || typeof snap !== "object" || typeof snap.source !== "string" || !snap.source) err("repos.json", "snapshot needs a \"source\" (e.g. \"confluence\" or \"http\")");
         else if (kinds.length && !kinds.includes(snap.source)) err("repos.json", `snapshot.source "${snap.source}" has no adapter in this engine (known: ${kinds.join(", ")})`);
         else {
           for (const k of need[snap.source] || []) if (!snap[k]) err("repos.json", `snapshot.source "${snap.source}" needs "${k}"`);
           if (snap.source === "confluence" && snap.pageId && !/^\d+$/.test(String(snap.pageId))) err("repos.json", "snapshot.pageId is the number in the page's URL (…/pages/<pageId>/…)");
           if (snap.source === "http" && snap.auth && !["none", "bearer", "basic"].includes(snap.auth)) err("repos.json", `snapshot.auth must be "none", "bearer" or "basic"`);
+          if (snap.source === "azure-blob" && !snap.account && !snap.endpoint) err("repos.json", 'snapshot.source "azure-blob" needs "account" (or "endpoint")');
+          if (snap.source === "azure-blob" && snap.account && !/^[a-z0-9]{3,24}$/.test(String(snap.account))) err("repos.json", "snapshot.account is the storage account's name: 3-24 lowercase letters and digits");
         }
       }
     }

@@ -26,6 +26,7 @@ import type { SnapshotFile, SnapshotSource } from "./snapshot-sources/index.ts";
 import { MANIFEST, parseManifest } from "./snapshot-sources/manifest.ts";
 import type { Manifest, ManifestEntry } from "./snapshot-sources/manifest.ts";
 import { extractTarGz } from "./tar.ts";
+import { extractZip } from "./zip.ts";
 import { canInstallFrom, installerName, renderInstaller, type InstallerRole } from "./installer.ts";
 
 const run = promisify(execFile);
@@ -189,6 +190,74 @@ export function downloadStep(root: string, source: SnapshotSource, t: { repo: Re
       rmrf(staging);
     }
   };
+}
+
+// ------------------------------------------------------------------ installing a workspace
+
+export interface InstallResult { workspace: "installed" | "updated" | "current"; sha: string; ui: boolean; repos: number }
+
+/**
+ * Install or update a whole workspace from its published snapshot, with no git: what a
+ * hosted container runs on boot (`snapshot.mjs install`). workspace.zip goes over
+ * `dir` (only an absent or empty folder, or one installed this way: never a git clone),
+ * then the prebuilt UI, then, with `repos`, every repo that's missing or older.
+ * Everything else in `dir` is left alone: the ledger, downloaded repos. Files deleted
+ * from the workspace since the last install stay until the folder is installed fresh.
+ */
+export async function installWorkspace(source: SnapshotSource, dir: string, opts: { repos?: boolean; log?: (t: string) => void } = {}): Promise<InstallResult> {
+  const log = opts.log || (() => {});
+  const state = repoState(path.dirname(path.resolve(dir)), path.basename(path.resolve(dir)));
+  if (!canDownload(state)) throw new Error(`${dir} is ${state === "cloned" ? "a git clone" : "a folder with other files"}; not installing over it.`);
+  const { manifest, files } = await fetchManifest(source, `install:${dir}`, true);
+  const ws = manifest.workspace;
+  const wsFile = ws && files.find((f) => f.name === ws.file);
+  if (!ws || !wsFile) throw new Error("Nothing has been published for the workspace itself yet (no workspace zip in the manifest).");
+  const fetchTo = async (entry: ManifestEntry, file: SnapshotFile, into: string) => {
+    const archive = path.join(into, entry.file);
+    log(`Downloading ${entry.file} (${entry.sha.slice(0, 10)}, built ${entry.builtAt}) from ${source.label}`);
+    await source.download(file, archive);
+    if (entry.size && fs.statSync(archive).size !== entry.size) throw new Error(`Downloaded ${fs.statSync(archive).size} bytes of ${entry.file}; the manifest says ${entry.size}. Try again.`);
+    return archive;
+  };
+
+  const local = readStamp(dir);
+  let workspace: InstallResult["workspace"] = "current";
+  if (!local || local.sha !== ws.sha) {
+    const tmp = tmpDir("ws");
+    try {
+      const staged = path.join(tmp, "workspace");
+      const r = await extractZip(await fetchTo(ws, wsFile, tmp), staged);
+      log(`Extracted ${r.files} workspace files`);
+      fs.mkdirSync(dir, { recursive: true });
+      fs.cpSync(staged, dir, { recursive: true, force: true });
+    } finally { rmrf(tmp); }
+    workspace = local ? "updated" : "installed";
+    log(`${dir} is now at ${ws.sha.slice(0, 10)}`);
+  }
+
+  // After the workspace files, so the built UI is newer than its sources and isn't rebuilt.
+  let ui = false;
+  const dist = path.join(dir, "dashboard", "dist");
+  const uiFileAt = manifest.ui && files.find((f) => f.name === manifest.ui!.file);
+  const prebuilt = (() => { try { return JSON.parse(fs.readFileSync(path.join(dist, ".prebuilt.json"), "utf-8")).sha; } catch { return null; } })();
+  if (manifest.ui && uiFileAt && (workspace !== "current" || prebuilt !== manifest.ui.sha)) {
+    const tmp = tmpDir("ui");
+    try {
+      const staged = path.join(tmp, "ui");
+      await extractTarGz(await fetchTo(manifest.ui, uiFileAt, tmp), staged);
+      rmrf(dist);
+      fs.cpSync(path.join(staged, "dist"), dist, { recursive: true });
+      ui = true;
+      log("Installed the prebuilt dashboard UI");
+    } finally { rmrf(tmp); }
+  } else if (!manifest.ui) log("No prebuilt UI was published: the dashboard builds it on first start.");
+
+  let repos = 0;
+  if (opts.repos) {
+    for (const t of await downloadTargets(dir, source, null)) { await downloadStep(dir, source, t)(log); repos++; }
+    log(repos ? `Downloaded ${repos} repo${repos === 1 ? "" : "s"}` : "Every repo is current");
+  }
+  return { workspace, sha: ws.sha, ui, repos };
 }
 
 // ------------------------------------------------------------------ publishing

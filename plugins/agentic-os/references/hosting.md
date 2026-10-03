@@ -43,15 +43,21 @@ What changes for the person:
 
 ## The image
 
-`templates/hosted/Dockerfile` is Node 24 plus git and the Claude CLI, with everything personal on a volume at `/data`. Build it once per workspace and run one container per person:
+`templates/hosted/Dockerfile` is Node 24 plus git, the Claude CLI and the engine's server code, with everything personal on a volume at `/data`. Build it from `plugins/agentic-os` once per workspace, and run one container per person:
 
 ```sh
-docker build -t <registry>/agentic-dashboard:1 plugins/agentic-os/templates/hosted
+docker build -f plugins/agentic-os/templates/hosted/Dockerfile -t <registry>/agentic-dashboard:1 plugins/agentic-os
 ```
 
-On start, `entrypoint.sh` clones `WORKSPACE_REPO` to `/data/workspace` the first time (with `GIT_TOKEN` if the repo is private, through `GIT_ASKPASS`, so it's never written to disk), pulls it afterwards, and runs `node dashboard/bin/dashboard.mjs run`, which is the server in the foreground. The first start runs `npm ci` and `ng build` on the volume, which takes a minute or two and about 1.6 GB of memory. Later starts skip the build.
+On start, `entrypoint.sh` puts the workspace in `/data/workspace` or updates it. Then it runs `node dashboard/bin/dashboard.mjs run`, which is the server in the foreground. The workspace comes from one of two places.
 
-The person's app repos get onto the volume the usual ways: the Repos page clones them (with a token the container can use), or, for people who shouldn't have code-host access, the read-only snapshots (`repos.json` `snapshot`).
+**From a published snapshot** (recommended). This needs no git and no code-host account, in the container or for the person. Set `SNAPSHOT_CONFIG` to `repos.json`'s `snapshot` block as JSON, and the source's credentials in the environment (`SNAPSHOT_AZURE_SAS`, `SNAPSHOT_S3_*`, `SNAPSHOT_HTTP_TOKEN`, ...).
+- **On boot**, it runs `snapshot.mjs install --repos` from the image. That installs or updates the workspace from the published workspace zip, then the prebuilt UI, then every repo, all as read-only copies (config.md "Snapshots").
+- **With a prebuilt UI** (publish from where `dashboard/` is built), the first start skips `npm ci` and `ng build` entirely.
+- **The key** comes from the environment, so the person never connects anything. Inject a read-only one: read and list for blobs, GetObject and ListBucket for S3.
+- **To publish**, run publish from CI or from the Repos page on an engineer's machine, with a key that can write.
+
+**From git:** `WORKSPACE_REPO` is cloned the first time and pulled afterwards. Add `GIT_TOKEN` if the repo is private; it goes through `GIT_ASKPASS`, so it's never written to disk. The first start runs `npm ci` and `ng build` on the volume, which takes a minute or two and about 1.6 GB of memory. Later starts skip the build. The person's app repos come from the Repos page: clones with a token the container can use, or read-only snapshots.
 
 ## Signing in to Claude
 
@@ -137,6 +143,7 @@ On every cloud:
 - **Azure App Service** (Web App for Containers, Linux): one app per person. Either put the router (with `static`) in front of them all, or give each app its own address.
   - Run the image with oauth2-proxy as a sidecar container in front of it, and point the app's port (`WEBSITES_PORT`) at the sidecar's 4180. App Service's built-in sign-in (Easy Auth) passes the person's identity in `X-MS-CLIENT-PRINCIPAL-NAME`, but it can't add the proxy secret, so on its own it isn't enough.
   - Mount an Azure Files share at `/data` (path mappings).
+  - Publish the snapshots to a blob container (`azure-blob`) and inject a read-only SAS as `SNAPSHOT_AZURE_SAS`. Issue it from a stored access policy so you can revoke it.
   - Turn on **Always On**, or idle apps are unloaded mid-run.
   - Pick a plan with 2 GB+ per app for the first start's build.
 - **Managed container services** (Cloud Run, ECS on Fargate, Azure Container Apps) work if they can keep a persistent volume (a filesystem mount; EFS for Fargate, Azure Files for Container Apps) and keep the CPU allocated between requests. Runs carry on in the background after the page closes, so don't let the platform throttle or scale the container to zero while a run is going.
