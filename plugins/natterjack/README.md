@@ -23,7 +23,8 @@ Natterjack is a Claude Code plugin that turns your team's repos into one workspa
 - **Apps & Workspaces**: start and stop your apps and stacks in the right order, per worktree, with logs.
 - **Connections**: every MCP server Claude can reach (claude.ai connectors, plugins, your own), whether it's working, and one-click fixes: sign in, approve, add, and let dashboard runs use it.
 - **Machine**: what this computer needs for your stack (Node, Go, PHP, Python, .NET, Java, Docker, databases…), checked live, with one-click installs.
-- **Docs, Links, Infrastructure**: your docs (repos, or Confluence/Notion/Drive), link tiles anyone can add to (for the team or just themselves), and your infrastructure (accounts, environments, URLs, databases, IPs) with click-to-copy values.
+- **Knowledge**: what the business knows, by area (Company, Customers, Finance…): notes in your own S3, Google Cloud Storage or Azure bucket that anyone can edit from the page (no GitHub seat needed), docs in the repos, and links to Notion, Confluence or Drive with whether Claude can reach them. Obsidian-style links, backlinks, tags and review dates; Claude reads all of it.
+- **Links, Infrastructure**: link tiles anyone can add to (for the team or just themselves), and your infrastructure (accounts, environments, URLs, databases, IPs) with click-to-copy values.
 - **Search, Skills, Usage, Memory, Explore, Settings**: search everything without spending tokens, run skills as cards, see plan usage, browse and edit files.
 
 It's tailored to your team by **discovery, not forms**: Claude scans your repos (stacks, ports, run commands, databases, CI, deploy targets, ticket keys in your branches, your design system), asks only what it couldn't work out, and writes the config. The dashboard itself is a finished engine copied into your workspace. You own that copy (change anything), and `upgrade` merges newer versions around your changes.

@@ -13,47 +13,75 @@ import { TrustedHtmlPipe } from '../../core/trusted-html.pipe';
 import { vscodeUrl } from '../../core/util';
 import { PageHeaderComponent } from '../../shared/page-header.component';
 import { ExternalDocsComponent } from './external-docs.component';
+import { byArea, reach } from './knowledge.util';
+import { NotesViewComponent } from './notes-view.component';
 
 type View = 'page' | 'text';
 
 /**
- * Docs: the sources in .claude/dashboard/docs.json. Sites and notes in the
- * workspace are read from your working copy; external ones (Confluence, Notion,
- * ...) open where they live, and Ask Claude reaches them through their MCP connector.
- * Route: /docs, /docs/:site, /docs/:site?page=<doc id>.
+ * Knowledge (once Docs): the sources in .claude/dashboard/docs.json, grouped by area
+ * (Company, Customers, Finance, ...). Sites and notes in the workspace are read from
+ * your working copy; stores are business notes in the team's bucket, edited here;
+ * external ones (Confluence, Notion, ...) open where they live, and Claude reaches
+ * them through their MCP connector (the Connections page says whether it can).
+ * Route: /knowledge, /knowledge/:site, ?note=<rel> (notes) or ?page=<doc id> (sites).
  */
 @Component({
   selector: 'dash-docs',
-  imports: [PageHeaderComponent, RouterLink, TrustedHtmlPipe, ExternalDocsComponent],
+  imports: [PageHeaderComponent, RouterLink, TrustedHtmlPipe, ExternalDocsComponent, NotesViewComponent],
   changeDetection: ChangeDetectionStrategy.OnPush,
   styleUrl: './docs.component.scss',
   template: `
-    <dash-page-header eyebrow="Company" title="Docs" [sub]="api.copy('docsSub', 'Documentation in the workspace, read from your local copy of each repo (published sites link to their live version), and docs that live elsewhere.')" />
+    <dash-page-header eyebrow="Company" title="Knowledge" [sub]="api.copy('knowledgeSub', api.copy('docsSub', 'What the business knows, by area: notes in your own storage, docs in the repos, and the tools where the rest lives. Claude reads all of it.'))" />
 
     @if (!siteKey()) {
-      <div class="sites">
-        @for (s of data.docSites(); track s.key) {
-          @if (s.kind === 'external') {
-            <div class="site-card ext">
-              @if (s.searchable) { <a class="n" [routerLink]="['/docs', s.key]">{{ s.name }}</a> }
-              @else { <a class="n" [href]="s.url" target="_blank" rel="noopener">{{ s.name }} ↗</a> }
-              <span class="ty">{{ s.type }} · {{ host(s.url) }}@if (s.searchable) { · <a [href]="s.url" target="_blank" rel="noopener">open ↗</a> }</span>
-              @if (s.description) { <span class="ty">{{ s.description }}</span> }
-              <button class="btn ghost sm" type="button" (click)="askExternal(s)" title="A read-only Claude run that looks this up through the {{ s.type }} connector">Ask Claude</button>
+      @for (g of groups(); track g.area?.key || '_other') {
+        <section class="area">
+          @if (groups().length > 1 || g.area) {
+            <div class="area-h">
+              <h2>{{ g.area?.label || 'Other sources' }}</h2>
+              @if (g.area?.owner) { <span class="ty">owner: {{ g.area!.owner }}</span> }
+              @if (g.area?.reviewEvery) { <span class="ty">reviewed every {{ g.area!.reviewEvery }} days</span> }
+              @if (staleIn(g.sites)) { <span class="tag amber">{{ staleIn(g.sites) }} due for review</span> }
+              @if (g.area?.description) { <span class="ty desc">{{ g.area!.description }}</span> }
             </div>
-          } @else {
-            <a class="site-card" [class.off]="!s.available" [routerLink]="['/docs', s.key]">
-              <span class="n">{{ s.name }}</span>
-              <span class="ty">{{ s.docs }} page{{ s.docs === 1 ? '' : 's' }} · {{ s.kind === 'site' ? host(s.live) : 'internal notes' }}</span>
-              @if (!s.available) { <span class="ty">not cloned</span> }
-            </a>
           }
-        } @empty {
-          @if (data.docsLoaded()) {
-            <div class="empty md tight"><p>No docs sources yet. Add them in <code>.claude/dashboard/docs.json</code>: a static-site repo, a folder of Markdown, or a link to Confluence, Notion or a wiki.</p></div>
-          } @else { <div class="empty">Loading…</div> }
-        }
-      </div>
+          <div class="sites">
+            @for (s of g.sites; track s.key) {
+              @if (s.kind === 'external') {
+                <div class="site-card ext">
+                  @if (s.searchable) { <a class="n" [routerLink]="['/knowledge', s.key]">{{ s.name }}</a> }
+                  @else { <a class="n" [href]="s.url" target="_blank" rel="noopener">{{ s.name }} ↗</a> }
+                  <span class="ty">{{ s.type }} · {{ host(s.url) }}@if (s.searchable) { · <a [href]="s.url" target="_blank" rel="noopener">open ↗</a> }</span>
+                  @if (s.description) { <span class="ty">{{ s.description }}</span> }
+                  @switch (reach(s)) {
+                    @case ('ok') { <span class="reach ok" [title]="'Through ' + s.connection">✓ Claude can reach it</span> }
+                    @case ('bad') { <a class="reach bad" routerLink="/connections" [title]="s.connection + ' is not working for you'">! Claude can't reach it: fix on Connections</a> }
+                    @case ('checking') { <span class="reach">Checking Claude's access…</span> }
+                  }
+                  <button class="btn ghost sm" type="button" (click)="askExternal(s)" title="A read-only Claude run that looks this up through the {{ s.type }} connector">Ask Claude</button>
+                </div>
+              } @else {
+                <a class="site-card" [class.off]="!s.available && s.kind !== 'store'" [routerLink]="['/knowledge', s.key]">
+                  <span class="n">{{ s.name }}</span>
+                  <span class="ty">{{ s.docs }} {{ s.kind === 'site' ? 'page' : 'note' }}{{ s.docs === 1 ? '' : 's' }} · {{ s.kind === 'site' ? host(s.live) : s.kind === 'store' ? s.type : 'in ' + s.repo }}</span>
+                  @if (s.description) { <span class="ty">{{ s.description }}</span> }
+                  @if (s.kind === 'store' && s.store && !s.store.connected) { <span class="tag amber">connect to read</span> }
+                  @if (s.stale) { <span class="tag amber">{{ s.stale }} due for review</span> }
+                  @if (!s.available && s.kind !== 'store') { <span class="ty">not cloned</span> }
+                </a>
+              }
+            }
+            @if (!g.sites.length) { <div class="empty sm">Nothing in this area yet.</div> }
+          </div>
+        </section>
+      } @empty {
+        @if (data.docsLoaded()) {
+          <div class="empty md tight"><p>No knowledge sources yet. Add them in <code>.claude/dashboard/docs.json</code>: notes in your team's storage (S3, Google Cloud Storage, Azure), a folder of Markdown or a docs site in a repo, or a link to Confluence, Notion or a wiki.</p></div>
+        } @else { <div class="empty">Loading…</div> }
+      }
+    } @else if (site()?.kind === 'notes' || site()?.kind === 'store') {
+      <dash-notes-view [site]="site()!" />
     } @else if (site()?.kind === 'external') {
       @if (site()!.searchable) { <dash-external-docs [site]="site()!" /> }
       @else { <div class="empty">{{ site()!.name }} can't be searched from here yet. <a [href]="site()!.url" target="_blank" rel="noopener">Open it ↗</a></div> }
@@ -62,13 +90,13 @@ type View = 'page' | 'text';
         <aside class="panel side">
           <div class="site-tabs">
             @for (s of localSites(); track s.key) {
-              <a [routerLink]="['/docs', s.key]" [class.on]="s.key === siteKey()">{{ s.name }}</a>
+              <a [routerLink]="['/knowledge', s.key]" [class.on]="s.key === siteKey()">{{ s.name }}</a>
             }
           </div>
           <input class="filter" placeholder="Filter pages…" [value]="q()" (input)="q.set($any($event.target).value)" autocomplete="off">
           <div class="pages">
             @for (p of filteredPages(); track p.id) {
-              <a class="pg" [class.on]="p.id === current()?.id" [routerLink]="['/docs', siteKey()]" [queryParams]="{ page: p.id }">
+              <a class="pg" [class.on]="p.id === current()?.id" [routerLink]="['/knowledge', siteKey()]" [queryParams]="{ page: p.id }">
                 <span class="t">{{ p.title }}</span><span class="r">{{ p.rel }}</span>
               </a>
             } @empty { <div class="empty">{{ pagesError() || (pages() ? 'No pages.' : 'Loading…') }}</div> }
@@ -136,8 +164,9 @@ export class DocsComponent implements OnInit {
   readonly frameError = signal<string | null>(null);
   private previewBase: Record<string, string> = {};
 
-  /** Sources with a folder in the workspace (the ones this page can read). */
-  readonly localSites = computed(() => this.data.docSites().filter((s) => s.kind !== 'external'));
+  /** Docs sites in the workspace (the static-site view's tabs). */
+  readonly localSites = computed(() => this.data.docSites().filter((s) => s.kind === 'site'));
+  readonly groups = computed(() => byArea(this.data.docSites(), this.data.docAreas()));
   readonly site = computed(() => this.data.docSites().find((s) => s.key === this.siteKey()) || this.pages()?.site || null);
   readonly filteredPages = computed(() => {
     const q = this.q().trim().toLowerCase();
@@ -157,8 +186,9 @@ export class DocsComponent implements OnInit {
       this.pages.set(null);
       this.pagesError.set(null);
       this.q.set('');
-      // External sources have no local page list (the external view searches them).
-      if (!key || this.data.docSites().find((s) => s.key === key)?.kind === 'external') return;
+      // Only static sites use the page list here (external ones are searched, notes have their own view).
+      const kind = this.data.docSites().find((s) => s.key === key)?.kind;
+      if (!key || (kind && kind !== 'site')) return;
       this.api.get<DocPagesResponse>('/api/docs/pages?site=' + encodeURIComponent(key))
         .then((r) => { if (this.siteKey() === key) this.pages.set(r); })
         .catch((e) => this.pagesError.set((e as Error).message));
@@ -242,6 +272,9 @@ export class DocsComponent implements OnInit {
     if (!s || !s.repo) return;
     this.launch.open(siteEditLaunch(s.repo, s.name, this.current()?.rel));
   }
+
+  reach(s: DocSite) { return reach(s, this.data.connections()); }
+  staleIn(sites: DocSite[]): number { return sites.reduce((n, s) => n + (s.stale || 0), 0); }
 
   host(url: string | null): string { return url ? url.replace(/^https?:\/\//, '').replace(/\/$/, '') : ''; }
   vscode(p: string): string { return vscodeUrl(p); }

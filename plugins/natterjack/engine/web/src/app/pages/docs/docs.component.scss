@@ -44,3 +44,15 @@
   .docs-layout { grid-template-columns: 1fr; }
   .side { position: static; max-height: 320px; }
 }
+
+.area { margin-bottom: 22px; }
+.area-h { display: flex; align-items: baseline; flex-wrap: wrap; gap: 4px 12px; margin: 4px 2px 10px; }
+.area-h h2 { font-family: var(--font-display); font-size: 17px; font-weight: 800; }
+.area-h .ty { font-size: 12px; color: var(--text-muted); }
+.area-h .desc { flex-basis: 100%; }
+.site-card .tag { align-self: flex-start; }
+.reach { font-size: 12px; color: var(--text-muted); }
+.reach.ok { color: var(--ok-strong); }
+.reach.bad { color: var(--risk); text-decoration: none; }
+.reach.bad:hover { text-decoration: underline; }
+.empty.sm { padding: 10px; font-size: 12.5px; }

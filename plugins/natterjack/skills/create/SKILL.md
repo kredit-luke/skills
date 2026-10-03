@@ -42,6 +42,8 @@ Read `references/discovery.md` for how to turn the inventory into questions. Kee
 
 Don't ask what the inventory already answers with confidence; state it in the summary instead.
 
+The **Knowledge** page (`docs.json`) is for the whole business, not just engineering: ask which areas matter (Company, Customers, Finance, Marketing…), who owns each and how often its notes should be reviewed, where that knowledge lives today (Notion, Confluence, Drive: an external source with its `connection`), and whether business people who don't use git need a bucket for notes (`kind: "store"`, S3 / Google Cloud Storage / Azure). Engineering docs in the repos are `notes` or `site` sources. Never put a bucket key in docs.json.
+
 The **Infrastructure** page is for infrastructure only (accounts, environments, public URLs, databases, egress IPs, firewall rules, DNS). Write its doc only from real sources (shape and rules in `references/config.md`, "infrastructure.json"), never pad it with app or product docs, and never put secrets in it. No infrastructure code and no cloud access: leave `infrastructure.json` out. The page then explains what goes there and asks someone with infrastructure access to have Claude fill it in, so say that in the summary.
 
 ## 3. Write the plan, confirm, scaffold

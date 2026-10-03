@@ -220,7 +220,7 @@ export class SearchPaletteComponent {
 
   openExternal(site: string, id: string): void {
     this.close();
-    this.router.navigate(['/docs', site], { queryParams: { q: this.query().trim() || null, page: id } });
+    this.router.navigate(['/knowledge', site], { queryParams: { q: this.query().trim() || null, page: id } });
   }
 
   async run(): Promise<void> {
@@ -325,7 +325,7 @@ export class SearchPaletteComponent {
         } catch (e) { this.toast.error((e as Error).message); }
         return;
       case 'open-run': this.close(); this.router.navigate(['/runs', r.extra['runId']]); return;
-      case 'read': this.close(); this.router.navigate(['/docs', r.extra['site']], { queryParams: { page: r.id } }); return;
+      case 'read': this.close(); this.router.navigate(['/knowledge', r.extra['site']], { queryParams: { page: r.id } }); return;
       case 'preview': this.docsPreview.open(r.extra['site'], r.extra['pagePath'], r.anchor); return;
       case 'changes':
         this.close();

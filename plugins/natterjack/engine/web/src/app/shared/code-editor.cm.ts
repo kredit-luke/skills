@@ -74,7 +74,7 @@ const theme = EditorView.theme({
   '.cm-selectionBackground, &.cm-focused .cm-selectionBackground, ::selection': { backgroundColor: '#cfdcf5 !important' },
 });
 
-export function createState(text: string, lang: Extension, ro: boolean, on: { changed(text: string): void; save(): void }): EditorState {
+export function createState(text: string, lang: Extension, ro: boolean, on: { changed(text: string): void; save(): void }, wrap = false): EditorState {
   return EditorState.create({
     doc: text,
     extensions: [
@@ -85,6 +85,7 @@ export function createState(text: string, lang: Extension, ro: boolean, on: { ch
       lang,
       readOnly.of(readOnlyExt(ro)),
       EditorView.updateListener.of((u) => { if (u.docChanged) on.changed(u.state.doc.toString()); }),
+      ...(wrap ? [EditorView.lineWrapping] : []),
     ],
   });
 }

@@ -45,7 +45,7 @@ const comments = (dir) => ({
   workspace: "Who this workspace is, for the dashboard: name, dashboard port (DASHBOARD_PORT overrides it per machine), worktrees, issue tracker, code host, brand, wording. Schema: the natterjack skill's references/config.md.",
   apps: "Apps and stacks for the Apps / Workspaces pages: folder, port, and how each starts ({ cmd } or your launcher script). Schema: references/config.md.",
   machine: `Machine page checks, from the catalog in ${dir}/server/src/machine-catalog.ts. Schema: references/config.md.`,
-  docs: "Docs page sources: site repos, Markdown folders, or external (Confluence, Notion, ...). Schema: references/config.md.",
+  docs: "Knowledge page: areas, and sources (notes in the team's bucket, Markdown folders and docs sites in repos, external tools such as Notion and Confluence). Schema: references/config.md.",
   infrastructure: "Infrastructure page: a Markdown doc in the workspace about the team's infrastructure (accounts, environments, URLs, databases, IPs, firewall rules) and the quick facts to pull out of it. Schema: references/config.md.",
   links: "Links page tiles for the team (personal ones: .claude/ledger/links.local.json). Edit them from the Links page. Schema: references/config.md.",
   connections: "MCP servers this workspace relies on (Connections page). Names as `claude mcp list` shows them. Schema: references/config.md.",

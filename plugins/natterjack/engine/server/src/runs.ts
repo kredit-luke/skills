@@ -99,6 +99,8 @@ export interface StartSpec {
   /** Docs sources this run should use (docs.json keys), and the note that tells Claude how (appended every turn). */
   docSources?: string[];
   extraPrompt?: string | null;
+  /** Folders outside the workspace it may read (--add-dir), e.g. a knowledge store's local copy. */
+  addDirs?: string[];
 }
 
 /**
@@ -256,6 +258,7 @@ export class RunManager {
       trigger: spec.trigger || "manual",
       docSources: spec.docSources && spec.docSources.length ? spec.docSources : undefined,
       extraPrompt: spec.extraPrompt || null,
+      addDirs: spec.addDirs && spec.addDirs.length ? spec.addDirs : undefined,
       status: "running",
       startedAt: new Date().toISOString(),
       endedAt: null,
@@ -597,6 +600,7 @@ export class RunManager {
     // (permission prompts are denied here, so without this a worktree run couldn't).
     const filesDir = this.attachments ? this.attachments.runDir(meta.id) : null;
     if (filesDir && fs.existsSync(filesDir)) args.push("--add-dir", filesDir);
+    for (const d of meta.addDirs || []) if (fs.existsSync(d)) args.push("--add-dir", d);
 
     const child = spawnClaude(args, {
       cwd: meta.cwd,

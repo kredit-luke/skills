@@ -1,24 +1,36 @@
 {
-  "$comment": "Docs page sources: site repos, Markdown folders, or external (Confluence, Notion, ...). Schema: references/config.md.",
+  "$comment": "Knowledge page: areas, and sources (notes in the team's bucket, Markdown folders and docs sites in repos, external tools such as Notion and Confluence). Schema: references/config.md.",
+  "areas": [
+    {
+      "key": "plugin",
+      "label": "Natterjack plugin",
+      "owner": "Luke",
+      "description": "How the plugin and its dashboard engine work",
+      "reviewEvery": 180
+    }
+  ],
   "sources": [
     {
       "key": "references",
       "name": "natterjack references",
       "kind": "notes",
-      "dir": "plugins/natterjack/references"
+      "dir": "plugins/natterjack/references",
+      "area": "plugin"
     },
     {
       "key": "skills",
       "name": "Plugin skills",
       "kind": "notes",
-      "dir": "plugins/natterjack/skills"
+      "dir": "plugins/natterjack/skills",
+      "area": "plugin"
     },
     {
       "key": "claude-code",
       "name": "Claude Code docs",
       "kind": "external",
       "url": "https://code.claude.com/docs",
-      "description": "Plugins, skills, hooks, headless runs"
+      "description": "Plugins, skills, hooks, headless runs",
+      "area": "plugin"
     }
   ]
 }

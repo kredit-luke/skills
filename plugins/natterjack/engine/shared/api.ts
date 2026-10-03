@@ -105,6 +105,8 @@ export interface RunMeta {
   docSources?: string[];
   /** Appended to the system prompt every turn (the docs sources' notes). */
   extraPrompt?: string | null;
+  /** Folders outside the workspace the run may read (a knowledge store's local copy). */
+  addDirs?: string[];
   status: RunStatus;
   startedAt: string;
   endedAt: string | null;      // end of the latest turn
@@ -463,17 +465,54 @@ export interface GitInfo {
 // ---------------------------------------------------------------- docs sites
 
 /**
- * A docs source from .claude/dashboard/docs.json. 'site' and 'notes' live in the workspace
- * (repo = their folder); 'external' is elsewhere (Confluence, Notion, ...): url opens it.
+ * A knowledge source from .claude/dashboard/docs.json. 'site' and 'notes' live in the workspace
+ * (repo = their folder); 'store' is business notes in the team's bucket (a local copy, edited
+ * from the page); 'external' is elsewhere (Confluence, Notion, ...): url opens it.
  */
 export interface DocSite {
-  key: string; name: string; repo: string | null; kind: 'site' | 'notes' | 'external'; type: string;
+  key: string; name: string; repo: string | null; kind: 'site' | 'notes' | 'external' | 'store'; type: string;
   live: string | null; url: string | null; provider: string | null; description: string | null;
   available: boolean; previewUrl: string | null; docs: number;
-  /** An external source whose provider has an adapter: the Docs page can search and read it. */
+  /** "Use <source>" can be ticked for a run: an external source with an adapter, or a store with a copy. */
   searchable?: boolean;
+  /** docs.json area key, and the MCP server Claude reaches it through (as the Connections page names it). */
+  area?: string | null;
+  connection?: string | null;
+  /** Notes past their area's review interval. */
+  stale?: number;
+  store?: KnowledgeStoreStatus | null;
 }
-/** GET /api/docs → { sites } ;  POST /api/docs/preview { site } → { url } */
+/** docs.json `areas`: parts of the business, each with an owner and how often its notes are reviewed (days). */
+export interface KnowledgeArea { key: string; label: string; owner: string | null; reviewEvery: number | null; description: string | null }
+/** GET /api/docs → { sites, areas } ;  POST /api/docs/preview { site } → { url } */
+export interface DocsResponse { sites: DocSite[]; areas: KnowledgeArea[] }
+
+/** A store's connection and sync. POST /api/knowledge/{connect {source,key}, disconnect, sync, claude-access {source,on}} → this. */
+export interface KnowledgeStoreStatus {
+  source: string; label: string; connected: boolean; problem: string | null;
+  /** Where the key comes from: 'env' (the deployment's) can't be disconnected here. */
+  keySource: 'env' | 'file' | null;
+  help: { title: string; steps: string[]; placeholder: string; needsKey: boolean } | null;
+  syncedAt: string | null; syncing: boolean; error: string | null; files: number;
+  /** The local copy (under the ledger). */
+  dir: string;
+  /** This person's Claude sessions in the workspace can read the copy (additionalDirectories). */
+  claudeAccess: boolean;
+}
+/** A note of a Markdown source (repo folder or store), with its links and freshness. */
+export interface KnowledgeNote {
+  rel: string; title: string; owner: string | null; reviewed: string | null; tags: string[]; updatedAt: string | null;
+  links: string[]; unresolved: string[]; backlinks: string[]; summary: string;
+  since: string | null; dueAt: string | null; stale: boolean;
+}
+/** GET /api/knowledge/notes?source= */
+export interface KnowledgeNotesResponse { source: string; notes: KnowledgeNote[]; tags: Record<string, number>; store: KnowledgeStoreStatus | null }
+/**
+ * GET /api/knowledge/note?source=&rel= → this. Stores only: POST /api/knowledge/save { source, rel, text, etag (null: new) } → { rel, etag },
+ * /delete { source, rel, etag }, /rename { source, from, to, etag } → { rel, etag }. Any notes source: /reviewed { source, rel }.
+ * A save that would overwrite someone else's newer change answers 409.
+ */
+export interface KnowledgeNoteText { rel: string; text: string; etag: string | null; editable: boolean; file: string }
 
 /**
  * External docs with a provider adapter (Confluence, …), read with each person's own key.

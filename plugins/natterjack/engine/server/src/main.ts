@@ -58,7 +58,8 @@ import type { Manifest } from "./snapshot-sources/manifest.ts";
 import { SnapshotSources } from "./snapshot-sources/index.ts";
 import type { SnapshotSource } from "./snapshot-sources/index.ts";
 import { readProfile, reapplyProfile, setRole } from "./profile.ts";
-import { DocSites, docSources } from "./docs.ts";
+import { DocSites, docAreas, docSources } from "./docs.ts";
+import { Knowledge } from "./knowledge/index.ts";
 import { DocsProviders } from "./docs-providers/index.ts";
 import { Memory } from "./memory.ts";
 import { Connections, listedName } from "./connections.ts";
@@ -460,13 +461,21 @@ async function externalDocsStatus(key: unknown) {
   };
 }
 
-/** The system-prompt note for a run that should use these docs sources (unknown ones are refused). */
-function docsRunNote(keys: unknown, page: unknown): { keys: string[]; note: string | null } {
+/**
+ * What a run that should use these sources gets (unknown ones are refused): external
+ * providers add a note on reaching them through their connector; knowledge stores add
+ * their local copy as a folder to read, and a note on what's in it.
+ */
+function docsRunNote(keys: unknown, page: unknown): { keys: string[]; note: string | null; addDirs: string[] } {
   const list = Array.isArray(keys) ? [...new Set(keys.map(String))].slice(0, 5) : [];
-  const notes = list.map((k) => externalDocs(k).provider.runNote(list.length === 1 && page ? String(page) : null));
-  return { keys: list, note: notes.length ? notes.join("\n\n") : null };
+  const stores = list.filter((k) => knowledge.source(k).kind === "store");
+  const notes = list.filter((k) => !stores.includes(k)).map((k) => externalDocs(k).provider.runNote(list.length === 1 && page ? String(page) : null));
+  const access = knowledge.runAccess(stores);
+  if (access.note) notes.push(access.note);
+  return { keys: list, note: notes.length ? notes.join("\n\n") : null, addDirs: access.addDirs };
 }
 const memory = new Memory(MAIN_WORKSPACE_PATH);
+const knowledge = new Knowledge(MAIN_WORKSPACE_PATH, LEDGER_DIR);
 const connections = new Connections(MAIN_WORKSPACE_PATH);
 const mcpLogin = new McpLogin(MAIN_WORKSPACE_PATH);
 const explore = new Explore(MAIN_WORKSPACE_PATH);
@@ -593,6 +602,7 @@ function launchRun(body: LaunchRequest, trigger: string): RunMeta {
   return runs.start({
     docSources: docs.keys,
     extraPrompt: docs.note,
+    addDirs: docs.addDirs,
     presetId: preset ? preset.id : null,
     label: preset ? `${preset.label}${argText ? ` · ${argText}` : ""}` : prompt.split("\n")[0].slice(0, 60),
     prompt,
@@ -1072,7 +1082,36 @@ async function handleApi(req: http.IncomingMessage, res: http.ServerResponse, ur
     }
     if (p === "/api/docs") {
       const defs = docSources().sources;
-      return sendJson(res, { sites: docSites.list().map((s) => ({ ...s, searchable: !!docsProviders.get(defs.find((d) => d.key === s.key)) })) });
+      const stale = knowledge.staleCounts();
+      const sites = docSites.list().map((s) => {
+        const store = s.kind === "store" ? knowledge.storeStatus(s.key) : null;
+        // A connected store keeps itself fresh while people use the page.
+        if (store && store.connected) knowledge.sync(s.key).catch(() => {});
+        return {
+          ...s, stale: stale[s.key] || 0, store,
+          // "Use <source>" in Ask and the launch dialog: searchable external sources, and stores with a copy.
+          searchable: s.kind === "store" ? !!(store && store.files) : !!docsProviders.get(defs.find((d) => d.key === s.key)),
+        };
+      });
+      return sendJson(res, { sites, areas: docAreas() });
+    }
+    if (p === "/api/knowledge/notes") {
+      const key = String(q("source") || "");
+      const src = knowledge.source(key);
+      if (src.kind === "store") knowledge.sync(key).catch(() => {});
+      const notes = knowledge.notesWithFreshness(key);
+      const tags: Record<string, number> = {};
+      for (const n of notes) for (const t of n.tags) tags[t] = (tags[t] || 0) + 1;
+      return sendJson(res, { source: key, notes, tags, store: src.kind === "store" ? knowledge.storeStatus(key) : null });
+    }
+    if (p === "/api/knowledge/note") return sendJson(res, knowledge.read(q("source"), q("rel")));
+    if (p === "/api/knowledge/image") {
+      const img = knowledge.imageFile(q("source"), q("rel"));
+      if (!img) return sendError(res, 404, "No such image");
+      // An SVG can carry script: sandboxed, like run files.
+      res.writeHead(200, { "Content-Type": img.type, "Cache-Control": "no-cache", "X-Content-Type-Options": "nosniff", "Content-Security-Policy": "sandbox" });
+      fs.createReadStream(img.file).pipe(res);
+      return;
     }
     if (p === "/api/docs/external") return sendJson(res, await externalDocsStatus(q("site")));
     if (p === "/api/docs/external/search") {
@@ -1205,7 +1244,12 @@ async function handleApi(req: http.IncomingMessage, res: http.ServerResponse, ur
     restartSelf({ script: path.join(DASHBOARD_DIR, "bin", "dashboard.mjs"), ledgerDir: LEDGER_DIR, env: { ...process.env, WORKSPACE_ROOT } });
     return sendJson(res, { ok: true, interrupted: runs.runningCount() }, 202);
   }
-  if (p === "/api/runs") return sendJson(res, { run: launchRun(body, "manual") }, 201);
+  if (p === "/api/runs") {
+    // A run that uses a knowledge store reads the latest notes: sync them first (briefly; a slow store doesn't hold the run up).
+    const stores = (Array.isArray(body.docSources) ? body.docSources.map(String) : []).filter((k) => docSources().sources.some((s) => s.key === k && s.kind === "store"));
+    if (stores.length) await Promise.race([Promise.allSettled(stores.map((k) => knowledge.sync(k, true))), new Promise((r) => setTimeout(r, 10_000))]);
+    return sendJson(res, { run: launchRun(body, "manual") }, 201);
+  }
   if (runMatch && runMatch[2] === "reply") {
     const blocker = launchBlocker();
     if (blocker) return sendError(res, 429, blocker);
@@ -1406,6 +1450,19 @@ async function handleApi(req: http.IncomingMessage, res: http.ServerResponse, ur
     const { provider } = externalDocs(body.site);
     try { await provider.connect(String(body.key || "")); } catch (e) { return sendError(res, 400, e.message); }
     return sendJson(res, await externalDocsStatus(body.site));
+  }
+  if (p.startsWith("/api/knowledge/")) {
+    const what = p.slice("/api/knowledge/".length);
+    const done = (out: unknown) => { search.invalidate(); return sendJson(res, out); };
+    if (what === "save") return done(await knowledge.save(body.source, body.rel, body.text, body.etag));
+    if (what === "delete") { await knowledge.remove(body.source, body.rel, body.etag); return done({ ok: true }); }
+    if (what === "rename") return done(await knowledge.rename(body.source, body.from, body.to, body.etag));
+    if (what === "reviewed") return done(await knowledge.markReviewed(body.source, body.rel));
+    if (what === "sync") { await knowledge.sync(String(body.source || ""), true); return done(knowledge.storeStatus(body.source)); }
+    if (what === "connect") return done(await knowledge.connect(body.source, String(body.key || "")));
+    if (what === "disconnect") return done(knowledge.disconnect(body.source));
+    if (what === "claude-access") return sendJson(res, knowledge.setClaudeAccess(body.source, body.on !== false));
+    return sendError(res, 404, "Unknown knowledge action");
   }
   if (p === "/api/docs/external/disconnect") {
     externalDocs(body.site).provider.disconnect();

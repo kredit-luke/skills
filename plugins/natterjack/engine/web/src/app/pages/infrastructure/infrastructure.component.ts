@@ -28,7 +28,7 @@ const POPULATE_PROMPT = `Fill in the dashboard's Infrastructure page. Write a Ma
       @if (ref()?.available) {
         <a class="btn ghost sm" [href]="vscode(ref()!.file)">Open in VS Code</a>
         <button class="btn ghost sm" (click)="changes()">Make changes</button>
-        @if (docsKey(); as k) { <a class="btn ghost sm" [routerLink]="['/docs', k]">All {{ repo() }} notes</a> }
+        @if (docsKey(); as k) { <a class="btn ghost sm" [routerLink]="['/knowledge', k]">All {{ repo() }} notes</a> }
       }
     </dash-page-header>
 

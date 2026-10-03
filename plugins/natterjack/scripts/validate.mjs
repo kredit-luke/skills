@@ -178,17 +178,40 @@ export function validate(root) {
   const docs = load("docs.json");
   if (docs) {
     const keys = new Set();
+    const areaKeys = new Set();
+    for (const a of docs.areas || []) {
+      if (!a || !/^[\w-]+$/.test(a.key || "")) { err("docs.json", `an area needs a key of letters, digits, _ or - (${JSON.stringify(a).slice(0, 60)})`); continue; }
+      if (areaKeys.has(a.key)) err("docs.json", `area "${a.key}" is listed twice`);
+      areaKeys.add(a.key);
+      if (!a.label) warn("docs.json", `area "${a.key}" has no label`);
+      if (a.reviewEvery !== undefined && !(Number(a.reviewEvery) > 0)) err("docs.json", `area "${a.key}": reviewEvery is a number of days, e.g. 90`);
+    }
     for (const s of docs.sources || []) {
       if (!s.key || !s.name) err("docs.json", `a source needs key and name (${JSON.stringify(s).slice(0, 60)})`);
       if (keys.has(s.key)) err("docs.json", `key "${s.key}" is used twice`);
       keys.add(s.key);
+      if (s.area !== undefined && !areaKeys.has(s.area)) err("docs.json", `${s.key}: area "${s.area}" isn't in areas`);
+      if (s.connection !== undefined && (typeof s.connection !== "string" || !s.connection.trim())) err("docs.json", `${s.key}: connection is the MCP server's name as the Connections page shows it, e.g. "claude.ai Notion"`);
+      if (s.kind === "store") {
+        const st = s.store || {};
+        const where = `${s.key}: store`;
+        if (!["s3", "gcs", "azure-blob"].includes(st.type)) err("docs.json", `${where}.type must be s3, gcs or azure-blob`);
+        else if (st.type === "azure-blob") {
+          if (!st.container) err("docs.json", `${where} needs container`);
+          if (!st.account && !st.endpoint) err("docs.json", `${where} needs account (the storage account name)`);
+        } else if (!st.bucket) err("docs.json", `${where} needs bucket`);
+        if (st.endpoint && !/^https?:\/\//.test(st.endpoint)) err("docs.json", `${where}.endpoint must be an http(s) address`);
+        for (const k of ["key", "secret", "accessKey", "secretAccessKey", "sas", "token"]) if (st[k]) err("docs.json", `${where}.${k}: never put keys in docs.json (it's committed); each person pastes theirs on the Knowledge page, or a hosted dashboard sets KNOWLEDGE_${String(s.key).toUpperCase().replace(/[^A-Z0-9]/g, "_")}_KEY`);
+        if (!/^[\w-]+$/.test(s.key || "")) err("docs.json", `${s.key}: a store's key is letters, digits, _ or -`);
+        continue;
+      }
       if (s.kind === "external") {
         if (!/^https?:\/\//.test(s.url || "")) err("docs.json", `${s.key}: external sources need an https url`);
         if (s.provider && docProviders.length && !docProviders.includes(s.provider)) warn("docs.json", `${s.key}: provider "${s.provider}" has no adapter (known: ${docProviders.join(", ")}), so it's a link card only; add one to search it from the Docs page`);
         if (s.provider === "confluence" && s.url && !/^https:\/\/[\w.-]+\/wiki\/?/.test(s.url)) warn("docs.json", `${s.key}: a Confluence url looks like https://<site>.atlassian.net/wiki`);
         if (s.spaces !== undefined && !(Array.isArray(s.spaces) && s.spaces.every((k) => typeof k === "string" && /^[A-Za-z0-9_~-]+$/.test(k)))) err("docs.json", `${s.key}: spaces must be a list of space keys, e.g. ["ENG"]`);
       }
-      else if (!s.dir) err("docs.json", `${s.key}: needs dir (or kind "external" with a url)`);
+      else if (!s.dir) err("docs.json", `${s.key}: needs dir (or kind "external" with a url, or "store" with a store)`);
       else if (!dirExists(s.dir)) warn("docs.json", `${s.key}: "${s.dir}" isn't in the workspace`);
       if (s.kind === "site" && !s.port) warn("docs.json", `${s.key}: no preview port, so Page view is off`);
     }

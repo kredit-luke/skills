@@ -39,6 +39,7 @@ The dashboard refuses to start when `DASHBOARD_HOSTED` is on and the URL or secr
 
 What changes for the person:
 - The Apps and Workspaces pages are hidden, and the server refuses app actions, Machine-page installs, "Continue in terminal", "Implement in terminal" and local docs previews. All of those open something on the server's own screen or ports.
+- Knowledge stores (docs.json `kind: "store"`) read their key from `KNOWLEDGE_<SOURCE KEY>_KEY` (uppercased, `-` as `_`): `ACCESS_KEY_ID:SECRET` for S3 and GCS, a SAS token for Azure. Set it in the deployment for the people who should read and edit that area; nobody has to paste it.
 - The Connections page's **Sign in** works in the page: the person signs in in their own browser, which ends on a `http://localhost:<port>/callback` page that can't load (that's their own computer). They paste its address into the page, and it's typed at the prompt of the `claude mcp login` waiting in the container (run under `script` for a pseudo-terminal; `script` comes with every Debian image). Only an address on the port and path that CLI named is accepted. claude.ai connectors sign in on claude.ai.
 - The Machine page's Claude Code check gets an in-page sign-in (below). The container's tools are the image's job, so it has no install buttons.
 

@@ -141,19 +141,37 @@ Each check picks a catalog entry with `use` and overrides any field, or defines 
 
 Always include: `package-manager`, `node` (the dashboard itself needs it; floor 24.15.0), `git`, the code host CLI (`gh`/`glab`), `claude`. Then each stack's toolchain (from its version pins), `docker` + one `docker-container` per database/service the apps need, and one `path` check per app's installed dependencies.
 
-## docs.json: the Docs page (and search)
+## docs.json: the Knowledge page (and search)
+
+The Knowledge page (it was Docs; `/docs` links and a `docs` id in `hiddenPages` still work) is what the business knows, grouped by **area**: notes in the team's own storage, docs in the repos, and the tools where the rest lives, each showing whether Claude can reach it.
 
 ```json
 {
+  "areas": [
+    { "key": "company", "label": "Company", "owner": "CEO", "description": "Mission, goals, how we work" },
+    { "key": "finance", "label": "Finance", "owner": "Dana", "reviewEvery": 90 },
+    { "key": "engineering", "label": "Engineering" }
+  ],
   "sources": [
-    { "key": "handbook", "name": "Engineering handbook", "kind": "notes", "dir": "handbook" },
+    { "key": "finance", "name": "Finance handbook", "kind": "store", "area": "finance",
+      "store": { "type": "s3", "bucket": "acme-knowledge", "region": "eu-west-1", "prefix": "finance/" } },
+    { "key": "specs", "name": "Product specs", "kind": "external", "url": "https://www.notion.so/acme", "area": "company", "connection": "claude.ai Notion" },
+    { "key": "handbook", "name": "Engineering handbook", "kind": "notes", "dir": "handbook", "area": "engineering" },
     { "key": "site", "name": "Docs site", "kind": "site", "dir": "docs-site", "live": "https://docs.acme.com/", "port": 4335 },
     { "key": "wiki", "name": "Confluence", "kind": "external", "url": "https://acme.atlassian.net/wiki", "provider": "confluence", "spaces": ["ENG"], "description": "Runbooks and specs" }
   ]
 }
 ```
 
-`notes` = a folder of Markdown, rendered in the page. `site` = a static-site repo (HTML); `port` serves the working copy locally for the Page view (pick unused ports), `live` links the published site. `external` = docs elsewhere (Confluence, Notion, Google Drive, SharePoint, a wiki): a card that opens `url`, and "Ask Claude" starts a read-only run that uses that service's MCP connector (the user connects it in Claude). Local sources are also indexed by search.
+**Areas** (optional) group sources on the page: `label`, `owner`, `description`, and `reviewEvery` (days): a note whose frontmatter `reviewed:` date (else its last change) is older than that is flagged "review due", counted on its card and in the sidebar, and cleared with **Mark reviewed** (which sets `reviewed:` to today). A source names its `area`; sources without one are listed last.
+
+**Notes** (`notes` folders and stores) read like an Obsidian vault: a folder tree, `[[wikilinks]]` (`[[note|alias]]`, `[[note#heading]]`, `![[image.png]]`) and relative `.md` links open the note, frontmatter `owner`, `reviewed` and `tags` (plus inline `#tags`) show as chips and filters, and each note lists its backlinks and the links that point at no note yet. An existing Obsidian vault can be used as it is.
+
+`store` = business notes in the team's own bucket, for people without git access (no GitHub seat needed): `store.type` is `s3` (`bucket`, `region`, optional `endpoint` for R2, MinIO and other S3-compatible stores), `gcs` (`bucket`; Google Cloud Storage through its S3-compatible API with an HMAC key) or `azure-blob` (`account`, `container`; `endpoint` for Azurite or sovereign clouds), plus an optional `prefix` (a folder in the bucket). Each person pastes their own key on the page (S3/GCS `ACCESS_KEY_ID:SECRET`, Azure a container SAS with read, write, delete and list), kept in `.claude/ledger/knowledge-<key>.key`; a hosted dashboard sets `KNOWLEDGE_<KEY>_KEY` instead. Never put a key in docs.json. Different areas can use different buckets or keys, so only Finance's key holders read Finance. The dashboard keeps a local copy in `.claude/ledger/knowledge/<key>/` (synced every few minutes while the page is used, and before a run that uses it), with an `INDEX.md` of every note's title, owner, tags and summary. People create, edit, rename and delete notes on the page; a save that would overwrite someone else's newer change is refused (ETag), and the page offers their version. **Use <name>** in Ask and the launch dialog gives the run the copy to read (`--add-dir`) and tells it to cite the notes; "My Claude sessions can read it" adds the copy to the person's `permissions.additionalDirectories`. Claude reads the copy but doesn't change it: edits go through the page.
+
+`connection` (any source) names the MCP server Claude reaches it through, as the Connections page shows it (`claude.ai Notion`, `plugin:engineering:atlassian`, `notion`); the card says whether Claude can reach it and links to Connections when it can't.
+
+`notes` = a folder of Markdown in a repo, rendered in the page (edited in the repo: **Make edits** starts a run). `site` = a static-site repo (HTML); `port` serves the working copy locally for the Page view (pick unused ports), `live` links the published site. `external` = docs elsewhere (Confluence, Notion, Google Drive, SharePoint, a wiki): a card that opens `url`, and "Ask Claude" starts a read-only run that uses that service's MCP connector (the user connects it in Claude). Local sources are also indexed by search.
 
 With a `provider` that has an adapter (`<engine>/server/src/docs-providers/`: `confluence` so far), an external source is also **searchable**: the Docs page searches it and shows its pages, global search (Ctrl+K) lists its matches, and Ask and the launch dialog get a **Use <name>** checkbox that tells the run to search it through the MCP connector and cite pages. Each person reads it with their own key, pasted on the Docs page (kept in `.claude/ledger/`), so they only see what their account can.
 - **Confluence**: `"provider": "confluence"`, `url` = `https://<site>.atlassian.net/wiki`, optional `spaces` (space keys; empty = every non-personal space). Key: `CONFLUENCE_EMAIL` + `CONFLUENCE_API_TOKEN`, the pasted `email:api-token`, or, when `issues.kind` is `jira` on the same site, the Jira key (nothing more to paste).

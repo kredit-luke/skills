@@ -14,12 +14,17 @@ import { esc } from './util';
 export interface MdUrls {
   image(src: string): string | null;
   link(href: string): string | null;
+  /**
+   * Where an Obsidian-style [[wikilink]] goes (target without #heading), or null for one
+   * that points at no note (shown as a broken link). Without it they stay plain text.
+   */
+  wiki?(target: string, heading: string | null): string | null;
 }
 
 export function inlineMd(s: string, urls?: MdUrls): string {
   // Links may be written [text](url) or, as Linear does, [text](<url>). Relative links
   // (to another file in the same repo) keep their text and show the path on hover.
-  const re = /!\[([^\]]*)\]\(<?([^)\s>]+)>?(?:\s+"[^"]*")?\)|`([^`]+)`|\*\*([^*]+)\*\*|\[([^\]]+)\]\(<?(https?:[^)\s>]+)>?\)|\[\[([^\]]+)\]\]|\[([^\]]+)\]\(([^)\s:]+)\)/g;
+  const re = /!\[([^\]]*)\]\(<?([^)\s>]+)>?(?:\s+"[^"]*")?\)|`([^`]+)`|\*\*([^*]+)\*\*|\[([^\]]+)\]\(<?(https?:[^)\s>]+)>?\)|(!?)\[\[([^\]]+)\]\]|\[([^\]]+)\]\(([^)\s:]+)\)/g;
   let out = '', last = 0, m: RegExpExecArray | null;
   while ((m = re.exec(s))) {
     if (m[2] != null && !urls) { re.lastIndex = m.index + 1; continue; } // no image support: read on as text
@@ -31,15 +36,34 @@ export function inlineMd(s: string, urls?: MdUrls): string {
     else if (m[3] != null) out += '<code>' + esc(m[3]) + '</code>';
     else if (m[4] != null) out += '<b>' + esc(m[4]) + '</b>';
     else if (m[5] != null) out += '<a href="' + esc(m[6]) + '" target="_blank" rel="noopener">' + esc(m[5]) + '</a>';
-    else if (m[8] != null) {
-      const href = urls?.link(m[9]);
-      out += href ? '<a href="' + esc(href) + '" data-rel="' + esc(m[9]) + '">' + esc(m[8]) + '</a>'
-        : '<span class="rl" title="' + esc(m[9]) + '">' + esc(m[8]) + '</span>';
+    else if (m[9] != null) {
+      const href = urls?.link(m[10]);
+      out += href ? '<a href="' + esc(href) + '" data-rel="' + esc(m[10]) + '">' + esc(m[9]) + '</a>'
+        : '<span class="rl" title="' + esc(m[10]) + '">' + esc(m[9]) + '</span>';
     }
-    else out += '<span class="wl">' + esc(m[7]) + '</span>';
+    else out += wikiLink(m[8], m[7] === '!', urls);
     last = re.lastIndex;
   }
   return out + esc(s.slice(last));
+}
+
+/** [[target#heading|alias]] (or ![[file.png]], an embed) as a link, an image, a broken link or plain text. */
+function wikiLink(inner: string, embed: boolean, urls?: MdUrls): string {
+  const bar = inner.indexOf('|');
+  const ref = (bar >= 0 ? inner.slice(0, bar) : inner).trim();
+  const alias = bar >= 0 ? inner.slice(bar + 1).trim() : '';
+  const hash = ref.indexOf('#');
+  const target = (hash >= 0 ? ref.slice(0, hash) : ref).trim();
+  const heading = hash >= 0 ? ref.slice(hash + 1).trim() : null;
+  const text = alias || (target ? target.split('/').pop()! + (heading ? ' › ' + heading : '') : heading || '');
+  if (embed && /\.(png|jpe?g|gif|webp|svg)$/i.test(target) && urls) {
+    const src = urls.image(target);
+    if (src) return '<img src="' + esc(src) + '" alt="' + esc(alias || target) + '" loading="lazy">';
+  }
+  if (!urls?.wiki) return '<span class="wl">' + esc(inner) + '</span>';
+  const href = urls.wiki(target, heading);
+  return href ? '<a class="wl-a" href="' + esc(href) + '" data-wiki="' + esc(target) + '">' + esc(text) + '</a>'
+    : '<span class="wl-missing" title="No note called ' + esc(target) + ' yet">' + esc(text) + '</span>';
 }
 
 export function mdSlug(s: string): string {
