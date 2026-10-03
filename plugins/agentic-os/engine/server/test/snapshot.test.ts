@@ -512,6 +512,20 @@ test("install: a whole workspace from its snapshot with no git; update keeps the
   fs.writeFileSync(path.join(broken, ".snapshot.json"), JSON.stringify({ name: "workspace", sha: INSTALLING, builtAt: "", source: "folder" }, null, 2));
   fs.writeFileSync(path.join(broken, "half-copied.txt"), "x");
   assert.equal(isInstalling(broken), true);
+  // A fresh install that dies while writing its first marker: whatever made it to disk is a
+  // stamp, so the folder is still ours (not "other files") and the next install redoes it.
+  const fresh = path.join(scratch("inst-fresh"), "workspace");
+  const writeOnce = fs.writeFileSync;
+  (fs as any).writeFileSync = (f: any, data: any, ...rest: any[]) => {
+    if (path.resolve(String(f)) === path.join(fresh, ".snapshot.json")) { (writeOnce as any)(f, String(data).slice(0, 7)); throw new Error("killed"); }
+    return (writeOnce as any)(f, data, ...rest);
+  };
+  try { await assert.rejects(installWorkspace(store, fresh), /killed/); }
+  finally { (fs as any).writeFileSync = writeOnce; }
+  assert.deepEqual([repoState(path.dirname(fresh), "workspace"), readStamp(fresh)], ["snapshot", null], "a partial first stamp still marks the folder as ours");
+  assert.equal((await installWorkspace(store, fresh)).workspace, "installed");
+  assert.equal(isInstalling(fresh), false);
+
   // A retry whose marker write fails leaves the old marker whole, not a truncated stamp.
   const realWrite = fs.writeFileSync;
   (fs as any).writeFileSync = (f: any, ...rest: any[]) => { if (String(f).endsWith(".snapshot.json.tmp")) throw new Error("disk full"); return (realWrite as any)(f, ...rest); };

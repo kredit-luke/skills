@@ -263,7 +263,11 @@ export async function installWorkspace(source: SnapshotSource, dir: string, opts
       fs.mkdirSync(dir, { recursive: true });
       let finalStamp: string | Buffer = needWorkspace ? "" : fs.readFileSync(stampFile);
       const marker: Stamp = { name: "workspace", sha: INSTALLING, builtAt: ws.builtAt, source: source.kind };
-      replaceFile(stampFile, JSON.stringify(marker, null, 2) + "\n");
+      // The first stamp is written in place: even a partial one makes the folder ours to
+      // retry (a lone .tmp wouldn't), and the entrypoint rejects what isn't a commit.
+      // Over an existing stamp, replace it whole so a failed write can't damage it.
+      if (fs.existsSync(stampFile)) replaceFile(stampFile, JSON.stringify(marker, null, 2) + "\n");
+      else fs.writeFileSync(stampFile, JSON.stringify(marker, null, 2) + "\n");
 
       if (needWorkspace) {
         const stamp = path.join(stagedWs, STAMP_FILE);
