@@ -208,6 +208,17 @@ test("Machine re-runs its checks when machine.json changes (no manual Re-check)"
   write("machine.json", { checks: [] });
 });
 
+test("Machine: a check that throws is reported as a warning that still says its kind", async () => {
+  const { Machine } = await import("../src/machine.ts");
+  write("machine.json", { checks: [{ use: "env-var", id: "boom", name: "DASH_TEST_A" }] });
+  const m = new Machine(ROOT) as any;
+  m._one = async () => { throw new Error("probe exploded"); };
+  try {
+    const [c] = (await m.get(true)).checks;
+    assert.deepEqual([c.id, c.kind, c.status, c.detail], ["boom", "env-var", "warn", "Check failed: probe exploded"]);
+  } finally { write("machine.json", { checks: [] }); }
+});
+
 test("Machine re-runs its checks when the viewer's profile changes (no stale role for 60s)", async () => {
   const { Machine } = await import("../src/machine.ts");
   const ledger = process.env.DASHBOARD_LEDGER_DIR!;

@@ -309,7 +309,7 @@ class Machine {
     };
 
     const results = await Promise.all(specs.map((s) => this._one(s, p).catch((e) => ({
-      id: s.id, group: s.group || "Everyone", label: s.label, status: "warn", detail: `Check failed: ${e.message}`, apps: s.apps || [],
+      id: s.id, kind: s.kind, group: s.group || "Everyone", label: s.label, status: "warn", detail: `Check failed: ${e.message}`, apps: s.apps || [],
     }))));
 
     const checks = [];
