@@ -41,7 +41,8 @@ const ICON: Record<string, string> = { ok: '✓', warn: '!', missing: '✕', inf
                 @if (c.status !== 'ok' && c.apps.length) { <div class="needs">Needed by {{ appNames(c) }}</div> }
                 @if (c.status !== 'ok' && hosted()) {
                   <!-- Hosted: the container's tools are the image's job; only Claude's sign-in is the person's. -->
-                  @if (c.id === 'claude-code' && c.install) {
+                  <!-- By kind: the id is machine.json's ("use": "claude" makes it "claude"). -->
+                  @if (c.kind === 'claude-code' && c.install) {
                     <div class="fx signin">
                       @if (!signInUrl()) {
                         <button class="btn primary sm" [disabled]="signingIn()" (click)="startSignIn()">{{ signingIn() ? 'Starting…' : c.install.label }}</button>

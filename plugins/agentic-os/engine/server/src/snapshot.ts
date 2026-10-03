@@ -194,6 +194,21 @@ export function downloadStep(root: string, source: SnapshotSource, t: { repo: Re
 
 // ------------------------------------------------------------------ installing a workspace
 
+/** The workspace stamp's sha while an install is copying files: never a commit, so the next install redoes it. */
+export const INSTALLING = "installing";
+
+/** Write beside the file, then rename over it: a write that fails never leaves it truncated. */
+function replaceFile(file: string, content: string | Buffer) {
+  const tmp = `${file}.tmp`;
+  try { fs.writeFileSync(tmp, content); fs.renameSync(tmp, file); }
+  catch (e) { fs.rmSync(tmp, { force: true }); throw e; }
+}
+
+/** A workspace folder whose last install didn't finish (its files are a mix): don't run it. */
+export function isInstalling(dir: string): boolean {
+  return readStamp(dir)?.sha === INSTALLING;
+}
+
 export interface InstallResult { workspace: "installed" | "updated" | "current"; sha: string; ui: boolean; repos: number }
 
 /**
@@ -221,36 +236,62 @@ export async function installWorkspace(source: SnapshotSource, dir: string, opts
   };
 
   const local = readStamp(dir);
-  let workspace: InstallResult["workspace"] = "current";
-  if (!local || local.sha !== ws.sha) {
-    const tmp = tmpDir("ws");
-    try {
-      const staged = path.join(tmp, "workspace");
-      const r = await extractZip(await fetchTo(ws, wsFile, tmp), staged);
-      log(`Extracted ${r.files} workspace files`);
-      fs.mkdirSync(dir, { recursive: true });
-      fs.cpSync(staged, dir, { recursive: true, force: true });
-    } finally { rmrf(tmp); }
-    workspace = local ? "updated" : "installed";
-    log(`${dir} is now at ${ws.sha.slice(0, 10)}`);
-  }
-
-  // After the workspace files, so the built UI is newer than its sources and isn't rebuilt.
-  let ui = false;
+  const stampFile = path.join(dir, STAMP_FILE);
   const dist = path.join(dir, "dashboard", "dist");
   const uiFileAt = manifest.ui && files.find((f) => f.name === manifest.ui!.file);
   const prebuilt = (() => { try { return JSON.parse(fs.readFileSync(path.join(dist, ".prebuilt.json"), "utf-8")).sha; } catch { return null; } })();
-  if (manifest.ui && uiFileAt && (workspace !== "current" || prebuilt !== manifest.ui.sha)) {
-    const tmp = tmpDir("ui");
+  const needWorkspace = !local || local.sha !== ws.sha;
+  const needUi = !!(manifest.ui && uiFileAt) && (needWorkspace || prebuilt !== manifest.ui!.sha);
+  if (!manifest.ui) log("No prebuilt UI was published: the dashboard builds it on first start.");
+
+  let workspace: InstallResult["workspace"] = "current";
+  let ui = false;
+  if (needWorkspace || needUi) {
+    const tmp = tmpDir("install");
+    const next = path.join(dir, "dashboard", ".dist-new"), old = path.join(dir, "dashboard", ".dist-old");
     try {
-      const staged = path.join(tmp, "ui");
-      await extractTarGz(await fetchTo(manifest.ui, uiFileAt, tmp), staged);
-      rmrf(dist);
-      fs.cpSync(path.join(staged, "dist"), dist, { recursive: true });
-      ui = true;
-      log("Installed the prebuilt dashboard UI");
-    } finally { rmrf(tmp); }
-  } else if (!manifest.ui) log("No prebuilt UI was published: the dashboard builds it on first start.");
+      // Download and extract everything first: a failed download or a corrupt archive
+      // leaves the live folder, and its stamp, exactly as they were.
+      const stagedWs = path.join(tmp, "workspace"), stagedUi = path.join(tmp, "ui");
+      if (needWorkspace) log(`Extracted ${(await extractZip(await fetchTo(ws, wsFile, tmp), stagedWs)).files} workspace files`);
+      if (needUi) await extractTarGz(await fetchTo(manifest.ui!, uiFileAt!, tmp), stagedUi);
+
+      // Copying over the live folder isn't atomic. Mark it now, so an interruption leaves a
+      // folder that's still ours to retry (not "other files") and isn't taken as current
+      // (`isInstalling`: the hosted entrypoint won't start it). The real stamp goes back in
+      // only once the workspace files and the UI are both in place.
+      fs.mkdirSync(dir, { recursive: true });
+      let finalStamp: string | Buffer = needWorkspace ? "" : fs.readFileSync(stampFile);
+      const marker: Stamp = { name: "workspace", sha: INSTALLING, builtAt: ws.builtAt, source: source.kind };
+      // The first stamp is written in place: even a partial one makes the folder ours to
+      // retry (a lone .tmp wouldn't), and the entrypoint rejects what isn't a commit.
+      // Over an existing stamp, replace it whole so a failed write can't damage it.
+      if (fs.existsSync(stampFile)) replaceFile(stampFile, JSON.stringify(marker, null, 2) + "\n");
+      else fs.writeFileSync(stampFile, JSON.stringify(marker, null, 2) + "\n");
+
+      if (needWorkspace) {
+        const stamp = path.join(stagedWs, STAMP_FILE);
+        finalStamp = fs.existsSync(stamp) ? fs.readFileSync(stamp) : JSON.stringify({ name: "workspace", sha: ws.sha, builtAt: ws.builtAt, source: source.kind }, null, 2) + "\n";
+        fs.rmSync(stamp, { force: true });
+        fs.cpSync(stagedWs, dir, { recursive: true, force: true });
+        workspace = local && local.sha !== INSTALLING ? "updated" : "installed";
+      }
+      // After the workspace files, so the built UI is newer than its sources and isn't
+      // rebuilt. Copied beside dist/ and swapped in by rename: there's never a half-copied
+      // dist/ that has a .prebuilt.json, which would pass for complete.
+      if (needUi) {
+        rmrf(next); rmrf(old);
+        fs.cpSync(path.join(stagedUi, "dist"), next, { recursive: true });
+        if (fs.existsSync(dist)) fs.renameSync(dist, old);
+        fs.renameSync(next, dist);
+        rmrf(old);
+        ui = true;
+        log("Installed the prebuilt dashboard UI");
+      }
+      replaceFile(stampFile, finalStamp);
+      if (needWorkspace) log(`${dir} is now at ${ws.sha.slice(0, 10)}`);
+    } finally { rmrf(tmp); rmrf(next); }
+  }
 
   let repos = 0;
   if (opts.repos) {

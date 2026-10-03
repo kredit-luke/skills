@@ -52,7 +52,8 @@ export class S3Source implements SnapshotSource {
       : endpoint ? `${endpoint}/${bucket}`
       : bucket.includes(".") ? `https://s3.${region}.amazonaws.com/${bucket}`
       : `https://${bucket}.s3.${region}.amazonaws.com`;
-    if (endpoint) this.label = `S3 (${new URL(endpoint).hostname})`;
+    // Only a valid endpoint names the label: a bad one is reported by connectHelp(), not thrown here.
+    if (endpoint && !problem) this.label = `S3 (${new URL(endpoint).hostname})`;
     this.prefix = folderPrefix(cfg.prefix);
     this.keyFile = path.join(ctx.ledgerDir, "snapshot-s3-key");
   }

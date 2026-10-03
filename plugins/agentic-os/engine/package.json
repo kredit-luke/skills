@@ -1,6 +1,6 @@
 {
   "name": "workspace-dashboard",
-  "version": "0.7.0",
+  "version": "0.7.1",
   "private": true,
   "type": "module",
   "description": "Local workspace console: runs, issues, apps, worktrees, search. Server: plain Node running TypeScript directly (type stripping). UI: Angular.",

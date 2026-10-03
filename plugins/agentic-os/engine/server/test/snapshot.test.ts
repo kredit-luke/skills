@@ -11,7 +11,7 @@ import zlib from "node:zlib";
 import { execFileSync } from "node:child_process";
 import type { AddressInfo } from "node:net";
 import { extractTarGz, safeMemberPath } from "../src/tar.ts";
-import { archiveName, buildSnapshot, carryOver, downloadStep, downloadTargets, dropManifestCache, installWorkspace, planSnapshot, publishSnapshot, readStamp, snapshotStatus } from "../src/snapshot.ts";
+import { archiveName, buildSnapshot, carryOver, downloadStep, downloadTargets, dropManifestCache, INSTALLING, installWorkspace, isInstalling, planSnapshot, publishSnapshot, readStamp, snapshotStatus } from "../src/snapshot.ts";
 import { extractZip } from "../src/zip.ts";
 import { repoState, readRepos } from "../src/repos.ts";
 import { createSource, snapshotSourceKinds } from "../src/snapshot-sources/index.ts";
@@ -416,14 +416,16 @@ test("archive names carry the commit and stay distinct when a repo name had to b
   assert.match(archiveName("日本", sha), /^repo-[0-9a-f]{6}-0123456789ab\.tar\.gz$/, "nothing file-safe left");
 });
 
-/** A zip with stored entries, for crafting archives git wouldn't write. */
-function storedZip(file: string, entries: Record<string, string>) {
+/** A zip with stored entries, for crafting archives git wouldn't write; `damage` flips a byte of that entry after its CRC is taken. */
+function storedZip(file: string, entries: Record<string, string>, damage?: string) {
   const locals: Buffer[] = [], centrals: Buffer[] = [];
   let offset = 0;
   for (const [name, text] of Object.entries(entries)) {
     const n = Buffer.from(name), d = Buffer.from(text);
-    const l = Buffer.alloc(30); l.writeUInt32LE(0x04034b50, 0); l.writeUInt32LE(d.length, 18); l.writeUInt32LE(d.length, 22); l.writeUInt16LE(n.length, 26);
-    const c = Buffer.alloc(46); c.writeUInt32LE(0x02014b50, 0); c.writeUInt32LE(d.length, 20); c.writeUInt32LE(d.length, 24); c.writeUInt16LE(n.length, 28); c.writeUInt32LE(offset, 42);
+    const crc = zlib.crc32(d);
+    if (name === damage) d[0] ^= 0x01;
+    const l = Buffer.alloc(30); l.writeUInt32LE(0x04034b50, 0); l.writeUInt32LE(crc, 14); l.writeUInt32LE(d.length, 18); l.writeUInt32LE(d.length, 22); l.writeUInt16LE(n.length, 26);
+    const c = Buffer.alloc(46); c.writeUInt32LE(0x02014b50, 0); c.writeUInt32LE(crc, 16); c.writeUInt32LE(d.length, 20); c.writeUInt32LE(d.length, 24); c.writeUInt16LE(n.length, 28); c.writeUInt32LE(offset, 42);
     locals.push(l, n, d); centrals.push(c, n);
     offset += 30 + n.length + d.length;
   }
@@ -446,6 +448,16 @@ test("zip: git archive output extracts byte-for-byte; an entry leaving the folde
   storedZip(path.join(dir, "evil.zip"), { "ok.txt": "ok", "../evil.txt": "evil" });
   await assert.rejects(extractZip(path.join(dir, "evil.zip"), path.join(dir, "out")), /outside the target folder/);
   assert.ok(!fs.existsSync(path.join(dir, "evil.txt")));
+  storedZip(path.join(dir, "flipped.zip"), { "a.txt": "same size, one bit off" }, "a.txt");
+  await assert.rejects(extractZip(path.join(dir, "flipped.zip"), path.join(dir, "out-crc")), /a\.txt fails its CRC-32 check/);
+  // A good entry before the bad one: its write has finished by the time the error arrives,
+  // so the caller can delete the folder straight away.
+  storedZip(path.join(dir, "late.zip"), { "first.txt": "x".repeat(200_000), "second.txt": "damaged" }, "second.txt");
+  await assert.rejects(extractZip(path.join(dir, "late.zip"), path.join(dir, "out-late")), /second\.txt fails its CRC-32 check/);
+  assert.equal(fs.statSync(path.join(dir, "out-late", "first.txt")).size, 200_000, "settled before throwing");
+  fs.rmSync(path.join(dir, "out-late"), { recursive: true });
+  storedZip(path.join(dir, "fine.zip"), { "a.txt": "intact" });
+  assert.equal((await extractZip(path.join(dir, "fine.zip"), path.join(dir, "out-ok"))).files, 1);
   fs.writeFileSync(path.join(dir, "not.zip"), "plain text");
   await assert.rejects(extractZip(path.join(dir, "not.zip"), path.join(dir, "out2")), /Not a zip archive/);
 });
@@ -491,6 +503,72 @@ test("install: a whole workspace from its snapshot with no git; update keeps the
   assert.equal(fs.readFileSync(path.join(dir, "CLAUDE.md"), "utf-8"), "v2\n");
   assert.equal(fs.readFileSync(path.join(dir, ".claude", "ledger", "mine.json"), "utf-8"), "{}");
   assert.equal(repoState(dir, "api"), "snapshot");
+  assert.equal(isInstalling(dir), false);
+
+  // An install that stopped while copying: the stamp says "installing" and some files are there.
+  // It's still ours to retry, and the retry finishes it with the real stamp.
+  const broken = path.join(scratch("inst-broken"), "workspace");
+  fs.mkdirSync(path.join(broken, "dashboard"), { recursive: true });
+  fs.writeFileSync(path.join(broken, ".snapshot.json"), JSON.stringify({ name: "workspace", sha: INSTALLING, builtAt: "", source: "folder" }, null, 2));
+  fs.writeFileSync(path.join(broken, "half-copied.txt"), "x");
+  assert.equal(isInstalling(broken), true);
+  // A fresh install that dies while writing its first marker: whatever made it to disk is a
+  // stamp, so the folder is still ours (not "other files") and the next install redoes it.
+  const fresh = path.join(scratch("inst-fresh"), "workspace");
+  const writeOnce = fs.writeFileSync;
+  (fs as any).writeFileSync = (f: any, data: any, ...rest: any[]) => {
+    if (path.resolve(String(f)) === path.join(fresh, ".snapshot.json")) { (writeOnce as any)(f, String(data).slice(0, 7)); throw new Error("killed"); }
+    return (writeOnce as any)(f, data, ...rest);
+  };
+  try { await assert.rejects(installWorkspace(store, fresh), /killed/); }
+  finally { (fs as any).writeFileSync = writeOnce; }
+  assert.deepEqual([repoState(path.dirname(fresh), "workspace"), readStamp(fresh)], ["snapshot", null], "a partial first stamp still marks the folder as ours");
+  assert.equal((await installWorkspace(store, fresh)).workspace, "installed");
+  assert.equal(isInstalling(fresh), false);
+
+  // A retry whose marker write fails leaves the old marker whole, not a truncated stamp.
+  const realWrite = fs.writeFileSync;
+  (fs as any).writeFileSync = (f: any, ...rest: any[]) => { if (String(f).endsWith(".snapshot.json.tmp")) throw new Error("disk full"); return (realWrite as any)(f, ...rest); };
+  try { await assert.rejects(installWorkspace(store, broken), /disk full/); }
+  finally { (fs as any).writeFileSync = realWrite; }
+  assert.equal(isInstalling(broken), true, "still marked unfinished");
+  assert.ok(!fs.existsSync(path.join(broken, ".snapshot.json.tmp")));
+  const r4 = await installWorkspace(store, broken);
+  assert.equal(r4.workspace, "installed", "an unfinished install isn't an update");
+  assert.equal(readStamp(broken)!.sha, m2.workspace!.sha);
+  assert.equal(isInstalling(broken), false);
+  assert.equal(fs.readFileSync(path.join(broken, "CLAUDE.md"), "utf-8"), "v2\n");
+
+  // A download that fails (or an archive that won't extract) touches nothing: the live
+  // folder keeps its stamp, so the hosted entrypoint still starts the previous version.
+  assert.ok(m2.ui, "the second publish has a prebuilt UI too");
+  const prebuiltSha = (d: string) => JSON.parse(fs.readFileSync(path.join(d, "dashboard", "dist", ".prebuilt.json"), "utf-8")).sha;
+  const failing = (name: string): SnapshotSource => ({ ...store, download: async (f, d) => { if (f.name === name) throw new Error("network dropped"); return store.download(f, d); } });
+  const before = readStamp(dir)!.sha;
+  fs.writeFileSync(path.join(ups, "ws", "CLAUDE.md"), "v3\n");
+  git(path.join(ups, "ws"), "commit", "-qam", "v3");
+  const out3 = scratch("inst-out3");
+  const m3 = await buildSnapshot(pub, out3, { workspace: true });
+  await publishSnapshot(store, out3, m3);
+  for (const name of [m3.workspace!.file, m3.ui!.file]) {
+    await assert.rejects(installWorkspace(failing(name), dir), /network dropped/);
+    assert.deepEqual([readStamp(dir)!.sha, isInstalling(dir), fs.readFileSync(path.join(dir, "CLAUDE.md"), "utf-8")], [before, false, "v2\n"], `${name} failing leaves the old install whole`);
+  }
+  assert.equal((await installWorkspace(store, dir)).workspace, "updated");
+  assert.deepEqual([readStamp(dir)!.sha, prebuiltSha(dir)], [m3.workspace!.sha, m3.workspace!.sha]);
+
+  // Interrupted after files started going in (simulated: the copy of the UI throws): still
+  // "installing", so it isn't started, and a retry finishes it.
+  const flaky = path.join(scratch("inst-ui-fail"), "workspace");
+  const realCp = fs.cpSync;
+  (fs as any).cpSync = (src: string, dst: string, o: any) => { if (path.basename(dst) === ".dist-new") throw new Error("disk full"); return realCp(src, dst, o); };
+  try { await assert.rejects(installWorkspace(store, flaky), /disk full/); }
+  finally { (fs as any).cpSync = realCp; }
+  assert.equal(isInstalling(flaky), true, "not stamped complete without its UI");
+  assert.ok(fs.existsSync(path.join(flaky, "CLAUDE.md")), "the workspace files did go in");
+  const r5 = await installWorkspace(store, flaky);
+  assert.deepEqual([r5.workspace, r5.ui, isInstalling(flaky), prebuiltSha(flaky)], ["installed", true, false, m3.workspace!.sha]);
+  assert.deepEqual(fs.readdirSync(path.join(flaky, "dashboard")).filter((n) => n.startsWith(".dist")), [], "no staging folders left behind");
 
   const clone = scratch("inst-clone");
   fs.mkdirSync(path.join(clone, ".git"));

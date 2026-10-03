@@ -595,7 +595,8 @@ export interface IssueDetail { id: string; title: string; url: string; team: str
 // ---------------------------------------------------------------- machine
 
 export interface MachineCheck {
-  id: string; group: string; label: string; status: 'ok' | 'warn' | 'missing' | 'info';
+  /** id: machine.json's id, else its `use` ("claude"); kind: what's checked ("claude-code"), whatever the id. */
+  id: string; kind: string; group: string; label: string; status: 'ok' | 'warn' | 'missing' | 'info';
   version?: string; required?: string; detail?: string; fix?: string; apps: string[];
   install?: { label: string; cmd: string; cwd?: string } | null; action?: 'setup';
 }

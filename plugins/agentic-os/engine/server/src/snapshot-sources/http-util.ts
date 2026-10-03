@@ -2,7 +2,8 @@
  * HTTP for snapshot sources: JSON calls, and file downloads / uploads that stream
  * (snapshots are tens of MB). Redirects are followed, but credentials only go to the
  * host they were given for: a redirect to another host (Confluence hands downloads to
- * its media service with a signed URL) drops the Authorization header.
+ * its media service with a signed URL) drops Authorization, S3's session token and
+ * cookies, whatever their case.
  */
 
 import fs from "node:fs";
@@ -11,6 +12,8 @@ import https from "node:https";
 import { pipeline } from "node:stream/promises";
 
 const MAX_REDIRECTS = 5;
+/** Never sent on to another host after a redirect. */
+const CREDENTIAL_HEADERS = new Set(["authorization", "x-amz-security-token", "cookie"]);
 const TIMEOUT_MS = 60_000;
 
 export class HttpStatusError extends Error {
@@ -37,7 +40,8 @@ export function request(url: string, opts: RequestOptions = {}, hops = 0): Promi
         if (hops >= MAX_REDIRECTS) return reject(new Error(`Too many redirects from ${url}`));
         const next = new URL(res.headers.location, u);
         const headers = { ...(opts.headers || {}) };
-        if (next.host !== u.host) delete headers.Authorization;
+        // Any spelling: SigV4 signs lowercase names. A session token is a credential too.
+        if (next.host !== u.host) for (const k of Object.keys(headers)) if (CREDENTIAL_HEADERS.has(k.toLowerCase())) delete headers[k];
         return resolve(request(next.toString(), { ...opts, headers }, hops + 1));
       }
       resolve(res);

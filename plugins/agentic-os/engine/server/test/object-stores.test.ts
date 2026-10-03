@@ -9,6 +9,7 @@ import path from "node:path";
 import type { AddressInfo } from "node:net";
 import { createSource } from "../src/snapshot-sources/index.ts";
 import { EMPTY_SHA256, signV4 } from "../src/snapshot-sources/sigv4.ts";
+import { downloadFile } from "../src/snapshot-sources/http-util.ts";
 import { decodeXml, elements, folderPrefix, text } from "../src/snapshot-sources/xml.ts";
 
 const scratch = (name: string) => fs.mkdtempSync(path.join(os.tmpdir(), `dash-os-${name}-`));
@@ -182,4 +183,25 @@ test("s3: AWS addresses are virtual-hosted, path-style for bucket names with dot
   const dotted = createSource({ source: "s3", bucket: "acme.code", region: "eu-west-1" }, ctx(scratch("s3-aws2")));
   for (const src of [s, dotted]) urls.push((src as any).url("a.tar.gz").toString());
   assert.deepEqual(urls, ["https://acme-code.s3.eu-west-1.amazonaws.com/a.tar.gz", "https://s3.eu-west-1.amazonaws.com/acme.code/a.tar.gz"]);
+});
+
+test("a redirect to another host drops every credential header, whatever its case (SigV4 signs lowercase names)", async () => {
+  const seen: http.IncomingHttpHeaders[] = [];
+  const other = await serve((req, res) => { seen.push(req.headers); res.writeHead(200); res.end("FILE"); });
+  const first = await serve((req, res) => { res.writeHead(307, { Location: `${other.url}/signed?x=1` }); res.end(); });
+  try {
+    const dest = path.join(scratch("redirect"), "f");
+    await downloadFile(`${first.url}/f`, { authorization: "AWS4-HMAC-SHA256 Credential=AKID/x", "x-amz-security-token": "session", Cookie: "c=1", "x-amz-date": "20260101T000000Z" }, dest, "Downloading f");
+    assert.equal(fs.readFileSync(dest, "utf-8"), "FILE");
+    assert.equal(seen.length, 1);
+    for (const h of ["authorization", "x-amz-security-token", "cookie"]) assert.equal(seen[0][h], undefined, `${h} isn't forwarded`);
+    assert.equal(seen[0]["x-amz-date"], "20260101T000000Z", "other headers still go");
+  } finally { first.close(); other.close(); }
+});
+
+test("s3: a malformed endpoint is reported by connectHelp, not thrown from the constructor", () => {
+  const s = createSource({ source: "s3", bucket: "acme-code", endpoint: "not a url" }, ctx(scratch("s3-bad")));
+  assert.equal(s.label, "S3");
+  assert.equal(s.status().connected, false);
+  assert.match(s.connectHelp()!.steps[0], /"endpoint" must be an http\(s\) address/);
 });
