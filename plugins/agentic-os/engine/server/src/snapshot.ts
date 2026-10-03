@@ -197,6 +197,13 @@ export function downloadStep(root: string, source: SnapshotSource, t: { repo: Re
 /** The workspace stamp's sha while an install is copying files: never a commit, so the next install redoes it. */
 export const INSTALLING = "installing";
 
+/** Write beside the file, then rename over it: a write that fails never leaves it truncated. */
+function replaceFile(file: string, content: string | Buffer) {
+  const tmp = `${file}.tmp`;
+  try { fs.writeFileSync(tmp, content); fs.renameSync(tmp, file); }
+  catch (e) { fs.rmSync(tmp, { force: true }); throw e; }
+}
+
 /** A workspace folder whose last install didn't finish (its files are a mix): don't run it. */
 export function isInstalling(dir: string): boolean {
   return readStamp(dir)?.sha === INSTALLING;
@@ -256,7 +263,7 @@ export async function installWorkspace(source: SnapshotSource, dir: string, opts
       fs.mkdirSync(dir, { recursive: true });
       let finalStamp: string | Buffer = needWorkspace ? "" : fs.readFileSync(stampFile);
       const marker: Stamp = { name: "workspace", sha: INSTALLING, builtAt: ws.builtAt, source: source.kind };
-      fs.writeFileSync(stampFile, JSON.stringify(marker, null, 2) + "\n");
+      replaceFile(stampFile, JSON.stringify(marker, null, 2) + "\n");
 
       if (needWorkspace) {
         const stamp = path.join(stagedWs, STAMP_FILE);
@@ -277,7 +284,7 @@ export async function installWorkspace(source: SnapshotSource, dir: string, opts
         ui = true;
         log("Installed the prebuilt dashboard UI");
       }
-      fs.writeFileSync(stampFile, finalStamp);
+      replaceFile(stampFile, finalStamp);
       if (needWorkspace) log(`${dir} is now at ${ws.sha.slice(0, 10)}`);
     } finally { rmrf(tmp); rmrf(next); }
   }

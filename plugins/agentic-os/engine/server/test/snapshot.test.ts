@@ -450,6 +450,12 @@ test("zip: git archive output extracts byte-for-byte; an entry leaving the folde
   assert.ok(!fs.existsSync(path.join(dir, "evil.txt")));
   storedZip(path.join(dir, "flipped.zip"), { "a.txt": "same size, one bit off" }, "a.txt");
   await assert.rejects(extractZip(path.join(dir, "flipped.zip"), path.join(dir, "out-crc")), /a\.txt fails its CRC-32 check/);
+  // A good entry before the bad one: its write has finished by the time the error arrives,
+  // so the caller can delete the folder straight away.
+  storedZip(path.join(dir, "late.zip"), { "first.txt": "x".repeat(200_000), "second.txt": "damaged" }, "second.txt");
+  await assert.rejects(extractZip(path.join(dir, "late.zip"), path.join(dir, "out-late")), /second\.txt fails its CRC-32 check/);
+  assert.equal(fs.statSync(path.join(dir, "out-late", "first.txt")).size, 200_000, "settled before throwing");
+  fs.rmSync(path.join(dir, "out-late"), { recursive: true });
   storedZip(path.join(dir, "fine.zip"), { "a.txt": "intact" });
   assert.equal((await extractZip(path.join(dir, "fine.zip"), path.join(dir, "out-ok"))).files, 1);
   fs.writeFileSync(path.join(dir, "not.zip"), "plain text");
@@ -506,6 +512,13 @@ test("install: a whole workspace from its snapshot with no git; update keeps the
   fs.writeFileSync(path.join(broken, ".snapshot.json"), JSON.stringify({ name: "workspace", sha: INSTALLING, builtAt: "", source: "folder" }, null, 2));
   fs.writeFileSync(path.join(broken, "half-copied.txt"), "x");
   assert.equal(isInstalling(broken), true);
+  // A retry whose marker write fails leaves the old marker whole, not a truncated stamp.
+  const realWrite = fs.writeFileSync;
+  (fs as any).writeFileSync = (f: any, ...rest: any[]) => { if (String(f).endsWith(".snapshot.json.tmp")) throw new Error("disk full"); return (realWrite as any)(f, ...rest); };
+  try { await assert.rejects(installWorkspace(store, broken), /disk full/); }
+  finally { (fs as any).writeFileSync = realWrite; }
+  assert.equal(isInstalling(broken), true, "still marked unfinished");
+  assert.ok(!fs.existsSync(path.join(broken, ".snapshot.json.tmp")));
   const r4 = await installWorkspace(store, broken);
   assert.equal(r4.workspace, "installed", "an unfinished install isn't an update");
   assert.equal(readStamp(broken)!.sha, m2.workspace!.sha);
