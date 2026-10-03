@@ -48,7 +48,7 @@ Give shared services a worktree rarely changes `"fallback": "main"` in apps.json
 
 ## /pull [all]
 
-Fast-forward the workspace's repos to their default branch: for each repo, skip (and say why) when it has uncommitted changes or is on another branch, else `git fetch` + `git merge --ff-only`. A bundled script keeps it deterministic. Also pull the workspace root itself (it carries the dashboard and config), then remind people to restart the dashboard if `dashboard/` changed.
+Fast-forward the workspace's repos to their default branch: for each repo, skip (and say why) when it has uncommitted changes or is on another branch, else `git fetch` + `git merge --ff-only`. A bundled script keeps it deterministic. Also pull the workspace root itself (it carries the dashboard and config), then remind people to restart the dashboard if `<engine>/` changed.
 
 ## Presets worth adding to deck.json
 

@@ -1,9 +1,9 @@
 {
-  "name": "agentic-os-router",
+  "name": "natterjack-router",
   "version": "0.1.0",
   "private": true,
   "type": "module",
-  "description": "One address for everyone's hosted agentic-os dashboard: sends each signed-in person to their own container. Plain Node, no packages (references/hosting.md).",
+  "description": "One address for everyone's hosted natterjack dashboard: sends each signed-in person to their own container. Plain Node, no packages (references/hosting.md).",
   "engines": {
     "node": ">=24.15.0"
   },

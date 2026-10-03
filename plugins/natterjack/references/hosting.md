@@ -43,17 +43,17 @@ What changes for the person:
 
 ## The image
 
-`templates/hosted/Dockerfile` is Node 24 plus git, the Claude CLI and the engine's server code, with everything personal on a volume at `/data`. Build it from `plugins/agentic-os` once per workspace, and run one container per person:
+`templates/hosted/Dockerfile` is Node 24 plus git, the Claude CLI and the engine's server code, with everything personal on a volume at `/data`. Build it from `plugins/natterjack` once per workspace, and run one container per person:
 
 ```sh
-docker build -f plugins/agentic-os/templates/hosted/Dockerfile -t <registry>/agentic-dashboard:1 plugins/agentic-os
+docker build -f plugins/natterjack/templates/hosted/Dockerfile -t <registry>/natterjack-dashboard:1 plugins/natterjack
 ```
 
-On start, `entrypoint.sh` puts the workspace in `/data/workspace` or updates it. Then it runs `node dashboard/bin/dashboard.mjs run`, which is the server in the foreground. The workspace comes from one of two places.
+On start, `entrypoint.sh` puts the workspace in `/data/workspace` or updates it. Then it runs `node <engine>/bin/dashboard.mjs run` (`<engine>` is the engine folder: `natterjack/` by default, `dashboard/` in older workspaces; `.claude/dashboard/engine.json` `dir` says which), which is the server in the foreground. The workspace comes from one of two places.
 
 **From a published snapshot** (recommended). This needs no git and no code-host account, in the container or for the person. Set `SNAPSHOT_CONFIG` to `repos.json`'s `snapshot` block as JSON, and the source's credentials in the environment (`SNAPSHOT_AZURE_SAS`, `SNAPSHOT_S3_*`, `SNAPSHOT_HTTP_TOKEN`, ...).
 - **On boot**, it runs `snapshot.mjs install --repos` from the image. That installs or updates the workspace from the published workspace zip, then the prebuilt UI, then every repo, all as read-only copies (config.md "Snapshots").
-- **With a prebuilt UI** (publish from where `dashboard/` is built), the first start skips `npm ci` and `ng build` entirely.
+- **With a prebuilt UI** (publish from where the engine folder is built), the first start skips `npm ci` and `ng build` entirely.
 - **The key** comes from the environment, so the person never connects anything. Inject a read-only one: read and list for blobs, GetObject and ListBucket for S3.
 - **To publish**, run publish from CI or from the Repos page on an engineer's machine, with a key that can write.
 
@@ -102,7 +102,7 @@ browser ── login proxy (adds the email and ROUTER_PROXY_SECRET)
 | `ROUTER_PORT` / `ROUTER_BIND` | 8080 / `0.0.0.0` | `127.0.0.1` when the login proxy is a sidecar. |
 
 Backends:
-- **`kubernetes`.** Each person's dashboard is a StatefulSet with the label `app=agentic-dashboard` and the annotation `agentic-os/owner: <email>`.
+- **`kubernetes`.** Each person's dashboard is a StatefulSet with the label `app=natterjack-dashboard` and the annotation `natterjack/owner: <email>`.
   - The router reaches it at `http://<serviceName>.<namespace>.svc:3333`. Change that with `ROUTER_K8S_URL_TEMPLATE` (`{service}`, `{namespace}`, `{port}`) and `ROUTER_K8S_PORT`.
   - Starting and stopping is scaling between 1 and 0, which keeps the volume.
   - Inside the cluster it uses its service account, which needs `list` on statefulsets and `patch` on statefulsets/scale (the Role in `kubernetes-router.yaml`).
@@ -110,10 +110,10 @@ Backends:
 - **`static`.** `ROUTER_STATIC_FILE` names a JSON file of `{ "<email>": "<dashboard URL>" }`, re-read when it changes. Use it for containers someone else keeps running: a VM with Docker, App Service apps, ECS services. The router never starts or stops them.
 - **Another platform.** Implement `Backend` in `router/src/backends.ts` (find a person's URL, and optionally start/stop/list running ones) and add it to `makeBackend()`.
 
-Build it from `plugins/agentic-os`, so it gets the engine's shared request checks:
+Build it from `plugins/natterjack`, so it gets the engine's shared request checks:
 
 ```sh
-docker build -f plugins/agentic-os/router/Dockerfile -t <registry>/agentic-router:1 plugins/agentic-os
+docker build -f plugins/natterjack/router/Dockerfile -t <registry>/natterjack-router:1 plugins/natterjack
 ```
 
 ## Running it

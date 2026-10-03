@@ -2,7 +2,7 @@
 
 The dashboard's look comes from CSS custom properties in two layers:
 
-1. `dashboard/web/public/ds/tokens.css` (served at `/ds/tokens.css`): the **contract**, every brand-level token the pages use, with neutral defaults (slate + indigo, system fonts).
+1. `<engine>/web/public/ds/tokens.css` (`<engine>` is the engine folder: `natterjack/` by default) (served at `/ds/tokens.css`): the **contract**, every brand-level token the pages use, with neutral defaults (slate + indigo, system fonts).
 2. `.claude/dashboard/brand/theme.css` (served at `/ds/theme.css`, after it): the team's brand. It `@import`s their token files (copied verbatim into `brand/`) and sets contract tokens from them. Anything it doesn't set keeps the neutral default, so a partial mapping still looks fine.
 
 The pages never name a brand color; `styles.scss` maps the contract onto the dashboard's own vocabulary (`--bg`, `--text`, `--green`, `--purple` for primary actions, …). Don't edit the engine's CSS to brand it.

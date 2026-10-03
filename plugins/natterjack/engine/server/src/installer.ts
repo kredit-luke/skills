@@ -53,7 +53,7 @@ export function renderInstaller(cfg: InstallerConfig): string {
     .replace(/[^\x20-\x7e\n]/g, (c) => `\\u${c.charCodeAt(0).toString(16).padStart(4, "0")}`);
   const header = [
     "@echo off",
-    `rem ${cfg.name} workspace setup (agentic-os). Double-click to install or update; nothing needs administrator rights.`,
+    `rem ${cfg.name} workspace setup (natterjack). Double-click to install or update; nothing needs administrator rights.`,
     "setlocal",
     'set "AOS_SELF=%~f0"',
     // The marker is split so this line doesn't match it.

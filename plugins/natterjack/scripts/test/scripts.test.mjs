@@ -1,4 +1,4 @@
-// node --test plugins/agentic-os/scripts/test/
+// node --test plugins/natterjack/scripts/test/
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import fs from "node:fs";
@@ -23,7 +23,7 @@ test("releaseCheck: stale only when a newer release is out; unknown when offline
   assert.equal(releaseCheck("999.0.0").stale, true);
   assert.equal(releaseCheck(current).stale, false);
   assert.equal(releaseCheck(null).stale, false);
-  assert.match(releaseCheck("999.0.0").update.join(" "), /claude plugin update agentic-os@/);
+  assert.match(releaseCheck("999.0.0").update.join(" "), /claude plugin update natterjack@/);
 });
 
 test("upgrade stops on a stale plugin or a downgrade instead of merging", () => {
@@ -88,12 +88,21 @@ test("scaffold + validate on a scratch workspace", () => {
     claudeMd: true,
   };
   const r = scaffold(root, plan);
-  assert.ok(r.wrote.some((w) => w.startsWith("dashboard/")));
-  assert.ok(fs.existsSync(path.join(root, "dashboard", "bin", "dashboard.mjs")));
-  assert.ok(fs.existsSync(path.join(root, ".claude", "skills", "dashboard", "SKILL.md")));
-  assert.match(fs.readFileSync(path.join(root, "CLAUDE.md"), "utf-8"), /localhost:3399/);
+  assert.ok(r.wrote.some((w) => w.startsWith("natterjack/")), "new installs go in natterjack/");
+  assert.ok(fs.existsSync(path.join(root, "natterjack", "bin", "dashboard.mjs")));
+  assert.equal(JSON.parse(fs.readFileSync(path.join(root, ".claude", "dashboard", "engine.json"), "utf-8")).dir, "natterjack");
+  const skill = fs.readFileSync(path.join(root, ".claude", "skills", "natterjack", "SKILL.md"), "utf-8");
+  assert.match(skill, /^name: natterjack$/m);
+  assert.match(skill, /node natterjack\/bin\/dashboard\.mjs start/);
+  assert.doesNotMatch(skill, /\{\{/);
+  const md = fs.readFileSync(path.join(root, "CLAUDE.md"), "utf-8");
+  assert.match(md, /localhost:3399/);
+  assert.match(md, /node natterjack\/bin\/dashboard\.mjs start --open/);
+  assert.doesNotMatch(md, /\{\{/);
+  assert.match(r.next[0], /^node natterjack\/bin\/dashboard\.mjs start/);
   const gi = fs.readFileSync(path.join(root, ".gitignore"), "utf-8");
-  assert.match(gi, /!dashboard\/\*\*/); // allow-list style gets the allow lines
+  assert.match(gi, /!natterjack\/\*\*/); // allow-list style gets the allow lines
+  assert.match(gi, /^natterjack\/node_modules\/$/m);
   assert.match(gi, /\.claude\/ledger\//);
   assert.deepEqual(validate(root).errors, []);
 
@@ -175,8 +184,8 @@ test("repos.json: both field styles read the same; scaffold writes the standard 
   const ws = fs.mkdtempSync(path.join(os.tmpdir(), "aos-repos-ws-"));
   scaffold(ws, { workspace: { name: "T" }, repos: [{ name: "API", url: "https://x/api.git", directory: "api", dependencies: [] }] });
   const written = JSON.parse(fs.readFileSync(path.join(ws, "repos.json"), "utf-8"));
-  assert.equal(written.$schema, "./dashboard/shared/repos.schema.json");
-  assert.ok(fs.existsSync(path.join(ws, "dashboard", "shared", "repos.schema.json")), "the schema ships with the engine");
+  assert.equal(written.$schema, "./natterjack/shared/repos.schema.json");
+  assert.ok(fs.existsSync(path.join(ws, "natterjack", "shared", "repos.schema.json")), "the schema ships with the engine");
   assert.deepEqual(written.repos, [{ name: "API", relativePath: "api", remote: "https://x/api.git" }]);
 
   // validate: old names are a warning; a path outside the workspace and a reused path are errors.
@@ -273,4 +282,112 @@ test("infrastructure.json: scaffold writes it (also from the old plan key); vali
   const v = validate(ws).warnings.join("\n");
   assert.match(v, /reference\.json: rename it to infrastructure\.json/);
   assert.match(v, /reference\.json: file "docs\/infra\.md" isn't in the workspace/);
+});
+
+test("engineDirOf: engine.json dir, else dashboard/ (older workspaces)", async () => {
+  const { engineDirOf, DEFAULT_ENGINE_DIR, LEGACY_ENGINE_DIR, reposSchema } = await import("../lib.mjs");
+  assert.equal(DEFAULT_ENGINE_DIR, "natterjack");
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "aos-enginedir-"));
+  assert.equal(engineDirOf(root), LEGACY_ENGINE_DIR, "no engine.json at all");
+  const cfg = path.join(root, ".claude", "dashboard");
+  fs.mkdirSync(cfg, { recursive: true });
+  fs.writeFileSync(path.join(cfg, "engine.json"), JSON.stringify({ version: "0.7.1" }));
+  assert.equal(engineDirOf(root), "dashboard", "engine.json without dir: an install from before it was configurable");
+  fs.writeFileSync(path.join(cfg, "engine.json"), JSON.stringify({ version: "0.8.0", dir: "tools\\ops/" }));
+  assert.equal(engineDirOf(root), "tools/ops");
+  for (const bad of ["../out", "/abs", "C:/x", ".claude/engine", "."]) {
+    fs.writeFileSync(path.join(cfg, "engine.json"), JSON.stringify({ dir: bad }));
+    assert.equal(engineDirOf(root), "dashboard", bad);
+  }
+  assert.match(validate(root).errors.join("\n"), /engine\.json: dir "\." must be a folder inside the workspace/);
+  assert.equal(reposSchema("tools/ops"), "./tools/ops/shared/repos.schema.json");
+});
+
+test("scaffold into a nested engineDir: engine, engine.json, .gitignore, skill named after it; upgrade and validate follow it", async () => {
+  const { ENGINE_DIR, copyTree, engineVersion: ev } = await import("../lib.mjs");
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "aos-nested-"));
+  fs.writeFileSync(path.join(root, ".gitignore"), "*\n!.gitignore\n");
+  const plan = { workspace: { name: "T", dashboard: { port: 3398 } }, engineDir: "tools/ops", skills: ["dashboard"], claudeMd: true, repos: [{ name: "api", relativePath: "api", remote: "https://x/api.git" }] };
+  const r = scaffold(root, plan);
+  assert.equal(r.engineDir, "tools/ops");
+  assert.equal(r.skill, "ops");
+  assert.ok(fs.existsSync(path.join(root, "tools", "ops", "server", "src", "main.ts")));
+  assert.ok(!fs.existsSync(path.join(root, "natterjack")) && !fs.existsSync(path.join(root, "dashboard")));
+  const lock = JSON.parse(fs.readFileSync(path.join(root, ".claude", "dashboard", "engine.json"), "utf-8"));
+  assert.equal(lock.dir, "tools/ops");
+  const gi = fs.readFileSync(path.join(root, ".gitignore"), "utf-8").split("\n");
+  for (const l of ["!tools/", "!tools/ops/", "!tools/ops/**", "tools/ops/node_modules/", "tools/ops/dist/", "tools/ops/.angular/", ".claude/ledger/"]) assert.ok(gi.includes(l), l);
+  assert.ok(gi.indexOf("!tools/") < gi.indexOf("!tools/ops/"), "the parent is let back in first");
+  const skill = fs.readFileSync(path.join(root, ".claude", "skills", "ops", "SKILL.md"), "utf-8");
+  assert.match(skill, /^---\nname: ops\n/);
+  assert.match(skill, /after pulling updates to tools\/ops\//);
+  assert.match(skill, /node tools\/ops\/bin\/dashboard\.mjs restart/);
+  assert.ok(!fs.existsSync(path.join(root, ".claude", "skills", "dashboard")));
+  assert.match(fs.readFileSync(path.join(root, "CLAUDE.md"), "utf-8"), /Its code is `tools\/ops\/`/);
+  assert.equal(JSON.parse(fs.readFileSync(path.join(root, "repos.json"), "utf-8")).$schema, "./tools/ops/shared/repos.schema.json");
+  assert.deepEqual(validate(root).errors, []);
+
+  // Run again without engineDir: it stays where it is (engine.json), nothing new appears.
+  const again = scaffold(root, { workspace: { name: "T" } });
+  assert.equal(again.engineDir, "tools/ops");
+  assert.ok(again.kept.some((k) => k.startsWith("tools/ops/ (already installed")));
+  assert.throws(() => scaffold(root, { workspace: { name: "T" }, engineDir: "natterjack" }), /already installed in tools\/ops\//);
+
+  // An explicit skillName wins over the folder's name.
+  const named = fs.mkdtempSync(path.join(os.tmpdir(), "aos-named-"));
+  scaffold(named, { workspace: { name: "T" }, engineDir: "ops-console", skillName: "Console", skills: ["dashboard"] });
+  assert.match(fs.readFileSync(path.join(named, ".claude", "skills", "console", "SKILL.md"), "utf-8"), /^name: console$/m);
+
+  // upgrade merges into tools/ops/ and keeps dir in engine.json.
+  const base = fs.mkdtempSync(path.join(os.tmpdir(), "aos-nested-base-"));
+  copyTree(ENGINE_DIR, base);
+  const rel = path.join("bin", "snapshot.mjs");
+  fs.appendFileSync(path.join(base, rel), "// old\n");
+  fs.appendFileSync(path.join(root, "tools", "ops", rel), "// old\n");
+  fs.writeFileSync(path.join(root, ".claude", "dashboard", "engine.json"), JSON.stringify({ ...lock, version: "0.0.1" }));
+  const up = upgrade(root, { base, latest: null });
+  assert.equal(up.ok, true);
+  assert.equal(up.engineDir, "tools/ops");
+  assert.deepEqual(up.updated, ["bin/snapshot.mjs"]);
+  assert.equal(fs.readFileSync(path.join(root, "tools", "ops", rel), "utf-8"), fs.readFileSync(path.join(ENGINE_DIR, rel), "utf-8").replace(/\r\n/g, "\n"));
+  assert.ok(up.next.includes("cd tools/ops && npm ci && npm test"));
+  const after = JSON.parse(fs.readFileSync(path.join(root, ".claude", "dashboard", "engine.json"), "utf-8"));
+  assert.equal(after.dir, "tools/ops");
+  assert.equal(after.version, ev());
+  assert.ok(!fs.existsSync(path.join(root, "dashboard")));
+});
+
+test("scaffold refuses an engineDir it can't use; an older workspace keeps dashboard/", () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "aos-refuse-"));
+  fs.mkdirSync(path.join(root, "natterjack", "src"), { recursive: true }); // the team's own folder
+  fs.writeFileSync(path.join(root, "natterjack", "src", "index.ts"), "x");
+  assert.throws(() => scaffold(root, { workspace: { name: "T" } }), /natterjack\/ is already in the workspace and isn't the engine/);
+  for (const bad of ["../up", "/abs", ".claude/x", "C:\\x"]) assert.throws(() => scaffold(root, { workspace: { name: "T" }, engineDir: bad }), /must be a folder inside the workspace/, bad);
+  assert.throws(() => scaffold(root, { workspace: { name: "T" }, engineDir: "api/tools", repos: [{ name: "api", relativePath: "api" }] }), /overlaps the repo "api"/);
+  assert.ok(!fs.existsSync(path.join(root, ".claude", "dashboard", "engine.json")), "nothing written when it refuses");
+
+  // A workspace set up before the folder was configurable: engine in dashboard/, engine.json without dir.
+  const old = fs.mkdtempSync(path.join(os.tmpdir(), "aos-legacy-"));
+  fs.mkdirSync(path.join(old, "dashboard", "server", "src"), { recursive: true });
+  fs.writeFileSync(path.join(old, "dashboard", "server", "src", "main.ts"), "");
+  fs.mkdirSync(path.join(old, ".claude", "dashboard"), { recursive: true });
+  fs.writeFileSync(path.join(old, ".claude", "dashboard", "engine.json"), JSON.stringify({ version: "0.7.1" }));
+  const r = scaffold(old, { workspace: { name: "T" } }, { dry: true });
+  assert.equal(r.engineDir, "dashboard");
+  assert.ok(r.kept.some((k) => k.startsWith("dashboard/ (already installed")));
+});
+
+test("brand scans skip the engine, whatever its folder is called", () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "aos-skip-engine-"));
+  const tokens = ":root { --brand-900: #082310; --brand-700: #104620; --cream: #fef6e7; --copper: #f2622a; --ink: #111; }";
+  const eng = path.join(root, "tools", "ops");
+  fs.mkdirSync(path.join(eng, "bin"), { recursive: true });
+  fs.mkdirSync(path.join(eng, "server", "src"), { recursive: true });
+  fs.mkdirSync(path.join(eng, "web", "public", "ds"), { recursive: true });
+  fs.writeFileSync(path.join(eng, "bin", "dashboard.mjs"), "");
+  fs.writeFileSync(path.join(eng, "server", "src", "main.ts"), "");
+  fs.writeFileSync(path.join(eng, "web", "public", "ds", "tokens.css"), tokens);
+  fs.mkdirSync(path.join(root, "app", "styles"), { recursive: true });
+  fs.writeFileSync(path.join(root, "app", "styles", "brand.css"), tokens);
+  assert.deepEqual(brandCandidates(root).map((c) => c.file), ["app/styles/brand.css"]);
 });

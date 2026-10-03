@@ -1,7 +1,7 @@
 {
-  "name": "agentic-os",
+  "name": "natterjack",
   "version": "0.7.1",
-  "description": "Set up an agentic OS for your team: a multi-repo Claude Code workspace with a local dashboard (runs, issues, apps, machine setup, docs, links) tailored to your stack, tools and brand.",
+  "description": "Set up Natterjack for your team: a multi-repo Claude Code workspace with a local dashboard (runs, issues, apps, machine setup, docs, links) tailored to your stack, tools and brand.",
   "author": {
     "name": "Luke Hoezee"
   },

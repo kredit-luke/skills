@@ -17,13 +17,18 @@ set -eu
 
 mkdir -p "$CLAUDE_CONFIG_DIR"
 
+# The engine's folder in the workspace: .claude/dashboard/engine.json "dir" (dashboard in older workspaces).
+engine_dir() {
+  node -e 'let d = "dashboard"; try { const v = JSON.parse(require("fs").readFileSync(process.argv[1], "utf8")).dir; const p = typeof v === "string" ? v.split("/") : []; if (p.length && p[0] !== ".claude" && p.every((s) => /^[\w.-]+$/.test(s) && s !== "." && s !== "..")) d = v } catch {} console.log(d)' "$WORKSPACE_ROOT/.claude/dashboard/engine.json"
+}
+
 if [ -n "${SNAPSHOT_CONFIG:-}" ]; then
-  if ! node --disable-warning=ExperimentalWarning /opt/agentic-os/engine/bin/snapshot.mjs install --into "$WORKSPACE_ROOT" --repos; then
+  if ! node --disable-warning=ExperimentalWarning /opt/natterjack/engine/bin/snapshot.mjs install --into "$WORKSPACE_ROOT" --repos; then
     # Start what's there only if it's a whole install, i.e. its stamp names a commit: one
     # that stopped while copying leaves "installing" (a mix of files). Exiting lets the
     # platform restart the container, which retries the install.
     if ! node -e 'try { process.exit(/^[0-9a-f]{7,64}$/.test(JSON.parse(require("fs").readFileSync(process.argv[1], "utf8")).sha) ? 0 : 1) } catch { process.exit(1) }' "$WORKSPACE_ROOT/.snapshot.json" \
-       || [ ! -f "$WORKSPACE_ROOT/dashboard/bin/dashboard.mjs" ]; then
+       || [ ! -f "$WORKSPACE_ROOT/$(engine_dir)/bin/dashboard.mjs" ]; then
       echo "Couldn't install the workspace from its snapshot." >&2
       exit 1
     fi
@@ -51,4 +56,4 @@ else
 fi
 
 cd "$WORKSPACE_ROOT"
-exec node dashboard/bin/dashboard.mjs run
+exec node "$(engine_dir)/bin/dashboard.mjs" run

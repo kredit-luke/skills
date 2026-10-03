@@ -88,7 +88,7 @@ interface Dashboard { name: string; service: string; replicas: number; ready: bo
 
 /**
  * One StatefulSet per person (templates/hosted/kubernetes-router.yaml), labelled for the
- * selector and naming its person in the agentic-os/owner annotation, so the names are
+ * selector and naming its person in the natterjack/owner annotation, so the names are
  * whatever the admin likes. Starting and stopping is scaling it between 0 and 1, which
  * keeps the person's volume. Needs list on statefulsets and patch on
  * statefulsets/scale in the namespace, nothing else.
@@ -141,7 +141,8 @@ export class KubernetesBackend implements Backend {
         .then((list) => {
           const byEmail = new Map<string, Dashboard>();
           for (const s of list.items || []) {
-            const owner = String(s.metadata?.annotations?.["agentic-os/owner"] || "").trim().toLowerCase();
+            const notes = s.metadata?.annotations || {};
+            const owner = String(notes["natterjack/owner"] || notes["agentic-os/owner"] || "").trim().toLowerCase(); // agentic-os/: before the rename
             if (!owner) continue;
             byEmail.set(owner, {
               name: s.metadata.name,

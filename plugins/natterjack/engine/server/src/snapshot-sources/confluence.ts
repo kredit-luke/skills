@@ -104,7 +104,7 @@ export class ConfluenceSource implements SnapshotSource {
   async upload(name: string, srcPath: string): Promise<void> {
     const page = this.page();
     // PUT creates the attachment, or adds a version to the one with this file name.
-    const form = multipartFile(srcPath, name, { minorEdit: "true", comment: "Published by agentic-os snapshot" });
+    const form = multipartFile(srcPath, name, { minorEdit: "true", comment: "Published by natterjack snapshot" });
     await requestJson(`${this.wiki}/rest/api/content/${page}/child/attachment`, {
       method: "PUT",
       headers: { ...this.headers(), "X-Atlassian-Token": "nocheck", ...form.headers },

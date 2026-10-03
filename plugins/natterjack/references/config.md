@@ -31,7 +31,7 @@ Running it on company infrastructure for people without a dev machine (hosted mo
 |---|---|---|
 | `name` | folder name | Sidebar (when there's no logo) and page titles. |
 | `dashboard.port` | 3333 | `DASHBOARD_PORT` env var overrides it per machine; `--port` per start. Must not clash with an app port. |
-| `dashboard.devPort` | 4339 | The UI dev server (`npm run dev` in dashboard/) allowed to call the server. Keep in step with `angular.json`'s serve port. |
+| `dashboard.devPort` | 4339 | The UI dev server (`npm run dev` in the engine folder) allowed to call the server. Keep in step with `angular.json`'s serve port. |
 | `dashboard.legacyRedirects` | none | Old tools' ports that should redirect into the dashboard. |
 | `worktrees.dir` | `worktrees` | Where per-ticket worktrees live (Workspaces page lists `<dir>/*` with a `.worktree.json`). Native `git worktree`s are found too, wherever they are: see "Worktrees" below. |
 | `worktrees.portsFile` | `~/.agentic-workspace-ports.json` | Per-user file of worktree ports: `{ worktrees: { <name>: { slot, workspace, ports: { <appId>: port } } } }`. Written by the team's worktree tooling, or by the dashboard when `worktrees.ports` is set. |
@@ -135,7 +135,7 @@ Port rules: unique across apps, not the dashboard's, and not a database's host p
 
 Each check picks a catalog entry with `use` and overrides any field, or defines one with `kind`. Fields: `id` (defaults to `use`; unique), `group` (section; order = first appearance; default "Everyone"), `label` (`{required}`, `{major}`, `{image}` expand), `apps` (app ids that can't start while it's missing: their cards say "Needs …"), `required` (`"1.2"` or `{ file, regex?, min?, default? }`: read from a repo file; `min` is a floor), `optional` (absent = info, not missing), `when: { exists: "<dir>", os: "win"|"mac"|"linux", profile: "developer"|"reader", role: "<role id>" }` (profile / role: only for people on that profile or in that role, e.g. build tools for developers; either takes a list), `install: { label?, win, mac, linux, cwd? }` (runs in a visible terminal when the user clicks Install; `null` for an OS = no button), `fix` (copyable text; string or per OS), `detail: { ok, missing }`.
 
-**Catalog ids** (`dashboard/server/src/machine-catalog.ts`): `package-manager` (winget/Homebrew), `node`, `npm`, `pnpm`, `yarn`, `bun`, `python`, `uv`, `php`, `composer`, `go`, `java`, `maven`, `gradle`, `ruby`, `bundler`, `cargo`, `dotnet`, `dotnet-dev-cert`, `dotnet-user-secrets` (`project`: a csproj with UserSecretsId), `git`, `gh`, `glab`, `claude` (installed **and signed in**, via `claude auth status`; signed out shows a Sign in button that opens a terminal running `claude auth login`), `curl`, `az`, `aws`, `gcloud`, `terraform`, `kubectl`, `docker`, `docker-container` (`name`, `port`, `image`; `setup: false` hides Run setup), `psql`, `mysql`, `redis-cli`, `path` (`path`, `repo`, `cloneFix`; `{exe}` = `.exe` on Windows), `npm-global` (`package`), `env-var` (`name`), `port` (`port`), `claude-connector` (`connector`: a claude.ai connector's name, e.g. `"Atlassian"`; read from `claude mcp list`: connected, turned off for the project, signed out, or not on the person's claude.ai account; the button opens claude.ai's connector settings). A connector is how Claude itself should reach a tracker or docs host: one browser sign-in, every folder, headless runs included.
+**Catalog ids** (`<engine>/server/src/machine-catalog.ts`): `package-manager` (winget/Homebrew), `node`, `npm`, `pnpm`, `yarn`, `bun`, `python`, `uv`, `php`, `composer`, `go`, `java`, `maven`, `gradle`, `ruby`, `bundler`, `cargo`, `dotnet`, `dotnet-dev-cert`, `dotnet-user-secrets` (`project`: a csproj with UserSecretsId), `git`, `gh`, `glab`, `claude` (installed **and signed in**, via `claude auth status`; signed out shows a Sign in button that opens a terminal running `claude auth login`), `curl`, `az`, `aws`, `gcloud`, `terraform`, `kubectl`, `docker`, `docker-container` (`name`, `port`, `image`; `setup: false` hides Run setup), `psql`, `mysql`, `redis-cli`, `path` (`path`, `repo`, `cloneFix`; `{exe}` = `.exe` on Windows), `npm-global` (`package`), `env-var` (`name`), `port` (`port`), `claude-connector` (`connector`: a claude.ai connector's name, e.g. `"Atlassian"`; read from `claude mcp list`: connected, turned off for the project, signed out, or not on the person's claude.ai account; the button opens claude.ai's connector settings). A connector is how Claude itself should reach a tracker or docs host: one browser sign-in, every folder, headless runs included.
 
 **Kinds** for custom checks: `command` (`probe: { cmd: "tool" | { win, mac, linux }, args: [], stream?: "out"|"err"|"both" }`, optional `auth: { cmd, args, detail, signIn: { label, win, mac, linux } }`), plus every kind above. Never put secrets in checks: secrets checks only look for a file and tell the user where it comes from.
 
@@ -155,7 +155,7 @@ Always include: `package-manager`, `node` (the dashboard itself needs it; floor 
 
 `notes` = a folder of Markdown, rendered in the page. `site` = a static-site repo (HTML); `port` serves the working copy locally for the Page view (pick unused ports), `live` links the published site. `external` = docs elsewhere (Confluence, Notion, Google Drive, SharePoint, a wiki): a card that opens `url`, and "Ask Claude" starts a read-only run that uses that service's MCP connector (the user connects it in Claude). Local sources are also indexed by search.
 
-With a `provider` that has an adapter (`dashboard/server/src/docs-providers/`: `confluence` so far), an external source is also **searchable**: the Docs page searches it and shows its pages, global search (Ctrl+K) lists its matches, and Ask and the launch dialog get a **Use <name>** checkbox that tells the run to search it through the MCP connector and cite pages. Each person reads it with their own key, pasted on the Docs page (kept in `.claude/ledger/`), so they only see what their account can.
+With a `provider` that has an adapter (`<engine>/server/src/docs-providers/`: `confluence` so far), an external source is also **searchable**: the Docs page searches it and shows its pages, global search (Ctrl+K) lists its matches, and Ask and the launch dialog get a **Use <name>** checkbox that tells the run to search it through the MCP connector and cite pages. Each person reads it with their own key, pasted on the Docs page (kept in `.claude/ledger/`), so they only see what their account can.
 - **Confluence**: `"provider": "confluence"`, `url` = `https://<site>.atlassian.net/wiki`, optional `spaces` (space keys; empty = every non-personal space). Key: `CONFLUENCE_EMAIL` + `CONFLUENCE_API_TOKEN`, the pasted `email:api-token`, or, when `issues.kind` is `jira` on the same site, the Jira key (nothing more to paste).
 
 ## infrastructure.json: the Infrastructure page
@@ -219,11 +219,11 @@ Presets are the Home page's skill cards: `prompt` (with `{arg}` placeholders), `
 
 ## repos.json: the Repos page (workspace root)
 
-The repos the workspace is made of, each cloned to `<workspace>/<relativePath>`. It sits at the workspace root, not in `.claude/dashboard/`, because the team's own skills (worktrees, pulls) read it too. Schema: `dashboard/shared/repos.schema.json` (point `$schema` at it for editor checks).
+The repos the workspace is made of, each cloned to `<workspace>/<relativePath>`. It sits at the workspace root, not in `.claude/dashboard/`, because the team's own skills (worktrees, pulls) read it too. Schema: `<engine>/shared/repos.schema.json` (point `$schema` at it for editor checks).
 
 ```json
 {
-  "$schema": "./dashboard/shared/repos.schema.json",
+  "$schema": "./natterjack/shared/repos.schema.json",
   "repos": [
     { "name": "api", "relativePath": "services/api", "remote": "https://github.com/acme/api.git", "layer": "backend", "dependencies": [] },
     { "name": "web", "relativePath": "web", "remote": "https://github.com/acme/web.git", "layer": "frontend", "defaultBranch": "main" }
@@ -246,26 +246,26 @@ A top-level `snapshot` block names where read-only copies of the repos are publi
 "snapshot": { "source": "s3", "bucket": "acme-code", "region": "eu-west-1", "prefix": "snapshots/" }
 ```
 
-- **Publish** (CI, nightly): `node dashboard/bin/snapshot.mjs publish --clone` shallow-clones missing repos, fetches each repo's **default branch from origin** (`defaultBranch` in repos.json, else origin's HEAD) and runs `git archive` on that commit into `<name>-<commit>.tar.gz` (files as committed, no history), whatever the clone has checked out, so a work branch or uncommitted changes are never published. It zips the workspace root's default branch into `workspace-<commit>.zip`, and uploads them with `snapshot-manifest.json` (each file's commit, size, date) last. File names carry the commit, so an interrupted publish never changes a file the current manifest names. Once the new manifest is up, files that only the previous manifest named are deleted, and old versions of the snapshot's own files are pruned; other files at the source are left alone. `--dry --out <dir>` builds without uploading (to check sizes); `--no-fetch` uses the origin refs the clones already have; `"snapshot": false` on a repo leaves it out. It needs git ≥ 2.40, and the source's credentials in the environment.
+- **Publish** (CI, nightly): `node <engine>/bin/snapshot.mjs publish --clone` shallow-clones missing repos, fetches each repo's **default branch from origin** (`defaultBranch` in repos.json, else origin's HEAD) and runs `git archive` on that commit into `<name>-<commit>.tar.gz` (files as committed, no history), whatever the clone has checked out, so a work branch or uncommitted changes are never published. It zips the workspace root's default branch into `workspace-<commit>.zip`, and uploads them with `snapshot-manifest.json` (each file's commit, size, date) last. File names carry the commit, so an interrupted publish never changes a file the current manifest names. Once the new manifest is up, files that only the previous manifest named are deleted, and old versions of the snapshot's own files are pruned; other files at the source are left alone. `--dry --out <dir>` builds without uploading (to check sizes); `--no-fetch` uses the origin refs the clones already have; `"snapshot": false` on a repo leaves it out. It needs git ≥ 2.40, and the source's credentials in the environment.
 - **Publish now** (the Repos page, developer profile, a source that takes uploads): the same, with your own key for the source. It first lists what would go up (each repo's branch, commit and message, fetched just then) and publishes exactly that after you confirm, as a job. Repos you haven't cloned, or without an origin, are skipped, and their last published copy stays in the manifest if the file is still at the source.
 - **Download** (the Repos page): connect the source (each person's own key, kept in the ledger), then **Download code** / **Update code**. Each archive is extracted next to its folder, stamped (`.snapshot.json`), and swapped in whole; the old copy goes only once the new one is in place. A folder with `.git`, or with files and no stamp, is never replaced. The first download sets the reader profile unless the person already chose one (with `roles`, they are still asked which role).
-- **Getting started with no git at all (Windows)**: each publish also uploads `Install-<name>.cmd` (confluence and http sources), generated from `dashboard/bin/install-windows.ps1` with the source filled in. Double-clicking it sets up or updates everything for that user, with no admin rights needed:
-  - Node.js at the dashboard's floor: the one on PATH, else a portable copy in `%LOCALAPPDATA%\agentic-os\node`, checked against nodejs.org's SHASUMS256.
+- **Getting started with no git at all (Windows)**: each publish also uploads `Install-<name>.cmd` (confluence and http sources), generated from `<engine>/bin/install-windows.ps1` with the source filled in. Double-clicking it sets up or updates everything for that user, with no admin rights needed:
+  - Node.js at the dashboard's floor: the one on PATH, else a portable copy in `%LOCALAPPDATA%\natterjack\node`, checked against nodejs.org's SHASUMS256.
   - Claude Code: Anthropic's per-user installer.
   - The source's key, asked for once and saved in the ledger.
   - `workspace.zip` and the built UI, extracted into the folder the user picks. It never extracts over a git clone, and the user's ledger and downloaded repos are kept.
   - It asks for the role first (when `workspace.json` has `roles`), then starts the dashboard, sets that role (else the reader profile), starts Download code, and adds a desktop shortcut.
 
   Running the installer again updates the workspace files.
-- **Pre-built UI**: publish adds `dashboard-ui.tar.gz`, the publisher's `dashboard/dist` marked with `.prebuilt.json`, when `dashboard/` there is exactly the published commit and its build is current (in CI: run `npm ci && npm run build` in `dashboard/` before publishing). `dashboard.mjs start` then needs neither npm nor a build, since the server only uses Node itself. Without it, the first start runs `npm ci` and `ng build`, which takes a few minutes.
-- **By hand, or on another OS**: download `workspace.zip` from the source, extract it, and run `node dashboard/bin/dashboard.mjs start`; the Repos page does the rest.
-- **Install with no git (hosted containers, scripts)**: `node dashboard/bin/snapshot.mjs install --into <dir> [--repos]` installs or updates a whole workspace from the source. It puts the workspace zip over `<dir>`, then the prebuilt UI, then, with `--repos`, every repo that's missing or older.
+- **Pre-built UI**: publish adds `dashboard-ui.tar.gz`, the publisher's `<engine>/dist` marked with `.prebuilt.json`, when `<engine>/` there is exactly the published commit and its build is current (in CI: run `npm ci && npm run build` in `<engine>/` before publishing). The manifest records the folder (`ui.dir`); installs put the UI where the workspace's `engine.json` says. `dashboard.mjs start` then needs neither npm nor a build, since the server only uses Node itself. Without it, the first start runs `npm ci` and `ng build`, which takes a few minutes.
+- **By hand, or on another OS**: download `workspace.zip` from the source, extract it, and run `node <engine>/bin/dashboard.mjs start`; the Repos page does the rest.
+- **Install with no git (hosted containers, scripts)**: `node <engine>/bin/snapshot.mjs install --into <dir> [--repos]` installs or updates a whole workspace from the source. It puts the workspace zip over `<dir>`, then the prebuilt UI, then, with `--repos`, every repo that's missing or older.
   - It only writes to a folder that's absent, empty or installed this way, never to a git clone, and the ledger is kept.
   - Before the first install there's no `repos.json` to read, so it takes the source from `SNAPSHOT_CONFIG` (the `snapshot` block as JSON) and the credentials from the environment.
   - The hosted image runs it on boot (hosting.md).
   - Files deleted from the workspace stay until the folder is installed fresh.
 
-Sources (`dashboard/server/src/snapshot-sources/`; adding one: `references/adapters.md`):
+Sources (`<engine>/server/src/snapshot-sources/`; adding one: `references/adapters.md`):
 
 | source | settings | who can download | publishing credentials |
 |---|---|---|---|
@@ -280,15 +280,33 @@ The Windows installer (`Install-<name>.cmd`) is published for `confluence` and `
 
 `brand/theme.css` is served at `/ds/theme.css`, after the dashboard's neutral defaults (`/ds/tokens.css`). It `@import`s the team's token files (copied into `brand/` verbatim) and maps them onto the contract. Other files in `brand/` (the logo, favicon, fonts) are served at `/ds/<file>`. See `branding.md`.
 
+## engine.json: the installed engine
+
+Written by scaffold, updated by upgrade; don't edit it by hand.
+
+```json
+{ "version": "0.8.0", "dir": "natterjack", "sourceRepo": "https://github.com/lhoezee/skills", "tag": "natterjack-v0.8.0", "installedAt": "…" }
+```
+
+- **`version`**: the engine version installed, the base upgrade merges from.
+- **`dir`**: the folder the engine is in, relative to the workspace with forward slashes (`natterjack`, `tools/ops-console`). Not absolute, no `..`, not under `.claude/`. Without it the engine is in `dashboard/` (workspaces set up before the folder was configurable). The scripts, the dashboard, the snapshot installer and the hosted image all read it. `.claude/dashboard/` and `.claude/ledger/` stay where they are whatever the folder: the engine finds the workspace by walking up to the nearest folder that has `.claude/dashboard/`.
+
+In these docs `<engine>/` means that folder.
+
 ## plan.json: input to scaffold.mjs
 
 ```json
 {
   "workspace": { … }, "apps": { … }, "machine": { … }, "docs": { … }, "infrastructure": { … }, "links": { … }, "deck": { … },
   "repos": [{ "name": "API", "relativePath": "api", "remote": "https://github.com/acme/api.git", "dependencies": [] }],
+  "engineDir": "natterjack",
+  "skillName": "natterjack",
   "skills": ["dashboard"],
   "claudeMd": true
 }
 ```
 
 Only `workspace` is required. scaffold never overwrites an existing config file unless `--force`.
+
+- **`engineDir`** (default `natterjack`; `--engine-dir` overrides it): where the engine goes, recorded as engine.json `dir`. Pick another when the workspace already has a folder or skill by that name, e.g. `tools/natterjack`. scaffold refuses a folder that's already something else, one that overlaps a repo, and moving an engine that's already installed. `.gitignore` gets its `node_modules/`, `dist/` and `.angular/` (and, allow-list style, the folder and its parents).
+- **`skillName`** (default: the last folder of `engineDir`, e.g. `natterjack` or `ops-console`): the name the workspace's dashboard skill is installed under (`.claude/skills/<skillName>/`, run as `/<skillName>`). `"dashboard"` in `skills` means that skill.

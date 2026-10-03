@@ -1,9 +1,9 @@
 /**
  * Publish read-only snapshots of the workspace's repos (see snapshot.ts), usually
- * from CI, or install a workspace from them. Run through dashboard/bin/snapshot.mjs:
+ * from CI, or install a workspace from them. Run through <engine>/bin/snapshot.mjs:
  *
- *   node dashboard/bin/snapshot.mjs publish [--clone] [--out <dir>] [--dry] [--no-workspace]
- *   node dashboard/bin/snapshot.mjs install [--into <dir>] [--repos]
+ *   node <engine>/bin/snapshot.mjs publish [--clone] [--out <dir>] [--dry] [--no-workspace]
+ *   node <engine>/bin/snapshot.mjs install [--into <dir>] [--repos]
  *
  *   --clone         shallow-clone repos.json repos that aren't here yet first (CI)
  *   --out <dir>     where the files are built (default: a temp folder)
@@ -59,7 +59,7 @@ async function main() {
   const cmd = argv[0];
   if (cmd === "install") return install();
   if (cmd !== "publish") {
-    console.error("Usage: node dashboard/bin/snapshot.mjs publish [--clone] [--out <dir>] [--dry] [--no-fetch] [--no-workspace]\n       node dashboard/bin/snapshot.mjs install [--into <dir>] [--repos]");
+    console.error("Usage: node <engine>/bin/snapshot.mjs publish [--clone] [--out <dir>] [--dry] [--no-fetch] [--no-workspace]\n       node <engine>/bin/snapshot.mjs install [--into <dir>] [--repos]");
     process.exit(2);
   }
   const root = WORKSPACE_ROOT;

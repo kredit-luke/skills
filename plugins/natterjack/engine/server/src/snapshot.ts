@@ -24,10 +24,11 @@ import { readRepos, repoState, STAMP_FILE } from "./repos.ts";
 import type { RepoDef } from "./repos.ts";
 import type { SnapshotFile, SnapshotSource } from "./snapshot-sources/index.ts";
 import { MANIFEST, parseManifest } from "./snapshot-sources/manifest.ts";
-import type { Manifest, ManifestEntry } from "./snapshot-sources/manifest.ts";
+import type { Manifest, ManifestEntry, UiEntry } from "./snapshot-sources/manifest.ts";
 import { extractTarGz } from "./tar.ts";
 import { extractZip } from "./zip.ts";
 import { canInstallFrom, installerName, renderInstaller, type InstallerRole } from "./installer.ts";
+import { engineDirOf, LEGACY_ENGINE_DIR } from "./workspace-root.ts";
 
 const run = promisify(execFile);
 const MANIFEST_TTL_MS = 60_000;
@@ -237,7 +238,11 @@ export async function installWorkspace(source: SnapshotSource, dir: string, opts
 
   const local = readStamp(dir);
   const stampFile = path.join(dir, STAMP_FILE);
-  const dist = path.join(dir, "dashboard", "dist");
+  // The engine folder the UI goes in: the workspace's engine.json says (dashboard/ when it has
+  // no `dir`), else what the publisher recorded, else dashboard/.
+  const recordedDir = (root: string) => (fs.existsSync(path.join(root, ".claude", "dashboard", "engine.json")) ? engineDirOf(root) : null);
+  const uiDirIn = (root: string) => recordedDir(root) || manifest.ui?.dir || LEGACY_ENGINE_DIR;
+  let dist = path.join(dir, uiDirIn(dir), "dist");
   const uiFileAt = manifest.ui && files.find((f) => f.name === manifest.ui!.file);
   const prebuilt = (() => { try { return JSON.parse(fs.readFileSync(path.join(dist, ".prebuilt.json"), "utf-8")).sha; } catch { return null; } })();
   const needWorkspace = !local || local.sha !== ws.sha;
@@ -248,13 +253,18 @@ export async function installWorkspace(source: SnapshotSource, dir: string, opts
   let ui = false;
   if (needWorkspace || needUi) {
     const tmp = tmpDir("install");
-    const next = path.join(dir, "dashboard", ".dist-new"), old = path.join(dir, "dashboard", ".dist-old");
+    let next = "", old = "";
     try {
       // Download and extract everything first: a failed download or a corrupt archive
       // leaves the live folder, and its stamp, exactly as they were.
       const stagedWs = path.join(tmp, "workspace"), stagedUi = path.join(tmp, "ui");
       if (needWorkspace) log(`Extracted ${(await extractZip(await fetchTo(ws, wsFile, tmp), stagedWs)).files} workspace files`);
       if (needUi) await extractTarGz(await fetchTo(manifest.ui!, uiFileAt!, tmp), stagedUi);
+      // The workspace being installed says where its engine is.
+      const engine = path.join(dir, needWorkspace ? uiDirIn(stagedWs) : uiDirIn(dir));
+      dist = path.join(engine, "dist");
+      next = path.join(engine, ".dist-new");
+      old = path.join(engine, ".dist-old");
 
       // Copying over the live folder isn't atomic. Mark it now, so an interruption leaves a
       // folder that's still ours to retry (not "other files") and isn't taken as current
@@ -290,7 +300,7 @@ export async function installWorkspace(source: SnapshotSource, dir: string, opts
       }
       replaceFile(stampFile, finalStamp);
       if (needWorkspace) log(`${dir} is now at ${ws.sha.slice(0, 10)}`);
-    } finally { rmrf(tmp); rmrf(next); }
+    } finally { rmrf(tmp); if (next) rmrf(next); }
   }
 
   let repos = 0;
@@ -399,9 +409,10 @@ export async function buildSnapshot(root: string, outDir: string, opts: { worksp
     workspace = entry(workspaceFile(t.sha), t.sha);
     log(`workspace: ${workspace.file} ${Math.round(workspace.size / 1024)} KB, ${t.branch} at ${t.sha.slice(0, 10)}`);
   }
-  let ui: ManifestEntry | null = null, installer: ManifestEntry | null = null;
+  let ui: UiEntry | null = null, installer: ManifestEntry | null = null;
   if (plan.workspace) {
-    if (await buildUi(root, outDir, plan.workspace.sha, log)) ui = entry(uiFile(plan.workspace.sha), plan.workspace.sha);
+    const engineDir = engineDirOf(root);
+    if (await buildUi(root, engineDir, outDir, plan.workspace.sha, log)) ui = { ...entry(uiFile(plan.workspace.sha), plan.workspace.sha), dir: engineDir };
     const snap = readRepos(root).snapshot;
     if (snap && canInstallFrom(snap) && opts.installer) {
       const file = installerName(opts.installer.name);
@@ -440,22 +451,22 @@ function newest(p: string): number {
 }
 
 /**
- * dashboard-ui.tar.gz: this machine's built dashboard UI (dashboard/dist), marked
+ * dashboard-ui.tar.gz: this machine's built dashboard UI (<engine>/dist), marked
  * prebuilt, so the downloaded workspace starts without npm or a build. Only when the
  * dashboard here is exactly the published commit's (no edits, nothing untracked) and
  * the build is newer than its sources; otherwise it's left out and a download builds
  * it on first start. Returns whether it was made.
  */
-async function buildUi(root: string, outDir: string, sha: string, log: (t: string) => void): Promise<boolean> {
-  const dash = path.join(root, "dashboard");
+async function buildUi(root: string, engineDir: string, outDir: string, sha: string, log: (t: string) => void): Promise<boolean> {
+  const dash = path.join(root, engineDir);
   const index = path.join(dash, "dist", "browser", "index.html");
   const skip = (why: string) => { log(`dashboard UI not included: ${why}`); return false; };
-  if (!fs.existsSync(index)) return skip("dashboard/dist isn't built here");
-  if ((await tryGit(root, ["diff", "--quiet", sha, "--", "dashboard"])) === null) return skip("dashboard/ here differs from the published commit");
-  const untracked = await tryGit(root, ["status", "--porcelain", "--untracked-files=all", "--", "dashboard"]);
-  if (untracked === null || untracked.trim()) return skip("dashboard/ here has untracked or changed files");
+  if (!fs.existsSync(index)) return skip(`${engineDir}/dist isn't built here`);
+  if ((await tryGit(root, ["diff", "--quiet", sha, "--", engineDir])) === null) return skip(`${engineDir}/ here differs from the published commit`);
+  const untracked = await tryGit(root, ["status", "--porcelain", "--untracked-files=all", "--", engineDir]);
+  if (untracked === null || untracked.trim()) return skip(`${engineDir}/ here has untracked or changed files`);
   const sources = Math.max(...["web", "shared", "angular.json", "package.json", "tsconfig.json"].map((s) => newest(path.join(dash, s))));
-  if (sources > fs.statSync(index).mtimeMs) return skip("dashboard/dist is older than its sources (run npm run build in dashboard/)");
+  if (sources > fs.statSync(index).mtimeMs) return skip(`${engineDir}/dist is older than its sources (run npm run build in ${engineDir}/)`);
   const stage = tmpDir("ui");
   try {
     fs.cpSync(path.join(dash, "dist"), path.join(stage, "dist"), { recursive: true });

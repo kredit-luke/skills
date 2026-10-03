@@ -1,5 +1,5 @@
 /**
- * Shared helpers for the agentic-os scripts. Zero dependencies.
+ * Shared helpers for the natterjack scripts. Zero dependencies.
  */
 
 import fs from "node:fs";
@@ -13,9 +13,17 @@ export const PLUGIN_DIR = path.resolve(path.dirname(fileURLToPath(import.meta.ur
 export const ENGINE_DIR = path.join(PLUGIN_DIR, "engine");
 export const TEMPLATES_DIR = path.join(PLUGIN_DIR, "templates");
 export const SOURCE_REPO = "https://github.com/lhoezee/skills";
-export const TAG_PREFIX = "agentic-os-v";
-export const PLUGIN_NAME = "agentic-os";
-// Installed plugins live at <plugins>/cache/<marketplace>/agentic-os/<version>; a checkout of the repo doesn't.
+export const TAG_PREFIX = "natterjack-v";
+export const PLUGIN_NAME = "natterjack";
+/**
+ * Releases up to 0.7.1 shipped as the agentic-os plugin: tagged agentic-os-v<x.y.z>,
+ * engine under plugins/agentic-os/. Upgrades from them still need those as the merge base.
+ */
+export const RELEASE_LAYOUTS = [
+  { prefix: TAG_PREFIX, plugin: PLUGIN_NAME },
+  { prefix: "agentic-os-v", plugin: "agentic-os" },
+];
+// Installed plugins live at <plugins>/cache/<marketplace>/natterjack/<version>; a checkout of the repo doesn't.
 const INSTALLED = path.basename(path.dirname(PLUGIN_DIR)) === PLUGIN_NAME;
 export const MARKETPLACE = INSTALLED ? path.basename(path.dirname(path.dirname(PLUGIN_DIR))) : "lhoezee-skills";
 
@@ -24,9 +32,6 @@ export const IGNORE = new Set(["node_modules", "dist", ".angular", "out-tsc", ".
 
 export const readJson = (f) => { try { return JSON.parse(fs.readFileSync(f, "utf-8").replace(/^﻿/, "")); } catch { return null; } };
 export const writeJson = (f, data) => { fs.mkdirSync(path.dirname(f), { recursive: true }); fs.writeFileSync(f, JSON.stringify(data, null, 2) + "\n"); };
-
-/** repos.json's schema, as a workspace refers to it (the engine ships a copy under dashboard/). */
-export const REPOS_SCHEMA = "./dashboard/shared/repos.schema.json";
 
 /**
  * A relative folder inside the workspace ("api", "services/billing"), forward
@@ -38,6 +43,32 @@ export function safeRelativePath(p) {
   if (!s || s === "." || s.startsWith("/") || /^[A-Za-z]:/.test(s) || s.split("/").includes("..")) return null;
   return s;
 }
+
+/** Where new installs put the engine, relative to the workspace. */
+export const DEFAULT_ENGINE_DIR = "natterjack";
+/** Where it was before the folder was configurable; a workspace whose engine.json has no `dir` still runs it from here. */
+export const LEGACY_ENGINE_DIR = "dashboard";
+
+/** A usable engine folder (relative, forward slashes, not inside .claude/), or null. */
+export function safeEngineDir(p) {
+  const s = safeRelativePath(p);
+  return s && s.split("/")[0] !== ".claude" && !s.split("/").includes(".") ? s : null;
+}
+
+/**
+ * The folder a workspace's engine is in, relative to it: engine.json's `dir`, else
+ * dashboard/ (every workspace set up before the folder was configurable).
+ */
+export function engineDirOf(root) {
+  const lock = readJson(path.join(root, ".claude", "dashboard", "engine.json"));
+  return safeEngineDir(lock && lock.dir) || LEGACY_ENGINE_DIR;
+}
+
+/** Is this folder an installed engine (whatever it's called)? Scans of the team's code skip it. */
+export const isEngineFolder = (dir) => fs.existsSync(path.join(dir, "bin", "dashboard.mjs")) && fs.existsSync(path.join(dir, "server", "src", "main.ts"));
+
+/** repos.json's schema, as a workspace refers to it (the engine ships a copy). */
+export const reposSchema = (dir) => `./${dir}/shared/repos.schema.json`;
 
 /**
  * One repos.json entry → { name, relativePath, remote, layer, defaultBranch, dependencies },
@@ -83,11 +114,12 @@ export function compareVersions(a, b) {
   return 0;
 }
 
-/** The newest agentic-os-v<x.y.z> tag on the source repo, or null (offline, or no tags). */
+/** The newest release on the source repo (natterjack-v<x.y.z>, or an older agentic-os-v tag), or null (offline, or no tags). */
 export function latestRelease(repo = SOURCE_REPO) {
   try {
-    const out = execFileSync("git", ["ls-remote", "--tags", "--refs", repo, `${TAG_PREFIX}*`], { encoding: "utf-8", stdio: ["ignore", "pipe", "ignore"], timeout: 20000 });
-    const tag = new RegExp(`refs/tags/${TAG_PREFIX}(\\d+\\.\\d+\\.\\d+)$`);
+    const prefixes = RELEASE_LAYOUTS.map((l) => l.prefix);
+    const out = execFileSync("git", ["ls-remote", "--tags", "--refs", repo, ...prefixes.map((p) => `${p}*`)], { encoding: "utf-8", stdio: ["ignore", "pipe", "ignore"], timeout: 20000 });
+    const tag = new RegExp(`refs/tags/(?:${prefixes.join("|")})(\\d+\\.\\d+\\.\\d+)$`);
     return out.split("\n").map((l) => (tag.exec(l.trim()) || [])[1]).filter(Boolean).sort(compareVersions).pop() || null;
   } catch {
     return null;
@@ -168,14 +200,16 @@ export const hashFile = (f) => {
 export function fetchEngine(version, repo = SOURCE_REPO) {
   if (!version) return null;
   if (engineVersion() === version) return ENGINE_DIR;
-  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "agentic-os-base-"));
-  try {
-    execFileSync("git", ["clone", "--quiet", "--depth", "1", "--branch", `${TAG_PREFIX}${version}`, repo, tmp], { stdio: "ignore", timeout: 120000 });
-    const dir = path.join(tmp, "plugins", "agentic-os", "engine");
-    return fs.existsSync(dir) ? dir : null;
-  } catch {
-    return null;
+  // Newer releases first; an older version is only under its agentic-os tag.
+  for (const layout of RELEASE_LAYOUTS) {
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "natterjack-base-"));
+    try {
+      execFileSync("git", ["clone", "--quiet", "--depth", "1", "--branch", `${layout.prefix}${version}`, repo, tmp], { stdio: "ignore", timeout: 120000 });
+      const dir = path.join(tmp, "plugins", layout.plugin, "engine");
+      if (fs.existsSync(dir)) return dir;
+    } catch {}
   }
+  return null;
 }
 
 export function gitMergeFile(local, base, theirs) {

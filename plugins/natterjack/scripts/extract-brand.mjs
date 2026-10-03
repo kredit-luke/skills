@@ -13,7 +13,7 @@
  * --apply copies the chosen stylesheet(s) verbatim into .claude/dashboard/brand/
  * (SCSS / Tailwind / JSON values are written out as plain CSS variables instead),
  * writes a DRAFT brand/theme.css that maps them onto the dashboard's token contract
- * (dashboard/web/public/ds/tokens.css), copies the logo and favicon, sets
+ * (<engine>/web/public/ds/tokens.css), copies the logo and favicon, sets
  * workspace.json "brand", and prints a WCAG contrast check. The mapping is a
  * best guess from variable names: Claude should read theme.css, fix anything the
  * report flags, and show the user a screenshot.
@@ -22,8 +22,9 @@
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { isEngineFolder } from "./lib.mjs";
 
-const SKIP = new Set(["node_modules", ".git", "dist", "build", "out", "bin", "obj", "vendor", "target", ".next", ".nuxt", ".angular", "coverage", "worktrees", ".claude", "dashboard"]);
+const SKIP = new Set(["node_modules", ".git", "dist", "build", "out", "bin", "obj", "vendor", "target", ".next", ".nuxt", ".angular", "coverage", "worktrees", ".claude", "dashboard", "natterjack"]);
 const read = (f) => { try { return fs.readFileSync(f, "utf-8"); } catch { return null; } };
 
 function walk(dir, test, depth = 6, out = []) {
@@ -31,7 +32,8 @@ function walk(dir, test, depth = 6, out = []) {
   try { entries = fs.readdirSync(dir, { withFileTypes: true }); } catch { return out; }
   for (const e of entries) {
     const p = path.join(dir, e.name);
-    if (e.isDirectory()) { if (depth > 0 && !SKIP.has(e.name) && !e.name.startsWith(".")) walk(p, test, depth - 1, out); }
+    // The engine (dashboard/, natterjack/ or wherever engine.json says) has its own tokens, not the team's.
+    if (e.isDirectory()) { if (depth > 0 && !SKIP.has(e.name) && !e.name.startsWith(".") && !isEngineFolder(p)) walk(p, test, depth - 1, out); }
     else if (test(e.name, p)) out.push(p);
   }
   return out;
@@ -405,7 +407,7 @@ function apply(root, pick, opts) {
    Brand for the workspace dashboard (served at /ds/theme.css).
    Source: ${cand.file} (${cand.why || cand.kind}).
    DRAFT from extract-brand.mjs: the token names below are the dashboard's
-   contract (dashboard/web/public/ds/tokens.css); values were matched by
+   contract (web/public/ds/tokens.css in the engine); values were matched by
    variable name. Check them, then fix anything the contrast report flagged.
    Tokens not set here keep their neutral default.
    @import must come before any rule.

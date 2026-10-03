@@ -95,7 +95,7 @@ export async function downloadFile(url: string, headers: Record<string, string>,
 
 /** multipart/form-data with one file field (plus plain fields), streamed from disk. */
 export function multipartFile(file: string, filename: string, fields: Record<string, string> = {}, fileField = "file") {
-  const boundary = `----agentic-os-${Date.now().toString(16)}${Math.random().toString(16).slice(2)}`;
+  const boundary = `----natterjack-${Date.now().toString(16)}${Math.random().toString(16).slice(2)}`;
   const esc = (s: string) => s.replace(/"/g, "%22").replace(/[\r\n]/g, " ");
   let head = "";
   for (const [k, v] of Object.entries(fields)) head += `--${boundary}\r\nContent-Disposition: form-data; name="${esc(k)}"\r\n\r\n${v}\r\n`;

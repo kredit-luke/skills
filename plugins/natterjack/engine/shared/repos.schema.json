@@ -1,8 +1,8 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://github.com/lhoezee/skills/plugins/agentic-os/engine/shared/repos.schema.json",
+  "$id": "https://github.com/lhoezee/skills/plugins/natterjack/engine/shared/repos.schema.json",
   "title": "repos.json",
-  "description": "The repos that make up an agentic-os workspace, each cloned to <workspace>/<relativePath>. Read by the dashboard's Repos page, discover.mjs, doctor.mjs and the team's own skills.",
+  "description": "The repos that make up a Natterjack workspace, each cloned to <workspace>/<relativePath>. Read by the dashboard's Repos page, discover.mjs, doctor.mjs and the team's own skills.",
   "type": "object",
   "required": ["repos"],
   "properties": {
@@ -12,7 +12,7 @@
       "items": { "$ref": "#/$defs/repo" }
     },
     "snapshot": {
-      "description": "Where read-only copies of the repos are published (dashboard/bin/snapshot.mjs publish) and downloaded from (the Repos page), for people who can't clone.",
+      "description": "Where read-only copies of the repos are published (<engine>/bin/snapshot.mjs publish) and downloaded from (the Repos page), for people who can't clone.",
       "oneOf": [
         {
           "type": "object",

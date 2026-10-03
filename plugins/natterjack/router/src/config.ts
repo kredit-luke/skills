@@ -35,7 +35,7 @@ export interface RouterConfig {
     tokenFile: string;
     caFile: string | null;
     namespace: string;
-    /** Which StatefulSets are dashboards; each names its person in the agentic-os/owner annotation. */
+    /** Which StatefulSets are dashboards; each names its person in the natterjack/owner annotation. */
     selector: string;
     /** How to reach a dashboard: {service}, {namespace} and {port} are filled in. */
     urlTemplate: string;
@@ -88,7 +88,7 @@ export function routerConfig(env: NodeJS.ProcessEnv = process.env, readFile: (f:
       tokenFile: String(env.ROUTER_K8S_TOKEN_FILE || "").trim() || `${SA}/token`,
       caFile: env.ROUTER_K8S_CA_FILE !== undefined ? (String(env.ROUTER_K8S_CA_FILE).trim() || null) : `${SA}/ca.crt`,
       namespace: String(env.ROUTER_K8S_NAMESPACE || "").trim() || (readFile(`${SA}/namespace`) || "").trim() || "default",
-      selector: String(env.ROUTER_K8S_SELECTOR || "").trim() || "app=agentic-dashboard",
+      selector: String(env.ROUTER_K8S_SELECTOR || "").trim() || "app=natterjack-dashboard",
       urlTemplate: String(env.ROUTER_K8S_URL_TEMPLATE || "").trim() || "http://{service}.{namespace}.svc:{port}",
       port: parseInt(String(env.ROUTER_K8S_PORT || ""), 10) || 3333,
     },

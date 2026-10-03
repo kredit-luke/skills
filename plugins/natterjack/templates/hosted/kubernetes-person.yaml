@@ -1,5 +1,5 @@
 # One person's dashboard behind the router (kubernetes-router.yaml). Fill in per person
-# and apply; the router finds it by the agentic-os/owner annotation and starts it (0 → 1)
+# and apply; the router finds it by the natterjack/owner annotation and starts it (0 → 1)
 # the first time they open https://dashboard.example.com:
 #
 #   PERSON=ana EMAIL=ana@example.com envsubst '$PERSON $EMAIL' < kubernetes-person.yaml | kubectl apply -n dashboards -f -
@@ -10,17 +10,17 @@ apiVersion: apps/v1
 kind: StatefulSet
 metadata:
   name: dashboard-${PERSON}
-  labels: { app: agentic-dashboard }
+  labels: { app: natterjack-dashboard }
   annotations:
-    agentic-os/owner: "${EMAIL}"
+    natterjack/owner: "${EMAIL}"
 spec:
   replicas: 0   # the router starts it on their first visit and stops it when idle
   serviceName: dashboard-${PERSON}
   selector:
-    matchLabels: { app: agentic-dashboard, person: "${PERSON}" }
+    matchLabels: { app: natterjack-dashboard, person: "${PERSON}" }
   template:
     metadata:
-      labels: { app: agentic-dashboard, person: "${PERSON}" }
+      labels: { app: natterjack-dashboard, person: "${PERSON}" }
     spec:
       automountServiceAccountToken: false
       securityContext: { runAsNonRoot: true, runAsUser: 1000, runAsGroup: 1000, fsGroup: 1000 }
@@ -28,7 +28,7 @@ spec:
       # tolerations: [{ key: dedicated, value: dashboards, effect: NoSchedule }]
       containers:
         - name: dashboard
-          image: REGISTRY/agentic-dashboard:1   # built from templates/hosted/Dockerfile
+          image: REGISTRY/natterjack-dashboard:1   # built from templates/hosted/Dockerfile
           env:
             - { name: DASHBOARD_PUBLIC_URL, value: "https://dashboard.example.com" }   # the router's address
             - { name: DASHBOARD_OWNER, value: "${EMAIL}" }
@@ -61,5 +61,5 @@ kind: Service
 metadata:
   name: dashboard-${PERSON}
 spec:
-  selector: { app: agentic-dashboard, person: "${PERSON}" }
+  selector: { app: natterjack-dashboard, person: "${PERSON}" }
   ports: [{ name: http, port: 3333, targetPort: http }]

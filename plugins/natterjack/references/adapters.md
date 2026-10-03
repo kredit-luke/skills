@@ -1,6 +1,6 @@
 # Issue tracker adapters
 
-The Issues page, Explain / Implement, search, and the ticket strip on runs all go through one `IssueTracker`, chosen by `workspace.json` `issues.kind`. Adapters live in `dashboard/server/src/issues/`: `linear.ts` (GraphQL, pasted key), `jira.ts` (REST v3, `email:token` entered as two fields; classic tokens at the site, scoped tokens through `api.atlassian.com/ex/jira/<cloudId>` via `atlassian.ts`; it reuses a same-site Confluence key and vice versa, and **Disconnect Atlassian** clears both), `github.ts` (the `gh` CLI's own login). The dashboard reads the tracker directly with each person's own credentials: refreshing the board costs no Claude usage, and everyone sees what their account can see. Claude *runs* that need the tracker (Implement, a morning brief) use its MCP connector instead.
+The Issues page, Explain / Implement, search, and the ticket strip on runs all go through one `IssueTracker`, chosen by `workspace.json` `issues.kind`. Adapters live in `<engine>/server/src/issues/` (`<engine>` is the engine folder: `natterjack/` by default, `dashboard/` in older workspaces; `.claude/dashboard/engine.json` `dir` says which): `linear.ts` (GraphQL, pasted key), `jira.ts` (REST v3, `email:token` entered as two fields; classic tokens at the site, scoped tokens through `api.atlassian.com/ex/jira/<cloudId>` via `atlassian.ts`; it reuses a same-site Confluence key and vice versa, and **Disconnect Atlassian** clears both), `github.ts` (the `gh` CLI's own login). The dashboard reads the tracker directly with each person's own credentials: refreshing the board costs no Claude usage, and everyone sees what their account can see. Claude *runs* that need the tracker (Implement, a morning brief) use its MCP connector instead.
 
 ## The interface (`issues/index.ts`)
 
@@ -52,7 +52,7 @@ Azure Boards (WIQL + work items API, PAT with Basic auth), Shortcut (REST, `Shor
 
 ## Docs providers (searchable external docs)
 
-A docs.json source with `"kind": "external", "provider": "<kind>"` becomes searchable when `dashboard/server/src/docs-providers/` has an adapter for it (`confluence.ts` so far): the Docs page searches and reads it, global search lists its matches, and runs can be told to use it ("Use <name>"). The interface (`docs-providers/index.ts`):
+A docs.json source with `"kind": "external", "provider": "<kind>"` becomes searchable when `<engine>/server/src/docs-providers/` has an adapter for it (`confluence.ts` so far): the Docs page searches and reads it, global search lists its matches, and runs can be told to use it ("Use <name>"). The interface (`docs-providers/index.ts`):
 
 ```ts
 interface DocsProvider {
@@ -74,7 +74,7 @@ Candidates: Notion (`POST /v1/search`, integration token; pages → blocks to HT
 
 ## Snapshot sources (the code for people who can't clone)
 
-repos.json `snapshot.source` picks where read-only copies of the repos are published and downloaded from (config: `references/config.md`, "Snapshots"). Adapters live in `dashboard/server/src/snapshot-sources/`: `confluence.ts` (attachments on one page, REST v1, the Docs page's Confluence key), `http.ts` (any direct-link host, download only), `azure-blob.ts` (a blob container, SAS auth) and `s3.ts` (S3 and S3-compatible stores, SigV4 in `sigv4.ts`; `xml.ts` reads both stores' listings). An adapter only moves files by name; `snapshot.ts` owns the archives, the manifest (`manifest.ts`), extraction and the swap. The interface (`snapshot-sources/index.ts`):
+repos.json `snapshot.source` picks where read-only copies of the repos are published and downloaded from (config: `references/config.md`, "Snapshots"). Adapters live in `<engine>/server/src/snapshot-sources/`: `confluence.ts` (attachments on one page, REST v1, the Docs page's Confluence key), `http.ts` (any direct-link host, download only), `azure-blob.ts` (a blob container, SAS auth) and `s3.ts` (S3 and S3-compatible stores, SigV4 in `sigv4.ts`; `xml.ts` reads both stores' listings). An adapter only moves files by name; `snapshot.ts` owns the archives, the manifest (`manifest.ts`), extraction and the swap. The interface (`snapshot-sources/index.ts`):
 
 ```ts
 interface SnapshotSource {

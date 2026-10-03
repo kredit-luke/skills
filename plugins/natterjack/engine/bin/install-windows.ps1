@@ -1,11 +1,11 @@
-# agentic-os workspace setup for Windows, for people without git access to the code.
+# natterjack workspace setup for Windows, for people without git access to the code.
 #
 # Not run directly: `snapshot.mjs publish` wraps it in Install-<name>.cmd with this
 # workspace's source filled in (the __AOS_CONFIG__ line) and uploads it next to the
 # snapshot. Running it (again) sets up or updates, for this user only, no admin:
 #
 #   1. Node.js (the dashboard's floor or newer): the one on PATH, else a portable copy
-#      in %LOCALAPPDATA%\agentic-os\node, checked against nodejs.org's SHASUMS256
+#      in %LOCALAPPDATA%\natterjack\node, checked against nodejs.org's SHASUMS256
 #   2. Claude Code: on PATH or in ~\.local\bin, else Anthropic's installer (install.ps1)
 #   3. The source's key (Confluence: email + API token; web server: its key), once
 #   4. workspace.zip + the built dashboard UI, extracted into the folder you pick
@@ -97,7 +97,7 @@ $minNode = [version]$cfg.nodeMin
 $node = $null
 $onPath = Get-Command node -ErrorAction SilentlyContinue
 if ($onPath -and (Version-Of $onPath.Source) -ge $minNode) { $node = $onPath.Source }
-$portable = Join-Path $env:LOCALAPPDATA 'agentic-os\node'
+$portable = Join-Path $env:LOCALAPPDATA 'natterjack\node'
 if (-not $node -and (Test-Path (Join-Path $portable 'node.exe')) -and (Version-Of (Join-Path $portable 'node.exe')) -ge $minNode) { $node = Join-Path $portable 'node.exe' }
 if (-not $node) {
   $arch = if ($env:PROCESSOR_ARCHITECTURE -eq 'ARM64') { 'arm64' } else { 'x64' }
@@ -218,13 +218,20 @@ try {
   Expand-Archive -Path (Join-Path $tmp 'workspace.zip') -DestinationPath $unzipped
   # Over what's there: your .claude\ledger (keys, runs) and the downloaded repos aren't in the zip, so they stay.
   Copy-Item -Path (Join-Path $unzipped '*') -Destination $dir -Recurse -Force
+  # The engine's folder: .claude\dashboard\engine.json "dir" (dashboard in older workspaces).
+  $engineDir = 'dashboard'
+  $lock = $null
+  try { $lock = Get-Content (Join-Path $dir '.claude\dashboard\engine.json') -Raw | ConvertFrom-Json } catch {}
+  $want = if ($lock) { [string]$lock.dir } elseif ($manifest.ui -and $manifest.ui.dir) { [string]$manifest.ui.dir } else { '' }
+  if ($want -match '^[\w.-]+([\\/][\w.-]+)*$' -and $want -notmatch '(^|[\\/])\.\.?([\\/]|$)' -and $want -notmatch '^\.claude([\\/]|$)') { $engineDir = $want -replace '/', '\' }
+  $engine = Join-Path $dir $engineDir
   Done "Workspace files from $($manifest.workspace.builtAt)"
   $ui = $manifest.ui
-  $dist = Join-Path $dir 'dashboard\dist'
+  $dist = Join-Path $engine 'dist'
   if ($ui) {
     Get-File $ui.file (Join-Path $tmp 'ui.tar.gz')
     if (Test-Path $dist) { Remove-Item $dist -Recurse -Force }
-    & (Join-Path $env:SystemRoot 'System32\tar.exe') -xzf (Join-Path $tmp 'ui.tar.gz') -C (Join-Path $dir 'dashboard')
+    & (Join-Path $env:SystemRoot 'System32\tar.exe') -xzf (Join-Path $tmp 'ui.tar.gz') -C $engine
     if ($LASTEXITCODE -ne 0) { Fail 'Could not unpack the dashboard UI.' }
     Done 'Dashboard UI'
   } else {
@@ -255,7 +262,7 @@ if ($null -ne $owner -and -not ($owner -and (Same-Folder $owner $dir))) {
   Write-Host "   Port $taken is in use (another dashboard?); this one uses $port." -ForegroundColor Yellow
 }
 Push-Location $dir
-try { & $node (Join-Path $dir 'dashboard\bin\dashboard.mjs') start --port $port } finally { Pop-Location }
+try { & $node (Join-Path $engine 'bin\dashboard.mjs') start --port $port } finally { Pop-Location }
 if ($LASTEXITCODE -ne 0) { Fail 'The dashboard did not start (see the lines above).' }
 $base = "http://localhost:$port"
 $boot = $null
@@ -282,13 +289,13 @@ if ($env:AOS_NO_SHORTCUT) { } else { try {
   $desktop = [Environment]::GetFolderPath('Desktop')
   $lnk = (New-Object -ComObject WScript.Shell).CreateShortcut((Join-Path $desktop "$($cfg.name) dashboard.lnk"))
   $lnk.TargetPath = $node
-  $lnk.Arguments = '"' + (Join-Path $dir 'dashboard\bin\dashboard.mjs') + "`" start --open --port $port"
+  $lnk.Arguments = '"' + (Join-Path $engine 'bin\dashboard.mjs') + "`" start --open --port $port"
   $lnk.WorkingDirectory = $dir
   $lnk.Description = "Start the $($cfg.name) dashboard"
   $lnk.Save()
   Done "Desktop shortcut: $($cfg.name) dashboard"
 } catch {
-  Write-Host "   Could not add a desktop shortcut; start it with: `"$node`" `"$dir\dashboard\bin\dashboard.mjs`" start --open" -ForegroundColor Yellow
+  Write-Host "   Could not add a desktop shortcut; start it with: `"$node`" `"$engine\bin\dashboard.mjs`" start --open" -ForegroundColor Yellow
 } }
 
 Say 'Done'

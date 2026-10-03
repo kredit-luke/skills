@@ -20,14 +20,17 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { engineDirOf, findWorkspaceRoot } from "./workspace-root.ts";
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 export const DASHBOARD_DIR = path.resolve(HERE, "..", "..");
 
-/** The workspace root: WORKSPACE_ROOT, else the folder that holds dashboard/. */
+/** The workspace root: WORKSPACE_ROOT, else the nearest folder above the engine with .claude/dashboard/. */
 export const WORKSPACE_ROOT = path.resolve(
-  process.env.WORKSPACE_ROOT || path.join(DASHBOARD_DIR, ".."),
+  process.env.WORKSPACE_ROOT || findWorkspaceRoot(DASHBOARD_DIR),
 );
+/** The engine's folder as the workspace names it (engine.json `dir`, else "dashboard"), for messages and paths. */
+export const ENGINE_FOLDER = engineDirOf(WORKSPACE_ROOT);
 export const CONFIG_DIR = path.join(WORKSPACE_ROOT, ".claude", "dashboard");
 /** Local state (gitignored). DASHBOARD_LEDGER_DIR points a second instance (e.g. a test run) elsewhere. */
 export const LEDGER_DIR = path.resolve(process.env.DASHBOARD_LEDGER_DIR || path.join(WORKSPACE_ROOT, ".claude", "ledger"));

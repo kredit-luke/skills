@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * Is this workspace's agentic OS healthy? validate.mjs (config) plus how things
+ * Is this workspace's Natterjack healthy? validate.mjs (config) plus how things
  * actually stand on this machine: Node version, dashboard installed / built /
  * running on its port, engine version vs the plugin's, repos cloned, the code
  * host CLI signed in, and what the running dashboard itself reports (Machine
@@ -16,7 +16,7 @@ import net from "node:net";
 import path from "node:path";
 import http from "node:http";
 import { execFileSync } from "node:child_process";
-import { TAG_PREFIX, args, compareVersions as cmp, engineVersion, isMain, latestRelease, readJson, readRepos, releaseCheck } from "./lib.mjs";
+import { TAG_PREFIX, args, compareVersions as cmp, engineDirOf, engineVersion, isMain, latestRelease, readJson, readRepos, releaseCheck } from "./lib.mjs";
 import { validate } from "./validate.mjs";
 
 const listening = (port) => new Promise((res) => { const s = new net.Socket(); s.setTimeout(800); s.once("connect", () => { s.destroy(); res(true); }); s.once("timeout", () => { s.destroy(); res(false); }); s.once("error", () => res(false)); s.connect(port, "127.0.0.1"); });
@@ -37,7 +37,8 @@ export async function doctor(root) {
   for (const w of v.warnings) add("warn", "config", w);
   if (!v.errors.length) add("ok", "config", `valid (${v.ok.join(", ") || "no files yet"})`);
 
-  const dash = path.join(root, "dashboard");
+  const dir = engineDirOf(root);
+  const dash = path.join(root, dir);
   const pkg = readJson(path.join(dash, "package.json")) || {};
   const floor = (/(\d+\.\d+\.\d+)/.exec((pkg.engines && pkg.engines.node) || "") || [])[1] || "24.15.0";
   const node = run("node", ["-v"]);
@@ -51,18 +52,18 @@ export async function doctor(root) {
   else add("warn", "plugin", `${release.current}; couldn't reach the source repo to check for a newer release`);
 
   const shipped = engineVersion();
-  if (lock && lock.version && shipped && cmp(shipped, lock.version) > 0) add("warn", "engine", `installed ${lock.version}, plugin has ${shipped}`, "Run the agentic-os upgrade skill to merge it in.");
+  if (lock && lock.version && shipped && cmp(shipped, lock.version) > 0) add("warn", "engine", `installed ${lock.version}, plugin has ${shipped}`, "Run the natterjack upgrade skill to merge it in.");
   else if (lock && lock.version && shipped && cmp(shipped, lock.version) < 0) add("warn", "engine", `installed ${lock.version}, newer than this plugin's ${shipped}`, "Update the plugin before upgrading; upgrading from this copy would downgrade.");
   else if (lock) add("ok", "engine", `version ${lock.version}`);
 
   const installed = fs.existsSync(path.join(dash, "node_modules", ".package-lock.json"));
   const built = fs.existsSync(path.join(dash, "dist", "browser", "index.html"));
-  add(installed && built ? "ok" : "warn", "dashboard build", `${installed ? "packages installed" : "packages not installed"}, ${built ? "UI built" : "UI not built"}`, installed && built ? "" : "node dashboard/bin/dashboard.mjs start (installs and builds on first start)");
+  add(installed && built ? "ok" : "warn", "dashboard build", `${installed ? "packages installed" : "packages not installed"}, ${built ? "UI built" : "UI not built"}`, installed && built ? "" : `node ${dir}/bin/dashboard.mjs start (installs and builds on first start)`);
 
   const ws = readJson(path.join(root, ".claude", "dashboard", "workspace.json")) || {};
   const port = Number(process.env.DASHBOARD_PORT || (ws.dashboard && ws.dashboard.port) || 3333);
   const up = await listening(port);
-  if (!up) add("warn", "dashboard", `not running on :${port}`, "node dashboard/bin/dashboard.mjs start --open");
+  if (!up) add("warn", "dashboard", `not running on :${port}`, `node ${dir}/bin/dashboard.mjs start --open`);
   else {
     const boot = await getJson(port, "/api/boot");
     if (!boot || !boot.workspace) add("fail", "dashboard", `something else is answering on :${port} (or an old dashboard)`, "Stop it, or set dashboard.port in workspace.json to a free port.");

@@ -1,6 +1,6 @@
 /**
  * Snapshot sources: where read-only copies of the workspace's repos are published
- * (by `dashboard/bin/snapshot.mjs publish`, usually from CI) and downloaded from (the
+ * (by `<engine>/bin/snapshot.mjs publish`, usually from CI) and downloaded from (the
  * Repos page), for people who can't clone. repos.json picks one:
  *
  *   "snapshot": { "source": "confluence", "site": "acme.atlassian.net", "pageId": "123456" }
@@ -13,7 +13,7 @@
  * uploaded last. Credentials are the viewer's own, in the ledger (never committed).
  *
  * To add a source: implement SnapshotSource in snapshot-sources/<kind>.ts and register
- * it in SOURCES (the agentic-os add-adapter skill walks through it).
+ * it in SOURCES (the natterjack add-adapter skill walks through it).
  */
 
 import type { ProviderContext, ProviderHelp, ProviderStatus } from "../docs-providers/index.ts";

@@ -15,13 +15,13 @@
 apiVersion: v1
 kind: ServiceAccount
 metadata:
-  name: agentic-router
+  name: natterjack-router
 ---
 # Just enough to find each person's StatefulSet and scale it between 0 and 1.
 apiVersion: rbac.authorization.k8s.io/v1
 kind: Role
 metadata:
-  name: agentic-router
+  name: natterjack-router
 rules:
   - apiGroups: [apps]
     resources: [statefulsets]
@@ -33,28 +33,28 @@ rules:
 apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding
 metadata:
-  name: agentic-router
-roleRef: { apiGroup: rbac.authorization.k8s.io, kind: Role, name: agentic-router }
-subjects: [{ kind: ServiceAccount, name: agentic-router }]
+  name: natterjack-router
+roleRef: { apiGroup: rbac.authorization.k8s.io, kind: Role, name: natterjack-router }
+subjects: [{ kind: ServiceAccount, name: natterjack-router }]
 ---
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: agentic-router
-  labels: { app: agentic-router }
+  name: natterjack-router
+  labels: { app: natterjack-router }
 spec:
   replicas: 1
   selector:
-    matchLabels: { app: agentic-router }
+    matchLabels: { app: natterjack-router }
   template:
     metadata:
-      labels: { app: agentic-router }
+      labels: { app: natterjack-router }
     spec:
-      serviceAccountName: agentic-router
+      serviceAccountName: natterjack-router
       securityContext: { runAsNonRoot: true, runAsUser: 1000 }
       containers:
         - name: router
-          image: REGISTRY/agentic-router:1   # built from router/Dockerfile
+          image: REGISTRY/natterjack-router:1   # built from router/Dockerfile
           env:
             - { name: ROUTER_PUBLIC_URL, value: "https://dashboard.example.com" }
             - { name: ROUTER_BACKEND, value: kubernetes }
@@ -89,13 +89,13 @@ spec:
             - { name: oauth2-proxy-config, mountPath: /etc/oauth2-proxy, readOnly: true }
             - { name: oidc-client, mountPath: /etc/oauth2-proxy-secret, readOnly: true }
       volumes:
-        - { name: oauth2-proxy-config, configMap: { name: agentic-router-oauth2-proxy } }
+        - { name: oauth2-proxy-config, configMap: { name: natterjack-router-oauth2-proxy } }
         - { name: oidc-client, secret: { secretName: dashboard-router, items: [{ key: client-secret, path: client-secret }] } }
 ---
 apiVersion: v1
 kind: ConfigMap
 metadata:
-  name: agentic-router-oauth2-proxy
+  name: natterjack-router-oauth2-proxy
 data:
   alpha.yaml: |
     server:
@@ -125,37 +125,37 @@ data:
 apiVersion: v1
 kind: Service
 metadata:
-  name: agentic-router
+  name: natterjack-router
 spec:
-  selector: { app: agentic-router }
+  selector: { app: natterjack-router }
   ports: [{ name: http, port: 80, targetPort: http }]
 ---
 apiVersion: networking.k8s.io/v1
 kind: Ingress
 metadata:
-  name: agentic-router
+  name: natterjack-router
   annotations:
     nginx.ingress.kubernetes.io/proxy-read-timeout: "3600"
     nginx.ingress.kubernetes.io/proxy-buffering: "off"
 spec:
   # ingressClassName: nginx   # or alb (EKS), azure-application-gateway (AKS), gce (GKE)
-  tls: [{ hosts: [dashboard.example.com], secretName: agentic-router-tls }]
+  tls: [{ hosts: [dashboard.example.com], secretName: natterjack-router-tls }]
   rules:
     - host: dashboard.example.com
       http:
-        paths: [{ path: /, pathType: Prefix, backend: { service: { name: agentic-router, port: { name: http } } } }]
+        paths: [{ path: /, pathType: Prefix, backend: { service: { name: natterjack-router, port: { name: http } } } }]
 ---
 # The dashboards: reachable only from the router, and kept off the cluster network and
 # the cloud metadata endpoint. Needs a CNI that enforces NetworkPolicy.
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
-  name: agentic-dashboards
+  name: natterjack-dashboards
 spec:
-  podSelector: { matchLabels: { app: agentic-dashboard } }
+  podSelector: { matchLabels: { app: natterjack-dashboard } }
   policyTypes: [Ingress, Egress]
   ingress:
-    - from: [{ podSelector: { matchLabels: { app: agentic-router } } }]
+    - from: [{ podSelector: { matchLabels: { app: natterjack-router } } }]
       ports: [{ port: 3333 }]
   egress:
     - to: [{ namespaceSelector: {}, podSelector: { matchLabels: { k8s-app: kube-dns } } }]

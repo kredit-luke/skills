@@ -19,7 +19,7 @@ import path from "node:path";
 import { execFileSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { brandCandidates } from "./extract-brand.mjs";
-import { readRepos } from "./lib.mjs";
+import { LEGACY_ENGINE_DIR, engineDirOf, isEngineFolder, readRepos } from "./lib.mjs";
 
 const SKIP_DIRS = new Set(["node_modules", ".git", "dist", "build", "out", "bin", "obj", "vendor", "target", ".next", ".nuxt", ".angular", ".venv", "venv", "__pycache__", ".turbo", ".cache", "coverage", "worktrees", ".claude"]);
 
@@ -46,7 +46,7 @@ function find(dir, test, depth = 3, out = []) {
   try { entries = fs.readdirSync(dir, { withFileTypes: true }); } catch { return out; }
   for (const e of entries) {
     const p = path.join(dir, e.name);
-    if (e.isDirectory()) { if (depth > 0 && !SKIP_DIRS.has(e.name) && !e.name.startsWith(".")) find(p, test, depth - 1, out); }
+    if (e.isDirectory()) { if (depth > 0 && !SKIP_DIRS.has(e.name) && !e.name.startsWith(".") && !isEngineFolder(p)) find(p, test, depth - 1, out); }
     else if (test(e.name, p)) out.push(p);
   }
   return out;
@@ -71,7 +71,7 @@ export function listRepos(root) {
   let entries = [];
   try { entries = fs.readdirSync(root, { withFileTypes: true }); } catch {}
   for (const e of entries) {
-    if (!e.isDirectory() || SKIP_DIRS.has(e.name) || e.name.startsWith(".")) continue;
+    if (!e.isDirectory() || SKIP_DIRS.has(e.name) || e.name.startsWith(".") || isEngineFolder(path.join(root, e.name))) continue;
     if (out.some((r) => r.dir === e.name)) continue;
     if (exists(path.join(root, e.name, ".git"))) out.push({ dir: e.name, name: e.name, url: null, declared: false, cloned: true });
   }
@@ -356,7 +356,7 @@ function repoStacks(root, repoDir) {
   for (const group of ["apps", "packages", "services"]) {
     try { for (const e of fs.readdirSync(path.join(base, group), { withFileTypes: true })) if (e.isDirectory()) children.push(path.join(base, group, e.name)); } catch {}
   }
-  try { for (const e of fs.readdirSync(base, { withFileTypes: true })) if (e.isDirectory() && !SKIP_DIRS.has(e.name) && !e.name.startsWith(".") && !["apps", "packages", "services"].includes(e.name)) children.push(path.join(base, e.name)); } catch {}
+  try { for (const e of fs.readdirSync(base, { withFileTypes: true })) if (e.isDirectory() && !SKIP_DIRS.has(e.name) && !e.name.startsWith(".") && !["apps", "packages", "services"].includes(e.name) && !isEngineFolder(path.join(base, e.name))) children.push(path.join(base, e.name)); } catch {}
   if (!rootStatic) {
     for (const c of children) {
       if (out.some((s) => s.path === rel(root, c))) continue;
@@ -662,11 +662,14 @@ export async function discover(root) {
   const codeHost = hostKinds.sort((a, b) => hostKinds.filter((x) => x === b).length - hostKinds.filter((x) => x === a).length)[0] || null;
   const clis = Object.fromEntries(["gh", "glab", "az", "aws", "gcloud", "docker", "claude"].map((c) => [c, have(c)]));
   const nodeVersion = process.version;
+  // An engine already here: in engine.json's folder, or an older workspace's dashboard/.
+  const installedEngine = [engineDirOf(root), LEGACY_ENGINE_DIR].find((d) => exists(path.join(root, d, "server", "src", "main.ts"))) || null;
   return {
     root,
     name: path.basename(root),
     existing: {
-      dashboard: exists(path.join(root, "dashboard", "server", "src", "main.ts")),
+      dashboard: !!installedEngine,
+      engineDir: installedEngine,
       config: fs.existsSync(path.join(root, ".claude", "dashboard")) ? fs.readdirSync(path.join(root, ".claude", "dashboard")) : [],
       reposJson: exists(path.join(root, "repos.json")),
       claudeMd: exists(path.join(root, "CLAUDE.md")),

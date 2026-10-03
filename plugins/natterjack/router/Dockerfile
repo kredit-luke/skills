@@ -1,7 +1,7 @@
-# The agentic-os router (references/hosting.md, "One address for everyone"). Build from
-# plugins/agentic-os so the engine's hosted.ts (the shared request checks) comes along:
+# The natterjack router (references/hosting.md, "One address for everyone"). Build from
+# plugins/natterjack so the engine's hosted.ts (the shared request checks) comes along:
 #
-#   docker build -f plugins/agentic-os/router/Dockerfile -t <registry>/agentic-router:1 plugins/agentic-os
+#   docker build -f plugins/natterjack/router/Dockerfile -t <registry>/natterjack-router:1 plugins/natterjack
 FROM node:24-bookworm-slim
 WORKDIR /app
 COPY engine/server/src/hosted.ts engine/server/src/hosted.ts

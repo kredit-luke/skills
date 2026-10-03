@@ -25,7 +25,7 @@ const ICON: Record<string, string> = { ok: '✓', warn: '!', missing: '✕', inf
       @if (m.error) { <div class="warn-note">{{ m.error }}</div> }
       @if (!m.configured) {
         <div class="panel"><div class="empty md tight" style="padding:2rem">
-          <p>No checks are set up. List what this workspace needs in <code>.claude/dashboard/machine.json</code> (for example <code>{{ '{' }} "use": "node" {{ '}' }}</code>, <code>{{ '{' }} "use": "docker" {{ '}' }}</code>, <code>{{ '{' }} "use": "go" {{ '}' }}</code>), then reload. The catalog of tools it knows is in <code>dashboard/server/src/machine-catalog.ts</code>; ask Claude to derive the list from your repos.</p>
+          <p>No checks are set up. List what this workspace needs in <code>.claude/dashboard/machine.json</code> (for example <code>{{ '{' }} "use": "node" {{ '}' }}</code>, <code>{{ '{' }} "use": "docker" {{ '}' }}</code>, <code>{{ '{' }} "use": "go" {{ '}' }}</code>), then reload. The catalog of tools it knows is in <code>{{ api.engineDir() }}/server/src/machine-catalog.ts</code>; ask Claude to derive the list from your repos.</p>
         </div></div>
       }
       <div class="check-groups">
@@ -77,7 +77,7 @@ const ICON: Record<string, string> = { ok: '✓', warn: '!', missing: '✕', inf
 })
 export class MachineComponent implements OnInit {
   readonly data = inject(DataService);
-  private readonly api = inject(ApiService);
+  readonly api = inject(ApiService);
   private readonly toast = inject(ToastService);
   readonly busy = signal(false);
   readonly installing = signal<string | null>(null);

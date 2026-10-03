@@ -1,5 +1,5 @@
 /**
- * The agentic-os router: one address for everyone's hosted dashboard.
+ * The natterjack router: one address for everyone's hosted dashboard.
  *
  *   node --disable-warning=ExperimentalWarning router/src/main.ts
  *
@@ -179,7 +179,7 @@ if (cfg.idleMinutes > 0 && backend.stop) {
 }
 
 server.listen(cfg.port, cfg.bind, () => {
-  console.log(`agentic-os router on ${cfg.bind}:${cfg.port} for ${cfg.front.publicOrigin} (${cfg.backend} backend${cfg.idleMinutes ? `, idle stop after ${cfg.idleMinutes} min` : ""})`);
+  console.log(`natterjack router on ${cfg.bind}:${cfg.port} for ${cfg.front.publicOrigin} (${cfg.backend} backend${cfg.idleMinutes ? `, idle stop after ${cfg.idleMinutes} min` : ""})`);
 });
 // Open run streams would hold close() forever; the browser reconnects to the next router.
 for (const sig of ["SIGINT", "SIGTERM"] as const) process.on(sig, () => { server.close(() => process.exit(0)); server.closeAllConnections(); });

@@ -1,8 +1,8 @@
 # One person's hosted dashboard (references/hosting.md). Build it once per workspace and
 # run one container per person, each with its own volume at /data. Build from
-# plugins/agentic-os, so the engine's snapshot install (the boot without git) comes along:
+# plugins/natterjack, so the engine's snapshot install (the boot without git) comes along:
 #
-#   docker build -f plugins/agentic-os/templates/hosted/Dockerfile -t <registry>/agentic-dashboard:1 plugins/agentic-os
+#   docker build -f plugins/natterjack/templates/hosted/Dockerfile -t <registry>/natterjack-dashboard:1 plugins/natterjack
 #
 # Cloud-neutral: any container platform with a persistent volume works (Kubernetes on
 # GKE/EKS/AKS, a VM with Docker, ...). Nothing here holds a secret; they come from the
@@ -29,10 +29,10 @@ RUN curl -fsSL https://claude.ai/install.sh | bash
 
 # The engine's server code (Node only, no packages), for `snapshot.mjs install`: the
 # boot from a published snapshot, before there's a workspace on the volume to run it from.
-COPY engine/package.json /opt/agentic-os/engine/package.json
-COPY engine/bin/snapshot.mjs /opt/agentic-os/engine/bin/snapshot.mjs
-COPY engine/shared /opt/agentic-os/engine/shared
-COPY engine/server/src /opt/agentic-os/engine/server/src
+COPY engine/package.json /opt/natterjack/engine/package.json
+COPY engine/bin/snapshot.mjs /opt/natterjack/engine/bin/snapshot.mjs
+COPY engine/shared /opt/natterjack/engine/shared
+COPY engine/server/src /opt/natterjack/engine/server/src
 COPY --chown=node templates/hosted/entrypoint.sh /usr/local/bin/dashboard-entrypoint
 
 # Everything personal lives on the volume: the workspace (its .claude/ledger holds runs

@@ -19,7 +19,7 @@
   <div class="panel connect-card">
     <div class="panel-h"><h2>{{ resp()!.tracker.label }} isn't supported yet</h2></div>
     <div class="cc-b md tight">
-      <p>This dashboard has no adapter for <code>{{ resp()!.tracker.kind }}</code>. Adding one is a single file in <code>dashboard/server/src/issues/</code> (see <code>index.ts</code> there); Claude can write it.</p>
+      <p>This dashboard has no adapter for <code>{{ resp()!.tracker.kind }}</code>. Adding one is a single file in <code>{{ api.engineDir() }}/server/src/issues/</code> (see <code>index.ts</code> there); Claude can write it.</p>
     </div>
   </div>
 } @else if (resp() && !resp()!.connected && resp()!.connect; as help) {

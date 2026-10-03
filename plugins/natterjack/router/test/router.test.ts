@@ -36,7 +36,7 @@ test("routerConfig: refuses an unsafe or incomplete setup", () => {
   assert.throws(() => routerConfig({ ...ok, ROUTER_BACKEND: "static" }), /ROUTER_STATIC_FILE/);
   const k = routerConfig({ ...ok, ROUTER_BACKEND: "kubernetes" }, (f) => (f.endsWith("namespace") ? "dashboards\n" : null));
   assert.equal(k.kubernetes.namespace, "dashboards");
-  assert.equal(k.kubernetes.selector, "app=agentic-dashboard");
+  assert.equal(k.kubernetes.selector, "app=natterjack-dashboard");
   assert.equal(k.front.owner, null);
   assert.deepEqual([...k.front.hosts], [HOST]);
 });
@@ -120,11 +120,11 @@ before(async () => {
       if (req.method === "GET" && req.url!.startsWith("/apis/apps/v1/namespaces/dashboards/statefulsets?labelSelector=")) {
         // serviceName doubles as host:port here (ROUTER_K8S_URL_TEMPLATE is http://{service}).
         return res.end(JSON.stringify({ items: [{
-          metadata: { name: "dashboard-ana", annotations: { "agentic-os/owner": "Ana@Example.com" } },
+          metadata: { name: "dashboard-ana", annotations: { "natterjack/owner": "Ana@Example.com" } },
           spec: { replicas: k8s.replicas, serviceName: `127.0.0.1:${P.dash}` },
           status: { readyReplicas: k8s.ready },
         }, {
-          metadata: { name: "dashboard-bo", annotations: { "agentic-os/owner": "bo@example.com" } },
+          metadata: { name: "dashboard-bo", annotations: { "natterjack/owner": "bo@example.com" } },
           spec: { replicas: 1, serviceName: `127.0.0.1:${P.busy}` },
           status: { readyReplicas: 1 },
         }] }));

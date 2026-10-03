@@ -12,7 +12,7 @@
 
 import fs from "node:fs";
 import path from "node:path";
-import { args, isMain, normalizeRepo, readJson } from "./lib.mjs";
+import { args, engineDirOf, isMain, normalizeRepo, readJson, safeEngineDir } from "./lib.mjs";
 
 const read = (f) => { try { return fs.readFileSync(f, "utf-8"); } catch { return null; } };
 
@@ -52,8 +52,11 @@ export function validate(root) {
   };
   const dirExists = (rel) => typeof rel === "string" && fs.existsSync(path.join(root, rel));
 
-  const engine = path.join(root, "dashboard");
-  if (!fs.existsSync(path.join(engine, "server", "src", "main.ts"))) err("dashboard/", "the engine isn't installed (run scaffold.mjs)");
+  const lock = readJson(path.join(cfgDir, "engine.json"));
+  if (lock && lock.dir !== undefined && !safeEngineDir(lock.dir)) err("engine.json", `dir "${lock.dir}" must be a folder inside the workspace (relative, no "..", not under .claude/); dashboard/ is used instead`);
+  const engineDir = engineDirOf(root);
+  const engine = path.join(root, engineDir);
+  if (!fs.existsSync(path.join(engine, "server", "src", "main.ts"))) err(`${engineDir}/`, "the engine isn't installed (run scaffold.mjs)");
   const catalog = literalKeys(path.join(engine, "server", "src", "machine-catalog.ts"), "CATALOG");
   const docProviders = literalKeys(path.join(engine, "server", "src", "docs-providers", "index.ts"), "const PROVIDERS");
   const trackers = literalKeys(path.join(engine, "server", "src", "issues", "index.ts"), "ADAPTERS");
@@ -164,7 +167,7 @@ export function validate(root) {
   if (machine) {
     for (const [i, c] of (machine.checks || []).entries()) {
       const where = `checks[${i}]${c.id || c.use ? ` (${c.id || c.use})` : ""}`;
-      if (c.use && catalog.length && !catalog.includes(c.use)) err("machine.json", `${where}: "${c.use}" isn't in the catalog (${catalog.length} tools; see dashboard/server/src/machine-catalog.ts)`);
+      if (c.use && catalog.length && !catalog.includes(c.use)) err("machine.json", `${where}: "${c.use}" isn't in the catalog (${catalog.length} tools; see ${engineDir}/server/src/machine-catalog.ts)`);
       if (!c.use && !c.kind) err("machine.json", `${where}: needs "use" (a catalog id) or "kind"`);
       if (c.required && c.required.file && !dirExists(c.required.file)) warn("machine.json", `${where}: required.file "${c.required.file}" isn't there (the min/default applies)`);
       if (c.apps && apps) for (const k of c.apps) if (!(apps.apps || {})[k]) warn("machine.json", `${where}: apps lists "${k}", which isn't in apps.json`);

@@ -18,7 +18,7 @@ import { createSource, snapshotSourceKinds } from "../src/snapshot-sources/index
 import type { SnapshotFile, SnapshotSource } from "../src/snapshot-sources/index.ts";
 import { ConfluenceSource } from "../src/snapshot-sources/confluence.ts";
 import { installerName, renderInstaller } from "../src/installer.ts";
-import { MANIFEST } from "../src/snapshot-sources/manifest.ts";
+import { MANIFEST, parseManifest } from "../src/snapshot-sources/manifest.ts";
 
 const scratch = (name: string) => fs.mkdtempSync(path.join(os.tmpdir(), `dash-snap-${name}-`));
 const git = (cwd: string, ...args: string[]) => execFileSync("git", ["-c", "user.name=t", "-c", "user.email=t@t", ...args], { cwd, stdio: "pipe" }).toString().trim();
@@ -404,6 +404,34 @@ test("publish adds the built dashboard UI only when dashboard/ is exactly the pu
   const m2 = await buildSnapshot(pub, scratch("ui-out2"), {});
   assert.equal(m2.ui, null);
   assert.equal(m2.installer, null, "no installer without the installer option");
+});
+
+test("publish and install follow engine.json's dir: the UI is built from, and installed into, tools/ops/", async () => {
+  const ups = scratch("dir-up");
+  const pub = path.join(scratch("dir-pub"), "ws");
+  cloned(path.join(ups, "ws"), pub, {
+    "repos.json": JSON.stringify({ snapshot: { source: "folder" }, repos: [] }),
+    ".claude/dashboard/engine.json": JSON.stringify({ version: "0.8.0", dir: "tools/ops" }),
+    ".gitignore": "tools/ops/dist/\n",
+    "tools/ops/web/main.ts": "export {};\n",
+  });
+  fs.mkdirSync(path.join(pub, "tools", "ops", "dist", "browser"), { recursive: true });
+  fs.writeFileSync(path.join(pub, "tools", "ops", "dist", "browser", "index.html"), "<html></html>");
+  const out = scratch("dir-out");
+  const m = await buildSnapshot(pub, out);
+  assert.equal(m.ui?.dir, "tools/ops", "the manifest says which folder the UI was built in");
+  const store = folderSource(scratch("dir-store"));
+  await publishSnapshot(store, out, m);
+  assert.equal(parseManifest(JSON.parse(fs.readFileSync(path.join(out, MANIFEST), "utf-8")))!.ui!.dir, "tools/ops");
+  assert.equal(parseManifest({ version: 1, repos: {}, ui: { file: "u.tar.gz", sha: "abc", dir: "../x" } })!.ui!.dir, undefined, "an unsafe dir is dropped");
+
+  const dir = path.join(scratch("dir-host"), "workspace");
+  const r1 = await installWorkspace(store, dir);
+  assert.deepEqual([r1.workspace, r1.ui], ["installed", true]);
+  assert.equal(JSON.parse(fs.readFileSync(path.join(dir, "tools", "ops", "dist", ".prebuilt.json"), "utf-8")).sha, m.workspace!.sha);
+  assert.ok(!fs.existsSync(path.join(dir, "dashboard")), "nothing lands in dashboard/");
+  const r2 = await installWorkspace(store, dir);
+  assert.deepEqual([r2.workspace, r2.ui], ["current", false], "the installed UI is found in tools/ops/");
 });
 
 test("archive names carry the commit and stay distinct when a repo name had to be made file-safe", () => {

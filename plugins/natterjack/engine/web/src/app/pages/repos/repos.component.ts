@@ -10,8 +10,8 @@ import { LogsService } from '../../shared/logs-dialog.component';
 import { PageHeaderComponent } from '../../shared/page-header.component';
 import { KeyFieldsComponent } from '../../shared/key-fields.component';
 
-const EXAMPLE = `{
-  "$schema": "./dashboard/shared/repos.schema.json",
+const example = (engineDir: string) => `{
+  "$schema": "./${engineDir}/shared/repos.schema.json",
   "repos": [
     { "name": "api", "relativePath": "api", "remote": "https://github.com/acme/api.git", "layer": "backend" },
     { "name": "web", "relativePath": "apps/web", "remote": "https://github.com/acme/web.git", "layer": "frontend" }
@@ -43,8 +43,8 @@ const STALE_DAYS = 3;
       @if (!r.configured) {
         <div class="panel"><div class="empty md tight" style="padding:2rem">
           <p>There's no <code>repos.json</code> at the workspace root. List the repos this workspace is made of, each with the folder it lives in and where to clone it from; then this page can clone the missing ones on a new machine.</p>
-          <pre class="example" title="Click to copy" (click)="copy(example)">{{ example }}</pre>
-          <p>Only <code>name</code> is required (the folder defaults to it). The schema is <code>dashboard/shared/repos.schema.json</code>.</p>
+          <pre class="example" title="Click to copy" (click)="copy(example())">{{ example() }}</pre>
+          <p>Only <code>name</code> is required (the folder defaults to it). The schema is <code>{{ api.engineDir() }}/shared/repos.schema.json</code>.</p>
         </div></div>
       }
 
@@ -159,7 +159,7 @@ const STALE_DAYS = 3;
   `,
 })
 export class ReposComponent implements OnInit {
-  private readonly api = inject(ApiService);
+  readonly api = inject(ApiService);
   private readonly data = inject(DataService);
   private readonly toast = inject(ToastService);
   private readonly logs = inject(LogsService);
@@ -168,7 +168,7 @@ export class ReposComponent implements OnInit {
   readonly key = signal('');
   readonly connecting = signal(false);
   readonly connectError = signal<string | null>(null);
-  readonly example = EXAMPLE;
+  readonly example = computed(() => example(this.api.engineDir()));
   readonly relTime = relTime;
   readonly reader = computed(() => this.api.boot()?.profile?.current === 'reader');
 

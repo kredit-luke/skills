@@ -3,12 +3,25 @@
 // The dev server itself listens on angular.json's serve port; keep workspace.json dashboard.devPort
 // in step with it, or the server refuses the dev server's requests as cross-origin.
 import fs from "node:fs";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
+
+/** The nearest folder above the engine with .claude/dashboard/, else its parent (as server/src/workspace-root.ts). */
+function workspaceRoot() {
+  if (process.env.WORKSPACE_ROOT) return path.resolve(process.env.WORKSPACE_ROOT);
+  const parent = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
+  for (let dir = parent; ; dir = path.dirname(dir)) {
+    if (fs.existsSync(path.join(dir, ".claude", "dashboard"))) return dir;
+    if (path.dirname(dir) === dir) return parent;
+  }
+}
 
 function port() {
   const fromEnv = parseInt(process.env.DASHBOARD_PORT || "", 10);
   if (fromEnv > 0) return fromEnv;
   try {
-    const cfg = JSON.parse(fs.readFileSync(new URL("../../.claude/dashboard/workspace.json", import.meta.url), "utf-8"));
+    const file = path.join(workspaceRoot(), ".claude", "dashboard", "workspace.json");
+    const cfg = JSON.parse(fs.readFileSync(file, "utf-8"));
     const p = parseInt((cfg.dashboard && cfg.dashboard.port) || "", 10);
     if (p > 0) return p;
   } catch {}

@@ -1,13 +1,14 @@
 #!/usr/bin/env node
 /**
- * What a workspace changed in its dashboard engine, as a patch against the
- * version it installed: the starting point for contributing improvements back.
+ * What a workspace changed in its dashboard engine (engine.json `dir`, else
+ * dashboard/), as a patch against the version it installed: the starting point
+ * for contributing improvements back.
  *
  *   node engine-diff.mjs <workspace> [--base <engine folder>] [--out changes.patch]
  *
  * The patch is relative to the engine folder, so it applies inside
- * plugins/agentic-os/engine/ of a clone of the skills repo:
- *   git apply --directory=plugins/agentic-os/engine changes.patch
+ * plugins/natterjack/engine/ of a clone of the skills repo:
+ *   git apply --directory=plugins/natterjack/engine changes.patch
  * Prints a file summary; writes the patch with --out (or prints it).
  */
 
@@ -15,11 +16,11 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { execFileSync } from "node:child_process";
-import { args, fetchEngine, hashFile, isMain, lfText, listFiles, readJson } from "./lib.mjs";
+import { args, engineDirOf, fetchEngine, hashFile, isMain, lfText, listFiles, readJson } from "./lib.mjs";
 
 export function engineDiff(root, { base: baseArg } = {}) {
   root = path.resolve(root);
-  const dash = path.join(root, "dashboard");
+  const dash = path.join(root, engineDirOf(root));
   const lock = readJson(path.join(root, ".claude", "dashboard", "engine.json"));
   const baseDir = baseArg ? path.resolve(baseArg) : lock && fetchEngine(lock.version, lock.sourceRepo);
   if (!baseDir) return { ok: false, error: "Couldn't get the installed engine version to compare with (no engine.json, offline, or no such tag). Pass --base." };

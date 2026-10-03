@@ -1,9 +1,9 @@
 #!/usr/bin/env node
 /**
- * Bring a workspace's dashboard/ up to the engine version this plugin ships,
- * keeping the team's own changes: a three-way merge per file between the version
- * they installed (the base, from .claude/dashboard/engine.json), their copy, and
- * the new engine.
+ * Bring a workspace's engine folder (engine.json `dir`, else dashboard/) up to
+ * the engine version this plugin ships, keeping the team's own changes: a three-way
+ * merge per file between the version they installed (the base, from
+ * .claude/dashboard/engine.json), their copy, and the new engine.
  *
  *   node upgrade.mjs <workspace> [--base <engine folder>] [--dry] [--allow-stale]
  *
@@ -17,14 +17,14 @@
  * merge cleanly is left with conflict markers and listed. Deleted upstream and
  * untouched locally -> deleted. Config (.claude/dashboard/) is never touched.
  *
- * The base is fetched from the release tag (agentic-os-v<version>) unless --base
+ * The base is fetched from the release tag (natterjack-v<version>) unless --base
  * points at a copy. Without a base, files the team changed can't be told apart
  * from files that are just old, so it stops and says so instead of guessing.
  */
 
 import fs from "node:fs";
 import path from "node:path";
-import { ENGINE_DIR, TAG_PREFIX, args, compareVersions, engineVersion, fetchEngine, gitMergeFile, hashFile, isMain, latestRelease, listFiles, readJson, releaseCheck, writeJson } from "./lib.mjs";
+import { ENGINE_DIR, TAG_PREFIX, args, compareVersions, engineDirOf, engineVersion, fetchEngine, gitMergeFile, hashFile, isMain, latestRelease, listFiles, readJson, releaseCheck, writeJson } from "./lib.mjs";
 
 /**
  * @param o.latest      newest release version; left out, it's looked up on the source repo
@@ -33,11 +33,12 @@ import { ENGINE_DIR, TAG_PREFIX, args, compareVersions, engineVersion, fetchEngi
  */
 export function upgrade(root, { base: baseArg, dry = false, latest, allowStale = false } = {}) {
   root = path.resolve(root);
-  const dash = path.join(root, "dashboard");
+  const dir = engineDirOf(root);
+  const dash = path.join(root, dir);
   const lockFile = path.join(root, ".claude", "dashboard", "engine.json");
   const lock = readJson(lockFile);
   const to = engineVersion();
-  if (!lock || !lock.version) return { ok: false, error: "No .claude/dashboard/engine.json: this workspace wasn't set up by the agentic-os skill (or the file was removed). Reinstall with scaffold.mjs --force, or pass --base with the engine it started from." };
+  if (!lock || !lock.version) return { ok: false, error: "No .claude/dashboard/engine.json: this workspace wasn't set up by the natterjack skill (or the file was removed). Reinstall with scaffold.mjs --force, or pass --base with the engine it started from." };
 
   const release = releaseCheck(latest === undefined ? latestRelease(lock.sourceRepo) : latest);
   const { update, newRoot } = release;
@@ -54,7 +55,7 @@ export function upgrade(root, { base: baseArg, dry = false, latest, allowStale =
   if (!baseDir) return { ok: false, error: `Couldn't get engine ${lock.version} (tag ${TAG_PREFIX}${lock.version}) to merge from. Check the network, or pass --base <folder with that engine>.` };
 
   const files = new Set([...listFiles(baseDir), ...listFiles(ENGINE_DIR), ...listFiles(dash)]);
-  const r = { ok: true, from: lock.version, to, ...releaseNote, updated: [], added: [], deleted: [], keptLocal: [], merged: [], conflicts: [], localOnly: [] };
+  const r = { ok: true, from: lock.version, to, engineDir: dir, ...releaseNote, updated: [], added: [], deleted: [], keptLocal: [], merged: [], conflicts: [], localOnly: [] };
   for (const rel of [...files].sort()) {
     if (rel === "ENGINE.json") continue;
     const b = path.join(baseDir, rel), n = path.join(ENGINE_DIR, rel), l = path.join(dash, rel);
@@ -87,7 +88,7 @@ export function upgrade(root, { base: baseArg, dry = false, latest, allowStale =
   r.next = r.conflicts.length
     ? ["Resolve the conflict markers in the files listed under conflicts (search for <<<<<<<), then build and restart."]
     : [];
-  r.next.push("cd dashboard && npm ci && npm test", "node dashboard/bin/dashboard.mjs restart  (ends any run in progress in the dashboard)");
+  r.next.push(`cd ${dir} && npm ci && npm test`, `node ${dir}/bin/dashboard.mjs restart  (ends any run in progress in the dashboard)`);
   return r;
 }
 

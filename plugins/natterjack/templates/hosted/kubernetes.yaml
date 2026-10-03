@@ -26,15 +26,15 @@ apiVersion: apps/v1
 kind: StatefulSet
 metadata:
   name: dashboard-${PERSON}
-  labels: { app: agentic-dashboard, person: "${PERSON}" }
+  labels: { app: natterjack-dashboard, person: "${PERSON}" }
 spec:
   replicas: 1
   serviceName: dashboard-${PERSON}
   selector:
-    matchLabels: { app: agentic-dashboard, person: "${PERSON}" }
+    matchLabels: { app: natterjack-dashboard, person: "${PERSON}" }
   template:
     metadata:
-      labels: { app: agentic-dashboard, person: "${PERSON}" }
+      labels: { app: natterjack-dashboard, person: "${PERSON}" }
     spec:
       # The pod runs whatever Claude decides to run: give it no cloud or cluster credentials.
       automountServiceAccountToken: false
@@ -45,7 +45,7 @@ spec:
       terminationGracePeriodSeconds: 30
       containers:
         - name: dashboard
-          image: REGISTRY/agentic-dashboard:1   # built from templates/hosted/Dockerfile
+          image: REGISTRY/natterjack-dashboard:1   # built from templates/hosted/Dockerfile
           env:
             - { name: DASHBOARD_PUBLIC_URL, value: "https://${HOST}" }
             - { name: DASHBOARD_OWNER, value: "${EMAIL}" }
@@ -106,7 +106,7 @@ kind: Service
 metadata:
   name: dashboard-${PERSON}
 spec:
-  selector: { app: agentic-dashboard, person: "${PERSON}" }
+  selector: { app: natterjack-dashboard, person: "${PERSON}" }
   ports: [{ name: http, port: 80, targetPort: http }]
 ---
 apiVersion: networking.k8s.io/v1
@@ -172,9 +172,9 @@ data:
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
-  name: agentic-dashboards
+  name: natterjack-dashboards
 spec:
-  podSelector: { matchLabels: { app: agentic-dashboard } }
+  podSelector: { matchLabels: { app: natterjack-dashboard } }
   policyTypes: [Ingress, Egress]
   ingress:
     - ports: [{ port: 4180 }]
