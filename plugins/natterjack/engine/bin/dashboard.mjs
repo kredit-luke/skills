@@ -135,6 +135,9 @@ function nodeDir(required) {
   try {
     if (cmpVer(execFileSync("node", ["-v"], { encoding: "utf-8", windowsHide: true }), required) >= 0) return "";
   } catch {}
+  // The Node running this script, when PATH's is older: a restart from the page runs
+  // under the server's own Node, whatever node PATH finds first on this machine.
+  if (cmpVer(process.version, required) >= 0) return path.dirname(process.execPath);
   const root = IS_WIN
     ? process.env.NVM_HOME || path.join(os.homedir(), "AppData", "Roaming", "nvm")
     : path.join(process.env.NVM_DIR || path.join(os.homedir(), ".nvm"), "versions", "node");
@@ -272,12 +275,28 @@ function warnIfClaudeNotReady() {
 // ------------------------------------------------------------------ commands
 
 async function start() {
-  if (await listening(PORT)) {
-    if (!flags.restart) {
-      console.log(`The dashboard is already running at ${URL_} (use --restart after pulling updates).`);
-      if (flags.open) openBrowser(URL_);
-      return;
-    }
+  const up = await listening(PORT);
+  if (up && !flags.restart) {
+    console.log(`The dashboard is already running at ${URL_} (use --restart after pulling updates).`);
+    if (flags.open) openBrowser(URL_);
+    return;
+  }
+
+  // Node, packages and the UI build come first: if any of them fails, a restart leaves
+  // the running dashboard up, and it keeps serving while the new UI builds.
+  const floor = nodeFloor();
+  const dir = nodeDir(floor);
+  if (dir === null) {
+    let current = "none";
+    try { current = execFileSync("node", ["-v"], { encoding: "utf-8", windowsHide: true }).trim(); } catch {}
+    console.error(`The dashboard needs Node.js ${floor} or newer (found: ${current}).`);
+    console.error(IS_WIN ? "Install it: winget install OpenJS.NodeJS.LTS  (then open a new terminal)" : "Install it: brew install node  (or nvm install --lts)");
+    process.exit(1);
+  }
+  const env = cleanEnv(dir);
+  ensureBuilt(env);
+
+  if (up) {
     killDashboard();
     await sleep(1000);
     console.log("Stopped the running dashboard.");
@@ -295,18 +314,6 @@ async function start() {
     await sleep(1000);
     console.log(`Stopped the dashboard on its previous port, ${was.port}.`);
   }
-
-  const floor = nodeFloor();
-  const dir = nodeDir(floor);
-  if (dir === null) {
-    let current = "none";
-    try { current = execFileSync("node", ["-v"], { encoding: "utf-8", windowsHide: true }).trim(); } catch {}
-    console.error(`The dashboard needs Node.js ${floor} or newer (found: ${current}).`);
-    console.error(IS_WIN ? "Install it: winget install OpenJS.NodeJS.LTS  (then open a new terminal)" : "Install it: brew install node  (or nvm install --lts)");
-    process.exit(1);
-  }
-  const env = cleanEnv(dir);
-  ensureBuilt(env);
 
   fs.mkdirSync(LEDGER, { recursive: true });
   const log = fs.openSync(path.join(LEDGER, "dashboard.log"), "a");

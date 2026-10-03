@@ -83,6 +83,26 @@ function call(port: number, method: string, p: string, token = ""): Promise<{ st
   });
 }
 
+test("with no usable node on PATH, start runs on the Node running the script", { timeout: 180_000 }, async () => {
+  // What a restart from the page meets on a machine whose PATH finds an older Node first:
+  // here, no node on PATH at all and no nvm, so only the running Node can serve.
+  const port = await freePort();
+  setPort(port);
+  const key = Object.keys(process.env).find((k) => k.toLowerCase() === "path") || "PATH";
+  const exe = process.platform === "win32" ? "node.exe" : "node";
+  const noNode = (process.env[key] || "").split(path.delimiter).filter((d) => d && !fs.existsSync(path.join(d, exe))).join(path.delimiter);
+  const empty = path.join(TMP, "no-nvm");
+  fs.mkdirSync(empty, { recursive: true });
+  execFileSync(process.execPath, [CLI, "start", "--skip-build"], {
+    encoding: "utf-8",
+    timeout: 90_000,
+    env: { ...process.env, [key]: noNode, NVM_HOME: empty, NVM_DIR: empty, WORKSPACE_ROOT: TMP, DASHBOARD_LEDGER_DIR: LEDGER, DASHBOARD_PORT: "" },
+  });
+  assert.ok(await listening(port), "started");
+  cli("stop");
+  assert.ok(await until(async () => !(await listening(port))), "stopped");
+});
+
 test("the page's restart brings up a new server on the same port", { timeout: 180_000 }, async () => {
   const port = await freePort();
   setPort(port);
