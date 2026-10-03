@@ -33,8 +33,13 @@ spec:
             - { name: DASHBOARD_PUBLIC_URL, value: "https://dashboard.example.com" }   # the router's address
             - { name: DASHBOARD_OWNER, value: "${EMAIL}" }
             - { name: DASHBOARD_PROXY_SECRET, valueFrom: { secretKeyRef: { name: dashboard-router, key: backend-secret } } }
+            # The workspace from git...
             - { name: WORKSPACE_REPO, value: "https://git.example.com/acme/workspace.git" }
             - { name: GIT_TOKEN, valueFrom: { secretKeyRef: { name: dashboard-router, key: git-token, optional: true } } }
+            # ...or from a published snapshot (no git or code-host account; replaces the two above):
+            # - { name: SNAPSHOT_CONFIG, value: '{"source":"s3","bucket":"acme-code","region":"eu-west-1"}' }
+            # - { name: SNAPSHOT_S3_ACCESS_KEY_ID, valueFrom: { secretKeyRef: { name: dashboard-router, key: snapshot-key-id } } }
+            # - { name: SNAPSHOT_S3_SECRET_ACCESS_KEY, valueFrom: { secretKeyRef: { name: dashboard-router, key: snapshot-secret } } }
           ports: [{ name: http, containerPort: 3333 }]
           resources:
             requests: { cpu: 100m, memory: 512Mi }

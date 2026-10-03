@@ -1,5 +1,6 @@
-// Snapshots: the tar extractor, publish → download → update through a source, and the
-// http and Confluence adapters against local fake servers.
+// Snapshots: the tar and zip extractors, publish → download → update through a source,
+// installing a whole workspace, and the http and Confluence adapters against local fake
+// servers (the object stores are in object-stores.test.ts).
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import fs from "node:fs";
@@ -10,7 +11,8 @@ import zlib from "node:zlib";
 import { execFileSync } from "node:child_process";
 import type { AddressInfo } from "node:net";
 import { extractTarGz, safeMemberPath } from "../src/tar.ts";
-import { archiveName, buildSnapshot, carryOver, downloadStep, downloadTargets, dropManifestCache, planSnapshot, publishSnapshot, readStamp, snapshotStatus } from "../src/snapshot.ts";
+import { archiveName, buildSnapshot, carryOver, downloadStep, downloadTargets, dropManifestCache, installWorkspace, planSnapshot, publishSnapshot, readStamp, snapshotStatus } from "../src/snapshot.ts";
+import { extractZip } from "../src/zip.ts";
 import { repoState, readRepos } from "../src/repos.ts";
 import { createSource, snapshotSourceKinds } from "../src/snapshot-sources/index.ts";
 import type { SnapshotFile, SnapshotSource } from "../src/snapshot-sources/index.ts";
@@ -239,8 +241,8 @@ async function serve(handler: http.RequestListener): Promise<{ url: string; clos
 }
 
 test("http source: files come from the manifest, the bearer key is checked on connect and sent on download", async () => {
-  assert.deepEqual(snapshotSourceKinds().sort(), ["confluence", "http"]);
-  assert.throws(() => createSource({ source: "nope" }, ctx(scratch("x"))), /isn't supported \(known: confluence, http\)/);
+  assert.deepEqual(snapshotSourceKinds().sort(), ["azure-blob", "confluence", "http", "s3"]);
+  assert.throws(() => createSource({ source: "nope" }, ctx(scratch("x"))), /isn't supported \(known: confluence, http, azure-blob, s3\)/);
   const manifest = { version: 1, builtAt: "2026-01-01T00:00:00Z", repos: { api: { file: "api.tar.gz", sha: "abc", size: 3, builtAt: "2026-01-01T00:00:00Z" } }, workspace: null };
   const seen: (string | undefined)[] = [];
   const srv = await serve((req, res) => {
@@ -412,4 +414,88 @@ test("archive names carry the commit and stay distinct when a repo name had to b
   assert.match(a, /^api-core-[0-9a-f]{6}-0123456789ab\.tar\.gz$/);
   assert.match(archiveName("ünïcode", sha), /-[0-9a-f]{6}-0123456789ab\.tar\.gz$/, "made file-safe, so tagged");
   assert.match(archiveName("日本", sha), /^repo-[0-9a-f]{6}-0123456789ab\.tar\.gz$/, "nothing file-safe left");
+});
+
+/** A zip with stored entries, for crafting archives git wouldn't write. */
+function storedZip(file: string, entries: Record<string, string>) {
+  const locals: Buffer[] = [], centrals: Buffer[] = [];
+  let offset = 0;
+  for (const [name, text] of Object.entries(entries)) {
+    const n = Buffer.from(name), d = Buffer.from(text);
+    const l = Buffer.alloc(30); l.writeUInt32LE(0x04034b50, 0); l.writeUInt32LE(d.length, 18); l.writeUInt32LE(d.length, 22); l.writeUInt16LE(n.length, 26);
+    const c = Buffer.alloc(46); c.writeUInt32LE(0x02014b50, 0); c.writeUInt32LE(d.length, 20); c.writeUInt32LE(d.length, 24); c.writeUInt16LE(n.length, 28); c.writeUInt32LE(offset, 42);
+    locals.push(l, n, d); centrals.push(c, n);
+    offset += 30 + n.length + d.length;
+  }
+  const cd = Buffer.concat(centrals);
+  const e = Buffer.alloc(22); e.writeUInt32LE(0x06054b50, 0); e.writeUInt16LE(Object.keys(entries).length, 8); e.writeUInt16LE(Object.keys(entries).length, 10); e.writeUInt32LE(cd.length, 12); e.writeUInt32LE(offset, 16);
+  fs.writeFileSync(file, Buffer.concat([...locals, cd, e]));
+}
+
+test("zip: git archive output extracts byte-for-byte; an entry leaving the folder fails the extraction", async () => {
+  const src = scratch("zip-src");
+  repo(src, { "README.md": "hello\n", "src/x/y.ts": "export const y = 1;\n".repeat(200), "empty.txt": "", "bin.dat": "\x00\x01\x02\xff" });
+  const archive = path.join(scratch("zip-a"), "w.zip");
+  git(src, "-c", "core.autocrlf=false", "archive", "--format=zip", "-o", archive, "HEAD");
+  const out = scratch("zip-out");
+  const r = await extractZip(archive, out);
+  assert.equal(r.files, 4);
+  for (const f of ["README.md", "src/x/y.ts", "empty.txt", "bin.dat"]) assert.deepEqual(fs.readFileSync(path.join(out, f)), fs.readFileSync(path.join(src, f)), f);
+
+  const dir = scratch("zip-bad");
+  storedZip(path.join(dir, "evil.zip"), { "ok.txt": "ok", "../evil.txt": "evil" });
+  await assert.rejects(extractZip(path.join(dir, "evil.zip"), path.join(dir, "out")), /outside the target folder/);
+  assert.ok(!fs.existsSync(path.join(dir, "evil.txt")));
+  fs.writeFileSync(path.join(dir, "not.zip"), "plain text");
+  await assert.rejects(extractZip(path.join(dir, "not.zip"), path.join(dir, "out2")), /Not a zip archive/);
+});
+
+test("install: a whole workspace from its snapshot with no git; update keeps the ledger; never over a clone", async () => {
+  const ups = scratch("inst-up");
+  const pub = path.join(scratch("inst-pub"), "ws");
+  const reposJson = { snapshot: { source: "folder" }, repos: [{ name: "api" }] };
+  cloned(path.join(ups, "ws"), pub, {
+    "repos.json": JSON.stringify(reposJson), "CLAUDE.md": "v1\n", ".gitignore": "api/\ndashboard/dist/\n", "dashboard/web/main.ts": "export {};\n",
+  });
+  cloned(path.join(ups, "api"), path.join(pub, "api"), { "main.go": "v1\n" });
+  fs.mkdirSync(path.join(pub, "dashboard", "dist", "browser"), { recursive: true });
+  fs.writeFileSync(path.join(pub, "dashboard", "dist", "browser", "index.html"), "<html></html>");
+  const store = folderSource(scratch("inst-store"));
+  const out1 = scratch("inst-out1");
+  const m1 = await buildSnapshot(pub, out1);
+  assert.ok(m1.ui, "the publisher's built UI goes along");
+  await publishSnapshot(store, out1, m1);
+
+  const dir = path.join(scratch("inst-host"), "workspace");
+  const r1 = await installWorkspace(store, dir, { repos: true });
+  assert.deepEqual([r1.workspace, r1.sha, r1.ui, r1.repos], ["installed", m1.workspace!.sha, true, 1]);
+  assert.equal(fs.readFileSync(path.join(dir, "CLAUDE.md"), "utf-8"), "v1\n");
+  assert.equal(readStamp(dir)!.sha, m1.workspace!.sha);
+  assert.equal(fs.readFileSync(path.join(dir, "api", "main.go"), "utf-8"), "v1\n");
+  assert.equal(JSON.parse(fs.readFileSync(path.join(dir, "dashboard", "dist", ".prebuilt.json"), "utf-8")).sha, m1.workspace!.sha);
+  assert.ok(fs.statSync(path.join(dir, "dashboard", "dist", "browser", "index.html")).mtimeMs >= fs.statSync(path.join(dir, "dashboard", "web", "main.ts")).mtimeMs, "the UI is newer than its sources, so it isn't rebuilt");
+
+  const r2 = await installWorkspace(store, dir, { repos: true });
+  assert.deepEqual([r2.workspace, r2.ui, r2.repos], ["current", false, 0], "nothing to do");
+
+  // A new workspace commit: the files are updated, the person's ledger and downloaded repos stay.
+  fs.mkdirSync(path.join(dir, ".claude", "ledger"), { recursive: true });
+  fs.writeFileSync(path.join(dir, ".claude", "ledger", "mine.json"), "{}");
+  fs.writeFileSync(path.join(ups, "ws", "CLAUDE.md"), "v2\n");
+  git(path.join(ups, "ws"), "commit", "-qam", "v2");
+  const out2 = scratch("inst-out2");
+  const m2 = await buildSnapshot(pub, out2, { workspace: true });
+  await publishSnapshot(store, out2, m2);
+  const r3 = await installWorkspace(store, dir);
+  assert.equal(r3.workspace, "updated");
+  assert.equal(fs.readFileSync(path.join(dir, "CLAUDE.md"), "utf-8"), "v2\n");
+  assert.equal(fs.readFileSync(path.join(dir, ".claude", "ledger", "mine.json"), "utf-8"), "{}");
+  assert.equal(repoState(dir, "api"), "snapshot");
+
+  const clone = scratch("inst-clone");
+  fs.mkdirSync(path.join(clone, ".git"));
+  await assert.rejects(installWorkspace(store, clone), /a git clone; not installing over it/);
+  const foreign = scratch("inst-foreign");
+  fs.writeFileSync(path.join(foreign, "notes.txt"), "mine");
+  await assert.rejects(installWorkspace(store, foreign), /a folder with other files/);
 });

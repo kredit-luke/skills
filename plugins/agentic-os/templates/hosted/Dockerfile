@@ -1,7 +1,8 @@
 # One person's hosted dashboard (references/hosting.md). Build it once per workspace and
-# run one container per person, each with its own volume at /data:
+# run one container per person, each with its own volume at /data. Build from
+# plugins/agentic-os, so the engine's snapshot install (the boot without git) comes along:
 #
-#   docker build -t <registry>/agentic-dashboard:1 plugins/agentic-os/templates/hosted
+#   docker build -f plugins/agentic-os/templates/hosted/Dockerfile -t <registry>/agentic-dashboard:1 plugins/agentic-os
 #
 # Cloud-neutral: any container platform with a persistent volume works (Kubernetes on
 # GKE/EKS/AKS, a VM with Docker, ...). Nothing here holds a secret; they come from the
@@ -23,13 +24,19 @@ RUN curl -fsSL https://claude.ai/install.sh | bash
 # (org id: `claude auth status` on a signed-in machine) in managed-settings.json next to
 # this file and uncomment:
 # USER root
-# COPY managed-settings.json /etc/claude-code/managed-settings.json
+# COPY templates/hosted/managed-settings.json /etc/claude-code/managed-settings.json
 # USER node
 
-COPY --chown=node entrypoint.sh /usr/local/bin/dashboard-entrypoint
+# The engine's server code (Node only, no packages), for `snapshot.mjs install`: the
+# boot from a published snapshot, before there's a workspace on the volume to run it from.
+COPY engine/package.json /opt/agentic-os/engine/package.json
+COPY engine/bin/snapshot.mjs /opt/agentic-os/engine/bin/snapshot.mjs
+COPY engine/shared /opt/agentic-os/engine/shared
+COPY engine/server/src /opt/agentic-os/engine/server/src
+COPY --chown=node templates/hosted/entrypoint.sh /usr/local/bin/dashboard-entrypoint
 
-# Everything personal lives on the volume: the workspace clone (its .claude/ledger holds
-# runs and tracker keys) and Claude's config (sign-in, transcripts, memory).
+# Everything personal lives on the volume: the workspace (its .claude/ledger holds runs
+# and tracker keys) and Claude's config (sign-in, transcripts, memory).
 ENV DASHBOARD_HOSTED=1 \
     WORKSPACE_ROOT=/data/workspace \
     CLAUDE_CONFIG_DIR=/data/claude \

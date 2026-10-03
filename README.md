@@ -69,7 +69,7 @@ To release:
 3. `claude plugin validate .`, commit, and tag **the commit that bumps the version**:
 
 ```bash
-git tag agentic-os-v0.6.0 && git push origin main --tags
+git tag agentic-os-v0.7.0 && git push origin main --tags
 ```
 
 The tag matters: a workspace's `upgrade` fetches the version it installed (by tag) as the merge base, so a tag on an earlier commit makes the version files look like local edits.

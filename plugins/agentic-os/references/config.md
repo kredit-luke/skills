@@ -242,6 +242,8 @@ A top-level `snapshot` block names where read-only copies of the repos are publi
 ```json
 "snapshot": { "source": "confluence", "site": "acme.atlassian.net", "pageId": "123456", "maxFileMb": 100 }
 "snapshot": { "source": "http", "baseUrl": "https://files.acme.com/code", "auth": "none" }
+"snapshot": { "source": "azure-blob", "account": "acmecode", "container": "snapshots" }
+"snapshot": { "source": "s3", "bucket": "acme-code", "region": "eu-west-1", "prefix": "snapshots/" }
 ```
 
 - **Publish** (CI, nightly): `node dashboard/bin/snapshot.mjs publish --clone` shallow-clones missing repos, fetches each repo's **default branch from origin** (`defaultBranch` in repos.json, else origin's HEAD) and runs `git archive` on that commit into `<name>-<commit>.tar.gz` (files as committed, no history), whatever the clone has checked out, so a work branch or uncommitted changes are never published. It zips the workspace root's default branch into `workspace-<commit>.zip`, and uploads them with `snapshot-manifest.json` (each file's commit, size, date) last. File names carry the commit, so an interrupted publish never changes a file the current manifest names. Once the new manifest is up, files that only the previous manifest named are deleted, and old versions of the snapshot's own files are pruned; other files at the source are left alone. `--dry --out <dir>` builds without uploading (to check sizes); `--no-fetch` uses the origin refs the clones already have; `"snapshot": false` on a repo leaves it out. It needs git ≥ 2.40, and the source's credentials in the environment.
@@ -257,6 +259,11 @@ A top-level `snapshot` block names where read-only copies of the repos are publi
   Running the installer again updates the workspace files.
 - **Pre-built UI**: publish adds `dashboard-ui.tar.gz`, the publisher's `dashboard/dist` marked with `.prebuilt.json`, when `dashboard/` there is exactly the published commit and its build is current (in CI: run `npm ci && npm run build` in `dashboard/` before publishing). `dashboard.mjs start` then needs neither npm nor a build, since the server only uses Node itself. Without it, the first start runs `npm ci` and `ng build`, which takes a few minutes.
 - **By hand, or on another OS**: download `workspace.zip` from the source, extract it, and run `node dashboard/bin/dashboard.mjs start`; the Repos page does the rest.
+- **Install with no git (hosted containers, scripts)**: `node dashboard/bin/snapshot.mjs install --into <dir> [--repos]` installs or updates a whole workspace from the source. It puts the workspace zip over `<dir>`, then the prebuilt UI, then, with `--repos`, every repo that's missing or older.
+  - It only writes to a folder that's absent, empty or installed this way, never to a git clone, and the ledger is kept.
+  - Before the first install there's no `repos.json` to read, so it takes the source from `SNAPSHOT_CONFIG` (the `snapshot` block as JSON) and the credentials from the environment.
+  - The hosted image runs it on boot (hosting.md).
+  - Files deleted from the workspace stay until the folder is installed fresh.
 
 Sources (`dashboard/server/src/snapshot-sources/`; adding one: `references/adapters.md`):
 
@@ -264,6 +271,10 @@ Sources (`dashboard/server/src/snapshot-sources/`; adding one: `references/adapt
 |---|---|---|---|
 | `confluence` | `site`, `pageId` (the page the files are attached to), `maxFileMb` (the site's attachment limit, 100 by default on Cloud) | whoever can view the page; the key is the Docs page's Confluence key, or Jira's on the same site | `CONFLUENCE_EMAIL` + `CONFLUENCE_API_TOKEN` of an account that can edit the page |
 | `http` | `baseUrl`, `auth` (`none` / `bearer` / `basic`) | anyone with the link (and the key, with auth); the key is pasted on the Repos page or set as `SNAPSHOT_HTTP_TOKEN` | none: download-only; copy the `--out` folder to the server yourself |
+| `azure-blob` | `account`, `container`, `prefix` (a folder in it), `endpoint` (instead of `https://<account>.blob.core.windows.net`: Azurite, sovereign clouds) | anyone with a SAS token for the container that can read and list. The token is pasted on the Repos page (the part after `?`, or the whole URL) or set as `SNAPSHOT_AZURE_SAS`. Issue it from a stored access policy so it can be revoked. | `SNAPSHOT_AZURE_SAS` with write and delete as well (and delete-version, with blob versioning on, to prune) |
+| `s3` | `bucket`, `region` (default `us-east-1`; `auto` for R2), `prefix`, `endpoint` (any S3-compatible store: Cloudflare R2, MinIO, Google Cloud Storage's interop API, Backblaze B2; path-style) | anyone with an access key that has `s3:ListBucket` + `s3:GetObject`, pasted as `ACCESS_KEY_ID:SECRET_ACCESS_KEY` or set as `SNAPSHOT_S3_ACCESS_KEY_ID` + `SNAPSHOT_S3_SECRET_ACCESS_KEY` (+ `SNAPSHOT_S3_SESSION_TOKEN`), else the standard `AWS_*` variables | the same, with `s3:PutObject` + `s3:DeleteObject` (and `s3:ListBucketVersions` + `s3:DeleteObjectVersion`, with versioning on, to prune) |
+
+The Windows installer (`Install-<name>.cmd`) is published for `confluence` and `http` only. For the object stores, use `snapshot.mjs install`, or give people the workspace zip by hand.
 
 ## brand/: the look
 

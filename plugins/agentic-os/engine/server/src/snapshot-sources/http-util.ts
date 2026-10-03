@@ -56,7 +56,7 @@ async function readText(res: http.IncomingMessage): Promise<string> {
 }
 
 /** An error for a non-2xx response, with the service's own message when it sends one. */
-async function statusError(res: http.IncomingMessage, what: string): Promise<HttpStatusError> {
+export async function statusError(res: http.IncomingMessage, what: string): Promise<HttpStatusError> {
   const status = res.statusCode || 0;
   const text = await readText(res).catch(() => "");
   let msg = "";
