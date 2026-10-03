@@ -1,0 +1,61 @@
+{
+  "$comment": "Machine page checks, from the catalog in dashboard/server/src/machine-catalog.ts. Schema: references/config.md.",
+  "checks": [
+    {
+      "use": "package-manager"
+    },
+    {
+      "use": "node",
+      "required": {
+        "file": "plugins/natterjack/engine/package.json",
+        "regex": "\"node\":\\s*\">=([\\d.]+)\"",
+        "min": "24.15.0"
+      }
+    },
+    {
+      "use": "git"
+    },
+    {
+      "use": "gh"
+    },
+    {
+      "use": "claude"
+    },
+    {
+      "use": "path",
+      "id": "engine-deps",
+      "label": "engine dependencies",
+      "path": "plugins/natterjack/engine/node_modules",
+      "install": {
+        "label": "npm ci",
+        "win": "npm ci",
+        "mac": "npm ci",
+        "linux": "npm ci",
+        "cwd": "plugins/natterjack/engine"
+      },
+      "apps": [
+        "ui-dev"
+      ]
+    },
+    {
+      "use": "path",
+      "id": "dashboard-link",
+      "label": "dashboard/ linked to the engine",
+      "path": "dashboard/server/src/main.ts",
+      "fix": {
+        "win": "cmd /c mklink /J dashboard plugins\\natterjack\\engine",
+        "mac": "ln -s plugins/natterjack/engine dashboard",
+        "linux": "ln -s plugins/natterjack/engine dashboard"
+      }
+    },
+    {
+      "use": "docker",
+      "optional": true,
+      "group": "Optional",
+      "detail": {
+        "ok": "Builds the hosted image (templates/hosted/Dockerfile).",
+        "missing": "Only needed to build the hosted image."
+      }
+    }
+  ]
+}

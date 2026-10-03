@@ -1,0 +1,30 @@
+{
+  "$comment": "Skill cards, routines, limits, default model and the Issues view. Schema: references/config.md.",
+  "defaults": {
+    "model": "opus",
+    "effort": "medium"
+  },
+  "presets": [
+    {
+      "id": "engine-tests",
+      "label": "Engine tests",
+      "icon": "shield",
+      "description": "Typecheck and test the engine. Read-only.",
+      "prompt": "In plugins/natterjack/engine run `npm run typecheck` and `npm test`, and in plugins/natterjack/router `npm test`. Report failures with the likely cause. Don't change anything.",
+      "permissionMode": "auto"
+    },
+    {
+      "id": "brief",
+      "label": "Repo brief",
+      "icon": "sun",
+      "description": "Open PRs, CI on main, open issues. Read-only.",
+      "prompt": "Give me a short brief on lhoezee/skills using gh: open PRs and their checks, the latest CI run on main, and open issues. End with the 3 things to do first. Don't change anything.",
+      "permissionMode": "auto"
+    }
+  ],
+  "issues": {
+    "teams": [
+      "lhoezee/skills"
+    ]
+  }
+}
