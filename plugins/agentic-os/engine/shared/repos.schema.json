@@ -36,6 +36,7 @@
         {
           "type": "object",
           "required": ["source", "container"],
+          "anyOf": [{ "required": ["account"] }, { "required": ["endpoint"] }],
           "properties": {
             "source": { "const": "azure-blob" },
             "account": { "type": "string", "pattern": "^[a-z0-9]{3,24}$", "description": "The storage account's name." },

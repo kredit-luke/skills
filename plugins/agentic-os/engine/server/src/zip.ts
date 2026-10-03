@@ -5,6 +5,7 @@
  *
  * The same rules as tar.ts: only files and folders are written (symlinks are skipped
  * and counted), and every path must stay inside the target or the whole extraction fails.
+ * Each entry's size and CRC-32 are checked; a corrupt entry fails it too.
  */
 
 import fs from "node:fs";
@@ -34,6 +35,7 @@ export async function extractZip(archive: string, dest: string): Promise<Extract
     if (buf.readUInt32LE(p) !== CENTRAL) throw new Error("Corrupt zip (bad central directory entry).");
     const flags = buf.readUInt16LE(p + 8);
     const method = buf.readUInt16LE(p + 10);
+    const crc = buf.readUInt32LE(p + 16);
     const compressed = buf.readUInt32LE(p + 20);
     const size = buf.readUInt32LE(p + 24);
     const nameLen = buf.readUInt16LE(p + 28), extraLen = buf.readUInt16LE(p + 30), commentLen = buf.readUInt16LE(p + 32);
@@ -55,6 +57,9 @@ export async function extractZip(archive: string, dest: string): Promise<Extract
     const data = method === 0 ? raw : method === 8 ? zlib.inflateRawSync(raw) : null;
     if (!data) throw new Error(`Unsupported zip compression method ${method} (${name}).`);
     if (data.length !== size) throw new Error(`Corrupt zip (${name} is ${data.length} bytes, expected ${size}).`);
+    // A flipped bit can keep the size (stored entries always do): without this, a damaged
+    // workspace would be installed and stamped as current.
+    if (zlib.crc32(data) !== crc) throw new Error(`Corrupt zip (${name} fails its CRC-32 check).`);
 
     mkdir(path.dirname(full));
     const w: Promise<void> = fs.promises.writeFile(full, data).finally(() => { pending.delete(w); });

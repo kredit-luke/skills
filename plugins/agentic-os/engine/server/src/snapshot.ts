@@ -194,6 +194,14 @@ export function downloadStep(root: string, source: SnapshotSource, t: { repo: Re
 
 // ------------------------------------------------------------------ installing a workspace
 
+/** The workspace stamp's sha while an install is copying files: never a commit, so the next install redoes it. */
+export const INSTALLING = "installing";
+
+/** A workspace folder whose last install didn't finish (its files are a mix): don't run it. */
+export function isInstalling(dir: string): boolean {
+  return readStamp(dir)?.sha === INSTALLING;
+}
+
 export interface InstallResult { workspace: "installed" | "updated" | "current"; sha: string; ui: boolean; repos: number }
 
 /**
@@ -228,10 +236,19 @@ export async function installWorkspace(source: SnapshotSource, dir: string, opts
       const staged = path.join(tmp, "workspace");
       const r = await extractZip(await fetchTo(ws, wsFile, tmp), staged);
       log(`Extracted ${r.files} workspace files`);
+      // Copying over the live folder isn't atomic. Mark it first, so an interruption leaves
+      // a folder that's still ours to retry (not "other files") and isn't taken as current
+      // (`isInstalling`: the hosted entrypoint won't start it). The real stamp goes in last.
       fs.mkdirSync(dir, { recursive: true });
+      const marker: Stamp = { name: "workspace", sha: INSTALLING, builtAt: ws.builtAt, source: source.kind };
+      fs.writeFileSync(path.join(dir, STAMP_FILE), JSON.stringify(marker, null, 2) + "\n");
+      const stamp = path.join(staged, STAMP_FILE);
+      const finalStamp = fs.existsSync(stamp) ? fs.readFileSync(stamp) : JSON.stringify({ name: "workspace", sha: ws.sha, builtAt: ws.builtAt, source: source.kind }, null, 2) + "\n";
+      fs.rmSync(stamp, { force: true });
       fs.cpSync(staged, dir, { recursive: true, force: true });
+      fs.writeFileSync(path.join(dir, STAMP_FILE), finalStamp);
     } finally { rmrf(tmp); }
-    workspace = local ? "updated" : "installed";
+    workspace = local && local.sha !== INSTALLING ? "updated" : "installed";
     log(`${dir} is now at ${ws.sha.slice(0, 10)}`);
   }
 

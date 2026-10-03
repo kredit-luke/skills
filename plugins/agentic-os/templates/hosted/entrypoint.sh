@@ -19,7 +19,13 @@ mkdir -p "$CLAUDE_CONFIG_DIR"
 
 if [ -n "${SNAPSHOT_CONFIG:-}" ]; then
   if ! node --disable-warning=ExperimentalWarning /opt/agentic-os/engine/bin/snapshot.mjs install --into "$WORKSPACE_ROOT" --repos; then
-    [ -f "$WORKSPACE_ROOT/dashboard/bin/dashboard.mjs" ] || { echo "Couldn't install the workspace from its snapshot." >&2; exit 1; }
+    # Start what's there only if it's a whole workspace: an install that stopped while
+    # copying leaves its stamp at "installing" (a mix of files), and exiting lets the
+    # platform restart the container, which retries the install.
+    if [ ! -f "$WORKSPACE_ROOT/dashboard/bin/dashboard.mjs" ] || grep -q '"sha": "installing"' "$WORKSPACE_ROOT/.snapshot.json" 2>/dev/null; then
+      echo "Couldn't install the workspace from its snapshot." >&2
+      exit 1
+    fi
     echo "Couldn't update the workspace from its snapshot; starting with what's there." >&2
   fi
 else
