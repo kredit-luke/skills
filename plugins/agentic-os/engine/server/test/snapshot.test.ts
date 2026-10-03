@@ -512,24 +512,35 @@ test("install: a whole workspace from its snapshot with no git; update keeps the
   assert.equal(isInstalling(broken), false);
   assert.equal(fs.readFileSync(path.join(broken, "CLAUDE.md"), "utf-8"), "v2\n");
 
-  // The UI step fails after the workspace files went in: still "installing" (so the hosted
-  // entrypoint won't start it), and a retry finishes it.
+  // A download that fails (or an archive that won't extract) touches nothing: the live
+  // folder keeps its stamp, so the hosted entrypoint still starts the previous version.
   assert.ok(m2.ui, "the second publish has a prebuilt UI too");
   const prebuiltSha = (d: string) => JSON.parse(fs.readFileSync(path.join(d, "dashboard", "dist", ".prebuilt.json"), "utf-8")).sha;
-  const uiFails: SnapshotSource = { ...store, download: async (f, d) => { if (f.name === m2.ui!.file) throw new Error("network dropped"); return store.download(f, d); } };
+  const failing = (name: string): SnapshotSource => ({ ...store, download: async (f, d) => { if (f.name === name) throw new Error("network dropped"); return store.download(f, d); } });
+  const before = readStamp(dir)!.sha;
+  fs.writeFileSync(path.join(ups, "ws", "CLAUDE.md"), "v3\n");
+  git(path.join(ups, "ws"), "commit", "-qam", "v3");
+  const out3 = scratch("inst-out3");
+  const m3 = await buildSnapshot(pub, out3, { workspace: true });
+  await publishSnapshot(store, out3, m3);
+  for (const name of [m3.workspace!.file, m3.ui!.file]) {
+    await assert.rejects(installWorkspace(failing(name), dir), /network dropped/);
+    assert.deepEqual([readStamp(dir)!.sha, isInstalling(dir), fs.readFileSync(path.join(dir, "CLAUDE.md"), "utf-8")], [before, false, "v2\n"], `${name} failing leaves the old install whole`);
+  }
+  assert.equal((await installWorkspace(store, dir)).workspace, "updated");
+  assert.deepEqual([readStamp(dir)!.sha, prebuiltSha(dir)], [m3.workspace!.sha, m3.workspace!.sha]);
+
+  // Interrupted after files started going in (simulated: the copy of the UI throws): still
+  // "installing", so it isn't started, and a retry finishes it.
   const flaky = path.join(scratch("inst-ui-fail"), "workspace");
-  await assert.rejects(installWorkspace(uiFails, flaky), /network dropped/);
+  const realCp = fs.cpSync;
+  (fs as any).cpSync = (src: string, dst: string, o: any) => { if (path.basename(dst) === ".dist-new") throw new Error("disk full"); return realCp(src, dst, o); };
+  try { await assert.rejects(installWorkspace(store, flaky), /disk full/); }
+  finally { (fs as any).cpSync = realCp; }
   assert.equal(isInstalling(flaky), true, "not stamped complete without its UI");
   assert.ok(fs.existsSync(path.join(flaky, "CLAUDE.md")), "the workspace files did go in");
   const r5 = await installWorkspace(store, flaky);
-  assert.deepEqual([r5.workspace, r5.ui, isInstalling(flaky), prebuiltSha(flaky)], ["installed", true, false, m2.workspace!.sha]);
-
-  // A UI-only repair (the workspace is current) is marked the same way, and keeps the stamp's sha.
-  fs.rmSync(path.join(flaky, "dashboard", "dist"), { recursive: true });
-  await assert.rejects(installWorkspace(uiFails, flaky), /network dropped/);
-  assert.equal(isInstalling(flaky), true);
-  const r6 = await installWorkspace(store, flaky);
-  assert.deepEqual([r6.workspace, r6.ui, readStamp(flaky)!.sha], ["installed", true, m2.workspace!.sha], "a retry after an unfinished install counts as installed");
+  assert.deepEqual([r5.workspace, r5.ui, isInstalling(flaky), prebuiltSha(flaky)], ["installed", true, false, m3.workspace!.sha]);
   assert.deepEqual(fs.readdirSync(path.join(flaky, "dashboard")).filter((n) => n.startsWith(".dist")), [], "no staging folders left behind");
 
   const clone = scratch("inst-clone");
