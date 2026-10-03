@@ -93,7 +93,9 @@ test("the page's restart brings up a new server on the same port", { timeout: 18
   const res = await call(port, "POST", "/api/restart", before.token);
   assert.equal(res.status, 202);
   const startedAt = async () => { try { return (await call(port, "GET", "/api/boot")).body?.startedAt || null; } catch { return null; } };
-  assert.ok(await until(async () => { const s = await startedAt(); return !!s && s !== before.startedAt; }, 90_000), "a new server answers");
+  const read = (f: string) => { try { return fs.readFileSync(path.join(LEDGER, f), "utf-8"); } catch { return "(none)"; } };
+  const back = await until(async () => { const s = await startedAt(); return !!s && s !== before.startedAt; }, 90_000);
+  assert.ok(back, `a new server answers.\n--- dashboard-restart.log\n${read("dashboard-restart.log")}\n--- dashboard.log (end)\n${read("dashboard.log").slice(-3000)}`);
   assert.match(fs.readFileSync(path.join(LEDGER, "dashboard-restart.log"), "utf-8"), /restart requested from the dashboard/);
 
   cli("stop");
