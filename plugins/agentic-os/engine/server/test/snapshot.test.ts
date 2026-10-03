@@ -512,6 +512,26 @@ test("install: a whole workspace from its snapshot with no git; update keeps the
   assert.equal(isInstalling(broken), false);
   assert.equal(fs.readFileSync(path.join(broken, "CLAUDE.md"), "utf-8"), "v2\n");
 
+  // The UI step fails after the workspace files went in: still "installing" (so the hosted
+  // entrypoint won't start it), and a retry finishes it.
+  assert.ok(m2.ui, "the second publish has a prebuilt UI too");
+  const prebuiltSha = (d: string) => JSON.parse(fs.readFileSync(path.join(d, "dashboard", "dist", ".prebuilt.json"), "utf-8")).sha;
+  const uiFails: SnapshotSource = { ...store, download: async (f, d) => { if (f.name === m2.ui!.file) throw new Error("network dropped"); return store.download(f, d); } };
+  const flaky = path.join(scratch("inst-ui-fail"), "workspace");
+  await assert.rejects(installWorkspace(uiFails, flaky), /network dropped/);
+  assert.equal(isInstalling(flaky), true, "not stamped complete without its UI");
+  assert.ok(fs.existsSync(path.join(flaky, "CLAUDE.md")), "the workspace files did go in");
+  const r5 = await installWorkspace(store, flaky);
+  assert.deepEqual([r5.workspace, r5.ui, isInstalling(flaky), prebuiltSha(flaky)], ["installed", true, false, m2.workspace!.sha]);
+
+  // A UI-only repair (the workspace is current) is marked the same way, and keeps the stamp's sha.
+  fs.rmSync(path.join(flaky, "dashboard", "dist"), { recursive: true });
+  await assert.rejects(installWorkspace(uiFails, flaky), /network dropped/);
+  assert.equal(isInstalling(flaky), true);
+  const r6 = await installWorkspace(store, flaky);
+  assert.deepEqual([r6.workspace, r6.ui, readStamp(flaky)!.sha], ["installed", true, m2.workspace!.sha], "a retry after an unfinished install counts as installed");
+  assert.deepEqual(fs.readdirSync(path.join(flaky, "dashboard")).filter((n) => n.startsWith(".dist")), [], "no staging folders left behind");
+
   const clone = scratch("inst-clone");
   fs.mkdirSync(path.join(clone, ".git"));
   await assert.rejects(installWorkspace(store, clone), /a git clone; not installing over it/);

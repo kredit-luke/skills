@@ -229,45 +229,65 @@ export async function installWorkspace(source: SnapshotSource, dir: string, opts
   };
 
   const local = readStamp(dir);
+  const stampFile = path.join(dir, STAMP_FILE);
+  const dist = path.join(dir, "dashboard", "dist");
+  const uiFileAt = manifest.ui && files.find((f) => f.name === manifest.ui!.file);
+  const prebuilt = (() => { try { return JSON.parse(fs.readFileSync(path.join(dist, ".prebuilt.json"), "utf-8")).sha; } catch { return null; } })();
+  const needWorkspace = !local || local.sha !== ws.sha;
+  const needUi = !!(manifest.ui && uiFileAt) && (needWorkspace || prebuilt !== manifest.ui!.sha);
+  if (!manifest.ui) log("No prebuilt UI was published: the dashboard builds it on first start.");
+
+  // Copying over the live folder isn't atomic. Mark it first, so an interruption leaves a
+  // folder that's still ours to retry (not "other files") and isn't taken as current
+  // (`isInstalling`: the hosted entrypoint won't start it). The real stamp goes back in
+  // only once the workspace files and the UI are both in place.
+  let finalStamp: string | Buffer | null = null;
+  if (needWorkspace || needUi) {
+    fs.mkdirSync(dir, { recursive: true });
+    finalStamp = needWorkspace ? null : fs.readFileSync(stampFile);
+    const marker: Stamp = { name: "workspace", sha: INSTALLING, builtAt: ws.builtAt, source: source.kind };
+    fs.writeFileSync(stampFile, JSON.stringify(marker, null, 2) + "\n");
+  }
+
   let workspace: InstallResult["workspace"] = "current";
-  if (!local || local.sha !== ws.sha) {
+  if (needWorkspace) {
     const tmp = tmpDir("ws");
     try {
       const staged = path.join(tmp, "workspace");
       const r = await extractZip(await fetchTo(ws, wsFile, tmp), staged);
       log(`Extracted ${r.files} workspace files`);
-      // Copying over the live folder isn't atomic. Mark it first, so an interruption leaves
-      // a folder that's still ours to retry (not "other files") and isn't taken as current
-      // (`isInstalling`: the hosted entrypoint won't start it). The real stamp goes in last.
-      fs.mkdirSync(dir, { recursive: true });
-      const marker: Stamp = { name: "workspace", sha: INSTALLING, builtAt: ws.builtAt, source: source.kind };
-      fs.writeFileSync(path.join(dir, STAMP_FILE), JSON.stringify(marker, null, 2) + "\n");
       const stamp = path.join(staged, STAMP_FILE);
-      const finalStamp = fs.existsSync(stamp) ? fs.readFileSync(stamp) : JSON.stringify({ name: "workspace", sha: ws.sha, builtAt: ws.builtAt, source: source.kind }, null, 2) + "\n";
+      finalStamp = fs.existsSync(stamp) ? fs.readFileSync(stamp) : JSON.stringify({ name: "workspace", sha: ws.sha, builtAt: ws.builtAt, source: source.kind }, null, 2) + "\n";
       fs.rmSync(stamp, { force: true });
       fs.cpSync(staged, dir, { recursive: true, force: true });
-      fs.writeFileSync(path.join(dir, STAMP_FILE), finalStamp);
     } finally { rmrf(tmp); }
     workspace = local && local.sha !== INSTALLING ? "updated" : "installed";
-    log(`${dir} is now at ${ws.sha.slice(0, 10)}`);
   }
 
   // After the workspace files, so the built UI is newer than its sources and isn't rebuilt.
+  // Staged beside dist/ and swapped in by rename: there's never a half-copied dist/ that
+  // has a .prebuilt.json, which would pass for complete.
   let ui = false;
-  const dist = path.join(dir, "dashboard", "dist");
-  const uiFileAt = manifest.ui && files.find((f) => f.name === manifest.ui!.file);
-  const prebuilt = (() => { try { return JSON.parse(fs.readFileSync(path.join(dist, ".prebuilt.json"), "utf-8")).sha; } catch { return null; } })();
-  if (manifest.ui && uiFileAt && (workspace !== "current" || prebuilt !== manifest.ui.sha)) {
+  if (needUi) {
     const tmp = tmpDir("ui");
+    const next = path.join(dir, "dashboard", ".dist-new"), old = path.join(dir, "dashboard", ".dist-old");
     try {
       const staged = path.join(tmp, "ui");
-      await extractTarGz(await fetchTo(manifest.ui, uiFileAt, tmp), staged);
-      rmrf(dist);
-      fs.cpSync(path.join(staged, "dist"), dist, { recursive: true });
+      await extractTarGz(await fetchTo(manifest.ui!, uiFileAt!, tmp), staged);
+      rmrf(next); rmrf(old);
+      fs.cpSync(path.join(staged, "dist"), next, { recursive: true });
+      if (fs.existsSync(dist)) fs.renameSync(dist, old);
+      fs.renameSync(next, dist);
+      rmrf(old);
       ui = true;
       log("Installed the prebuilt dashboard UI");
-    } finally { rmrf(tmp); }
-  } else if (!manifest.ui) log("No prebuilt UI was published: the dashboard builds it on first start.");
+    } finally { rmrf(tmp); rmrf(next); }
+  }
+
+  if (finalStamp !== null) {
+    fs.writeFileSync(stampFile, finalStamp);
+    if (needWorkspace) log(`${dir} is now at ${ws.sha.slice(0, 10)}`);
+  }
 
   let repos = 0;
   if (opts.repos) {
