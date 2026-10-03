@@ -346,7 +346,7 @@ class Machine {
 
   /** One check. Returns its result, or null to leave it out (e.g. nothing to check on this OS). */
   async _one(s: any, p: any) {
-    const base = { id: s.id, group: s.group || "Everyone", label: s.label, apps: s.apps || [] };
+    const base = { id: s.id, kind: s.kind, group: s.group || "Everyone", label: s.label, apps: s.apps || [] };
     const optional = !!s.optional;
     const absent = optional ? "info" : "missing";
     const detail = s.detail || {};

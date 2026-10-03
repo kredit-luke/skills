@@ -201,7 +201,7 @@ test("Machine re-runs its checks when machine.json changes (no manual Re-check)"
   write("machine.json", { checks: [{ use: "env-var", id: "a", name: "DASH_TEST_A" }] });
   const m = new Machine(ROOT);
   const first = await m.get();
-  assert.deepEqual(first.checks.map((c) => c.id), ["a"]);
+  assert.deepEqual(first.checks.map((c) => [c.id, c.kind]), [["a", "env-var"]], "each check says its kind, which the UI keys on (the id is the config's)");
   assert.equal(await m.get(), first, "unchanged config: the cached report");
   write("machine.json", { checks: [{ use: "env-var", id: "a", name: "DASH_TEST_A" }, { use: "env-var", id: "b", name: "DASH_TEST_B" }] });
   assert.deepEqual((await m.get()).checks.map((c) => c.id), ["a", "b"]);
