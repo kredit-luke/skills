@@ -3,12 +3,14 @@ import { ActivatedRoute, Router } from '@angular/router';
 import type { LaunchRequest, RunMeta, SearchResponse, SearchResult } from '../../../../../shared/api';
 import { ApiService } from '../../core/api.service';
 import { DataService } from '../../core/data.service';
+import { defaultsFor } from '../../core/agents';
 import { LaunchService } from '../../core/launch.service';
 import { markTerms } from '../../core/markdown';
 import { ToastService } from '../../core/toast.service';
 import { TrustedHtmlPipe } from '../../core/trusted-html.pipe';
 import { askPrompt } from '../../shared/ask-prompt';
 import { SlashInputComponent } from '../../shared/slash-input.component';
+import { AgentFieldsComponent } from '../../shared/agent-fields.component';
 import { AttachComponent } from '../../shared/attach.component';
 import { PageHeaderComponent } from '../../shared/page-header.component';
 import { RunRowComponent } from '../../shared/run-row.component';
@@ -24,11 +26,11 @@ function readDocsPref(): string[] {
  */
 @Component({
   selector: 'dash-ask',
-  imports: [PageHeaderComponent, TrustedHtmlPipe, RunRowComponent, AttachComponent, SlashInputComponent],
+  imports: [PageHeaderComponent, TrustedHtmlPipe, RunRowComponent, AttachComponent, SlashInputComponent, AgentFieldsComponent],
   changeDetection: ChangeDetectionStrategy.OnPush,
   styleUrl: './ask.component.scss',
   template: `
-    <dash-page-header eyebrow="Ask" title="Ask about the workspace" sub="Starts a Claude run in the repo. Plan mode (read-only) is on by default — turn it off below, or later from the run, if it should make changes." />
+    <dash-page-header eyebrow="Ask" title="Ask about the workspace" sub="Starts a run in the repo with the agent you pick. Plan mode (read-only) is on by default — turn it off below, or later from the run, if it should make changes." />
     <div class="ask-layout">
       <div class="col">
         <form class="panel ask-box" (submit)="$event.preventDefault(); submit()"
@@ -42,22 +44,13 @@ function readDocsPref(): string[] {
                 @for (w of data.deck()?.workspaces || []; track w.slug) { <option [value]="w.slug" [selected]="w.slug === ws()">{{ w.name }}</option> }
               </select>
             </label>
-            <label>Model
-              <select (change)="model.set($any($event.target).value)">
-                @for (m of data.deck()?.options?.models || []; track m) { <option [value]="m" [selected]="m === model()">{{ m }}</option> }
-              </select>
-            </label>
-            <label>Effort
-              <select (change)="effort.set($any($event.target).value)">
-                @for (e of data.deck()?.options?.efforts || []; track e) { <option [value]="e" [selected]="e === effort()">{{ e }}</option> }
-              </select>
-            </label>
-            <label class="chk"><input type="checkbox" [checked]="useRefs()" (change)="useRefs.set($any($event.target).checked)"> Point Claude at the matches</label>
-            <label class="chk" title="Claude can read and answer but not change anything until this is off.">
+            <dash-agent-fields [(agent)]="agent" [(modelId)]="model" [(effort)]="effort" />
+            <label class="chk"><input type="checkbox" [checked]="useRefs()" (change)="useRefs.set($any($event.target).checked)"> Point it at the matches</label>
+            <label class="chk" title="The agent can read and answer but not change anything until this is off.">
               <input type="checkbox" [checked]="planMode()" (change)="planMode.set($any($event.target).checked)"> Plan mode (read-only)
             </label>
             @for (s of docSources(); track s.key) {
-              <label class="chk" [title]="'Claude searches ' + s.name + ' through its connector and cites the pages it uses'">
+              <label class="chk" [title]="'The agent searches ' + s.name + ' through its connector and cites the pages it uses'">
                 <input type="checkbox" [checked]="useDocs().has(s.key)" (change)="toggleDocs(s.key, $any($event.target).checked)"> Use {{ s.name }}
               </label>
             }
@@ -65,11 +58,11 @@ function readDocsPref(): string[] {
             <span class="form-err">{{ error() }}</span>
             <button class="btn primary" type="submit" [disabled]="busy() || att.uploading() || !q().trim()">{{ busy() ? 'Starting…' : 'Ask' }}</button>
           </div>
-          <div class="hint">Enter to ask · Shift+Enter for a new line. {{ planMode() ? 'Read-only: Claude can look things up but not change anything until you turn plan mode off.' : 'Plan mode is off: this run can make changes right away.' }}</div>
+          <div class="hint">Enter to ask · Shift+Enter for a new line. {{ planMode() ? 'Read-only: the agent can look things up but not change anything until you turn plan mode off.' : 'Plan mode is off: this run can make changes right away.' }}</div>
         </form>
 
         <div class="panel">
-          <div class="panel-h"><h2>Starting points</h2><span class="ty">{{ results().length ? 'Top matches from the local search (free, no Claude)' : '' }}</span></div>
+          <div class="panel-h"><h2>Starting points</h2><span class="ty">{{ results().length ? 'Top matches from the local search (free, no agent)' : '' }}</span></div>
           <div class="panel-b">
             @for (r of results(); track r.id) {
               <div class="sp-row">
@@ -77,7 +70,7 @@ function readDocsPref(): string[] {
                 <div class="main"><div class="t" [innerHTML]="mark(r.title) | trustedHtml"></div>
                   <div class="s" [innerHTML]="mark(r.section ? '§ ' + r.section : r.snippet) | trustedHtml"></div></div>
               </div>
-            } @empty { <div class="empty">{{ q().trim() ? 'No matches; Claude will search on its own.' : 'Type a question to see which docs, skills and memories match.' }}</div> }
+            } @empty { <div class="empty">{{ q().trim() ? 'No matches; the agent will search on its own.' : 'Type a question to see which docs, skills and memories match.' }}</div> }
           </div>
         </div>
       </div>
@@ -101,8 +94,11 @@ export class AskComponent implements OnInit {
   readonly q = signal('');
   readonly ws = signal('main');
   // Start on the default model/effort (and follow it once deck.json loads); a change is for this question only.
-  readonly model = linkedSignal(() => this.launch.model());
-  readonly effort = linkedSignal(() => this.launch.effort());
+  /** The agent picked last (or the workspace's), on its default model/effort; a change is for this question only. */
+  readonly agent = linkedSignal(() => this.launch.agent());
+  private readonly agentDefaults = computed(() => defaultsFor((this.data.agents() || []).find((a) => a.id === this.agent()) || null, { model: this.launch.model(), effort: this.launch.effort() }));
+  readonly model = linkedSignal(() => this.agentDefaults().model);
+  readonly effort = linkedSignal(() => this.agentDefaults().effort);
   readonly useRefs = signal(true);
   readonly planMode = signal(true);
   /** Searchable docs sources (Confluence, …): ticked ones are remembered in this browser. */
@@ -162,7 +158,7 @@ export class AskComponent implements OnInit {
     const att = this.att();
     if (att?.uploading()) { this.error.set('Wait for the files to finish uploading.'); return; }
     // No budgetUsd: the server applies a cap only when it's turned on in Settings.
-    const body: LaunchRequest = { prompt, workspace: this.ws(), model: this.model(), effort: this.effort() as LaunchRequest['effort'], planMode: this.planMode(), permissionMode: 'auto', trigger: 'ask', attachments: att?.ids() || [] };
+    const body: LaunchRequest = { prompt, workspace: this.ws(), agent: this.agent(), model: this.model(), effort: this.effort() as LaunchRequest['effort'], planMode: this.planMode(), permissionMode: 'auto', trigger: 'ask', attachments: att?.ids() || [] };
     const docs = [...this.useDocs()].filter((k) => this.docSources().some((s) => s.key === k));
     if (docs.length) body.docSources = docs;
     this.busy.set(true);

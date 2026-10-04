@@ -19,13 +19,16 @@
       </div>
       <div class="kv">
         <span>workspace <b>{{ r.workspace }}</b>@if (workWs(); as w) { @if (w.slug !== r.workspace) { <b title="Started here, then worked in this worktree"> → {{ w.slug }}</b> } }</span>
+        <span>agent <b>{{ agentName(r.agent) }}</b></span>
         <span title="The model the CLI actually used">model <b>{{ r.resolvedModel || r.model || 'default' }}</b></span>
         <span>effort <b>{{ r.effort || 'default' }}</b></span>
         <span>permissions <b>{{ r.planMode ? 'plan (read-only)' : r.permissionMode }}</b>
           @if (ranAs()) { <span class="tag bad" title="The CLI ran this session in a different mode than requested">ran as {{ ranAs() }}</span> }</span>
         <span>turns <b>{{ r.turns || 1 }}</b></span>
         <span>time <b>{{ elapsed() }}</b></span>
-        <span title="What this run would cost on the API. On a subscription it draws on your usage limits instead; the cap only stops runaways.">api-equiv <b>{{ money(r.costUsd) }}{{ r.budgetUsd ? ' / ' + money(r.budgetUsd) + ' cap' : '' }}</b></span>
+        @if (!r.agent || r.agent === 'claude') {
+          <span title="What this run would cost on the API. On a subscription it draws on your usage limits instead; the cap only stops runaways.">api-equiv <b>{{ money(r.costUsd) }}{{ r.budgetUsd ? ' / ' + money(r.budgetUsd) + ' cap' : '' }}</b></span>
+        }
         <span>tools <b>{{ r.toolCalls || 0 }}</b></span>
         <span>started <b>{{ started(r) }}</b></span>
         <span>updated <b>{{ rel(r.endedAt || r.turnStartedAt || r.startedAt) }}</b></span>

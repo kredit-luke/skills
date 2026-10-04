@@ -1,4 +1,6 @@
 import { Injectable, computed, inject, signal } from '@angular/core';
+import type { AgentId } from '../../../../shared/api';
+import { startAgent, usableAgents } from './agents';
 import { DataService } from './data.service';
 
 export interface LaunchOptions {
@@ -9,6 +11,8 @@ export interface LaunchOptions {
   /** Preset option checkboxes to pre-tick or untick, by name. */
   options?: Record<string, boolean>;
   workspace?: string;
+  /** The agent CLI to run it with (default: the one picked last, else the workspace's). */
+  agent?: AgentId;
   model?: string;
   effort?: string;
   title?: string;
@@ -36,6 +40,14 @@ export class LaunchService {
   readonly defaults = computed(() => this.data.deck()?.defaults || FALLBACK);
   readonly model = computed(() => this.defaults().model);
   readonly effort = computed(() => this.defaults().effort);
+  private readonly remembered = signal<string | null>(readAgent());
+  /** The agent a new run starts on: the one picked last in this browser, else deck.json's default, else Claude. */
+  readonly agent = computed<AgentId>(() => startAgent(usableAgents(this.data.agents()), this.remembered(), (this.data.deck()?.defaults as any)?.agent || null));
+
+  rememberAgent(id: AgentId): void {
+    this.remembered.set(id);
+    try { localStorage.setItem('dash.agent', id); } catch {}
+  }
 
   open(opts: LaunchOptions): void {
     this.request.set({ ...opts });
@@ -44,4 +56,8 @@ export class LaunchService {
   close(): void {
     this.request.set(null);
   }
+}
+
+function readAgent(): string | null {
+  try { return localStorage.getItem('dash.agent'); } catch { return null; }
 }

@@ -88,6 +88,17 @@ export const CATALOG: Record<string, CatalogEntry> = {
     detail: { missing: "The dashboard's runs, usage meters and autocomplete all use it. Sign in once it's installed." },
     install: { win: "irm https://claude.ai/install.ps1 | iex", mac: "curl -fsSL https://claude.ai/install.sh | bash", linux: "curl -fsSL https://claude.ai/install.sh | bash" },
   },
+  copilot: {
+    kind: "command", label: "GitHub Copilot CLI", probe: cmd("copilot", ["--version"]),
+    detail: { missing: "Lets dashboard runs use Copilot (the Agent picker in Ask and Run). Sign in with `copilot login` once it's installed.", ok: "Installed: pick Copilot as the agent in Ask or Run." },
+    install: { win: "winget install --id GitHub.Copilot -e", mac: "brew install copilot-cli", linux: "npm install -g @github/copilot" },
+  },
+  codex: {
+    kind: "command", label: "OpenAI Codex CLI", probe: cmd("codex", ["--version"]),
+    detail: { missing: "Lets dashboard runs use Codex (the Agent picker in Ask and Run).", ok: "Signed in: pick Codex as the agent in Ask or Run." },
+    install: { win: "npm install -g @openai/codex", mac: "npm install -g @openai/codex", linux: "npm install -g @openai/codex" },
+    auth: { cmd: "codex", args: ["login", "status"], detail: "Installed but not signed in.", signIn: { label: "Sign in", win: "codex login", mac: "codex login", linux: "codex login" } },
+  },
   "claude-connector": {
     kind: "claude-connector", label: "claude.ai connector",
     install: { label: "Open claude.ai", win: "Start-Process https://claude.ai/settings/connectors", mac: "open https://claude.ai/settings/connectors", linux: "xdg-open https://claude.ai/settings/connectors" },

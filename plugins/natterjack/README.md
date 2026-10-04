@@ -18,7 +18,8 @@
 
 Natterjack is a Claude Code plugin that turns your team's repos into one workspace with a local **dashboard**. Engineers run apps and Claude from the browser, and everyone else can ask the code questions directly.
 
-- **Runs**: start Claude from the browser (type `/` in any chat box to pick a skill or command); when it needs a decision it asks on the page (buttons), and every run shows its transcript, subagents, and the code it changed. Type while Claude works and your message is queued for when the turn ends (edit or remove it until then), like typing ahead in the CLI. Turn on **Auto-send** and it goes out even if Claude stops to ask a question, so you can walk away.
+- **Agents**: runs use Claude Code, GitHub Copilot CLI or OpenAI Codex CLI, whichever are installed: pick one next to Model and Effort.
+- **Runs**: start an agent from the browser (type `/` in any chat box to pick a skill or command); when it needs a decision it asks on the page (buttons), and every run shows its transcript, subagents, and the code it changed. Type while Claude works and your message is queued for when the turn ends (edit or remove it until then), like typing ahead in the CLI. Turn on **Auto-send** and it goes out even if Claude stops to ask a question, so you can walk away.
 - **Issues**: your tracker's board (Linear, Jira or GitHub Issues), with **Explain** (read-only, against the real code) and **Implement** (runs your `/implement` skill).
 - **Apps & Workspaces**: start and stop your apps and stacks in the right order, per worktree, with logs.
 - **Connections**: every MCP server Claude can reach (claude.ai connectors, plugins, your own), whether it's working, and one-click fixes: sign in, approve, add, and let dashboard runs use it.

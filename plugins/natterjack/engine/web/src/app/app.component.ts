@@ -94,7 +94,7 @@ export class AppComponent implements OnInit {
     { path: '/knowledge', label: 'Knowledge', icon: 'docs' },
     { path: '/infrastructure', label: 'Infrastructure', icon: 'infrastructure' },
     { path: '/issues', label: 'Issues', icon: 'issues' },
-    { path: '/ask', label: 'Ask', icon: 'ask', group: 'Claude' },
+    { path: '/ask', label: 'Ask', icon: 'ask', group: 'Agents' },
     { path: '/runs', label: 'Activity', icon: 'runs' },
     { path: '/skills', label: 'Skills', icon: 'skills' },
     { path: '/connections', label: 'Connections', icon: 'connections' },

@@ -74,7 +74,19 @@ export type RunStatus =
   | 'handedOff';   // continued in a terminal; the dashboard no longer drives it
 
 export type PermissionMode = 'auto' | 'acceptEdits' | 'dontAsk' | 'plan';
-export type Effort = 'low' | 'medium' | 'high' | 'xhigh' | 'max';
+export type Effort = 'low' | 'medium' | 'high' | 'xhigh' | 'max' | 'ultra' | 'none';
+
+/** The agent CLIs a run can use (server/src/agents/). */
+export type AgentId = 'claude' | 'copilot' | 'codex';
+export interface AgentModelInfo { id: string; label: string; efforts: string[] | null }
+/** GET /api/agents[?force=1] → { agents: AgentInfo[] }: each CLI, whether it can run here, and its models. */
+export interface AgentInfo {
+  id: AgentId; label: string; installed: boolean; signedIn: boolean; version: string | null;
+  /** Why it can't run (not installed / not signed in), or null. */
+  problem: string | null;
+  models: AgentModelInfo[]; efforts: string[]; defaultModel: string | null; defaultEffort: string | null;
+  capabilities: { planMode: boolean; costUsd: boolean; backgroundTasks: boolean; transcripts: boolean };
+}
 
 export interface QuestionOption { label: string; description?: string }
 export interface Question {
@@ -107,6 +119,8 @@ export interface RunMeta {
   extraPrompt?: string | null;
   /** Folders outside the workspace the run may read (a knowledge store's local copy). */
   addDirs?: string[];
+  /** The agent CLI that runs it ('claude' when missing: runs from before agents). */
+  agent?: AgentId;
   status: RunStatus;
   startedAt: string;
   endedAt: string | null;      // end of the latest turn
@@ -266,6 +280,8 @@ export interface LaunchRequest {
   options?: Record<string, boolean>;
   prompt?: string;             // required without a preset
   workspace?: string;          // slug, default preset's or "main"
+  /** The agent CLI to run it with; omitted = the deck's default agent (Claude unless set). */
+  agent?: AgentId;
   model?: string;              // alias or full id; omitted/"" = CLI default
   effort?: Effort | '';
   permissionMode?: PermissionMode;

@@ -4,6 +4,8 @@
  */
 
 import { execFileSync, spawn, type ChildProcess, type SpawnOptions } from "node:child_process";
+import fs from "node:fs";
+import path from "node:path";
 
 /**
  * Env vars Claude Code sets on processes it launches, describing *that* session
@@ -152,6 +154,57 @@ function quoteWin(arg: string): string {
     slashes = 0;
   }
   return out + "\\".repeat(slashes * 2) + '"';
+}
+
+// ------------------------------------------------------------------ other agent CLIs
+
+interface Cli { file: string; prefix: string[]; via: "exe" | "node" | "shell" }
+const clis = new Map<string, Cli>();
+
+/**
+ * Where another agent CLI (codex, copilot) is, and how to start it without a shell where
+ * possible: a native .exe directly; an npm .cmd shim by running the Node script it points
+ * at with this Node (no cmd.exe, so prompt text can't be mangled by %, & or ^); anything
+ * else through cmd.exe. `DASHBOARD_<NAME>_BIN` pins it (container images, tests).
+ */
+export function resolveCli(name: string): Cli {
+  const hit = clis.get(name);
+  if (hit) return hit;
+  const pinned = (process.env[`DASHBOARD_${name.toUpperCase()}_BIN`] || "").trim();
+  let cli: Cli = { file: pinned || name, prefix: [], via: "exe" };
+  if (!pinned && process.platform === "win32") {
+    try {
+      const hits = execFileSync("where", [name], { encoding: "utf-8", windowsHide: true, stdio: ["ignore", "pipe", "ignore"] })
+        .split(/\r?\n/).map((s) => s.trim()).filter(Boolean);
+      const exe = hits.find((h) => /\.exe$/i.test(h));
+      const cmd = hits.find((h) => /\.(cmd|bat)$/i.test(h));
+      if (exe) cli = { file: exe, prefix: [], via: "exe" };
+      else if (cmd) {
+        const script = shimScript(cmd);
+        cli = script ? { file: process.execPath, prefix: [script], via: "node" } : { file: cmd, prefix: [], via: "shell" };
+      }
+    } catch {}
+  }
+  clis.set(name, cli);
+  return cli;
+}
+
+/** The .js an npm .cmd shim runs ("%dp0%\node_modules\…\bin\x.js"), if it's that kind of shim. */
+export function shimScript(cmdFile: string): string | null {
+  let text = "";
+  try { text = fs.readFileSync(cmdFile, "utf-8"); } catch { return null; }
+  const m = /"%dp0%\\([^"]+\.(?:js|cjs|mjs))"/i.exec(text);
+  if (!m) return null;
+  const script = path.join(path.dirname(cmdFile), m[1]);
+  return fs.existsSync(script) ? script : null;
+}
+
+/** spawn(name, args) for another agent CLI (see resolveCli). */
+export function spawnCli(name: string, args: string[], opts: SpawnOptions): ChildProcess {
+  const cli = resolveCli(name);
+  if (cli.via !== "shell") return spawn(cli.file, [...cli.prefix, ...args], opts);
+  const line = [cli.file, ...args].map(quoteWin).join(" ");
+  return spawn(process.env.ComSpec || "cmd.exe", ["/d", "/s", "/c", `"${line}"`], { ...opts, windowsVerbatimArguments: true });
 }
 
 /** The `claude` executable spawnClaude runs (for wrapping it in another command, e.g. `script`). */

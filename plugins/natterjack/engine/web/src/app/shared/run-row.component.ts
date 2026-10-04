@@ -1,6 +1,7 @@
 import { ChangeDetectionStrategy, Component, computed, input } from '@angular/core';
 import { RouterLink } from '@angular/router';
 import type { RunMeta } from '../../../../shared/api';
+import { agentLabel } from '../core/agents';
 import { dur, relTime } from '../core/util';
 import { runStatus, toReview } from './run-status';
 
@@ -20,6 +21,7 @@ import { runStatus, toReview } from './run-status';
           @if (r.watch && !r.watch.endedAt) { <span class="tag routine" [title]="'Watching ' + watchedPrs() + ': the dashboard resumes this run when they change'">watching</span> }
           @if (r.warning) { <span class="tag amber" [title]="r.warning">bg stopped</span> }
           @if (r.trigger && r.trigger.startsWith('routine:')) { <span class="tag routine">routine</span> }
+          @if (r.agent && r.agent !== 'claude') { <span class="tag agent" [title]="'Run by ' + agentName()">{{ agentName() }}</span> }
           @if (r.planMode) { <span class="tag" title="Read-only">plan</span> }
           @if (r.status === 'handedOff' || r.continuedAt) { <span class="tag routine" title="Continued in a terminal">terminal</span> }
           @if (r.verdict === 'good') { <span class="tag good">good</span> }
@@ -41,6 +43,7 @@ export class RunRowComponent {
   readonly keepQuery = input(false);
   readonly st = computed(() => runStatus(this.run()));
   readonly review = computed(() => toReview(this.run()));
+  readonly agentName = computed(() => agentLabel(this.run().agent));
   readonly sub = computed(() => {
     const r = this.run();
     if (r.status === 'running') return (r.lastActivity || 'starting…') + ' · ' + (r.toolCalls || 0) + ' tool calls';
