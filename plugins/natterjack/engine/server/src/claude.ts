@@ -119,17 +119,24 @@ export function claudeAuthCached(): ClaudeAuth | null {
   return authCache;
 }
 
-let resolved: { file: string; shim: boolean } | null = null;
+let resolved: { file: string; shim: boolean; script?: string } | null = null;
 
 /**
- * `claude` is a native binary for the standard installer, but an npm install
- * leaves a .cmd shim on Windows, which spawn() can't run without a shell.
+ * `claude` is a native binary for the standard installer, but an npm install leaves a .cmd
+ * shim on Windows, which spawn() can't run without a shell. An npm shim runs a Node script,
+ * so that script is run with this Node instead: cmd.exe would cut every argument at its first
+ * newline (the dashboard's rules), losing everything after it (--model, --effort...), and
+ * treats & | < > ^ % ! as its own. Only a shim of another kind goes through cmd.exe.
  */
-function resolveClaude(): { file: string; shim: boolean } {
+export function resolveClaude(): { file: string; shim: boolean; script?: string } {
   if (resolved) return resolved;
+  const viaCmd = (cmd: string) => {
+    const script = shimScript(cmd);
+    return script ? { file: cmd, shim: false, script } : { file: cmd, shim: true };
+  };
   // A container image (hosted mode) or a test can pin the exact CLI.
   const pinned = (process.env.DASHBOARD_CLAUDE_BIN || "").trim();
-  if (pinned) return (resolved = { file: pinned, shim: /\.(cmd|bat)$/i.test(pinned) });
+  if (pinned) return (resolved = /\.(cmd|bat)$/i.test(pinned) ? viaCmd(pinned) : { file: pinned, shim: false });
   if (process.platform !== "win32") return (resolved = { file: "claude", shim: false });
   try {
     const hits = execFileSync("where", ["claude"], { encoding: "utf-8", windowsHide: true, stdio: ["ignore", "pipe", "ignore"] })
@@ -137,7 +144,7 @@ function resolveClaude(): { file: string; shim: boolean } {
     const exe = hits.find((h) => /\.exe$/i.test(h));
     if (exe) return (resolved = { file: exe, shim: false });
     const cmd = hits.find((h) => /\.(cmd|bat)$/i.test(h));
-    if (cmd) return (resolved = { file: cmd, shim: true });
+    if (cmd) return (resolved = viaCmd(cmd));
   } catch {}
   return (resolved = { file: "claude", shim: false });
 }
@@ -234,18 +241,22 @@ export function spawnCli(name: string, args: string[], opts: SpawnOptions): Chil
 }
 
 /** The `claude` executable spawnClaude runs (for wrapping it in another command, e.g. `script`). */
+/** For tests: forget the resolved CLI (DASHBOARD_CLAUDE_BIN changed). */
+export function resetClaudeResolution(): void { resolved = null; }
+
 export function claudeFile(): string {
   return resolveClaude().file;
 }
 
-/** `claude` is an npm .cmd shim, so its arguments pass through cmd.exe (which treats & | < > ^ % ! as its own). */
+/** `claude` is a .cmd shim that isn't npm's, so its arguments pass through cmd.exe (which treats & | < > ^ % ! as its own). */
 export function claudeIsShim(): boolean {
   return resolveClaude().shim;
 }
 
 /** spawn("claude", args) that works for both the native binary and a Windows .cmd shim. */
 export function spawnClaude(args: string[], opts: SpawnOptions): ChildProcess {
-  const { file, shim } = resolveClaude();
+  const { file, shim, script } = resolveClaude();
+  if (script) return spawn(process.execPath, [script, ...args], opts);
   if (!shim) return spawn(file, args, opts);
   const line = [file, ...args].map(quoteWin).join(" ");
   return spawn(process.env.ComSpec || "cmd.exe", ["/d", "/s", "/c", `"${line}"`], { ...opts, windowsVerbatimArguments: true });
