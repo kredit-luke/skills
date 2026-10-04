@@ -99,7 +99,8 @@ test("Codex: exec for the first turn, exec resume after; plan mode is the read-o
   assert.deepEqual(later.slice(0, 2), ["exec", "resume"]);
   assert.ok(later.includes('sandbox_mode="read-only"') && !later.includes("-s"), "resume takes the sandbox through config");
   assert.deepEqual(later.slice(-2), ["thread-9", withRules("PLAN", "Next")]);
-  assert.equal(a.resumeCommand("thread-9"), "codex resume thread-9");
+  assert.equal(a.resumeCommand("thread-9"), `codex resume -c "project_doc_fallback_filenames=['CLAUDE.md']" thread-9`);
+  assert.ok(first.includes("project_doc_fallback_filenames=['CLAUDE.md']"), "Codex reads the workspace's CLAUDE.md");
 });
 
 test("Codex events → run events: the thread id, commands as Bash, file changes, MCP calls, the result", () => {
@@ -157,4 +158,74 @@ test("an npm .cmd shim runs its Node script directly", () => {
   assert.equal(shimScript(path.join(dir, "codex.cmd")), path.join(dir, "node_modules", "@openai", "codex", "bin", "codex.js"));
   fs.writeFileSync(path.join(dir, "other.cmd"), "@echo off\r\nsomething.exe %*\r\n");
   assert.equal(shimScript(path.join(dir, "other.cmd")), null);
+});
+
+test("expandSlash: a workspace skill's instructions with the arguments, for agents that don't load skills", async () => {
+  const { expandSlash, findSkill } = await import("../src/agents/skills.ts");
+  const ws = fs.mkdtempSync(path.join(os.tmpdir(), "dash-skills-"));
+  fs.mkdirSync(path.join(ws, ".claude", "skills", "Implement"), { recursive: true });
+  fs.writeFileSync(path.join(ws, ".claude", "skills", "Implement", "SKILL.md"), "---\nname: implement\ndescription: Do a ticket\n---\n# Implement\n\nFetch $ARGUMENTS from the tracker, branch, build, open a PR.\n");
+  fs.mkdirSync(path.join(ws, ".claude", "commands"), { recursive: true });
+  fs.writeFileSync(path.join(ws, ".claude", "commands", "standup.md"), "Summarise yesterday's commits.");
+  const out = expandSlash("/implement ENG-12", ws);
+  assert.match(out, /^Follow the workspace's "\/implement" skill below \(\.claude\/skills\/Implement\/SKILL\.md\), as if it had been invoked as `\/implement ENG-12`\./);
+  assert.match(out, /<skill>\n# Implement\n\nFetch ENG-12 from the tracker/);
+  assert.doesNotMatch(out, /description: Do a ticket/, "frontmatter is dropped");
+  assert.match(expandSlash("/standup for the team", ws), /Summarise yesterday's commits\.\n<\/skill>\n\nArguments: for the team$/);
+  assert.equal(expandSlash("/unknown thing", ws), "/unknown thing");
+  assert.equal(expandSlash("Fix /implement", ws), "Fix /implement", "only a prompt that starts with the slash");
+  assert.equal(expandSlash("/plugin:skill x", ws), "/plugin:skill x");
+  assert.equal(findSkill(ws, "IMPLEMENT")?.rel, ".claude/skills/Implement/SKILL.md");
+});
+
+test("other agents' MCP servers: listings parsed without values, add commands per CLI, Claude names made portable", async () => {
+  const { parseCopilotServers, parseCodexServers, addArgs, agentServerName, terminalCommand } = await import("../src/agents/mcp.ts");
+  const copilot = parseCopilotServers({ mcpServers: {
+    notion: { type: "http", url: "https://mcp.notion.com/mcp?token=x", source: "user", enabled: true },
+    localtool: { type: "local", command: "npx", args: ["-y", "some-mcp", "--api-key=SECRET"], env: { API_KEY: "s3cret" }, source: "user", enabled: true },
+    "team-docs": { type: "http", url: "https://docs.example.com/mcp", source: "workspace" },
+    "github-mcp-server": { type: "http", url: "https://api.githubcopilot.com/mcp/readonly", headers: { "X-MCP-Host": "copilot-cli" }, source: "builtin", enabled: true },
+  } });
+  assert.deepEqual(copilot.map((s: any) => [s.name, s.source, s.transport, s.target, s.actions.join("|")]), [
+    ["notion", "user", "http", "https://mcp.notion.com/mcp", "remove"],
+    ["localtool", "user", "stdio", "npx -y some-mcp --api-key=•••", "remove"],
+    ["team-docs", "workspace", "http", "https://docs.example.com/mcp", ""],
+    ["github-mcp-server", "builtin", "http", "https://api.githubcopilot.com/mcp/readonly", ""],
+  ]);
+  assert.ok(!JSON.stringify(copilot).includes("s3cret") && !JSON.stringify(copilot).includes("SECRET"));
+  const codex = parseCodexServers([
+    { name: "localtool", enabled: true, transport: { type: "stdio", command: "npx", args: ["-y", "x"], env: { API_KEY: "s3cret" }, env_vars: ["OTHER"] }, auth_status: "unsupported" },
+    { name: "notion", enabled: true, transport: { type: "streamable_http", url: "https://mcp.notion.com/mcp" }, auth_status: "not_logged_in" },
+    { name: "off", enabled: false, transport: { type: "streamable_http", url: "https://x.dev/mcp" }, auth_status: "o_auth" },
+  ]);
+  assert.deepEqual(codex.map((s: any) => [s.name, s.transport, s.envKeys.join("+"), s.auth, s.actions.join("|"), s.enabled]), [
+    ["localtool", "stdio", "API_KEY+OTHER", null, "remove", true],
+    ["notion", "http", "", "not_logged_in", "remove|login", true],
+    ["off", "http", "", "o_auth", "remove", false],
+  ]);
+  assert.ok(!JSON.stringify(codex).includes("s3cret"));
+  assert.deepEqual(addArgs("copilot", "notion", { type: "http", url: "https://mcp.notion.com/mcp", headers: { Authorization: "Bearer t" } }),
+    ["mcp", "add", "--transport", "http", "notion", "https://mcp.notion.com/mcp", "--header", "Authorization: Bearer t"]);
+  assert.deepEqual(addArgs("codex", "tool", { type: "stdio", command: "npx", args: ["-y", "x"], env: { K: "v" } }), ["mcp", "add", "tool", "--env", "K=v", "--", "npx", "-y", "x"]);
+  assert.deepEqual(addArgs("codex", "notion", { type: "http", url: "https://mcp.notion.com/mcp" }), ["mcp", "add", "notion", "--url", "https://mcp.notion.com/mcp"]);
+  assert.throws(() => addArgs("codex", "n", { type: "http", url: "https://x.dev", headers: { A: "b" } }), /OAuth/);
+  assert.throws(() => addArgs("copilot", "bad name", { type: "http", url: "https://x.dev" }), /Name/);
+  assert.equal(agentServerName("claude.ai Cloudflare Developer Platform"), "cloudflare-developer-platform");
+  assert.equal(agentServerName("plugin:engineering:linear"), "linear");
+  assert.equal(agentServerName("octopusdeploy"), "octopusdeploy");
+  assert.match(terminalCommand("codex", ["mcp", "add", "notion", "--url", "https://mcp.notion.com/mcp"]), /^codex mcp add notion --url https:\/\/mcp\.notion\.com\/mcp$/);
+});
+
+test("an npm launcher that starts a native binary resolves to the binary (no console window flash)", async () => {
+  const { nativeBinary } = await import("../src/claude.ts");
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "dash-native-"));
+  const pkg = path.join(root, "node_modules", "@openai", "codex");
+  const bin = path.join(pkg, "node_modules", "@openai", "codex-win32-x64", "vendor", "x86_64-pc-windows-msvc", "bin");
+  fs.mkdirSync(path.join(pkg, "bin"), { recursive: true });
+  fs.mkdirSync(bin, { recursive: true });
+  fs.writeFileSync(path.join(pkg, "bin", "codex.js"), "");
+  fs.writeFileSync(path.join(bin, "codex.exe"), "");
+  fs.writeFileSync(path.join(bin, "codex-helper.exe"), "");
+  assert.equal(nativeBinary(path.join(pkg, "bin", "codex.js"), "codex"), path.join(bin, "codex.exe"));
+  assert.equal(nativeBinary(path.join(pkg, "bin", "codex.js"), "other"), null);
 });

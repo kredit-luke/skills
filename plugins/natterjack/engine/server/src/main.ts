@@ -61,6 +61,8 @@ import { readProfile, reapplyProfile, setRole } from "./profile.ts";
 import { DocSites, docAreas, docSources } from "./docs.ts";
 import { Knowledge } from "./knowledge/index.ts";
 import { agentOf, agentStatuses, isAgentId, type AgentStatus } from "./agents/index.ts";
+import { addAgentServer, addArgs, agentServerName, claudeServersToCopy, listAgentServers, needsTerminal, removeAgentServer, terminalCommand, type OtherAgent } from "./agents/mcp.ts";
+import { checkConfig } from "./connections.ts";
 import { KNOWLEDGE_TOOLS, addStoreSource, chosenTools, saveTools } from "./knowledge/tools.ts";
 import { DocsProviders } from "./docs-providers/index.ts";
 import { Memory } from "./memory.ts";
@@ -463,6 +465,24 @@ async function externalDocsStatus(key: unknown) {
   };
 }
 
+/** "copilot" or "codex" from a request (Claude's servers are /api/connections). */
+function otherAgent(v: unknown): OtherAgent {
+  if (v === "copilot" || v === "codex") return v;
+  throw httpError(400, "agent must be copilot or codex");
+}
+
+/** An agent's own MCP servers, and Claude's that it doesn't have yet (Copy from Claude). */
+async function agentConnections(agent: OtherAgent) {
+  const servers = await listAgentServers(agent, MAIN_WORKSPACE_PATH);
+  const have = new Set(servers.map((s) => s.name.toLowerCase()));
+  const fromClaude = (await claudeServersToCopy(MAIN_WORKSPACE_PATH).catch(() => []))
+    // Copilot already reads the workspace's .mcp.json.
+    .filter((s) => !(agent === "copilot" && s.from === "workspace"))
+    .map((s) => ({ name: s.name, from: s.from, as: agentServerName(s.name), transport: s.config.type, target: s.config.type === "stdio" ? s.config.command : s.config.url }))
+    .filter((s) => !have.has(s.as));
+  return { agent, servers, fromClaude };
+}
+
 /** The Knowledge setup panel: the catalog, what the team picked, its stores, and whether this dashboard can change it. */
 function knowledgeSetup() {
   return {
@@ -615,7 +635,9 @@ function launchRun(body: LaunchRequest, trigger: string): RunMeta {
   // Nothing chosen (Explain, routines, Implement from Issues…): the deck's default model/effort.
   const { defaults, limits } = deck.config();
   // The deck's default model and effort are Claude's; another agent uses its own default unless one is picked.
-  const model = pick("model") || (agentId === "claude" ? defaults.model : null);
+  // A Claude alias (opus, sonnet…) means nothing to another agent: it uses its own default instead.
+  const picked = pick("model");
+  const model = (agentId !== "claude" && MODELS.includes(picked) ? null : picked) || (agentId === "claude" ? defaults.model : null);
   const effort = pick("effort") || (agentId === "claude" ? defaults.effort : null);
   const permissionMode = pick("permissionMode") || "auto";
   // No per-run cap unless the runBudget setting is on (on a subscription it only stops working runs).
@@ -1187,6 +1209,7 @@ async function handleApi(req: http.IncomingMessage, res: http.ServerResponse, ur
     if (p === "/api/infrastructure") return sendJson(res, infrastructure(MAIN_WORKSPACE_PATH));
     if (p === "/api/memory") return sendJson(res, memory.list());
     if (p === "/api/agents") return sendJson(res, { agents: await agentsNow(force) });
+    if (p === "/api/connections/agent") return sendJson(res, await agentConnections(otherAgent(q("agent"))));
     if (p === "/api/connections") return sendJson(res, await connections.list({ wait: q("wait") === "1", force }));
     if (p === "/api/search") {
       const limit = Math.min(parseInt(q("limit") || "", 10) || 40, 100);
@@ -1362,7 +1385,7 @@ async function handleApi(req: http.IncomingMessage, res: http.ServerResponse, ur
     // Headless. Its open questions come back as "waiting" (Needs your answer) unless
     // options.auto is set, which appends --auto so it decides them and notes them on the ticket.
     const options = typeof body.auto === "boolean" ? { auto: body.auto } : {};
-    return sendJson(res, { run: launchRun({ presetId: deck.config().issues.implementPreset, args: { ticket }, options }, "issues") }, 201);
+    return sendJson(res, { run: launchRun({ presetId: deck.config().issues.implementPreset, args: { ticket }, options, ...(isAgentId(body.agent) ? { agent: body.agent } : {}) }, "issues") }, 201);
   }
   if (p === "/api/issues/explain" || p === "/api/linear/explain") {
     const ticket = ticketParam(body.ticket);
@@ -1371,6 +1394,7 @@ async function handleApi(req: http.IncomingMessage, res: http.ServerResponse, ur
     const run = launchRun({
       prompt: explainPrompt(issue), planMode: true, workspace: "main",
       model: body.model, effort: body.effort, trigger: "explain",
+      ...(isAgentId(body.agent) ? { agent: body.agent } : {}),
     }, "explain");
     return sendJson(res, { run }, 201);
   }
@@ -1525,6 +1549,34 @@ async function handleApi(req: http.IncomingMessage, res: http.ServerResponse, ur
     }
     if (body.action === "cancel") { mcpLogin.cancel(name); return sendJson(res, { ok: true }); }
     return sendError(res, 400, "Unknown action");
+  }
+  if (p.startsWith("/api/connections/agent/")) {
+    // Copilot's and Codex's own MCP servers (agents/mcp.ts).
+    const agent = otherAgent(body.agent);
+    const what = p.slice("/api/connections/agent/".length);
+    const terminal = async (args: string[], title: string) => {
+      if (HOSTED) throw httpError(400, NOT_HOSTED);
+      const command = terminalCommand(agent, args);
+      const r = await openTerminal(command, MAIN_WORKSPACE_PATH, title);
+      return sendJson(res, { terminal: { opened: r.opened, command }, ...(await agentConnections(agent)) });
+    };
+    const add = async (name: string, config: any) => {
+      if (needsTerminal(agent, config)) return terminal(addArgs(agent, name, config), `Add ${name} to ${agentOf(agent).label}`);
+      await addAgentServer(agent, name, config, MAIN_WORKSPACE_PATH);
+      return sendJson(res, await agentConnections(agent));
+    };
+    if (what === "add") return add(String(body.name || "").trim(), checkConfig(body.config));
+    if (what === "copy") {
+      const src = (await claudeServersToCopy(MAIN_WORKSPACE_PATH)).find((s) => s.name === String(body.name || ""));
+      if (!src) throw httpError(404, `Claude has no server ${String(body.name || "")} to copy.`);
+      return add(agentServerName(src.name), src.config);
+    }
+    if (what === "remove") { await removeAgentServer(agent, String(body.name || ""), MAIN_WORKSPACE_PATH); return sendJson(res, await agentConnections(agent)); }
+    if (what === "login") {
+      if (agent !== "codex") throw httpError(400, "Copilot signs in to a server when it first uses it.");
+      return terminal(["mcp", "login", String(body.name || "")], `Sign in: ${String(body.name || "").slice(0, 40)}`);
+    }
+    return sendError(res, 404, "Unknown action");
   }
   if (p === "/api/connections/logout") return sendJson(res, await connections.logout(body.name));
   if (p === "/api/connections/remove") return sendJson(res, await connections.remove(body.name));

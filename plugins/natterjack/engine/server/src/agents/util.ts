@@ -52,10 +52,10 @@ export function cached<T>(ttlMs: number, fn: () => Promise<T>): (force?: boolean
 }
 
 /** Run another agent CLI once (see resolveCli in ../claude.ts). */
-export function probeCli(name: string, args: string[], timeoutMs = 20_000): Promise<{ ok: boolean; out: string; missing: boolean }> {
+export function probeCli(name: string, args: string[], timeoutMs = 20_000, cwd?: string): Promise<{ ok: boolean; out: string; missing: boolean }> {
   const cli = resolveCli(name);
   return new Promise((resolve) => {
-    execFile(cli.file, [...cli.prefix, ...args], { timeout: timeoutMs, windowsHide: true, encoding: "utf-8", shell: cli.via === "shell" }, (err: any, stdout, stderr) => {
+    execFile(cli.file, [...cli.prefix, ...args], { timeout: timeoutMs, windowsHide: true, encoding: "utf-8", shell: cli.via === "shell", cwd, maxBuffer: 16 * 1024 * 1024 }, (err: any, stdout, stderr) => {
       resolve({ ok: !err, out: `${stdout || ""}${stderr || ""}`, missing: !!err && (err.code === "ENOENT" || /not recognized|not found/i.test(String(stderr || ""))) });
     });
   });

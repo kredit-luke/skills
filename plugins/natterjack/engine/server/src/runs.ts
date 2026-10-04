@@ -28,6 +28,7 @@ import { execFile, type ChildProcess } from "node:child_process";
 import type { ServerResponse } from "node:http";
 import type { Attachment, Effort, PermissionMode, QueuedMessage, Question, RunEvent, RunMeta, RunWatch, WatchedPr } from "../../shared/api.ts";
 import { AGENT_HEADLESS_RULES, agentOf, type ParseState } from "./agents/index.ts";
+import { expandSlash } from "./agents/skills.ts";
 import { promptWithAttachments, type Attachments } from "./attachments.ts";
 
 const RESULT_TEXT_MAX = 4000;
@@ -593,7 +594,8 @@ export class RunManager {
     const addDirs = [...(filesDir && fs.existsSync(filesDir) ? [filesDir] : []), ...(meta.addDirs || []).filter((d) => fs.existsSync(d))];
     const args = agent.turnArgs({
       first, sessionId: meta.sessionId, label: meta.label,
-      prompt: first ? prompt : promptWithAttachments(prompt, files),
+      // Agents that don't load Claude Code's skills get a workspace skill's instructions for `/name args`.
+      prompt: (agent.id === "claude" ? (s: string) => s : (s: string) => expandSlash(s, meta.cwd))(first ? prompt : promptWithAttachments(prompt, files)),
       model: meta.model, effort: meta.effort, planMode: !!meta.planMode, permissionMode: meta.permissionMode,
       budgetUsd: agent.capabilities.costUsd ? meta.budgetUsd : null,
       rules: [agent.id === "claude" ? HEADLESS_RULES : AGENT_HEADLESS_RULES, meta.extraPrompt || null].filter(Boolean).join("\n\n"),

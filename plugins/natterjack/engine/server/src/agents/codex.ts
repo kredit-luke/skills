@@ -3,6 +3,10 @@
  * `codex exec resume --json <thread id> <prompt>`. Codex picks the thread id itself (its
  * first line, thread.started), so the run's session id is set from it on the first turn.
  *
+ * Team instructions: Codex reads AGENTS.md only; a Natterjack workspace keeps them in
+ * CLAUDE.md (Copilot reads both), so every Codex turn and the terminal resume command pass
+ * project_doc_fallback_filenames=["CLAUDE.md"]: AGENTS.md still wins where there is one.
+ *
  * Sandbox: workspace-write (edits inside the workspace, network on for git and package
  * managers); plan mode is read-only. There's no system-prompt flag: the dashboard's rules
  * ride at the top of the first prompt. The models (and the efforts each takes) come from
@@ -23,6 +27,8 @@ import type { Agent, AgentCapabilities, AgentModel, AgentStatus, ParseState, Tur
 import { cached, clip, probeCli, withRules } from "./util.ts";
 
 const FALLBACK_EFFORTS = ["low", "medium", "high"];
+/** Read the workspace's CLAUDE.md as project instructions when there's no AGENTS.md. */
+const CLAUDE_MD_FALLBACK = "project_doc_fallback_filenames=['CLAUDE.md']"; // TOML literal strings: survives shells' quoting
 
 /** Models from Codex's cache (the ones it lists), with the reasoning efforts each supports. */
 export function parseCodexModels(cache: any): AgentModel[] {
@@ -145,6 +151,7 @@ export class CodexAgent implements Agent {
       ...(t.effort ? ["-c", `model_reasoning_effort="${t.effort}"`] : []),
       // git, gh and package managers need the network inside the sandbox.
       "-c", "sandbox_workspace_write.network_access=true",
+      "-c", CLAUDE_MD_FALLBACK,
     ];
     if (t.first) return ["exec", ...opts, "-s", sandbox, ...t.addDirs.flatMap((d) => ["--add-dir", d]), prompt];
     // resume takes no --sandbox: set it through config.
@@ -160,6 +167,6 @@ export class CodexAgent implements Agent {
   }
 
   resumeCommand(sessionId: string): string {
-    return `codex resume ${sessionId}`;
+    return `codex resume -c "${CLAUDE_MD_FALLBACK}" ${sessionId}`;
   }
 }

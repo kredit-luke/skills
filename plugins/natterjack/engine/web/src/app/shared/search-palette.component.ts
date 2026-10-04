@@ -318,7 +318,7 @@ export class SearchPaletteComponent {
       case 'implement': this.close(); this.launch.open({ presetId: this.dataSvc.deck()?.issues.implementPreset || 'implement', prefill: { ticket: r.extra['ticket'] } }); return;
       case 'explain':
         try {
-          const res = await this.api.post<{ run: { id: string } }>('/api/issues/explain', { ticket: r.extra['ticket'] });
+          const res = await this.api.post<{ run: { id: string } }>('/api/issues/explain', { ticket: r.extra['ticket'], agent: this.launch.agent() });
           this.close();
           this.dataSvc.loadRuns();
           this.router.navigate(['/runs', res.run.id]);

@@ -4,7 +4,9 @@ import { ApiService } from '../../core/api.service';
 import { DataService } from '../../core/data.service';
 import { ToastService } from '../../core/toast.service';
 import { relTime } from '../../core/util';
+import { agentLabel } from '../../core/agents';
 import { PageHeaderComponent } from '../../shared/page-header.component';
+import { AgentConnectionsComponent } from './agent-connections.component';
 import { GROUP_ORDER, SCOPE_LABEL, fillVars, groupOf, pairsText, parsePairs, stateLabel, statusOf } from './connections.util';
 
 const ICON: Record<string, string> = { ok: '✓', warn: '!', missing: '✕', info: '–' };
@@ -23,19 +25,27 @@ interface AddForm {
 
 @Component({
   selector: 'dash-connections',
-  imports: [PageHeaderComponent],
+  imports: [PageHeaderComponent, AgentConnectionsComponent],
   changeDetection: ChangeDetectionStrategy.OnPush,
   styleUrl: './connections.component.scss',
   template: `
     @let r = data.connections();
-    <dash-page-header eyebrow="Connections" title="Claude's connections"
-      [sub]="api.copy('connectionsSub', 'The MCP servers Claude reaches from this workspace: claude.ai connectors, plugins, and servers added here. Dashboard runs can only use the ones you allow.')">
-      <span class="ty">{{ meta() }}</span>
-      <button class="btn ghost sm" (click)="openAdd(null)">Add server</button>
-      <button class="btn sm" (click)="recheck()" [disabled]="busy() || !!r?.checking">{{ busy() || r?.checking ? 'Checking…' : 'Re-check' }}</button>
+    <dash-page-header eyebrow="Connections" [title]="pageTitle()" [sub]="pageSub()">
+      @if (tab() === 'claude') {
+        <span class="ty">{{ meta() }}</span>
+        <button class="btn ghost sm" (click)="openAdd(null)">Add server</button>
+        <button class="btn sm" (click)="recheck()" [disabled]="busy() || !!r?.checking">{{ busy() || r?.checking ? 'Checking…' : 'Re-check' }}</button>
+      }
     </dash-page-header>
 
-    @if (!r) { <div class="empty">Loading…</div> }
+    @if (tabs().length > 1) {
+      <div class="agent-tabs" role="tablist">
+        @for (t of tabs(); track t.id) { <button type="button" role="tab" [class.on]="t.id === tab()" [attr.aria-selected]="t.id === tab()" (click)="tab.set(t.id)">{{ t.label }}</button> }
+      </div>
+    }
+
+    @if (tab() !== 'claude') { <dash-agent-connections [agent]="$any(tab())" /> }
+    @else if (!r) { <div class="empty">Loading…</div> }
     @else {
       @if (r.configError) { <div class="warn-note">{{ r.configError }}</div> }
       @if (r.checkError) { <div class="warn-note">Couldn't run <code>claude mcp list</code>: {{ r.checkError }}</div> }
@@ -153,6 +163,14 @@ export class ConnectionsComponent implements OnInit, OnDestroy {
   readonly api = inject(ApiService);
   private readonly toast = inject(ToastService);
   readonly busy = signal(false);
+  /** Whose servers: Claude's (this page's own list), or another installed agent's (each keeps its own). */
+  readonly tab = signal<'claude' | 'copilot' | 'codex'>('claude');
+  readonly tabs = computed(() => [{ id: 'claude' as const, label: 'Claude' }, ...(this.data.agents() || []).filter((a) => a.id !== 'claude' && a.installed).map((a) => ({ id: a.id, label: a.label }))]);
+  readonly tabLabel = computed(() => agentLabel(this.tab()));
+  readonly pageTitle = computed(() => `${this.tabLabel()}'s connections`);
+  readonly pageSub = computed(() => this.tab() === 'claude'
+    ? this.api.copy('connectionsSub', 'The MCP servers Claude reaches from this workspace: claude.ai connectors, plugins, and servers added here. Dashboard runs can only use the ones you allow.')
+    : `The MCP servers ${this.tabLabel()} reaches. Each agent keeps its own list: copy Claude's servers over in one click.`);
   readonly working = signal<string | null>(null);
   readonly armed = signal<string | null>(null);
   readonly form = signal<AddForm | null>(null);

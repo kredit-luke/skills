@@ -181,7 +181,11 @@ export function resolveCli(name: string): Cli {
       if (exe) cli = { file: exe, prefix: [], via: "exe" };
       else if (cmd) {
         const script = shimScript(cmd);
-        cli = script ? { file: process.execPath, prefix: [script], via: "node" } : { file: cmd, prefix: [], via: "shell" };
+        // A Node launcher that starts a native binary (Codex) starts it without windowsHide, which flashes a
+        // console window every time: run the binary itself.
+        const native = script ? nativeBinary(script, name) : null;
+        cli = native ? { file: native, prefix: [], via: "exe" }
+          : script ? { file: process.execPath, prefix: [script], via: "node" } : { file: cmd, prefix: [], via: "shell" };
       }
     } catch {}
   }
@@ -197,6 +201,28 @@ export function shimScript(cmdFile: string): string | null {
   if (!m) return null;
   const script = path.join(path.dirname(cmdFile), m[1]);
   return fs.existsSync(script) ? script : null;
+}
+
+/**
+ * The native `<name>.exe` an npm package's launcher script runs, if it ships one (Codex:
+ * node_modules/@openai/codex-win32-x64/vendor/<target>/bin/codex.exe): searched under the
+ * package folder, vendor folders only, a few levels deep.
+ */
+export function nativeBinary(script: string, name: string): string | null {
+  const root = path.dirname(path.dirname(script));
+  const want = `${name}.exe`.toLowerCase();
+  const queue: { dir: string; depth: number }[] = [{ dir: root, depth: 0 }];
+  while (queue.length) {
+    const { dir, depth } = queue.shift()!;
+    let entries: fs.Dirent[] = [];
+    try { entries = fs.readdirSync(dir, { withFileTypes: true }); } catch { continue; }
+    for (const e of entries) {
+      const full = path.join(dir, e.name);
+      if (e.isFile() && e.name.toLowerCase() === want && /[\\/]vendor[\\/]/i.test(full)) return full;
+      if (e.isDirectory() && depth < 7 && !e.name.startsWith(".")) queue.push({ dir: full, depth: depth + 1 });
+    }
+  }
+  return null;
 }
 
 /** spawn(name, args) for another agent CLI (see resolveCli). */
