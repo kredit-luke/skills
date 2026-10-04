@@ -8,7 +8,7 @@ import { MdPipe } from '../../core/md.pipe';
 import { ToastService } from '../../core/toast.service';
 import { TrustedHtmlPipe } from '../../core/trusted-html.pipe';
 import { copyText, dur, relTime, tokens, usd } from '../../core/util';
-import { buildThread, countSteps, stripAgents, stripSummary, type AgentCard, type ThreadItem } from '../../runs/thread';
+import { buildThread, countSteps, isOpenModel, openModelSummary, stripAgents, stripSummary, type AgentCard, type ThreadItem } from '../../runs/thread';
 import { RunEventCache, type RunEvents } from '../../runs/event-cache';
 import { runTicket } from '../../../../../shared/run-ticket';
 import { runWorkspace } from '../../../../../shared/run-workspace';
@@ -80,6 +80,8 @@ export class RunDetailComponent implements OnDestroy {
   private loadSeq = 0;
 
   readonly active = computed(() => this.run()?.status === 'running');
+  /** A PR watch waiting for its next check: the clock ticks so the countdown moves. */
+  readonly watching = computed(() => { const r = this.run(); return r?.status === 'succeeded' && !!r.watch && !r.watch.endedAt; });
   readonly st = computed(() => (this.run() ? runStatus(this.run()!) : null));
   /** Finished, unrated and recent: what keeps it under "To review" in Focus. */
   readonly review = computed(() => { const r = this.run(); return !!r && toReview(r); });
@@ -96,8 +98,9 @@ export class RunDetailComponent implements OnDestroy {
   readonly strip = computed(() => {
     const agents = this.thread().agents;
     const { shown, hidden } = stripAgents(agents);
-    return { agents: this.stripOpen() ? agents : shown, hidden, collapsible: hidden > 0, summary: stripSummary(agents) };
+    return { agents: this.stripOpen() ? agents : shown, hidden, collapsible: hidden > 0, summary: stripSummary(agents), open: openModelSummary(agents) };
   });
+  readonly isOpenModel = isOpenModel;
   readonly elapsed = computed(() => {
     const r = this.run();
     if (!r) return '';
@@ -156,7 +159,7 @@ export class RunDetailComponent implements OnDestroy {
       const el = this.box()?.nativeElement;
       if (el && this.stick) setTimeout(() => { el.scrollTop = el.scrollHeight; });
     });
-    this.tick = setInterval(() => { if (this.active()) this.now.set(Date.now()); }, 1000);
+    this.tick = setInterval(() => { if (this.active() || this.watching()) this.now.set(Date.now()); }, 1000);
     effect(() => {
       const t = this.ticket();
       if (t) untracked(() => this.loadIssue(t.id));
@@ -351,6 +354,13 @@ export class RunDetailComponent implements OnDestroy {
   }
   money(n: number): string { return usd(n); }
   rel(t: string | null | undefined): string { return relTime(t); }
+  /** "in 4:32" until the watch's next check, then "now" while the server runs it. */
+  countdown(t: string): string {
+    const left = Math.ceil((Date.parse(t) - this.now()) / 1000);
+    if (!(left > 0)) return 'now';
+    const m = Math.floor(left / 60), s = left % 60;
+    return 'in ' + m + ':' + String(s).padStart(2, '0');
+  }
   started(r: RunMeta): string { return new Date(r.startedAt).toLocaleString(); }
   trackItem(_: number, i: ThreadItem): string { return i.key; }
 

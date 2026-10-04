@@ -47,6 +47,11 @@ export interface AgentCard {
   pass: number;
   /** This card is a SendMessage resume, not the Agent call itself. */
   resumed: boolean;
+  /**
+   * The model that answered the subagent (its first assistant message's message.model); '' until
+   * known. With smart routing an Explore runs on an open model, and this is the only place that shows.
+   */
+  model: string;
 }
 export type ThreadItem =
   | { kind: 'text'; key: string; text: string }
@@ -69,6 +74,13 @@ const SKIP_SYSTEM = new Set(['hook_started', 'hook_response', 'commands_changed'
 const FINISHED: AgentStatus[] = ['completed', 'failed', 'stopped'];
 const QUESTION_RE = /<<QUESTION>>[\s\S]*?(<<\/QUESTION>>|$)/g;
 const WATCH_RE = /<<WATCH>>[\s\S]*?(<<\/WATCH>>|$)/g;
+/** message.model on messages the CLI made up itself (an interrupt, an error), not a model's answer. */
+const SYNTHETIC_MODEL = '<synthetic>';
+
+/** True for a model that isn't Claude: a smart-routing explorer, or a local/team model. */
+export function isOpenModel(model: string | null | undefined): boolean {
+  return !!model && !/^claude-/i.test(model);
+}
 
 export function stripQuestion(text: string): string {
   return String(text || '').replace(QUESTION_RE, '').replace(WATCH_RE, '').trim();
@@ -153,7 +165,7 @@ export function buildThread(events: readonly any[], opts: BuildOptions = {}): Th
   const card = (id: string, depth = 1): AgentCard => {
     let c = cards.get(id);
     if (!c) {
-      c = { id, agentType: '', description: '', prompt: '', background: false, status: 'starting', activity: '', lastTool: '', tokens: 0, toolUses: 0, durationMs: null, summary: '', steps: 0, depth, items: [], agentId: '', pass: 1, resumed: false };
+      c = { id, agentType: '', description: '', prompt: '', background: false, status: 'starting', activity: '', lastTool: '', tokens: 0, toolUses: 0, durationMs: null, summary: '', steps: 0, depth, items: [], agentId: '', pass: 1, resumed: false, model: '' };
       cards.set(id, c);
       agents.push(c);
     }
@@ -294,6 +306,8 @@ export function buildThread(events: readonly any[], opts: BuildOptions = {}): Th
       const parent: string | null = currentPass(ev.parent_tool_use_id || null);
       const into = containerFor(parent);
       const owner = parent ? card(parent) : null;
+      const model = ev.message.model;
+      if (owner && !owner.model && typeof model === 'string' && model && model !== SYNTHETIC_MODEL) owner.model = model;
       for (const b of ev.message.content) {
         if (!b) continue;
         if (b.type === 'text') {
@@ -424,4 +438,11 @@ export function stripSummary(agents: readonly AgentCard[]): string {
   const n = (s: AgentStatus[]) => agents.filter((a) => s.includes(a.status)).length;
   return [[n(['running', 'starting']), 'running'], [n(['completed']), 'done'], [n(['failed']), 'failed'], [n(['stopped']), 'stopped']]
     .filter(([c]) => c).map(([c, l]) => `${c} ${l}`).join(' · ');
+}
+
+/** "3 on gemma4:12b-ctx64k": the subagents that ran on an open model, per model; '' when none did. */
+export function openModelSummary(agents: readonly AgentCard[]): string {
+  const counts = new Map<string, number>();
+  for (const a of agents) if (isOpenModel(a.model)) counts.set(a.model, (counts.get(a.model) || 0) + 1);
+  return [...counts].map(([m, c]) => `${c} on ${m}`).join(' · ');
 }

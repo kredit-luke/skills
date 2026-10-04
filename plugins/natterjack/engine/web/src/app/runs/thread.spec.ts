@@ -2,7 +2,7 @@ import { readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
-import { STRIP_COLLAPSE_AT, buildThread, stripAgents, stripQuestion, stripSummary, toolLabel, type AgentCard, type AgentStatus, type ThreadItem } from './thread';
+import { STRIP_COLLAPSE_AT, buildThread, isOpenModel, openModelSummary, stripAgents, stripQuestion, stripSummary, toolLabel, type AgentCard, type AgentStatus, type ThreadItem } from './thread';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const fixture = (name: string) =>
@@ -289,9 +289,9 @@ describe('buildThread: subagents resumed with SendMessage', () => {
 });
 
 describe('subagent strip', () => {
-  const card = (id: string, status: AgentStatus): AgentCard => ({
+  const card = (id: string, status: AgentStatus, model = ''): AgentCard => ({
     id, agentType: 'agent-' + id, description: '', prompt: '', background: false, status, activity: '', lastTool: '', tokens: 0, toolUses: 0,
-    durationMs: null, summary: '', steps: 0, depth: 0, items: [], agentId: '', pass: 1, resumed: false,
+    durationMs: null, summary: '', steps: 0, depth: 0, items: [], agentId: '', pass: 1, resumed: false, model,
   });
 
   it('shows every card up to the collapse limit', () => {
@@ -311,5 +311,42 @@ describe('subagent strip', () => {
   it('summarises by status, leaving out the zeros', () => {
     expect(stripSummary([card('a', 'running'), card('b', 'completed'), card('c', 'completed'), card('d', 'failed')])).toBe('1 running · 2 done · 1 failed');
     expect(stripSummary([card('a', 'completed')])).toBe('1 done');
+  });
+
+  it('counts the subagents that ran on open models, per model, and nothing when all were Claude', () => {
+    const agents = [
+      card('a', 'completed', 'gemma4:12b-ctx64k'), card('b', 'completed', 'claude-haiku-4-5-20251001'),
+      card('c', 'completed', 'gemma4:12b-ctx64k'), card('d', 'running', 'qwen3.8:27b'), card('e', 'starting'),
+    ];
+    expect(openModelSummary(agents)).toBe('2 on gemma4:12b-ctx64k · 1 on qwen3.8:27b');
+    expect(openModelSummary([card('a', 'completed', 'claude-opus-5-5'), card('b', 'starting')])).toBe('');
+  });
+});
+
+describe('subagent model (smart routing)', () => {
+  it('records the model that answered each subagent, not the lead model', () => {
+    const t = buildThread([
+      { type: 'system', subtype: 'init', model: 'claude-opus-5-5' },
+      { type: 'assistant', parent_tool_use_id: null, message: { model: 'claude-opus-5-5', content: [
+        { type: 'tool_use', id: 'x', name: 'Agent', input: { subagent_type: 'Explore', description: 'Search' } },
+        { type: 'tool_use', id: 'r', name: 'Agent', input: { subagent_type: 'reviewer', description: 'Review' } },
+      ] } },
+      { type: 'assistant', parent_tool_use_id: 'x', message: { model: '<synthetic>', content: [{ type: 'text', text: 'interrupted' }] } },
+      { type: 'assistant', parent_tool_use_id: 'x', message: { model: 'gemma4:12b-ctx64k', content: [{ type: 'tool_use', id: 'g', name: 'Grep', input: { pattern: 'x' } }] } },
+      { type: 'assistant', parent_tool_use_id: 'r', message: { model: 'claude-sonnet-5-5', content: [{ type: 'text', text: 'ok' }] } },
+    ]);
+    const [explore, reviewer] = t.agents;
+    expect(explore.model).toBe('gemma4:12b-ctx64k');
+    expect(isOpenModel(explore.model)).toBe(true);
+    expect(reviewer.model).toBe('claude-sonnet-5-5');
+    expect(isOpenModel(reviewer.model)).toBe(false);
+  });
+
+  it('leaves the model empty until the subagent has answered', () => {
+    const t = buildThread([
+      { type: 'assistant', parent_tool_use_id: null, message: { model: 'claude-opus-5-5', content: [{ type: 'tool_use', id: 'x', name: 'Agent', input: { subagent_type: 'Explore' } }] } },
+    ]);
+    expect(t.agents[0].model).toBe('');
+    expect(isOpenModel('')).toBe(false);
   });
 });
