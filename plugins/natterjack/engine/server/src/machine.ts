@@ -27,6 +27,7 @@ import { LEDGER_DIR, readConfigFile } from "./config.ts";
 import { readProfile } from "./profile.ts";
 import { CATALOG } from "./machine-catalog.ts";
 import { claudeAuth, connectorState } from "./claude.ts";
+import { mcpHealth } from "./connections.ts";
 import { NOT_HOSTED } from "./hosted.ts";
 
 const IS_WIN = process.platform === "win32";
@@ -425,8 +426,8 @@ class Machine {
         // every folder and in the dashboard's runs, with no tokens or /mcp.
         const name = String(s.connector || "");
         if (!name) return null;
-        const r = await p.probe("claude", ["mcp", "list"], { timeout: 60000 });
-        if (!r.ok && !r.out) return { ...base, label, status: "warn", detail: "Couldn't run `claude mcp list` to check it." };
+        const r = await mcpHealth(this.root); // shared with the Connections page
+        if (!r.ok && !r.entries.length) return { ...base, label, status: "warn", detail: "Couldn't run `claude mcp list` to check it." };
         const c = connectorState(r.out, name);
         const install = installFor(s.install, vars, "Open claude.ai");
         if (c.state === "connected") return { ...base, label, status: "ok", detail: detail.ok || `Connected through claude.ai.` };

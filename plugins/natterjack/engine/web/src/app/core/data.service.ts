@@ -1,6 +1,6 @@
 import { Injectable, computed, inject, signal } from '@angular/core';
 import type {
-  DeckResponse, DocSite, Inbox, Job, JobsResponse, MachineReport, Overview, PresetStats,
+  ConnectionsResponse, DeckResponse, DocSite, Inbox, Job, JobsResponse, MachineReport, Overview, PresetStats,
   RunMeta, RunsResponse, Stack, StatusResponse,
 } from '../../../../shared/api';
 import { ApiService } from './api.service';
@@ -35,6 +35,8 @@ export class DataService {
   readonly appsConfigured = signal<boolean | null>(null);
   readonly appsError = signal<string | null>(null);
   readonly machine = signal<MachineReport | null>(null);
+  /** MCP servers (Connections page and its sidebar count). */
+  readonly connections = signal<ConnectionsResponse | null>(null);
   readonly docSites = signal<DocSite[]>([]);
   readonly docsLoaded = signal(false);
 
@@ -57,6 +59,7 @@ export class DataService {
     if (this.started) return;
     this.started = true;
     this.loadMachine(false);
+    this.loadConnections({ wait: true });
     if (typeof EventSource === 'undefined') { this.startPolling(); return; }
     // A hidden tab holds no stream: nothing to keep current, and the browser's few connections per host stay free.
     document.addEventListener('visibilitychange', () => (document.hidden ? this.disconnect() : this.connect()));
@@ -182,6 +185,16 @@ export class DataService {
       if (force) this.loadStatus(); // app cards show "Needs …" from this
     } catch (e) {
       if (force) this.toast.error((e as Error).message);
+    }
+  }
+
+  /** wait: until the health check (`claude mcp list`, slow) is in; force: run a new one. */
+  async loadConnections(opts: { wait?: boolean; force?: boolean } = {}): Promise<void> {
+    const q = [opts.wait ? 'wait=1' : '', opts.force ? 'force=1' : ''].filter(Boolean).join('&');
+    try {
+      this.connections.set(await this.api.get<ConnectionsResponse>('/api/connections' + (q ? '?' + q : '')));
+    } catch (e) {
+      if (opts.force) this.toast.error((e as Error).message);
     }
   }
 

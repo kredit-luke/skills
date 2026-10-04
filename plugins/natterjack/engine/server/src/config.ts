@@ -9,6 +9,7 @@
  *   docs.json       docs sources (Docs page, Search)
  *   infrastructure.json  the Infrastructure page's doc and quick facts (was reference.json)
  *   links.json      Links page tiles (+ .claude/ledger/links.local.json, personal)
+ *   connections.json  MCP servers the team relies on (Connections page)
  *   deck.json       presets, routines, limits, defaults, issues view
  *
  * Every file is optional: a missing one means "not configured" and its page

@@ -46,7 +46,7 @@ The **Infrastructure** page is for infrastructure only (accounts, environments, 
 
 ## 3. Write the plan, confirm, scaffold
 
-Build a plan file (shape in `references/config.md`, "plan.json"): the contents of `workspace.json`, `apps.json`, `machine.json`, `docs.json`, `infrastructure.json` (only with infrastructure info; see below), `links.json`, `deck.json`, plus `repos`, `engineDir` (only when it isn't `natterjack`), `skills: ["dashboard"]`, `claudeMd: true`. Show the user a short summary (apps with ports, tracker, docs, checks, port, install folder) and get a yes. Then:
+Build a plan file (shape in `references/config.md`, "plan.json"): the contents of `workspace.json`, `apps.json`, `machine.json`, `docs.json`, `infrastructure.json` (only with infrastructure info; see below), `links.json`, `connections.json` (only when the team relies on MCP servers: their tracker or docs connector, e.g. `claude.ai Linear`, `claude.ai Atlassian`; see config.md), `deck.json`, plus `repos`, `engineDir` (only when it isn't `natterjack`), `skills: ["dashboard"]`, `claudeMd: true`. Show the user a short summary (apps with ports, tracker, docs, checks, port, install folder) and get a yes. Then:
 
 ```bash
 node "${CLAUDE_PLUGIN_ROOT}/scripts/scaffold.mjs" <workspace> --plan <scratch>/plan.json

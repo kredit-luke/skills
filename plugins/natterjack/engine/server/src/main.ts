@@ -61,6 +61,8 @@ import { readProfile, reapplyProfile, setRole } from "./profile.ts";
 import { DocSites, docSources } from "./docs.ts";
 import { DocsProviders } from "./docs-providers/index.ts";
 import { Memory } from "./memory.ts";
+import { Connections, listedName } from "./connections.ts";
+import { McpLogin, PTY_SIGN_IN } from "./mcp-login.ts";
 import { Search } from "./search.ts";
 import { claudeAuth, claudeAuthCached, claudeEnv } from "./claude.ts";
 import { infrastructure } from "./infrastructure.ts";
@@ -465,6 +467,8 @@ function docsRunNote(keys: unknown, page: unknown): { keys: string[]; note: stri
   return { keys: list, note: notes.length ? notes.join("\n\n") : null };
 }
 const memory = new Memory(MAIN_WORKSPACE_PATH);
+const connections = new Connections(MAIN_WORKSPACE_PATH);
+const mcpLogin = new McpLogin(MAIN_WORKSPACE_PATH);
 const explore = new Explore(MAIN_WORKSPACE_PATH);
 const search = new Search({
   root: MAIN_WORKSPACE_PATH,
@@ -1106,6 +1110,7 @@ async function handleApi(req: http.IncomingMessage, res: http.ServerResponse, ur
     }
     if (p === "/api/infrastructure") return sendJson(res, infrastructure(MAIN_WORKSPACE_PATH));
     if (p === "/api/memory") return sendJson(res, memory.list());
+    if (p === "/api/connections") return sendJson(res, await connections.list({ wait: q("wait") === "1", force }));
     if (p === "/api/search") {
       const limit = Math.min(parseInt(q("limit") || "", 10) || 40, 100);
       return sendJson(res, search.query(String(q("q") || "").slice(0, 200), { source: q("source") || undefined, site: q("site") || undefined, limit }));
@@ -1408,6 +1413,27 @@ async function handleApi(req: http.IncomingMessage, res: http.ServerResponse, ur
   }
   if (p === "/api/links/save") return sendJson(res, saveLink(MAIN_WORKSPACE_PATH, body));
   if (p === "/api/links/delete") return sendJson(res, deleteLink(MAIN_WORKSPACE_PATH, body));
+  if (p === "/api/connections/login") {
+    // In the page, no terminal (mcp-login.ts): start → a URL to open; finish → the address the browser ended on (hosted).
+    const name = listedName(body.name);
+    if (body.action === "start" && !PTY_SIGN_IN) {
+      // Windows (always local): no `script` for a pseudo-terminal, so a terminal window it is; the page re-checks on focus.
+      const terminal = await openTerminal(`claude mcp login '${name.replace(/'/g, "''")}'`, MAIN_WORKSPACE_PATH, `Sign in: ${name.slice(0, 60)}`);
+      return sendJson(res, { url: "", callback: null, terminal });
+    }
+    if (body.action === "start") return sendJson(res, await mcpLogin.start(name));
+    if (body.action === "status") return sendJson(res, mcpLogin.status(name));
+    if (body.action === "finish") {
+      try { return sendJson(res, await mcpLogin.finish(name, String(body.url || ""))); } catch (e) { return sendError(res, 400, e.message); }
+    }
+    if (body.action === "cancel") { mcpLogin.cancel(name); return sendJson(res, { ok: true }); }
+    return sendError(res, 400, "Unknown action");
+  }
+  if (p === "/api/connections/logout") return sendJson(res, await connections.logout(body.name));
+  if (p === "/api/connections/remove") return sendJson(res, await connections.remove(body.name));
+  if (p === "/api/connections/add") return sendJson(res, await connections.add(body));
+  if (p === "/api/connections/approve") return sendJson(res, await connections.approve(body.name));
+  if (p === "/api/connections/allow") return sendJson(res, connections.allow(body.name, body.on !== false));
   if (p === "/api/memory/delete") {
     const out = memory.remove(String(body.file || ""));
     search.invalidate();
@@ -1496,6 +1522,7 @@ for (const sig of ["SIGINT", "SIGTERM"] as const) {
   process.on(sig, () => {
     for (const id of runs.live.keys()) runs.cancel(id);
     claudeLogin.cancel();
+    mcpLogin.cancelAll();
     setTimeout(() => process.exit(0), 300);
   });
 }
