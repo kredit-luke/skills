@@ -85,10 +85,11 @@
       <div class="agent-strip" [class.open]="stripOpen()" aria-label="Subagents">
         <span class="strip-lbl">Subagents <b>{{ thread().agents.length }}</b></span>
         @if (st.collapsible) { <span class="strip-sum">{{ st.summary }}</span> }
+        @if (st.open) { <span class="strip-sum routed" title="Subagents that ran on an open model (smart routing) instead of Claude">{{ st.open }}</span> }
         @if (st.collapsible && !stripOpen()) { <button type="button" class="strip-more" (click)="stripOpen.set(true)" title="Show every subagent in run order">{{ st.hidden }} earlier · show all</button> }
         @for (a of st.agents; track a.id; let last = $last) {
-          <button type="button" class="chip" [class]="'chip ' + a.status" (click)="jumpTo(a)" [title]="a.description + (a.resumed ? ' (pass ' + a.pass + ', resumed with SendMessage)' : '')">
-            @if (a.resumed) { <span class="resume" aria-label="resumed">↻</span> }{{ a.agentType || 'agent' }}@if (a.pass > 1) { <span class="pass">· {{ a.pass }}</span> } <span class="ic">{{ agentIcon(a) }}</span>
+          <button type="button" class="chip" [class]="'chip ' + a.status" (click)="jumpTo(a)" [title]="a.description + (a.resumed ? ' (pass ' + a.pass + ', resumed with SendMessage)' : '') + (a.model ? ' · ' + a.model : '')">
+            @if (a.resumed) { <span class="resume" aria-label="resumed">↻</span> }{{ a.agentType || 'agent' }}@if (a.pass > 1) { <span class="pass">· {{ a.pass }}</span> }@if (isOpenModel(a.model)) { <span class="open-mk" [attr.aria-label]="'on ' + a.model">◆</span> } <span class="ic">{{ agentIcon(a) }}</span>
           </button>
           @if (!last) { <span class="arrow-sep">→</span> }
         }
@@ -198,6 +199,7 @@
             @if (c.resumed) { <span class="resume" title="Resumed with SendMessage">↻</span> }
             <b class="type">{{ c.agentType || 'agent' }}</b>
             @if (c.pass > 1) { <span class="pass" [title]="'Pass ' + c.pass + ' of this agent (' + c.agentId + ')'">pass {{ c.pass }}</span> }
+            @if (c.model) { <span class="model" [class.routed]="isOpenModel(c.model)" [title]="isOpenModel(c.model) ? 'Ran on an open model (smart routing), not Claude' : 'Model this subagent ran on'">{{ c.model }}</span> }
             <span class="desc">{{ c.description }}</span>
             <span class="grow"></span>
             <span class="meta">{{ agentStatus(c) }} · {{ steps(c) }} step{{ steps(c) === 1 ? '' : 's' }}{{ c.tokens ? ' · ' + tok(c.tokens) + ' tokens' : '' }}{{ c.durationMs ? ' · ' + d(c.durationMs) : '' }}</span>
