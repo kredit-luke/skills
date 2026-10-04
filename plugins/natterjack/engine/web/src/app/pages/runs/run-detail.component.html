@@ -44,7 +44,7 @@
         @if (!w.endedAt) {
           <div class="info-note watch-note">
             <span><b>Watching {{ watchedPrs() }}.</b>
-              @if (r.status === 'succeeded') { Next check {{ rel(w.nextCheckAt) }}, every {{ w.everyMinutes }} min; this run resumes when something changes. }
+              @if (r.status === 'succeeded') { Next check {{ countdown(w.nextCheckAt) }}, every {{ w.everyMinutes }} min; this run resumes when something changes. }
               @else { Paused while the run is {{ st()!.label.toLowerCase() }}; it carries on once the last turn ends fine. }
               @if (w.lastChange) { Last change {{ rel(w.lastChangeAt) }}: {{ w.lastChange }}. }
               @if (w.wakes) { Woken {{ w.wakes }}×. }
