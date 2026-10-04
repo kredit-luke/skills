@@ -4,7 +4,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { EventEmitter } from "node:events";
-import { parseQuestion, toolLabel, backgroundWarning, normaliseMeta, lastActivity, RunManager } from "../src/runs.ts";
+import { parseQuestion, parseWatch, stripBlock, toolLabel, backgroundWarning, normaliseMeta, lastActivity, RunManager } from "../src/runs.ts";
 
 test("parseQuestion: {questions:[...]} with options", () => {
   const text = `I need a decision.\n<<QUESTION>>\n{"questions":[{"question":"Which DB?","header":"DB","multiSelect":false,"options":[{"label":"Postgres","description":"the usual"},{"label":"SQLite"}]}]}\n<</QUESTION>>`;
@@ -37,6 +37,23 @@ test("parseQuestion: missing closing marker still counts", () => {
 
 test("parseQuestion: no marker is no question", () => {
   assert.equal(parseQuestion("All done."), null);
+});
+
+test("a marker mentioned in the answer isn't a question (or a watch), and doesn't cut the answer off", () => {
+  // Claude explaining runs: the marker inline in backticks, and in a code sample.
+  const inline = "Each turn is a fresh `claude -p`, so it ends a turn with a `<<QUESTION>>` block, which the page turns into buttons. A `<<WATCH>>` block works the same way for PRs.";
+  assert.equal(parseQuestion(inline), null);
+  assert.equal(parseWatch(inline), null);
+  assert.equal(stripBlock(inline, "QUESTION"), inline);
+  const sample = "The regex is:\n```ts\nconst QUESTION_RE = /<<QUESTION>>([\\s\\S]*?)/;\n<<QUESTION>>\n```\nThat's all.";
+  assert.equal(parseQuestion(sample), null);
+  assert.equal(stripBlock(sample, "QUESTION"), sample);
+  // A real block after such a mention still counts, and only it is stripped.
+  const both = `${inline}\n\nWhich next?\n<<QUESTION>>\n{"questions":[{"question":"Next?","options":["A","B"]}]}\n<</QUESTION>>`;
+  assert.deepEqual(parseQuestion(both)!.map((q) => q.question), ["Next?"]);
+  assert.equal(stripBlock(both, "QUESTION"), `${inline}\n\nWhich next?`);
+  // Indented at the start of a line is fine.
+  assert.equal(parseQuestion('Pick.\n  <<QUESTION>>{"question":"Go?","options":["Yes"]}<</QUESTION>>')![0].question, "Go?");
 });
 
 test("toolLabel says what a call does", () => {

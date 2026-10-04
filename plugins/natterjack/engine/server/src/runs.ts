@@ -40,10 +40,32 @@ const QUEUE_MAX = 10;
 const QUEUE_RETRY_MS = 30000;
 /** Backstop for run files edited outside this server (a file added or removed is caught by name). */
 const LIST_TTL_MS = 10000;
-const QUESTION_RE = /<<QUESTION>>([\s\S]*?)(?:<<\/QUESTION>>|$)/;
-const QUESTION_STRIP_RE = /\s*<<QUESTION>>[\s\S]*?(?:<<\/QUESTION>>|$)\s*/g;
-const WATCH_RE = /<<WATCH>>([\s\S]*?)(?:<<\/WATCH>>|$)/;
-const WATCH_STRIP_RE = /\s*<<WATCH>>[\s\S]*?(?:<<\/WATCH>>|$)\s*/g;
+/**
+ * A <<QUESTION>> or <<WATCH>> block: the first marker that isn't inside code (a ``` block or
+ * `inline code`). A marker in code (Claude explaining how runs work) is just text: matching it
+ * would turn the rest of the answer into a question and cut the answer off there.
+ */
+export function findBlock(text: string, tag: "QUESTION" | "WATCH"): { start: number; end: number; body: string } | null {
+  const open = new RegExp(`<<${tag}>>`, "g");
+  for (let m: RegExpExecArray | null; (m = open.exec(text || "")); ) {
+    const start = m.index;
+    const before = text.slice(0, start);
+    if (((before.match(/^[ \t]*```/gm) || []).length) % 2) continue; // inside a ``` block
+    const line = before.slice(before.lastIndexOf("\n") + 1).replace(/```/g, "");
+    if (((line.match(/`/g) || []).length) % 2) continue; // inside `inline code`
+    const from = m.index + m[0].length;
+    const close = text.indexOf(`<</${tag}>>`, from);
+    const end = close < 0 ? text.length : close + `<</${tag}>>`.length;
+    return { start, end, body: text.slice(from, close < 0 ? text.length : close) };
+  }
+  return null;
+}
+
+/** The text without its block (if any). */
+export function stripBlock(text: string, tag: "QUESTION" | "WATCH"): string {
+  const b = findBlock(text, tag);
+  return b ? `${text.slice(0, b.start).trimEnd()}\n${text.slice(b.end).trimStart()}`.trim() : text;
+}
 const WATCH_DEFAULT_MINUTES = 5;
 const WATCH_MIN_MINUTES = 2;
 const WATCH_MAX_MINUTES = 60;
@@ -646,14 +668,14 @@ export class RunManager {
         for (const b of ev.message.content) {
           if (b.type === "text" && typeof b.text === "string" && b.text.trim()) {
             rawFinalText = b.text;
-            if (b.text.includes("<<QUESTION>>")) b.text = b.text.replace(QUESTION_STRIP_RE, "\n").trim();
-            if (b.text.includes("<<WATCH>>")) b.text = b.text.replace(WATCH_STRIP_RE, "\n").trim();
+            if (b.text.includes("<<QUESTION>>")) b.text = stripBlock(b.text, "QUESTION");
+            if (b.text.includes("<<WATCH>>")) b.text = stripBlock(b.text, "WATCH");
           }
         }
       }
       if (ev.type === "result" && typeof ev.result === "string") {
         if (ev.result.trim()) rawFinalText = ev.result;
-        ev.result = ev.result.replace(QUESTION_STRIP_RE, "\n").replace(WATCH_STRIP_RE, "\n").trim();
+        ev.result = stripBlock(stripBlock(ev.result, "QUESTION"), "WATCH").trim();
       }
 
       watchBackground(watch, ev);
@@ -875,9 +897,9 @@ function parseWatchedPr(v: any): { repo: string; number: number } | null {
 
 /** Parse a <<WATCH>> block. Null when there's no marker; { error } when it can't be used. */
 export function parseWatch(text: string): WatchBlock | null {
-  const m = WATCH_RE.exec(text || "");
+  const m = findBlock(text || "", "WATCH");
   if (!m) return null;
-  const body = m[1].trim().replace(/^```(?:json)?\s*/i, "").replace(/\s*```$/, "").trim();
+  const body = m.body.trim().replace(/^```(?:json)?\s*/i, "").replace(/\s*```$/, "").trim();
   let data: any = null;
   try { data = JSON.parse(body); } catch { return { error: "The watch block isn't valid JSON." }; }
   if (!data || typeof data !== "object") return { error: "The watch block isn't a JSON object." };
@@ -1009,9 +1031,9 @@ export function toolLabel(name: string, input: any): string {
 
 /** Parse the <<QUESTION>> block. Never returns null for text that has the marker. */
 export function parseQuestion(text: string): Question[] | null {
-  const m = QUESTION_RE.exec(text);
+  const m = findBlock(text, "QUESTION");
   if (!m) return null;
-  let body = m[1].trim().replace(/^```(?:json)?\s*/i, "").replace(/\s*```$/, "").trim();
+  let body = m.body.trim().replace(/^```(?:json)?\s*/i, "").replace(/\s*```$/, "").trim();
   let data: any = null;
   try { data = JSON.parse(body); } catch {}
   const list = Array.isArray(data?.questions) ? data.questions : Array.isArray(data) ? data : data && typeof data === "object" ? [data] : null;
@@ -1027,7 +1049,7 @@ export function parseQuestion(text: string): Question[] | null {
     }));
   if (questions.length) return questions;
   // Unparseable: still a question, answered in free text.
-  const before = text.slice(0, m.index).trim().split("\n").pop() || "";
+  const before = text.slice(0, m.start).trim().split("\n").pop() || "";
   return [{ question: body && !body.startsWith("{") ? body : before || "Claude needs your input to continue.", options: [] }];
 }
 
