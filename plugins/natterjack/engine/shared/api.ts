@@ -296,7 +296,8 @@ export interface LaunchRequest {
 }
 
 /** POST /api/runs/:id/reply  { text, attachments? } → { run }   409 while a turn is running or after hand-off */
-export interface ReplyRequest { text: string; attachments?: string[] }
+/** model: the rest of the run on another model (Claude runs; e.g. a local model's run on to "opus"); effort with it. */
+export interface ReplyRequest { text: string; attachments?: string[]; model?: string; effort?: string }
 /** POST /api/runs/:id/rename  { label } → { run }   (any time, even mid-turn) */
 export interface RenameRequest { label: string }
 /** POST /api/runs/:id/plan-mode  { on } → { run }   409 while a turn is running or after hand-off */

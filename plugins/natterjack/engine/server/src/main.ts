@@ -1333,12 +1333,22 @@ async function handleApi(req: http.IncomingMessage, res: http.ServerResponse, ur
     return sendJson(res, { run: launchRun(body, "manual") }, 201);
   }
   if (runMatch && runMatch[2] === "reply") {
-    const blocker = launchBlocker(runs.get(runMatch[1])?.agent, runs.get(runMatch[1])?.model);
+    const run = runs.get(runMatch[1]);
+    // { model }: the rest of the run on another model (Claude runs: e.g. from a local model on to Opus).
+    const switchTo = body.model !== undefined && body.model !== run?.model ? String(body.model || "") : undefined;
+    if (switchTo !== undefined) {
+      if (agentOf(run?.agent).id !== "claude") return sendError(res, 400, "Only Claude runs can change model.");
+      if (!(isRoutedId(switchTo) ? routeOf(switchTo) : MODEL_RE.test(switchTo))) return sendError(res, 400, `Unknown model ${switchTo}`);
+    }
+    const model = switchTo ?? run?.model;
+    const blocker = launchBlocker(run?.agent, model);
     if (blocker) return sendError(res, 429, blocker);
     const ids = attachments.check(body.attachments);
-    // The cap follows the current setting: off drops it, even for a run started with one.
-    const budgetUsd = deck.config().limits.runBudget ? undefined : null;
-    return sendJson(res, { run: runs.reply(runMatch[1], body.text, { budgetUsd, attachments: ids }) });
+    // The cap follows the current setting: off drops it, even for a run started with one; none on a local or team model.
+    const budgetUsd = deck.config().limits.runBudget && !isRoutedId(model) ? undefined : null;
+    // On to a Claude model: the effort asked for, else the deck's default (an open model takes none).
+    const effort = switchTo === undefined ? undefined : isRoutedId(switchTo) ? null : (EFFORTS.includes(body.effort) ? body.effort : deck.config().defaults.effort) || null;
+    return sendJson(res, { run: runs.reply(runMatch[1], body.text, { budgetUsd, attachments: ids, ...(switchTo !== undefined ? { model: switchTo, effort } : {}) }) });
   }
   if (runMatch && runMatch[2] === "rename") return sendJson(res, { run: runs.rename(runMatch[1], body.label) });
   // Queued messages: typed while Claude works, sent when the turn ends (shared/api.ts RunMeta.queued).

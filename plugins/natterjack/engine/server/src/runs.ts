@@ -28,7 +28,7 @@ import { execFile, type ChildProcess } from "node:child_process";
 import type { ServerResponse } from "node:http";
 import type { Attachment, Effort, PermissionMode, QueuedMessage, Question, RunEvent, RunMeta, RunWatch, WatchedPr } from "../../shared/api.ts";
 import { AGENT_HEADLESS_RULES, agentOf, type ParseState, type TurnInput } from "./agents/index.ts";
-import { isRoutedId } from "./models/routes.ts";
+import { LOCAL_MODEL_RULE, isRoutedId } from "./models/routes.ts";
 import { expandSlash } from "./agents/skills.ts";
 import { promptWithAttachments, type Attachments } from "./attachments.ts";
 
@@ -116,6 +116,12 @@ export type QueueGate = (meta: RunMeta) => { blocker: string | null; budgetUsd?:
 export interface ReplyOptions {
   /** A new per-turn cap; null removes it, undefined keeps the run's. */
   budgetUsd?: number | null;
+  /**
+   * Another model from this turn on (checked by the caller; Claude runs only), and its effort.
+   * The session carries on: e.g. a run that explored on a local model continues on Opus.
+   */
+  model?: string;
+  effort?: Effort | null;
   attachments?: string[];
 }
 
@@ -299,6 +305,11 @@ export class RunManager {
     if (meta.status === "handedOff") throw httpError(409, "This run continued in a terminal; reply there.");
     if (!REPLYABLE.has(meta.status)) throw httpError(409, `Can't reply to a ${meta.status} run.`);
     if (opts.budgetUsd !== undefined) meta.budgetUsd = opts.budgetUsd;
+    if (opts.model !== undefined && opts.model !== meta.model) {
+      meta.model = opts.model;
+      meta.effort = opts.effort ?? null;
+      meta.resolvedModel = null;
+    }
     const files = this._claim(id, ids);
     this._turn(meta, text || "See the attached files.", files);
     return meta;
@@ -599,7 +610,7 @@ export class RunManager {
       prompt: (agent.id === "claude" ? (s: string) => s : (s: string) => expandSlash(s, meta.cwd))(first ? prompt : promptWithAttachments(prompt, files)),
       model: meta.model, effort: meta.effort, planMode: !!meta.planMode, permissionMode: meta.permissionMode,
       budgetUsd: agent.capabilities.costUsd ? meta.budgetUsd : null,
-      rules: [agent.id === "claude" ? HEADLESS_RULES : AGENT_HEADLESS_RULES, meta.extraPrompt || null].filter(Boolean).join("\n\n"),
+      rules: [agent.id === "claude" ? HEADLESS_RULES : AGENT_HEADLESS_RULES, isRoutedId(meta.model) ? LOCAL_MODEL_RULE : null, meta.extraPrompt || null].filter(Boolean).join("\n\n"),
       planRule: meta.planMode ? PLAN_MODE_RULE : null,
       addDirs,
     };

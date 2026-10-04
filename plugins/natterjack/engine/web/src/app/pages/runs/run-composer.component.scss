@@ -37,3 +37,5 @@
 .queue-acts { display: flex; gap: 10px; align-items: center; flex: none; font-size: 12.5px; }
 .queue-h .auto { display: inline-flex; align-items: center; gap: 5px; font-size: 12px; color: var(--ink-soft); cursor: pointer; white-space: nowrap; }
 .queue-h .auto input { margin: 0; }
+.next-model { display: flex; align-items: center; justify-content: flex-end; gap: 8px; font-size: 12px; color: var(--ink-soft); margin-top: 4px; }
+.next-model select { font-size: 12px; padding: 2px 6px; border: 1px solid var(--line); border-radius: 6px; background: var(--surface); color: var(--ink); margin-left: 6px; }

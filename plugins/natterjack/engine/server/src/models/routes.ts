@@ -61,10 +61,17 @@ const PROVIDER_ENV = [
   "ANTHROPIC_BASE_URL", "ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_API_KEY", "ANTHROPIC_CUSTOM_HEADERS",
   "ANTHROPIC_MODEL", "ANTHROPIC_SMALL_FAST_MODEL",
   "ANTHROPIC_DEFAULT_OPUS_MODEL", "ANTHROPIC_DEFAULT_SONNET_MODEL", "ANTHROPIC_DEFAULT_HAIKU_MODEL",
-  "CLAUDE_CODE_SUBAGENT_MODEL",
+  "CLAUDE_CODE_SUBAGENT_MODEL", "API_TIMEOUT_MS",
   "CLAUDE_CODE_USE_BEDROCK", "CLAUDE_CODE_USE_VERTEX", "CLAUDE_CODE_USE_FOUNDRY",
   "ANTHROPIC_BEDROCK_BASE_URL", "ANTHROPIC_VERTEX_BASE_URL", "ANTHROPIC_FOUNDRY_BASE_URL",
 ];
+
+/**
+ * Added to a routed turn's rules. A local server answers one request at a time: subagents
+ * started together queue behind each other (and evict each other's cached prompt), so each
+ * waits minutes, and Claude Code gives up on them and retries.
+ */
+export const LOCAL_MODEL_RULE = `You are running on an open model served one request at a time. Do the searching and reading yourself with Grep, Glob and Read, one step at a time. Don't start subagents (the Agent tool): several at once queue behind each other and can time out.`;
 
 /** The overrides a routed turn sets (also what a terminal resume sets). */
 export function routeVars(r: Route): Record<string, string> {
@@ -82,6 +89,8 @@ export function routeVars(r: Route): Record<string, string> {
     CLAUDE_CODE_SUBAGENT_MODEL: r.model,
     // No telemetry or update checks to Anthropic from a turn that's meant to stay local.
     CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: "1",
+    // A request can wait in the server's queue, and a long prompt takes a while to read: 30 minutes, not 10.
+    API_TIMEOUT_MS: "1800000",
   };
 }
 
