@@ -52,6 +52,18 @@ test("a marker mentioned in the answer isn't a question (or a watch), and doesn'
   const both = `${inline}\n\nWhich next?\n<<QUESTION>>\n{"questions":[{"question":"Next?","options":["A","B"]}]}\n<</QUESTION>>`;
   assert.deepEqual(parseQuestion(both)!.map((q) => q.question), ["Next?"]);
   assert.equal(stripBlock(both, "QUESTION"), `${inline}\n\nWhich next?`);
+  // Tilde fences and longer backtick spans are code too.
+  const tilde = "Like this:\n~~~\n<<QUESTION>>\n~~~\nDone.";
+  assert.equal(parseQuestion(tilde), null);
+  assert.equal(stripBlock(tilde, "QUESTION"), tilde);
+  const doubled = "Write ``<<QUESTION>>`` (or `` `<<WATCH>>` ``) to end a turn.";
+  assert.equal(parseQuestion(doubled), null);
+  assert.equal(parseWatch(doubled), null);
+  // A fence closes only on its own character, at least as long: a ``` inside ~~~~ doesn't end it.
+  assert.equal(parseQuestion("~~~~\n```\n<<QUESTION>>\n~~~~\n"), null);
+  assert.deepEqual(parseQuestion('~~~\nx\n~~~\n<<QUESTION>>{"question":"Go?","options":["Yes"]}<</QUESTION>>')!.map((q) => q.question), ["Go?"]);
+  // A lone backtick before the marker doesn't make it code.
+  assert.equal(parseQuestion('It\'s ` odd.\n<<QUESTION>>{"question":"Go?","options":["Yes"]}<</QUESTION>>')![0].question, "Go?");
   // Indented at the start of a line is fine.
   assert.equal(parseQuestion('Pick.\n  <<QUESTION>>{"question":"Go?","options":["Yes"]}<</QUESTION>>')![0].question, "Go?");
 });

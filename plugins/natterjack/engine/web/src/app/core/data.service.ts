@@ -213,7 +213,12 @@ export class DataService {
 
   /** A model downloaded, deleted or reachable changes Claude's model list: reload the agents when the set changes. */
   private applyModels(d: ModelsView): void {
-    const key = (m: ModelsView | null) => (m ? [...m.installed.map((x) => x.name + x.ready + x.tools), ...m.endpoints.flatMap((e) => e.models.map((x) => x.routeId)), m.ollama.running].join('|') : '');
+    // Everything that decides which routes exist and how they're labelled (an Ollama update can add the Messages API).
+    const key = (m: ModelsView | null) => (m ? JSON.stringify([
+      m.ollama.running, m.ollama.messagesApi,
+      m.installed.map((x) => [x.name, x.label, x.ready, x.tools]),
+      m.endpoints.map((e) => [e.label, e.models.map((x) => [x.routeId, x.label, x.tools])]),
+    ]) : '');
     const changed = key(this.models()) !== key(d);
     this.models.set(d);
     if (changed) this.loadAgents();

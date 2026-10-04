@@ -168,5 +168,8 @@ export function resumeCommand(sessionId: string, model: string | null | undefine
     }
     return win ? `$env:${k}=${psq(v)}` : `export ${k}=${shq(v)}`;
   });
-  return win ? `${parts.join("; ")}; ${base} --model ${psq(r.model)}` : `${parts.join("; ")}; ${base} --model ${shq(r.model)}`;
+  // Clear what the shell may have set (Bedrock, Vertex, another gateway) first, as turnEnv does.
+  const unset = PROVIDER_ENV.filter((k) => !(k in vars));
+  const clear = win ? unset.map((k) => `Remove-Item Env:${k} -ErrorAction SilentlyContinue`).join("; ") : `unset ${unset.join(" ")}`;
+  return win ? `${clear}; ${parts.join("; ")}; ${base} --model ${psq(r.model)}` : `${clear}; ${parts.join("; ")}; ${base} --model ${shq(r.model)}`;
 }

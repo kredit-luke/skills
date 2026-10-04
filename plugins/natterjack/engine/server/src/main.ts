@@ -571,6 +571,8 @@ const AGENT_EFFORTS = [...EFFORTS, "ultra", "none"];
 const PERMISSION_MODES = ["auto", "acceptEdits", "dontAsk", "plan"];
 const TRIGGERS = new Set(["manual", "ask", "explain", "search", "issues", "make-changes"]);
 const MAX_RUN_BUDGET_USD = 100;
+// A run whose preset sets no cap gets this one while runBudget is on.
+const DEFAULT_RUN_BUDGET_USD = 5;
 const SESSIONS_TTL_MS = 5000;
 
 function startOfToday() {
@@ -660,7 +662,7 @@ function launchRun(body: LaunchRequest, trigger: string): RunMeta {
   if (blocker) throw httpError(429, blocker);
   const permissionMode = pick("permissionMode") || "auto";
   // No per-run cap unless the runBudget setting is on (on a subscription it only stops working runs).
-  const budgetUsd = limits.runBudget && !routed ? Number(pick("budgetUsd")) || 5 : null;
+  const budgetUsd = limits.runBudget && !routed ? Number(pick("budgetUsd")) || DEFAULT_RUN_BUDGET_USD : null;
   // A model becomes a CLI argument: aliases or full ids only (e.g. rejects "--bare"); a routed one must be known (above).
   if (model && !routed && !MODEL_RE.test(model)) throw httpError(400, `Invalid model ${model}`);
   if (effort && !(agentId === "claude" ? EFFORTS : AGENT_EFFORTS).includes(effort)) throw httpError(400, `Unknown effort ${effort}`);
@@ -1345,7 +1347,8 @@ async function handleApi(req: http.IncomingMessage, res: http.ServerResponse, ur
     if (blocker) return sendError(res, 429, blocker);
     const ids = attachments.check(body.attachments);
     // The cap follows the current setting: off drops it, even for a run started with one; none on a local or team model.
-    const budgetUsd = deck.config().limits.runBudget && !isRoutedId(model) ? undefined : null;
+    // A run started on one has no cap stored, so moving it on to Claude gets the default cap a new run would.
+    const budgetUsd = !deck.config().limits.runBudget || isRoutedId(model) ? null : run?.budgetUsd ? undefined : DEFAULT_RUN_BUDGET_USD;
     // On to a Claude model: the effort asked for, else the deck's default (an open model takes none).
     const effort = switchTo === undefined ? undefined : isRoutedId(switchTo) ? null : (EFFORTS.includes(body.effort) ? body.effort : deck.config().defaults.effort) || null;
     return sendJson(res, { run: runs.reply(runMatch[1], body.text, { budgetUsd, attachments: ids, ...(switchTo !== undefined ? { model: switchTo, effort } : {}) }) });

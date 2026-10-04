@@ -34,7 +34,11 @@ test("router: Claude's requests pass through untouched; the explorer's go to the
     res.end('event: message_start\ndata: {"type":"message_start"}\n\n');
     inFlight--;
   });
-  setRoutes([{ id: "local/gemma4:12b", label: "Local · Gemma 4 12B", model: "gemma4:12b-ctx64k", tools: true, context: 65536, backend: { id: "local", label: "Ollama", baseUrl: ollama.url, token: null } }]);
+  const route = { id: "local/gemma4:12b", label: "Local · Gemma 4 12B", model: "gemma4:12b-ctx64k", tools: true, context: 65536, backend: { id: "local", label: "Ollama", baseUrl: ollama.url, token: null } };
+  // A team endpoint serving the same model name: the explorer the person picked gets the requests, not the first match.
+  const twin = { ...route, id: "team/gemma4:12b", backend: { id: "team", label: "Team", baseUrl: "http://127.0.0.1:9", token: "team-secret" } };
+  setRoutes([twin, route]);
+  setExplorer({ route, agentsFile: "/tmp/agents.json", url: "http://127.0.0.1:4555" });
   const router = new ModelRouter(anthropic.url, { pingMs: 50 });
   const url = await router.start();
   try {
@@ -64,7 +68,7 @@ test("router: Claude's requests pass through untouched; the explorer's go to the
     assert.ok((await c.json()).input_tokens > 100);
     assert.deepEqual({ local: router.stats.local, claude: router.stats.claude }, { local: 3, claude: 1 });
   } finally {
-    router.stop(); anthropic.close(); ollama.close();
+    router.stop(); anthropic.close(); ollama.close(); setExplorer(null);
   }
 });
 

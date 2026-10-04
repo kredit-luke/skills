@@ -49,4 +49,11 @@ describe('local and team models (the Models page)', () => {
     expect(effortsFor(claude, 'opus', ['low', 'high'])).toEqual(['low', 'high']);
     expect(isRoutedModel('team/gpu/x') && !isRoutedModel('opus') && !isRoutedModel(null)).toBe(true);
   });
+  it('keep Claude usable without a Claude sign-in, offering only them', () => {
+    const signedOut = { ...claude, signedIn: false };
+    expect(usableAgents([signedOut, codex]).map((a) => a.id)).toEqual(['claude', 'codex']);
+    expect(usableAgents([agent('claude', { signedIn: false }), codex]).map((a) => a.id), 'nothing to run on').toEqual(['codex']);
+    expect(modelsFor(signedOut, ['opus']).map((m) => m.id)).toEqual(['local/ornith:9b', 'team/gpu/glm-5.3']);
+    expect(defaultsFor(signedOut, { model: 'opus', effort: 'medium' })).toEqual({ model: 'local/ornith:9b', effort: '' });
+  });
 });

@@ -27,7 +27,7 @@
           @if (ranAs()) { <span class="tag bad" title="The CLI ran this session in a different mode than requested">ran as {{ ranAs() }}</span> }</span>
         <span>turns <b>{{ r.turns || 1 }}</b></span>
         <span>time <b>{{ elapsed() }}</b></span>
-        @if ((!r.agent || r.agent === 'claude') && !isRouted(r.model)) {
+        @if ((!r.agent || r.agent === 'claude') && (!isRouted(r.model) || r.costUsd)) {
           <span title="What this run would cost on the API. On a subscription it draws on your usage limits instead; the cap only stops runaways.">api-equiv <b>{{ money(r.costUsd) }}{{ r.budgetUsd ? ' / ' + money(r.budgetUsd) + ' cap' : '' }}</b></span>
         }
         <span>tools <b>{{ r.toolCalls || 0 }}</b></span>

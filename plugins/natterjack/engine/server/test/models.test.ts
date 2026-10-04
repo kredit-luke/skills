@@ -18,7 +18,7 @@ process.env.OLLAMA_MODELS = path.join(ROOT, "ollama-models");
 
 const { fitOf, RECOMMENDED } = await import("../src/models/catalog.ts");
 const { Ollama, ollamaBase, parseShow, pullStep } = await import("../src/models/ollama.ts");
-const { Models, modelsConfig, twinName, isTwin } = await import("../src/models/index.ts");
+const { Models, modelsConfig, twinName, isTwin, isLoopback } = await import("../src/models/index.ts");
 const { setRoutes, routeOf, turnEnv, resumeCommand, isRoutedId } = await import("../src/models/routes.ts");
 const { parseNvidiaSmi, driverTooOld } = await import("../src/hardware.ts");
 const { agentOf } = await import("../src/agents/index.ts");
@@ -69,6 +69,9 @@ test("ollama: OLLAMA_HOST forms, pull progress across layers, show", () => {
   assert.equal(ollamaBase({ OLLAMA_HOST: "0.0.0.0" }), "http://127.0.0.1:11434");
   assert.equal(ollamaBase({ OLLAMA_HOST: "gpu-box:8080" }), "http://gpu-box:8080");
   assert.equal(ollamaBase({ OLLAMA_HOST: "https://ollama.example.com" }), "https://ollama.example.com");
+  // Another machine's Ollama isn't "here", even with a CLI installed on this one.
+  assert.ok(isLoopback("http://127.0.0.1:11434") && isLoopback("http://localhost:11434") && isLoopback("http://[::1]:11434"));
+  assert.ok(!isLoopback("http://gpu-box:8080") && !isLoopback("https://ollama.example.com"));
   const layers = new Map();
   pullStep({ status: "pulling a", digest: "sha256:a", total: 100, completed: 50 }, layers);
   assert.deepEqual(pullStep({ status: "pulling b", digest: "sha256:b", total: 300, completed: 30 }, layers), { status: "pulling b", completed: 80, total: 400 });
@@ -136,10 +139,13 @@ test("resume in a terminal: the route's variables first; a team token is read, n
   setRoutes([localRoute, teamRoute] as any);
   assert.equal(resumeCommand("abc", "opus", "win32"), "claude --resume abc");
   const win = resumeCommand("abc", "local/qwen3.8:27b", "win32");
-  assert.match(win, /^\$env:ANTHROPIC_BASE_URL='http:\/\/127\.0\.0\.1:11434'; /);
+  // The shell's own provider settings (Bedrock, Vertex…) are cleared first.
+  assert.match(win, /^Remove-Item Env:ANTHROPIC_CUSTOM_HEADERS -ErrorAction SilentlyContinue; .*Remove-Item Env:CLAUDE_CODE_USE_BEDROCK /);
+  assert.match(win, /; \$env:ANTHROPIC_BASE_URL='http:\/\/127\.0\.0\.1:11434'; /);
   assert.match(win, /claude --resume abc --model 'qwen3\.8:27b-ctx64k'$/);
   const sh = resumeCommand("abc", "team/gpu/glm-5.3", "darwin");
   assert.match(sh, /export ANTHROPIC_AUTH_TOKEN="\$TEAM_LLM_TOKEN"/);
+  assert.match(sh, /^unset .*CLAUDE_CODE_USE_VERTEX/);
   assert.doesNotMatch(sh, /s3cret/);
   assert.equal(agentOf("claude").resumeCommand("abc", null), "claude --resume abc");
 });
@@ -147,7 +153,7 @@ test("resume in a terminal: the route's variables first; a team token is read, n
 // ---------------------------------------------------------------- Models against a fake Ollama
 
 function fakeOllama() {
-  const state = { old: false, models: [] as { name: string; size: number; digest: string; tools: boolean; ctx?: number }[], created: [] as any[], deleted: [] as string[] };
+  const state = { old: false, tagsFail: false, models: [] as { name: string; size: number; digest: string; tools: boolean; ctx?: number }[], created: [] as any[], deleted: [] as string[] };
   const server = http.createServer((req, res) => {
     let body = "";
     req.on("data", (d) => (body += d));
@@ -156,6 +162,7 @@ function fakeOllama() {
       const send = (d: unknown, status = 200) => { res.writeHead(status, { "Content-Type": "application/json" }); res.end(JSON.stringify(d)); };
       if (req.url === "/api/version") return send({ version: state.old ? "0.13.5" : "0.21.0" });
       if (req.url === "/v1/messages") return state.old ? (res.writeHead(404), res.end("404 page not found")) : send({ type: "error" }, 400);
+      if (req.url === "/api/tags" && state.tagsFail) return send({ error: "busy" }, 500);
       if (req.url === "/api/tags") return send({ models: state.models.map((m) => ({ name: m.name, size: m.size, digest: m.digest, details: { parameter_size: "9B", quantization_level: "Q4_K_M" } })) });
       if (req.url === "/api/show") {
         const m = state.models.find((x) => x.name === json.model);
@@ -263,6 +270,12 @@ test("Models: download with progress, a 64k twin, a route for runs; delete takes
     fake.state.old = false;
     await models.view(true);
     assert.ok(routeOf("local/ornith:9b"));
+
+    // One failed list while Ollama still runs keeps the models runs can use.
+    fake.state.tagsFail = true;
+    await models.refresh();
+    assert.ok(routeOf("local/ornith:9b"), "a transient /api/tags failure doesn't drop local models");
+    fake.state.tagsFail = false;
 
     await models.remove("ornith:9b");
     assert.deepEqual(fake.state.deleted, ["ornith:9b-ctx64k", "ornith:9b"]);

@@ -18,15 +18,20 @@
 
 import http from "node:http";
 import https from "node:https";
-import { allRoutes, type Route } from "./routes.ts";
+import { explorerFor, type Route } from "./routes.ts";
 
 const PING_MS = 15_000;
 
 export interface RouterStats { local: number; claude: number; queued: number }
 
-/** The route whose server-side model name a request asked for (the explorer's), or null. */
+/**
+ * The explorer's route when a request asks for its server-side model name, or null. Only the
+ * explorer the person picked: two endpoints can serve the same model name, and the request
+ * (with that endpoint's token) must go to the one they chose.
+ */
 export function routeForModel(model: unknown): Route | null {
-  return typeof model === "string" ? allRoutes().find((r) => r.model === model) || null : null;
+  const r = explorerFor(null)?.route;
+  return r && typeof model === "string" && r.model === model ? r : null;
 }
 
 /** Headers for a model server: no Claude credentials (or hop-by-hop ones); its own token if it has one. */

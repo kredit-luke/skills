@@ -103,8 +103,11 @@ const ENDPOINT_EXAMPLE = `{
                 <td><span class="tag" [class]="'tag ' + fitTag(r.fit)">{{ r.fitLabel }}</span></td>
                 <td class="act">
                   @if (pullOf(r.tag); as p) {
+                    @if (p.error) { <span class="no" [title]="p.error">Download failed</span> <button class="btn ghost sm" [title]="p.error" (click)="pull(p.tag)">Try again</button> }
+                    @else {
                     <div class="prog"><div class="meter"><i [style.width.%]="progress(p)"></i></div><span class="dim">{{ pullText(p) }}</span></div>
                     <button class="btn ghost sm" (click)="cancel(p.tag)">Cancel</button>
+                    }
                   } @else if (r.installed) {
                     <span class="yes">Downloaded</span>
                   } @else {
@@ -161,6 +164,9 @@ const ENDPOINT_EXAMPLE = `{
         <div class="panel-h"><h2>Smart routing</h2><span class="ty">Claude leads; an open model explores</span></div>
         <div class="help">
           <p>On runs with Claude's models (Opus, Sonnet…), the <b>Explore</b> subagent Claude hands broad code searching and reading to runs on the open model you pick, so that exploring is free, and Claude does the planning, editing and final answer. Expect exploring to take longer than on Claude: a small model works in more, smaller steps. Claude's own requests still go to Anthropic on your sign-in, passed through unchanged by a small router on this computer; the explorer's go to the open model, without your Claude credentials.</p>
+          @if (m.hosted) {
+            <p class="amber-t">Not in a hosted dashboard: the router runs on your own computer. Open the dashboard there to use it.</p>
+          } @else {
           <div class="route-row">
             <label>Explorer
               <select [value]="m.routing.explorer || ''" [disabled]="working() === 'routing'" (change)="setExplorer($any($event.target).value)" aria-label="Model the explorer subagent runs on">
@@ -172,6 +178,7 @@ const ENDPOINT_EXAMPLE = `{
             @if (m.routing.active && m.routing.stats; as s) { <span class="dim">Since the dashboard started: {{ s.local }} explorer request{{ s.local === 1 ? '' : 's' }} to the open model, {{ s.claude }} to Claude.</span> }
             @if (!m.routing.choices.length) { <span class="dim">Download a model (or add a team endpoint) to use this.</span> }
           </div>
+          }
           <p class="dim">Experimental. A turn on a local or team model is unaffected (it's already local), and so is every run while this is off.</p>
         </div>
       </div>
@@ -275,7 +282,7 @@ export class ModelsComponent implements OnInit {
   /** A recommended model's download in progress (or failed), if any. */
   pullOf(tag: string): ModelPull | null {
     const p = this.data.models()?.pulls.find((x) => x.tag === tag);
-    return p && !p.done ? p : null;
+    return p && (!p.done || p.error) ? p : null;
   }
   progress(p: ModelPull): number { return p.total ? (p.completed / p.total) * 100 : 0; }
   pullText(p: ModelPull): string {

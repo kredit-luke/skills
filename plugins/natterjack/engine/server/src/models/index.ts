@@ -63,6 +63,11 @@ const full = (tag: string) => (tag.includes(":") ? tag : `${tag}:latest`);
 export interface PullState { tag: string; status: string; completed: number; total: number; error: string | null; startedAt: number; done: boolean }
 export interface EndpointTest { ok: boolean; ms: number | null; error: string | null; models: string[]; at: number }
 
+/** A base URL on this machine (localhost, 127.x, ::1, or 0.0.0.0 as OLLAMA_HOST writes "serve on all"). */
+export function isLoopback(base: string): boolean {
+  try { return /^(localhost|127\.\d+\.\d+\.\d+|\[::1\]|0\.0\.0\.0)$/i.test(new URL(base).hostname); } catch { return true; }
+}
+
 interface EndpointCfg { id: string; label: string; baseUrl: string; token: string | null; models: { id: string; label: string; tools: boolean | null; context: number | null }[] | null }
 
 /** models.json, normalized: bad entries are left out (validate.mjs says why). */
@@ -212,6 +217,8 @@ export class Models {
 
   /** Where Ollama runs: "here" (this OS), "wsl", "elsewhere" (answers, but neither), or null (not found). */
   private async where(): Promise<"here" | "wsl" | "elsewhere" | null> {
+    // OLLAMA_HOST naming another machine: that's where it runs, whatever CLI is installed here.
+    if (!isLoopback(this.ollama.base)) return this.last.running ? "elsewhere" : null;
     if ((await this.ollamaCli()).installed) return "here";
     if (!this.last.running) return null;
     if (process.platform === "win32" && (await this.wslOllama()).found) return "wsl";
@@ -265,7 +272,8 @@ export class Models {
     // Asked once per Ollama version (an update can add it).
     const messagesApi = running ? (this.last.running === running && this.last.messagesApi) || (await this.ollama.messagesApi()) : false;
     if (running) {
-      try { list = await this.ollama.list(); } catch {}
+      // One failed refresh keeps the last list: it would otherwise drop every local model from runs.
+      try { list = await this.ollama.list(); } catch { list = this.last.running ? this.last.list : []; }
       for (const m of list) {
         const key = `${m.name}@${m.digest}`;
         if (!this.shows.has(key)) {
