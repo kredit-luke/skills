@@ -77,11 +77,12 @@ export interface Agent {
   status(force?: boolean): Promise<AgentStatus>;
   /** The CLI's arguments for one turn. */
   turnArgs(t: TurnInput): string[];
-  spawn(args: string[], opts: SpawnOptions): ChildProcess;
+  /** Start one turn (`turn`: what it was built from, e.g. its model picks Claude Code's backend). */
+  spawn(args: string[], opts: SpawnOptions, turn?: TurnInput): ChildProcess;
   /** One printed line (parsed JSON) → the dashboard's run events (none to drop it). */
   parse(line: any, state: ParseState): RunEvent[];
-  /** The command that continues this session in a terminal. */
-  resumeCommand(sessionId: string): string;
+  /** The command that continues this session in a terminal (on the run's model's backend). */
+  resumeCommand(sessionId: string, model?: string | null): string;
 }
 
 const AGENTS: Record<AgentId, Agent> = {

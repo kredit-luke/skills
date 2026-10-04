@@ -24,6 +24,7 @@ export const routes: Routes = [
     runGuardsAndResolvers: 'pathParamsOrQueryParamsChange',
     canDeactivate: [(c: { canLeave(): boolean }) => c.canLeave()],
   },
+  { path: 'models', loadComponent: () => import('./pages/models/models.component').then((m) => m.ModelsComponent), title: 'Models' },
   { path: 'connections', loadComponent: () => import('./pages/connections/connections.component').then((m) => m.ConnectionsComponent), title: 'Connections' },
   { path: 'memory', loadComponent: () => import('./pages/memory/memory.component').then((m) => m.MemoryComponent), title: 'Memory' },
   { path: 'machine', loadComponent: () => import('./pages/machine/machine.component').then((m) => m.MachineComponent), title: 'Machine' },

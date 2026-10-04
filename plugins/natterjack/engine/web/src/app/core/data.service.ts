@@ -1,6 +1,6 @@
 import { Injectable, computed, inject, signal } from '@angular/core';
 import type {
-  AgentInfo, ConnectionsResponse, DeckResponse, DocSite, DocsResponse, KnowledgeArea, Inbox, Job, JobsResponse, MachineReport, Overview, PresetStats,
+  AgentInfo, ConnectionsResponse, DeckResponse, DocSite, DocsResponse, KnowledgeArea, Inbox, Job, JobsResponse, MachineReport, ModelsView, Overview, PresetStats,
   RunMeta, RunsResponse, Stack, StatusResponse,
 } from '../../../../shared/api';
 import { ApiService } from './api.service';
@@ -37,6 +37,8 @@ export class DataService {
   readonly machine = signal<MachineReport | null>(null);
   /** The agent CLIs runs can use (Claude, Copilot, Codex): installed, signed in, models. Null until loaded. */
   readonly agents = signal<AgentInfo[] | null>(null);
+  /** Local and team open models (Models page); null until the stream sends it. */
+  readonly models = signal<ModelsView | null>(null);
   /** MCP servers (Connections page and its sidebar count). */
   readonly connections = signal<ConnectionsResponse | null>(null);
   readonly docSites = signal<DocSite[]>([]);
@@ -89,6 +91,7 @@ export class DataService {
     on<StatusResponse>('status', (d) => this.status.set(d));
     on<DeckResponse>('deck', (d) => { this.deck.set(d); this.deckError.set(null); });
     on<Inbox>('inbox', (d) => { this.inbox.set(d); this.inboxError.set(null); });
+    on<ModelsView>('models', (d) => this.applyModels(d));
     es.onopen = () => { if (this.es === es) { this.api.connected.set(true); this.stopPolling(); } };
     es.onerror = () => {
       if (this.es !== es) return;
@@ -202,6 +205,18 @@ export class DataService {
     } catch (e) {
       if (opts.force) this.toast.error((e as Error).message);
     }
+  }
+
+  async loadModels(force = false): Promise<void> {
+    try { this.applyModels(await this.api.get<ModelsView>('/api/models' + (force ? '?force=1' : ''))); } catch { /* keep the last */ }
+  }
+
+  /** A model downloaded, deleted or reachable changes Claude's model list: reload the agents when the set changes. */
+  private applyModels(d: ModelsView): void {
+    const key = (m: ModelsView | null) => (m ? [...m.installed.map((x) => x.name + x.ready + x.tools), ...m.endpoints.flatMap((e) => e.models.map((x) => x.routeId)), m.ollama.running].join('|') : '');
+    const changed = key(this.models()) !== key(d);
+    this.models.set(d);
+    if (changed) this.loadAgents();
   }
 
   async loadAgents(force = false): Promise<void> {

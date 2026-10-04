@@ -27,7 +27,8 @@ import crypto from "node:crypto";
 import { execFile, type ChildProcess } from "node:child_process";
 import type { ServerResponse } from "node:http";
 import type { Attachment, Effort, PermissionMode, QueuedMessage, Question, RunEvent, RunMeta, RunWatch, WatchedPr } from "../../shared/api.ts";
-import { AGENT_HEADLESS_RULES, agentOf, type ParseState } from "./agents/index.ts";
+import { AGENT_HEADLESS_RULES, agentOf, type ParseState, type TurnInput } from "./agents/index.ts";
+import { isRoutedId } from "./models/routes.ts";
 import { expandSlash } from "./agents/skills.ts";
 import { promptWithAttachments, type Attachments } from "./attachments.ts";
 
@@ -592,7 +593,7 @@ export class RunManager {
     // (permission prompts are denied here, so without this a worktree run couldn't).
     const filesDir = this.attachments ? this.attachments.runDir(meta.id) : null;
     const addDirs = [...(filesDir && fs.existsSync(filesDir) ? [filesDir] : []), ...(meta.addDirs || []).filter((d) => fs.existsSync(d))];
-    const args = agent.turnArgs({
+    const turn: TurnInput = {
       first, sessionId: meta.sessionId, label: meta.label,
       // Agents that don't load Claude Code's skills get a workspace skill's instructions for `/name args`.
       prompt: (agent.id === "claude" ? (s: string) => s : (s: string) => expandSlash(s, meta.cwd))(first ? prompt : promptWithAttachments(prompt, files)),
@@ -601,13 +602,14 @@ export class RunManager {
       rules: [agent.id === "claude" ? HEADLESS_RULES : AGENT_HEADLESS_RULES, meta.extraPrompt || null].filter(Boolean).join("\n\n"),
       planRule: meta.planMode ? PLAN_MODE_RULE : null,
       addDirs,
-    });
+    };
+    const args = agent.turnArgs(turn);
 
     const child = agent.spawn(args, {
       cwd: meta.cwd,
       stdio: ["ignore", "pipe", "pipe"], // prompt is an argument; an open stdin can make the CLI wait forever
       windowsHide: true,
-    });
+    }, turn);
     const parseState: ParseState = { sessionId: first ? null : meta.sessionId, model: meta.model };
     const live: LiveTurn = { child, stopping: null, meta };
     this.live.set(meta.id, live);
@@ -964,7 +966,8 @@ function applyEvent(meta: RunMeta, ev: RunEvent, main: boolean, costBefore: numb
     // model); each carries running totals, so the last one wins. total_cost_usd covers
     // the whole session, earlier (resumed) turns included, so it is the run's total:
     // adding it to the previous turns' total counted them again.
-    meta.costUsd = Math.max(costBefore, ev.total_cost_usd || 0);
+    // A local or team model costs nothing here (Claude Code would price it as a Claude model).
+    meta.costUsd = isRoutedId(meta.model) ? costBefore : Math.max(costBefore, ev.total_cost_usd || 0);
     meta.numTurns = roundTripsBefore + (ev.num_turns || 0);
     const text = typeof ev.result === "string" ? ev.result : "";
     meta.resultText = text.slice(0, RESULT_TEXT_MAX);

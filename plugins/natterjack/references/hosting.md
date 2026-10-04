@@ -150,6 +150,19 @@ On every cloud:
   - Pick a plan with 2 GB+ per app for the first start's build.
 - **Managed container services** (Cloud Run, ECS on Fargate, Azure Container Apps) work if they can keep a persistent volume (a filesystem mount; EFS for Fargate, Azure Files for Container Apps) and keep the CPU allocated between requests. Runs carry on in the background after the page closes, so don't let the platform throttle or scale the container to zero while a run is going.
 
+## Hosting a model for the team
+
+An open model on the team's own GPU gives everyone (hosted dashboards too) a free model for code search and exploring. List it in `models.json` `endpoints` ([config.md](config.md#modelsjson-the-models-page-local-and-team-open-models)) and it shows up in every Model select.
+
+- **The server.** Anything that speaks Anthropic's Messages API (`POST /v1/messages`, with tool use and streaming):
+  - **Ollama** on a GPU machine (`OLLAMA_HOST=0.0.0.0`, `OLLAMA_CONTEXT_LENGTH=65536`). It's the simplest; one model at a time per GPU.
+  - **vLLM** (`vllm serve <model> --enable-auto-tool-choice --tool-call-parser <the model's>`) for many people at once.
+  - **LiteLLM**'s proxy in front of either. It adds per-person keys, rate limits and logs, and gives an Anthropic-format endpoint for servers that only speak OpenAI's.
+- **The model.** One that calls tools reliably, with at least a 64k context window (Claude Code's own instructions are ~20k tokens). The Models page's recommended list is a good start; a 24–48 GB GPU runs the 27–35B ones at full speed, and an 80 GB one runs the next size up.
+- **Sign-in.** Put it behind a token (LiteLLM keys, or a reverse proxy that checks a bearer token). Write the token as `"${TEAM_LLM_TOKEN}"` in models.json. Hosted dashboards get the variable from the deployment's secrets; people running the dashboard locally set it, or save their own token on the Models page.
+- **Network.** The hosted containers' NetworkPolicy blocks the cluster's own network. Allow egress to the model server's Service (or give it an internal HTTPS address outside the cluster) and keep everything else blocked. Turns on the team model don't leave your network; Claude's own models still go to Anthropic.
+- **Check it.** The Models page's **Test** calls `/v1/models` with the token. A run on the model shows `backend team endpoint <id>` on its page.
+
 ## Sizing (measured)
 
 | | Memory | Notes |

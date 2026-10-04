@@ -89,7 +89,10 @@ export class MachineComponent implements OnInit {
   readonly sub = computed(() => {
     const m = this.data.machine();
     const what = this.hosted() ? 'What your hosted dashboard has set up, including your Claude sign-in.' : "Everything this computer needs to run the workspace's apps.";
-    return m ? `${m.os} ${m.osVersion} · ${m.arch} · ${m.cpus} CPUs · ${m.memoryGb} GB RAM. ${what}` : what;
+    if (!m) return what;
+    const gpus = (m.gpus || []).map((g) => g.name + (g.vramGb && !g.unified ? ` ${g.vramGb} GB` : '')).join(', ');
+    const disk = m.disk ? ` · ${m.disk.freeGb} GB free of ${m.disk.totalGb} GB` : '';
+    return `${m.os} ${m.osVersion} · ${m.arch} · ${m.cpus} CPUs · ${m.memoryGb} GB RAM${gpus ? ' · ' + gpus : ''}${disk}. ${what}`;
   });
   readonly meta = computed(() => {
     const m = this.data.machine();
