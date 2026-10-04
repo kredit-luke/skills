@@ -158,6 +158,25 @@ const ENDPOINT_EXAMPLE = `{
       }
 
       <div class="panel">
+        <div class="panel-h"><h2>Smart routing</h2><span class="ty">Claude leads; an open model explores</span></div>
+        <div class="help">
+          <p>On runs with Claude's models (Opus, Sonnet…), the <b>Explore</b> subagent Claude hands broad code searching and reading to runs on the open model you pick, so that exploring is free, and Claude does the planning, editing and final answer. Expect exploring to take longer than on Claude: a small model works in more, smaller steps. Claude's own requests still go to Anthropic on your sign-in, passed through unchanged by a small router on this computer; the explorer's go to the open model, without your Claude credentials.</p>
+          <div class="route-row">
+            <label>Explorer
+              <select [value]="m.routing.explorer || ''" [disabled]="working() === 'routing'" (change)="setExplorer($any($event.target).value)" aria-label="Model the explorer subagent runs on">
+                <option value="" [selected]="!m.routing.explorer">Off</option>
+                @for (c of m.routing.choices; track c.id) { <option [value]="c.id" [selected]="c.id === m.routing.explorer">{{ c.label }}</option> }
+              </select>
+            </label>
+            @if (m.routing.explorer && !m.routing.active) { <span class="amber-t">That model isn't available right now, so runs don't delegate.</span> }
+            @if (m.routing.active && m.routing.stats; as s) { <span class="dim">Since the dashboard started: {{ s.local }} explorer request{{ s.local === 1 ? '' : 's' }} to the open model, {{ s.claude }} to Claude.</span> }
+            @if (!m.routing.choices.length) { <span class="dim">Download a model (or add a team endpoint) to use this.</span> }
+          </div>
+          <p class="dim">Experimental. A turn on a local or team model is unaffected (it's already local), and so is every run while this is off.</p>
+        </div>
+      </div>
+
+      <div class="panel">
         <div class="panel-h"><h2>Team models @if (m.endpoints.length) { <span class="n">{{ m.endpoints.length }}</span> }</h2><span class="ty">Bigger models the team hosts, from models.json</span></div>
         @if (!m.endpoints.length) {
           <div class="help">
@@ -275,6 +294,10 @@ export class ModelsComponent implements OnInit {
       else { await copyText(r.command); this.toast.error('Couldn\'t open a terminal; copied the command instead.'); }
     } catch (e) { this.toast.error((e as Error).message); }
     finally { setTimeout(() => this.installing.set(false), 3000); }
+  }
+
+  async setExplorer(id: string): Promise<void> {
+    await this.act('routing', '/api/models/routing', { explorer: id || null }, id ? 'Claude runs now delegate exploring to the open model' : 'Smart routing is off');
   }
 
   async startOllama(): Promise<void> {

@@ -36,7 +36,8 @@ import { readConfigFile } from "../config.ts";
 import { MIN_NVIDIA_DRIVER, diskOf, driverTooOld, hardware, type Hardware } from "../hardware.ts";
 import { FIT_LABEL, RECOMMENDED, fitOf, type CatalogModel, type Fit } from "./catalog.ts";
 import { Ollama, ollamaModelsDir, type OllamaModel, type OllamaShow } from "./ollama.ts";
-import { setRoutes, type Backend, type Route } from "./routes.ts";
+import { explorerAgents, setExplorer, setRoutes, type Backend, type Route } from "./routes.ts";
+import { ModelRouter } from "./router.ts";
 
 export const DEFAULT_CONTEXT = 65536;
 /** Claude Code's own instructions and tools are ~20k tokens: below this there's no room to work. */
@@ -104,6 +105,7 @@ export class Models {
   private wsl: { at: number; found: boolean; dir: string | null; freeGb: number | null; totalGb: number | null } | null = null;
   private last: { at: number; running: string | null; messagesApi: boolean; list: OllamaModel[] } = { at: 0, running: null, messagesApi: false, list: [] };
   private notifyAt = 0;
+  private router: ModelRouter | null = null;
   onChange: () => void = () => {};
 
   private readonly opts: { root: string; ledgerDir: string; hosted: boolean; ollama?: Ollama };
@@ -114,6 +116,37 @@ export class Models {
   }
 
   private get tokenFile() { return path.join(this.opts.ledgerDir, "model-tokens.json"); }
+  private get routingFile() { return path.join(this.opts.ledgerDir, "model-routing.json"); }
+  private get agentsFile() { return path.join(this.opts.ledgerDir, "model-explorer-agents.json"); }
+
+  /** The model this person's Claude runs delegate exploring to (smart routing), or null when it's off. */
+  explorerId(): string | null {
+    try { return JSON.parse(fs.readFileSync(this.routingFile, "utf-8")).explorer || null; } catch { return null; }
+  }
+
+  /** Turn smart routing on (a local or team model's id) or off (null). */
+  async setExplorer(id: string | null): Promise<void> {
+    if (id !== null && !(await this.refresh().then(() => this.routeIds().includes(id)))) throw new Error(`${id} isn't available to runs. Download or prepare it first.`);
+    fs.mkdirSync(this.opts.ledgerDir, { recursive: true });
+    fs.writeFileSync(this.routingFile, JSON.stringify({ explorer: id }, null, 2) + "\n");
+    await this.applyExplorer();
+    this.changed(true);
+  }
+
+  private routeIds(): string[] { return this.currentRoutes.map((r) => r.id); }
+  private currentRoutes: Route[] = [];
+
+  /** Point routes.ts at the explorer (starting the router the first time), or switch it off. */
+  private async applyExplorer(): Promise<void> {
+    const id = this.opts.hosted ? null : this.explorerId();
+    const route = id ? this.currentRoutes.find((r) => r.id === id) || null : null;
+    if (!route) { setExplorer(null); return; }
+    if (!this.router) this.router = new ModelRouter();
+    const url = await this.router.start();
+    fs.mkdirSync(this.opts.ledgerDir, { recursive: true });
+    fs.writeFileSync(this.agentsFile, JSON.stringify(explorerAgents(route), null, 2) + "\n");
+    setExplorer({ route, agentsFile: this.agentsFile, url });
+  }
   private savedTokens(): Record<string, string> {
     try { return JSON.parse(fs.readFileSync(this.tokenFile, "utf-8")) || {}; } catch { return {}; }
   }
@@ -284,6 +317,9 @@ export class Models {
       }
     }
     setRoutes(routes);
+    this.currentRoutes = routes;
+    // The explorer's model can change (a twin made, a model deleted): keep the routing in step.
+    this.applyExplorer().catch(() => setExplorer(null));
   }
 
   private changed(force = false): void {
@@ -439,6 +475,13 @@ export class Models {
       recommended: hosted ? [] : cfg.recommended.map((m) => ({ ...m, installed: installedNames.has(full(m.tag)), ...fit(m.diskGb, installedNames.has(full(m.tag))) })),
       installed,
       pulls,
+      routing: {
+        explorer: this.explorerId(),
+        /** Set but not usable right now (its model is gone or Ollama is down): runs don't delegate. */
+        active: !!this.router?.url && this.currentRoutes.some((r) => r.id === this.explorerId()),
+        choices: this.currentRoutes.map((r) => ({ id: r.id, label: r.label })),
+        stats: this.router ? { ...this.router.stats } : null,
+      },
       endpoints: cfg.endpoints.map((e) => {
         const t = this.tokenOf(e);
         const models = e.models || (this.discovered.get(e.id) || []).map((id) => ({ id, label: id, tools: null, context: null }));

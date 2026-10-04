@@ -833,6 +833,11 @@ export interface ModelsView {
   recommended: RecommendedModel[];
   installed: InstalledModel[];
   pulls: ModelPull[];
+  /**
+   * Smart routing (POST /api/models/routing { explorer: id | null }): Claude's runs' Explore
+   * subagent (code searching and reading) runs on this model, through a router on 127.0.0.1.
+   */
+  routing: { explorer: string | null; active: boolean; choices: { id: string; label: string }[]; stats: { local: number; claude: number; queued: number } | null };
   endpoints: ModelEndpoint[];
   configured: boolean;
   error: string | null;

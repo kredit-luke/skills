@@ -13,7 +13,7 @@ import type { RunEvent } from "../../../shared/api.ts";
 import { claudeAuth, claudeEnv, claudeFile, spawnClaude } from "../claude.ts";
 import type { Agent, AgentCapabilities, AgentStatus, ParseState, TurnInput } from "./index.ts";
 import { cached, probe } from "./util.ts";
-import { allRoutes, resumeCommand, routeOf, turnEnv } from "../models/routes.ts";
+import { EXPLORER_RULE, allRoutes, explorerFor, resumeCommand, routeOf, turnEnv } from "../models/routes.ts";
 
 const MODELS = [
   { id: "opus", label: "Opus", efforts: null },
@@ -51,8 +51,11 @@ export class ClaudeAgent implements Agent {
       "--permission-mode", t.planMode ? "plan" : t.permissionMode,
       // Headless: nobody can answer a permission prompt, so anything that would ask is denied.
       "--permission-prompts", "none",
-      "--append-system-prompt", [t.rules, t.planRule].filter(Boolean).join("\n\n"),
+      "--append-system-prompt", [t.rules, explorerFor(t.model) ? EXPLORER_RULE : null, t.planRule].filter(Boolean).join("\n\n"),
     ];
+    // Smart routing: Claude Code's Explore subagent, replaced by one on the open model.
+    const ex = explorerFor(t.model);
+    if (ex) args.push("--agents", ex.agentsFile);
     // A local or team model: its name on that server (the backend comes from spawn's env). One
     // that's gone (launches check first) goes as it is, so it fails instead of running on Claude.
     const route = routeOf(t.model);

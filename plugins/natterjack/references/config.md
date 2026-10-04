@@ -240,6 +240,17 @@ The Models page (under Agents) lets runs use open models instead of Claude's, fo
 
 The backend is chosen per turn from the turn's model (`<engine>/server/src/models/routes.ts`). Turns on `opus`, `sonnet`, `haiku` or `fable` start exactly as before, on the person's own Claude sign-in (their subscription, when they have one). A local turn clears any provider settings from the shell (Bedrock, Vertex, a gateway's `ANTHROPIC_BASE_URL`) and sets its own, so none of them carry over. It also points Claude Code's subagents and background calls at the same model (the server has no Claude models) and turns off Claude Code's non-essential traffic. **Continue in terminal** sets the same variables first. A team token is read from its env var or the token file, never printed. A model that's no longer available stops the launch or reply with a pointer to the Models page; it never falls back to a Claude model.
 
+**Smart routing (experimental, per person).** The Models page's **Explorer** setting makes Claude's runs (Opus, Sonnet…) do their broad code searching on an open model:
+- Each Claude turn gets an `Explore` subagent on that model (passed with `--agents`, a file in `.claude/ledger/`). It takes the place of Claude Code's own Explore, so the exploring Claude already chooses to hand off runs free, and Claude does the planning, editing and final answer.
+- The turn's requests go through a small router on `127.0.0.1` (`<engine>/server/src/models/router.ts`):
+  - The explorer's model goes to its server without the person's Claude credentials, queued one at a time, with keep-alive pings while waiting.
+  - Everything else goes on to Anthropic (or the gateway `ANTHROPIC_BASE_URL` names) unchanged, on the person's own sign-in.
+- Off by default. It has no effect on runs that are already on a local or team model. Exploring takes longer on a small model than on Claude.
+- A run's "api-equiv" cost includes the explorer's tokens priced as if Claude ran them, so it overstates the real cost.
+- Local runs get a rule not to start parallel subagents, because the server answers one request at a time, and a 30-minute request timeout.
+
+**Changing model mid-run.** The reply box on a Claude run has **Next reply on**, plus **Continue with Opus** on a local or team model's run. The session carries on, on the new model.
+
 **On this computer (Ollama).**
 - The page shows:
   - the GPU and its memory (`nvidia-smi`; Apple silicon shares RAM),

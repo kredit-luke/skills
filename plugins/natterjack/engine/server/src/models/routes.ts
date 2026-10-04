@@ -101,9 +101,47 @@ export function routeVars(r: Route): Record<string, string> {
 export function turnEnv(model: string | null | undefined, base: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv {
   const env = claudeEnv(base);
   const r = routeOf(model);
+  // Smart routing: the same environment (the person's own sign-in) with the router in front; it
+  // passes Claude's requests on unchanged (to the gateway this env named, if any: the router was
+  // started knowing it).
+  const ex = r ? null : explorerFor(model);
+  if (ex) return { ...env, ANTHROPIC_BASE_URL: ex.url };
   if (!r) return env;
   for (const k of PROVIDER_ENV) delete env[k];
   return { ...env, ...routeVars(r) };
+}
+
+// ---------------------------------------------------------------- smart routing (router.ts)
+
+/**
+ * Smart routing, when the person turned it on: Claude's turns get an "Explore" subagent on this
+ * route's model (the --agents file). It takes the place of Claude Code's own Explore, so the
+ * exploring Claude already chooses to hand off runs on the open model; telling Claude to delegate
+ * isn't reliable (on a small task it searches itself), and taking its search tools away only
+ * sends it to grep through Bash. The turn goes through the router at `url`, which sends the
+ * explorer's requests to the model's server and everything else on to Anthropic unchanged.
+ */
+export interface Explorer { route: Route; agentsFile: string; url: string }
+let explorer: Explorer | null = null;
+export function setExplorer(e: Explorer | null): void { explorer = e; }
+/** The explorer for a turn on `model`: only Claude's own models delegate (a routed turn is already local). */
+export function explorerFor(model: string | null | undefined): Explorer | null {
+  return explorer && !isRoutedId(model) ? explorer : null;
+}
+
+export const EXPLORER_NAME = "Explore";
+export const EXPLORER_RULE = `The ${EXPLORER_NAME} subagent runs on a free open model here. For broad searching and reading (finding files, tracing where something is defined or used, surveying a module), use it with a focused question, one at a time, and build on what it reports; quick lookups you can do yourself. Do the planning, editing and final answer yourself.`;
+
+/** The --agents file's content: the explorer, read-only, on the route's model. */
+export function explorerAgents(r: Route): Record<string, unknown> {
+  return {
+    [EXPLORER_NAME]: {
+      description: `Read-only code search and exploring on a free open model (${r.label}). Use it to find files, trace definitions and usages, and summarize code. Give it one focused question.`,
+      prompt: "You search and read code to answer one question. Use Grep, Glob and Read, one step at a time; don't edit anything. Report what you found, with file paths and line numbers, briefly.",
+      model: r.model,
+      tools: ["Read", "Grep", "Glob"],
+    },
+  };
 }
 
 const psq = (s: string) => `'${s.replace(/'/g, "''")}'`;
