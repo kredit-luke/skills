@@ -6,6 +6,8 @@ argument-hint: "[workspace folder]"
 
 # Upgrade the dashboard engine
 
+> **Plugin folder.** `${CLAUDE_PLUGIN_ROOT}` below is this plugin's folder (the one with `scripts/`, `references/` and `engine/`). Claude Code fills it in. GitHub Copilot CLI and OpenAI Codex CLI don't: there, use the folder two levels above this SKILL.md (`<plugin>/skills/<name>/SKILL.md` → `<plugin>`) wherever it appears.
+
 The team's dashboard is a copy of this plugin's engine (`${CLAUDE_PLUGIN_ROOT}/engine/`) that they may have changed. `.claude/dashboard/engine.json` records the version they installed (the merge base) and its folder, `dir` (`<engine>` below; no `dir` means `dashboard/`, from before the folder was configurable). Their config (`.claude/dashboard/*.json`, `brand/`) is never touched.
 
 1. **Get the latest plugin first.** Claude Code caches plugins and doesn't refresh them by itself, so this copy may be behind the latest release, and it would then "upgrade" to an old engine. Refresh it:
@@ -13,6 +15,7 @@ The team's dashboard is a copy of this plugin's engine (`${CLAUDE_PLUGIN_ROOT}/e
    claude plugin marketplace update <marketplace>
    claude plugin update natterjack@<marketplace>
    ```
+   In GitHub Copilot CLI: `copilot plugin marketplace update <marketplace>` then `copilot plugin update natterjack@<marketplace>`. In OpenAI Codex CLI: `codex plugin marketplace upgrade <marketplace>`. (A local marketplace folder is read live: nothing to update.)
    (`<marketplace>` is the folder above `natterjack/` in `${CLAUDE_PLUGIN_ROOT}`, normally `lhoezee-skills`.) If it updated, this running skill still points at the old folder: use the new one for every script below. It's the sibling folder named after the new version (`<CLAUDE_PLUGIN_ROOT>/../<new version>/`); call it `$ROOT`, otherwise `$ROOT` is `${CLAUDE_PLUGIN_ROOT}`. Tell the user to restart Claude Code afterwards so the skills load from the new copy.
 2. **Check the tree is clean**: `git -C <workspace> status --short <engine>/`. If there are uncommitted changes there, ask the user to commit or stash them (so the upgrade is one reviewable diff), or get their OK to proceed.
 3. **Dry run** and show the user what will happen:

@@ -422,3 +422,23 @@ test("releases before the rename: latestRelease and fetchEngine read agentic-os-
   assert.equal(engineVersion(fetchEngine("0.9.0", repo)), "0.9.0");
   assert.equal(fetchEngine("0.5.0", repo), null, "a version with no tag");
 });
+
+test("the plugin installs in Claude Code, Copilot CLI and Codex CLI from the same folder, at the same version", () => {
+  const repo = path.resolve(path.dirname(new URL(import.meta.url).pathname.replace(/^\/([A-Za-z]:)/, "$1")), "..", "..", "..", "..");
+  const read = (p) => JSON.parse(fs.readFileSync(path.join(repo, p), "utf-8"));
+  const claude = read("plugins/natterjack/.claude-plugin/plugin.json");
+  const codex = read("plugins/natterjack/.codex-plugin/plugin.json");
+  assert.equal(codex.version, claude.version, "bump .codex-plugin/plugin.json with .claude-plugin/plugin.json on release");
+  assert.equal(codex.name, claude.name);
+  assert.equal(codex.skills, "./skills/");
+  // Copilot reads the Claude marketplace; Codex has its own, pointing at the same plugin folder.
+  const claudeMarket = read(".claude-plugin/marketplace.json");
+  const codexMarket = read(".agents/plugins/marketplace.json");
+  assert.equal(codexMarket.name, claudeMarket.name);
+  assert.deepEqual(codexMarket.plugins.map((p) => [p.name, p.source.path]), claudeMarket.plugins.map((p) => [p.name, p.source]));
+  // Skills say where the plugin is for agents that don't fill in ${CLAUDE_PLUGIN_ROOT}.
+  for (const d of fs.readdirSync(path.join(repo, "plugins/natterjack/skills"))) {
+    const text = fs.readFileSync(path.join(repo, "plugins/natterjack/skills", d, "SKILL.md"), "utf-8");
+    if (text.includes("${CLAUDE_PLUGIN_ROOT}")) assert.match(text, /\*\*Plugin folder\.\*\*/, `${d}/SKILL.md uses \${CLAUDE_PLUGIN_ROOT} without the Plugin folder note`);
+  }
+});

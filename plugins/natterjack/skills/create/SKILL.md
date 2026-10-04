@@ -6,6 +6,8 @@ argument-hint: "[workspace folder]"
 
 # Set up Natterjack
 
+> **Plugin folder.** `${CLAUDE_PLUGIN_ROOT}` below is this plugin's folder (the one with `scripts/`, `references/` and `engine/`). Claude Code fills it in. GitHub Copilot CLI and OpenAI Codex CLI don't: there, use the folder two levels above this SKILL.md (`<plugin>/skills/<name>/SKILL.md` → `<plugin>`) wherever it appears.
+
 You're setting up a workspace so a whole team can work with Claude: repos side by side under one root, workspace-level CLAUDE.md and skills, and a **dashboard** they run locally (default http://localhost:3333). The dashboard is a finished, generic engine you copy in; your job is to **discover** the team's world, **confirm** it with them, and write the **config** that makes the engine theirs. You don't write dashboard code unless a service they use has no adapter yet.
 
 Everything bundled with this skill is under `${CLAUDE_PLUGIN_ROOT}`:
@@ -30,7 +32,7 @@ If `inventory.existing.dashboard` is true, this workspace already has one (in `i
 
 ## 2. Interview (only what discovery couldn't settle)
 
-Read `references/discovery.md` for how to turn the inventory into questions. Keep it to one or two rounds of AskUserQuestion (or the dashboard's question block when you're running headless). Always confirm:
+Read `references/discovery.md` for how to turn the inventory into questions. Keep it to one or two rounds of AskUserQuestion (Copilot CLI: its ask_user tool; an agent without one: ask in chat; the dashboard's question block when you're running headless). Always confirm:
 1. **Repos**: which folders are part of the workspace (and any to clone: their URLs go in repos.json).
 2. **Issue tracker**: Linear / Jira / GitHub Issues / none, plus its settings (Linear org slug; Jira site + project keys; GitHub owner/repo list), which teams and states to show, and which state means "ready to build".
 3. **Apps**: which to put on the Apps page, how each starts, its port, and which run together as a stack (and in what order, e.g. database, then API, then web).

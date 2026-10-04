@@ -28,6 +28,7 @@ import { readProfile } from "./profile.ts";
 import { CATALOG } from "./machine-catalog.ts";
 import { claudeAuth, connectorState } from "./claude.ts";
 import { mcpHealth } from "./connections.ts";
+import { agentStatuses } from "./agents/index.ts";
 import { NOT_HOSTED } from "./hosted.ts";
 
 const IS_WIN = process.platform === "win32";
@@ -166,6 +167,34 @@ export function openTerminal(cmd: string, cwd: string, title: string, doneMsg = 
     }
     resolve({ opened: false, command: cmd });
   });
+}
+
+// ------------------------------------------------------------- agents
+
+/**
+ * The agent CLIs a run can use besides Claude (Copilot, Codex: the Agent picker in Ask and
+ * Run), shown in their own group whether or not machine.json lists them: signed in, not
+ * signed in (with Sign in), or not installed (optional, with Install; not a problem).
+ * One that machine.json does list (`"use": "copilot"`) keeps that check instead.
+ */
+async function agentChecks(existing: any[]): Promise<any[]> {
+  const listed = new Set(existing.map((c) => c.id));
+  const out: any[] = [];
+  for (const a of await agentStatuses(true).catch(() => [])) {
+    if (a.id === "claude" || listed.has(a.id)) continue;
+    const cat: any = (CATALOG as any)[a.id] || {};
+    const signIn = installFor(cat.auth?.signIn || { win: `${a.id} login`, mac: `${a.id} login`, linux: `${a.id} login` }, {}, "Sign in");
+    const install = installFor(cat.install, {}, "Install");
+    out.push({
+      id: `agent-${a.id}`, kind: "agent", group: "Agents", label: cat.label || a.label, version: a.version, apps: [],
+      status: !a.installed ? "info" : a.signedIn ? "ok" : "warn",
+      detail: !a.installed ? `Optional: lets dashboard runs use ${a.label} (pick it next to Model in Ask and Run).`
+        : a.signedIn ? `Signed in: pick ${a.label} as the agent in Ask or Run.` : `Installed but not signed in, so runs can't use ${a.label} yet.`,
+      install: !a.installed ? install : a.signedIn ? undefined : signIn,
+      fix: !a.installed ? install?.cmd || "" : a.signedIn ? "" : signIn?.cmd || "",
+    });
+  }
+  return out;
 }
 
 // ------------------------------------------------------------- checks
@@ -320,6 +349,7 @@ class Machine {
       const fixText = c.fix || (c.install ? c.install.cmd : "");
       checks.push({ apps: [], ...c, detail: c.detail || "", fix: fixText });
     }
+    checks.push(...(await agentChecks(checks)));
     // Install buttons only where there's something to do.
     for (const c of checks) if (c.status === "ok") delete c.install;
 
@@ -417,6 +447,21 @@ class Machine {
             : signedOut ? s.auth.detail || "Installed but not signed in."
             : detail.ok || "",
           install: !ok || tooOld ? installFor(s.install, vars) : signedOut ? installFor(s.auth.signIn, vars, "Sign in") : undefined,
+          fix: fixOf(),
+        };
+      }
+
+      case "agent-cli": {
+        // Copilot / Codex listed in machine.json: the same check as the automatic Agents group (agents/),
+        // which runs the native binary (Codex's npm launcher would flash a console window).
+        const a = (await agentStatuses(false).catch(() => [])).find((x) => x.id === s.id || x.id === s.use);
+        if (!a) return null;
+        const signIn = installFor({ win: `${a.id} login`, mac: `${a.id} login`, linux: `${a.id} login` }, vars, "Sign in");
+        return {
+          ...base, label, version: a.version,
+          status: !a.installed ? absent : a.signedIn ? "ok" : "warn",
+          detail: !a.installed ? detail.missing || "" : a.signedIn ? detail.ok || "Signed in." : "Installed but not signed in.",
+          install: !a.installed ? installFor(s.install, vars) : a.signedIn ? undefined : signIn,
           fix: fixOf(),
         };
       }

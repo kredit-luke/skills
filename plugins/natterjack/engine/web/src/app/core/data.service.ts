@@ -1,6 +1,6 @@
 import { Injectable, computed, inject, signal } from '@angular/core';
 import type {
-  ConnectionsResponse, DeckResponse, DocSite, DocsResponse, KnowledgeArea, Inbox, Job, JobsResponse, MachineReport, Overview, PresetStats,
+  AgentInfo, ConnectionsResponse, DeckResponse, DocSite, DocsResponse, KnowledgeArea, Inbox, Job, JobsResponse, MachineReport, Overview, PresetStats,
   RunMeta, RunsResponse, Stack, StatusResponse,
 } from '../../../../shared/api';
 import { ApiService } from './api.service';
@@ -35,6 +35,8 @@ export class DataService {
   readonly appsConfigured = signal<boolean | null>(null);
   readonly appsError = signal<string | null>(null);
   readonly machine = signal<MachineReport | null>(null);
+  /** The agent CLIs runs can use (Claude, Copilot, Codex): installed, signed in, models. Null until loaded. */
+  readonly agents = signal<AgentInfo[] | null>(null);
   /** MCP servers (Connections page and its sidebar count). */
   readonly connections = signal<ConnectionsResponse | null>(null);
   readonly docSites = signal<DocSite[]>([]);
@@ -63,6 +65,7 @@ export class DataService {
     this.loadMachine(false);
     this.loadConnections({ wait: true });
     this.loadDocs(); // the sidebar's count of notes due for review
+    this.loadAgents();
     if (typeof EventSource === 'undefined') { this.startPolling(); return; }
     // A hidden tab holds no stream: nothing to keep current, and the browser's few connections per host stay free.
     document.addEventListener('visibilitychange', () => (document.hidden ? this.disconnect() : this.connect()));
@@ -199,6 +202,10 @@ export class DataService {
     } catch (e) {
       if (opts.force) this.toast.error((e as Error).message);
     }
+  }
+
+  async loadAgents(force = false): Promise<void> {
+    try { this.agents.set((await this.api.get<{ agents: AgentInfo[] }>('/api/agents' + (force ? '?force=1' : ''))).agents); } catch { /* keep the last list */ }
   }
 
   async loadDocs(): Promise<void> {

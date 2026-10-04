@@ -4,6 +4,7 @@ import { ApiService } from '../../core/api.service';
 import { ToastService } from '../../core/toast.service';
 import { answerText } from '../../runs/answer';
 import { AttachComponent } from '../../shared/attach.component';
+import { agentLabel } from '../../core/agents';
 import { SlashInputComponent } from '../../shared/slash-input.component';
 
 const REPLYABLE = new Set(['waiting', 'succeeded', 'failed', 'cancelled', 'interrupted']);
@@ -62,10 +63,10 @@ const AUTO_SEND_KEY = 'dash.queueAutoSend';
 
         <div class="plan-bar" [class.on]="r.planMode">
           @if (r.planMode) {
-            <span><b>Plan mode</b> — read-only. Claude can look but not change anything.</span>
+            <span><b>Plan mode</b> — read-only. {{ who() }} can look but not change anything.</span>
             <button class="btn sm" type="button" [disabled]="busy() || r.status === 'running'" (click)="setPlan(false)">Turn off plan mode</button>
           } @else {
-            <span class="muted">Claude can make changes in {{ r.workspace }}.</span>
+            <span class="muted">{{ who() }} can make changes in {{ r.workspace }}.</span>
             <button class="linkish" type="button" [disabled]="busy() || r.status === 'running'" (click)="setPlan(true)">Turn on plan mode</button>
           }
         </div>
@@ -74,11 +75,11 @@ const AUTO_SEND_KEY = 'dash.queueAutoSend';
           <div class="queue" [class.held]="held()">
             <div class="queue-h">
               @if (r.status === 'running') {
-                <span><b>Queued</b> · sent when Claude finishes this turn</span>
+                <span><b>Queued</b> · sent when {{ who() }} finishes this turn</span>
               } @else if (r.queueBlocked) {
                 <span><b>Queued, not sent:</b> {{ r.queueBlocked }}</span>
               } @else if (r.status === 'waiting') {
-                <span><b>Queued</b> · held while Claude waits for your answer</span>
+                <span><b>Queued</b> · held while {{ who() }} waits for your answer</span>
               } @else {
                 <span><b>Queued</b> · held because the turn was {{ r.status }}</span>
               }
@@ -110,7 +111,7 @@ const AUTO_SEND_KEY = 'dash.queueAutoSend';
         }
 
         @if (r.status === 'running') {
-          <div class="note working"><span class="spin"></span> Claude is working… Type ahead to queue a message for when it's done, or cancel the turn to interrupt.</div>
+          <div class="note working"><span class="spin"></span> {{ who() }} is working… Type ahead to queue a message for when it's done, or cancel the turn to interrupt.</div>
           <form class="reply" (submit)="$event.preventDefault(); queue()">
             <dash-slash-input [multiline]="true" [rows]="2" [above]="true" [value]="text()" (valueChange)="text.set($event)" (keys)="onKey($event)"
               placeholder="Queue a message for when this turn ends, or type / for skills…" [disabled]="busy()" />
@@ -135,6 +136,8 @@ export class RunComposerComponent {
   private readonly api = inject(ApiService);
   private readonly toast = inject(ToastService);
   readonly run = input.required<RunMeta>();
+  /** The run's agent, for labels. */
+  readonly who = computed(() => agentLabel(this.run().agent));
   readonly changed = output<RunMeta>();
 
   readonly text = signal('');

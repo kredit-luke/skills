@@ -196,15 +196,16 @@ test("skillFile finds SKILL.md whatever its case (case-sensitive disks)", async 
   assert.ok(names.includes("lower"), names.join(","));
 });
 
+// The Agents group (Copilot, Codex) depends on what this machine has installed: left out of these comparisons.
 test("Machine re-runs its checks when machine.json changes (no manual Re-check)", async () => {
   const { Machine } = await import("../src/machine.ts");
   write("machine.json", { checks: [{ use: "env-var", id: "a", name: "DASH_TEST_A" }] });
   const m = new Machine(ROOT);
   const first = await m.get();
-  assert.deepEqual(first.checks.map((c) => [c.id, c.kind]), [["a", "env-var"]], "each check says its kind, which the UI keys on (the id is the config's)");
+  assert.deepEqual(first.checks.filter((c) => c.kind !== "agent").map((c) => [c.id, c.kind]), [["a", "env-var"]], "each check says its kind, which the UI keys on (the id is the config's)");
   assert.equal(await m.get(), first, "unchanged config: the cached report");
   write("machine.json", { checks: [{ use: "env-var", id: "a", name: "DASH_TEST_A" }, { use: "env-var", id: "b", name: "DASH_TEST_B" }] });
-  assert.deepEqual((await m.get()).checks.map((c) => c.id), ["a", "b"]);
+  assert.deepEqual((await m.get()).checks.filter((c) => c.kind !== "agent").map((c) => c.id), ["a", "b"]);
   write("machine.json", { checks: [] });
 });
 
@@ -226,12 +227,12 @@ test("Machine re-runs its checks when the viewer's profile changes (no stale rol
   write("machine.json", { checks: [{ use: "env-var", id: "all", name: "DASH_TEST_A" }, { use: "env-var", id: "dev", name: "DASH_TEST_B", when: { profile: "developer" } }] });
   const m = new Machine(ROOT);
   try {
-    assert.deepEqual((await m.get()).checks.map((c) => c.id), ["all", "dev"]);
+    assert.deepEqual((await m.get()).checks.filter((c) => c.kind !== "agent").map((c) => c.id), ["all", "dev"]);
     fs.mkdirSync(ledger, { recursive: true });
     fs.writeFileSync(profileFile, JSON.stringify({ role: null, profile: "reader" }));
-    assert.deepEqual((await m.get()).checks.map((c) => c.id), ["all"], "a reader doesn't get the developer's cached report");
+    assert.deepEqual((await m.get()).checks.filter((c) => c.kind !== "agent").map((c) => c.id), ["all"], "a reader doesn't get the developer's cached report");
     fs.rmSync(profileFile);
-    assert.deepEqual((await m.get()).checks.map((c) => c.id), ["all", "dev"]);
+    assert.deepEqual((await m.get()).checks.filter((c) => c.kind !== "agent").map((c) => c.id), ["all", "dev"]);
   } finally {
     fs.rmSync(profileFile, { force: true });
     write("machine.json", { checks: [] });

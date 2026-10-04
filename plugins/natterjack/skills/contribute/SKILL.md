@@ -6,6 +6,8 @@ argument-hint: "[workspace folder]"
 
 # Contribute engine changes upstream
 
+> **Plugin folder.** `${CLAUDE_PLUGIN_ROOT}` below is this plugin's folder (the one with `scripts/`, `references/` and `engine/`). Claude Code fills it in. GitHub Copilot CLI and OpenAI Codex CLI don't: there, use the folder two levels above this SKILL.md (`<plugin>/skills/<name>/SKILL.md` → `<plugin>`) wherever it appears.
+
 Only the **engine** goes upstream: the engine folder (`natterjack/` by default, `dashboard/` in older workspaces; `.claude/dashboard/engine.json` `dir` says which). The team's config and brand (`.claude/dashboard/`) stay theirs.
 
 1. **See what changed** since the installed version:
