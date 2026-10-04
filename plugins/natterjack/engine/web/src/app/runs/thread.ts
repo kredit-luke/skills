@@ -287,6 +287,9 @@ export function buildThread(events: readonly any[], opts: BuildOptions = {}): Th
     }
 
     if (ev.type === 'turn') {
+      // Each dashboard turn is a new process: whatever the last one left running died with it.
+      for (const c of agents) if (!FINISHED.includes(c.status)) c.status = 'stopped';
+      for (const t of tools.values()) if (t.bgStatus === 'running') t.bgStatus = 'killed';
       turn = ev.turn || turn + 1;
       main.push({ kind: 'turn', key: key('turn'), turn, planMode: !!ev.planMode });
       continue;

@@ -142,6 +142,21 @@ describe('buildThread basics', () => {
     expect(buildThread(events, { runActive: false }).agents[0].status).toBe('stopped');
   });
 
+  it('shows an earlier turn\'s unfinished agents and background tasks as Stopped once a new turn starts', () => {
+    const t = buildThread([
+      { type: 'assistant', parent_tool_use_id: null, message: { content: [{ type: 'tool_use', id: 'a', name: 'Agent', input: { subagent_type: 'x' } }] } },
+      { type: 'system', subtype: 'task_started', task_id: 'k', tool_use_id: 'a', task_type: 'local_agent' },
+      { type: 'assistant', parent_tool_use_id: null, message: { content: [{ type: 'tool_use', id: 'b', name: 'Bash', input: { command: 'npm ci', run_in_background: true } }] } },
+      { type: 'system', subtype: 'task_started', task_id: 'kb', tool_use_id: 'b', task_type: 'local_bash' },
+      { type: 'turn', turn: 2 },
+      { type: 'assistant', parent_tool_use_id: null, message: { content: [{ type: 'tool_use', id: 'c', name: 'Agent', input: { subagent_type: 'x' } }] } },
+      { type: 'system', subtype: 'task_started', task_id: 'k2', tool_use_id: 'c', task_type: 'local_agent' },
+    ], { runActive: true });
+    expect(t.agents.map((a) => a.status)).toEqual(['stopped', 'running']);
+    const bash = t.items.find((i) => i.kind === 'tool' && i.name === 'Bash');
+    expect(bash && bash.kind === 'tool' && bash.bgStatus).toBe('killed');
+  });
+
   it('tracks background Bash tasks on their tool row, not as agents', () => {
     const t = buildThread([
       { type: 'assistant', parent_tool_use_id: null, message: { content: [{ type: 'tool_use', id: 'b', name: 'Bash', input: { command: 'npm ci', run_in_background: true } }] } },
