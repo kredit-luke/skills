@@ -309,6 +309,10 @@ test("saveTools: docs.json sources and connections.json requirements for the pic
   assert.throws(() => saveTools({ tools: [{ tool: "confluence" }] }), /add the site/);
   assert.throws(() => saveTools({ tools: [{ tool: "confluence", url: "https://example.com" }] }), /doesn't look like a Confluence site/);
   assert.throws(() => saveTools({ tools: [{ tool: "dropbox" }] }), /Unknown tool/);
+  // Notion links are on notion.com now (notion.so and notion.site before); any of them is fine.
+  for (const url of ["https://app.notion.com/p/3ee3159bd5ed80aba8b5f95e9339a4fb?v=3ee3", "https://www.notion.so/acme", "https://acme.notion.site/Handbook"]) saveTools({ tools: [{ tool: "notion", url }] });
+  assert.throws(() => saveTools({ tools: [{ tool: "notion", url: "https://example.com/notion" }] }), /Notion/);
+  saveTools({ tools: [{ tool: "notion" }] });
   assert.throws(() => saveTools({ tools: [{ tool: "other", name: "X" }] }), /add its link/);
 
   // A store from the setup panel: never a key in config.

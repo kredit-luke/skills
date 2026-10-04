@@ -36,7 +36,7 @@ const CLAUDE_AI = "Connect it once at claude.ai → Settings → Connectors; it 
 export const KNOWLEDGE_TOOLS: KnowledgeTool[] = [
   {
     id: "notion", label: "Notion", description: "Wiki, docs and databases",
-    urlLabel: "Workspace link", urlPlaceholder: "https://www.notion.so/acme", urlRequired: false, urlPattern: "^https://([\\w-]+\\.)?notion\\.(so|site)(/|$)",
+    urlLabel: "Workspace or page link", urlPlaceholder: "https://app.notion.com/p/…", urlRequired: false, urlPattern: "^https://([\\w-]+\\.)?notion\\.(com|so|site)(/|$)",
     connections: ["claude.ai Notion", "notion"], provider: null,
     connectHelp: `${CLAUDE_AI} Or add Notion's own server (https://mcp.notion.com/mcp) on the Connections page.`,
   },
@@ -54,7 +54,7 @@ export const KNOWLEDGE_TOOLS: KnowledgeTool[] = [
   },
   {
     id: "sharepoint", label: "SharePoint / OneDrive", description: "Microsoft 365 files and sites",
-    urlLabel: "Site", urlPlaceholder: "https://acme.sharepoint.com/sites/…", urlRequired: false, urlPattern: "^https://[\\w-]+(-my)?\\.sharepoint\\.com/",
+    urlLabel: "Site", urlPlaceholder: "https://acme.sharepoint.com/sites/…", urlRequired: false, urlPattern: "^https://([\\w-]+(-my)?\\.sharepoint\\.com|onedrive\\.live\\.com|1drv\\.ms)/",
     connections: ["claude.ai Microsoft 365"], provider: null,
     connectHelp: `${CLAUDE_AI} An organization admin enables the Microsoft 365 connector for the organization first.`,
   },

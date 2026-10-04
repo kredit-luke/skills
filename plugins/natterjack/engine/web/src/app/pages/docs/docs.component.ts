@@ -55,15 +55,18 @@ type View = 'page' | 'text';
               @if (s.kind === 'external') {
                 <div class="site-card ext">
                   @if (s.searchable) { <a class="n" [routerLink]="['/knowledge', s.key]">{{ s.name }}</a> }
-                  @else { <a class="n" [href]="s.url" target="_blank" rel="noopener">{{ s.name }} ↗</a> }
-                  <span class="ty">{{ s.type }} · {{ host(s.url) }}@if (s.searchable) { · <a [href]="s.url" target="_blank" rel="noopener">open ↗</a> }</span>
+                  @else { <a class="n" [href]="s.url" [title]="s.url" target="_blank" rel="noopener">{{ s.name }} ↗</a> }
+                  <span class="ty">{{ s.type }} · {{ host(s.url) }}</span>
                   @if (s.description) { <span class="ty">{{ s.description }}</span> }
                   @switch (reach(s)) {
                     @case ('ok') { <span class="reach ok" [title]="'Through ' + s.connection">✓ Claude can reach it</span> }
                     @case ('bad') { <a class="reach bad" routerLink="/connections" [title]="s.connection + ' is not working for you'">! Claude can't reach it: fix on Connections</a> }
                     @case ('checking') { <span class="reach">Checking Claude's access…</span> }
                   }
-                  <button class="btn ghost sm" type="button" (click)="askExternal(s)" title="A read-only Claude run that looks this up through the {{ s.type }} connector">Ask Claude</button>
+                  <div class="card-acts">
+                    <button class="btn ghost sm" type="button" (click)="askExternal(s)" title="A read-only Claude run that looks this up through the {{ s.type }} connector">Ask Claude</button>
+                    @if (s.url) { <a class="btn ghost sm" [href]="s.url" [title]="s.url" target="_blank" rel="noopener">Open ↗</a> }
+                  </div>
                 </div>
               } @else {
                 <a class="site-card" [class.off]="!s.available && s.kind !== 'store'" [routerLink]="['/knowledge', s.key]">
@@ -284,6 +287,7 @@ export class DocsComponent implements OnInit {
   reach(s: DocSite) { return reach(s, this.data.connections()); }
   staleIn(sites: DocSite[]): number { return sites.reduce((n, s) => n + (s.stale || 0), 0); }
 
-  host(url: string | null): string { return url ? url.replace(/^https?:\/\//, '').replace(/\/$/, '') : ''; }
+  /** Just the site (app.notion.com), not the whole link: the full address is the Open button's tooltip. */
+  host(url: string | null): string { if (!url) return ''; try { return new URL(url).hostname; } catch { return url; } }
   vscode(p: string): string { return vscodeUrl(p); }
 }
