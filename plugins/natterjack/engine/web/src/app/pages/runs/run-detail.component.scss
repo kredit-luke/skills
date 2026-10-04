@@ -31,7 +31,7 @@
 // Expanded with many subagents: scroll inside the strip instead of pushing the transcript off screen.
 .agent-strip.open { max-height: 9.5rem; overflow-y: auto; }
 .strip-sum { font-size: 11.5px; color: var(--ink-soft); margin-right: 4px; }
-.strip-sum.routed { color: var(--accent); font-family: var(--font-mono); }
+.strip-sum.routed { color: var(--accent); font-family: var(--font-mono); min-width: 0; overflow-wrap: anywhere; }
 .strip-more { border: 1px dashed var(--border-strong); background: transparent; border-radius: var(--r-pill); padding: 2px 9px; font-size: 11.5px; color: var(--brand-700); cursor: pointer; }
 .strip-more:hover { border-color: var(--brand-700); background: #fff; }
 
@@ -105,7 +105,7 @@
 .chip .resume, .agent-h .resume { color: var(--brand-700); font-size: 12px; }
 .chip .pass { color: var(--ink-soft); }
 .agent-h .pass { font-family: var(--font-mono); font-size: 11px; color: var(--ink-soft); background: var(--paper-2); border-radius: 6px; padding: 0 5px; flex: none; }
-.agent-h .model { font-family: var(--font-mono); font-size: 10.5px; color: var(--ink-faint); border: 1px solid var(--border); border-radius: 6px; padding: 0 5px; flex: none; }
+.agent-h .model { font-family: var(--font-mono); font-size: 10.5px; color: var(--ink-faint); border: 1px solid var(--border); border-radius: 6px; padding: 0 5px; flex: 0 1 auto; min-width: 0; overflow-wrap: anywhere; }
 .agent-h .model.routed { color: var(--accent); border-color: currentColor; }
 .chip .open-mk { color: var(--accent); font-size: 9px; margin-left: 3px; }
 
