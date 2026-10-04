@@ -45,7 +45,7 @@ const ENDPOINT_EXAMPLE = `{
             <div class="fact">
               <div class="k">GPU</div>
               @if (m.hardware.gpus.length) {
-                @for (g of m.hardware.gpus; track g.name) { <div class="v">{{ g.name }}@if (g.vramGb) { <span class="dim"> · {{ g.vramGb }} GB{{ g.unified ? ' (shared with RAM)' : '' }}</span> }</div> }
+                @for (g of m.hardware.gpus; track g.name) { <div class="v">{{ g.name }}@if (g.vramGb) { <span class="dim"> · {{ g.vramGb }} GB{{ g.unified ? ' (shared with RAM)' : '' }}</span> }@if (g.driver) { <span class="dim"> · driver {{ g.driver }}</span> }</div> }
               } @else { <div class="v dim">None found: models run on the CPU (slowly)</div> }
             </div>
             <div class="fact"><div class="k">Memory</div><div class="v">{{ m.hardware.memoryGb }} GB <span class="dim">· {{ m.hardware.freeMemoryGb }} GB free</span></div></div>
@@ -60,6 +60,7 @@ const ENDPOINT_EXAMPLE = `{
               } @else { <div class="v dim">{{ m.ollama.where === 'elsewhere' ? 'Wherever Ollama runs (not this computer\'s apps)' : 'Unknown' }}</div> }
             </div>
           </div>
+          @if (m.gpuWarning) { <div class="runtime"><span class="tag bad">GPU not used</span><span>{{ m.gpuWarning }}</span></div> }
           @if (m.ollama.where === 'wsl') {
             <div class="runtime">
               <span>Ollama runs in WSL here, so this page can use it but not install, start or update it. To have the page manage it, switch to the native app (it uses the same GPU): stop the WSL one with <code (click)="copy('sudo systemctl disable --now ollama')" title="Click to copy">sudo systemctl disable --now ollama</code> in WSL, then Refresh and Install.</span>

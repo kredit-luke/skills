@@ -767,7 +767,7 @@ export interface MachineCheck {
   install?: { label: string; cmd: string; cwd?: string } | null; action?: 'setup';
 }
 /** GET /api/machine[?force=1] ;  POST /api/machine/install { id } → { opened, command } */
-export interface MachineGpu { name: string; vramGb: number | null; unified?: boolean }
+export interface MachineGpu { name: string; vramGb: number | null; unified?: boolean; vendor?: 'nvidia' | 'apple'; driver?: string }
 export interface MachineDisk { path: string; freeGb: number; totalGb: number }
 export interface MachineReport {
   host: string; os: string; osVersion: string; arch: string; cpus: number; memoryGb: number;
@@ -821,6 +821,8 @@ export interface ModelEndpoint {
 export interface ModelsView {
   hosted: boolean;
   hardware: { memoryGb: number; freeMemoryGb: number; gpus: MachineGpu[]; disk: MachineDisk | null };
+  /** The GPU can't be used (e.g. an NVIDIA driver older than Ollama needs), and what to do; null when fine. */
+  gpuWarning: string | null;
   modelsDir: MachineDisk | null;
   contextLength: number;
   /** messagesApi: it serves Anthropic's Messages API, which Claude Code needs (older versions don't). */

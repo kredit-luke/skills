@@ -33,7 +33,7 @@ import os from "node:os";
 import fs from "node:fs";
 import path from "node:path";
 import { readConfigFile } from "../config.ts";
-import { diskOf, hardware, type Hardware } from "../hardware.ts";
+import { MIN_NVIDIA_DRIVER, diskOf, driverTooOld, hardware, type Hardware } from "../hardware.ts";
 import { FIT_LABEL, RECOMMENDED, fitOf, type CatalogModel, type Fit } from "./catalog.ts";
 import { Ollama, ollamaModelsDir, type OllamaModel, type OllamaShow } from "./ollama.ts";
 import { setRoutes, type Backend, type Route } from "./routes.ts";
@@ -140,10 +140,18 @@ export class Models {
     this.refreshRoutes();
   }
 
+  /**
+   * Ollama's CLI on this OS: on PATH, or where the native app installs it (a process started before
+   * the install has the old PATH, and the Mac app isn't on PATH until it's been opened once).
+   */
   private ollamaCli(): Promise<{ installed: boolean; version: string | null }> {
     if (this.cli && Date.now() - this.cli.at < 30_000) return Promise.resolve(this.cli);
+    const native = [
+      process.platform === "win32" ? path.join(process.env.LOCALAPPDATA || path.join(os.homedir(), "AppData", "Local"), "Programs", "Ollama", "ollama.exe") : null,
+      process.platform === "darwin" ? "/Applications/Ollama.app/Contents/Resources/ollama" : null,
+    ].find((f) => f && fs.existsSync(f));
     return new Promise((resolve) => {
-      execFile("ollama", ["--version"], { timeout: 5000, windowsHide: true, encoding: "utf-8" }, (err, out, errOut) => {
+      execFile(native || "ollama", ["--version"], { timeout: 5000, windowsHide: true, encoding: "utf-8" }, (err, out, errOut) => {
         const text = `${out || ""}${errOut || ""}`;
         this.cli = { at: Date.now(), installed: !err || /version/i.test(text), version: (/(\d+\.\d+\.\d+)/.exec(text) || [])[1] || null };
         resolve(this.cli);
@@ -157,7 +165,7 @@ export class Models {
    */
   private wslOllama(): Promise<{ found: boolean; dir: string | null; freeGb: number | null; totalGb: number | null }> {
     if (this.wsl && Date.now() - this.wsl.at < 60_000) return Promise.resolve(this.wsl);
-    const script = 'command -v ollama >/dev/null || exit 3; d=/usr/share/ollama/.ollama/models; [ -d "$d" ] || d="$HOME/.ollama/models"; echo "$d"; df -kP "$d" 2>/dev/null | tail -1';
+    const script = 'command -v ollama >/dev/null || exit 3; pgrep -x ollama >/dev/null || exit 4; d=/usr/share/ollama/.ollama/models; [ -d "$d" ] || d="$HOME/.ollama/models"; echo "$d"; df -kP "$d" 2>/dev/null | tail -1';
     return new Promise((resolve) => {
       execFile("wsl.exe", ["-e", "sh", "-c", script], { timeout: 8000, windowsHide: true, encoding: "utf-8" }, (err, out) => {
         const lines = String(out || "").split(/\r?\n/).map((l) => l.trim()).filter(Boolean);
@@ -305,8 +313,9 @@ export class Models {
       })
       .catch((e) => { st.error = abort.signal.aborted ? "Cancelled" : e.message; st.status = "failed"; })
       .finally(async () => {
-        st.done = true;
+        // Done only once the list (and the Model select) has it.
         await this.refresh().catch(() => {});
+        st.done = true;
         this.changed(true);
       });
     const { abort: _a, ...pub } = st;
@@ -386,7 +395,11 @@ export class Models {
     // Elsewhere: its disk isn't this computer's, so no number rather than a wrong one.
     const disk = wsl ? (wsl.freeGb != null && wsl.totalGb != null ? { path: dir, freeGb: wsl.freeGb, totalGb: wsl.totalGb } : null)
       : where === "elsewhere" ? null : diskOf(dir);
-    const gpu = hw.gpus.reduce<{ vram: number | null; unified: boolean }>((best, g) => (g.vramGb != null && g.vramGb > (best.vram || 0) ? { vram: g.vramGb, unified: !!g.unified } : best), { vram: null, unified: false });
+    // A GPU Ollama can't use (an NVIDIA driver that's too old) doesn't count toward what fits.
+    const usable = hw.gpus.filter((g) => !driverTooOld(g));
+    const gpu = usable.reduce<{ vram: number | null; unified: boolean }>((best, g) => (g.vramGb != null && g.vramGb > (best.vram || 0) ? { vram: g.vramGb, unified: !!g.unified } : best), { vram: null, unified: false });
+    const old = hw.gpus.find(driverTooOld);
+    const gpuWarning = old ? `The ${old.name}'s driver (${old.driver}) is older than Ollama needs (${MIN_NVIDIA_DRIVER} or newer), so models run on the CPU, many times slower. Update the driver (NVIDIA App, or your laptop maker's support page), restart Ollama, then Refresh.` : null;
     const installedNames = new Set(this.last.list.map((m) => full(m.name)));
     const pulls = [...this.pulls.values()].map(({ abort: _a, ...p }) => p);
     const fit = (diskGb: number, installed: boolean): { fit: Fit; fitLabel: string } => {
@@ -410,6 +423,7 @@ export class Models {
     return {
       hosted,
       hardware: hw,
+      gpuWarning,
       modelsDir: disk ? { ...disk, path: dir } : null,
       contextLength: cfg.contextLength,
       ollama: {

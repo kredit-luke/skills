@@ -13,7 +13,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 
-export interface Gpu { name: string; vramGb: number | null; unified?: boolean }
+export interface Gpu { name: string; vramGb: number | null; unified?: boolean; vendor?: "nvidia" | "apple"; driver?: string }
 export interface Disk { path: string; freeGb: number; totalGb: number }
 export interface Hardware {
   memoryGb: number;
@@ -47,23 +47,29 @@ function exec(file: string, args: string[], timeout = 8000): Promise<string | nu
   });
 }
 
-/** nvidia-smi's csv (name, memory.total in MiB), one GPU per line. */
+/** nvidia-smi's csv (name, memory.total in MiB[, driver_version]), one GPU per line. */
 export function parseNvidiaSmi(out: string): Gpu[] {
   return out.split(/\r?\n/).map((l) => l.trim()).filter(Boolean).flatMap((l) => {
-    const m = /^(.*),\s*(\d+)\s*(?:MiB)?$/.exec(l);
-    return m ? [{ name: m[1].trim(), vramGb: round1(Number(m[2]) / 1024) }] : [];
+    const m = /^(.*?),\s*(\d+)\s*(?:MiB)?(?:,\s*([\d.]+))?$/.exec(l);
+    return m ? [{ name: m[1].trim(), vramGb: round1(Number(m[2]) / 1024), vendor: "nvidia" as const, ...(m[3] ? { driver: m[3] } : {}) }] : [];
   });
 }
 
+/** Ollama uses an NVIDIA GPU only with driver 550 or newer (docs.ollama.com/gpu); older ones run models on the CPU. */
+export const MIN_NVIDIA_DRIVER = 550;
+export function driverTooOld(g: Gpu): boolean {
+  return g.vendor === "nvidia" && !!g.driver && parseFloat(g.driver) < MIN_NVIDIA_DRIVER;
+}
+
 async function gpus(): Promise<Gpu[]> {
-  const nv = await exec("nvidia-smi", ["--query-gpu=name,memory.total", "--format=csv,noheader,nounits"]);
+  const nv = await exec("nvidia-smi", ["--query-gpu=name,memory.total,driver_version", "--format=csv,noheader,nounits"]);
   if (nv) {
     const list = parseNvidiaSmi(nv);
     if (list.length) return list;
   }
   if (process.platform === "darwin" && process.arch === "arm64") {
     const chip = ((await exec("sysctl", ["-n", "machdep.cpu.brand_string"])) || "Apple silicon").trim();
-    return [{ name: chip, vramGb: round1((os.totalmem() / GB) * 0.75), unified: true }];
+    return [{ name: chip, vramGb: round1((os.totalmem() / GB) * 0.75), unified: true, vendor: "apple" }];
   }
   if (process.platform === "win32") {
     const out = await exec("powershell.exe", ["-NoProfile", "-NonInteractive", "-Command", "(Get-CimInstance Win32_VideoController).Name"]);

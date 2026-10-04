@@ -20,7 +20,7 @@ const { fitOf, RECOMMENDED } = await import("../src/models/catalog.ts");
 const { Ollama, ollamaBase, parseShow, pullStep } = await import("../src/models/ollama.ts");
 const { Models, modelsConfig, twinName, isTwin } = await import("../src/models/index.ts");
 const { setRoutes, routeOf, turnEnv, resumeCommand, isRoutedId } = await import("../src/models/routes.ts");
-const { parseNvidiaSmi } = await import("../src/hardware.ts");
+const { parseNvidiaSmi, driverTooOld } = await import("../src/hardware.ts");
 const { agentOf } = await import("../src/agents/index.ts");
 
 const write = (name: string, data: unknown) => {
@@ -53,10 +53,14 @@ test("fit: GPU, partly on the GPU, CPU, too big, not enough disk", () => {
 });
 
 test("hardware: nvidia-smi's csv", () => {
-  assert.deepEqual(parseNvidiaSmi("NVIDIA GeForce RTX 4090 Laptop GPU, 16376\r\nNVIDIA A100, 81920 MiB\n"), [
-    { name: "NVIDIA GeForce RTX 4090 Laptop GPU", vramGb: 16 },
-    { name: "NVIDIA A100", vramGb: 80 },
+  assert.deepEqual(parseNvidiaSmi("NVIDIA GeForce RTX 4090 Laptop GPU, 16376, 536.67\r\nNVIDIA A100, 81920 MiB\n"), [
+    { name: "NVIDIA GeForce RTX 4090 Laptop GPU", vramGb: 16, vendor: "nvidia", driver: "536.67" },
+    { name: "NVIDIA A100", vramGb: 80, vendor: "nvidia" },
   ]);
+  // Ollama needs NVIDIA driver 550+: older runs models on the CPU.
+  assert.equal(driverTooOld({ name: "x", vramGb: 16, vendor: "nvidia", driver: "536.67" }), true);
+  assert.equal(driverTooOld({ name: "x", vramGb: 16, vendor: "nvidia", driver: "581.29" }), false);
+  assert.equal(driverTooOld({ name: "x", vramGb: 16, vendor: "nvidia" }), false, "unknown driver: no warning");
   assert.deepEqual(parseNvidiaSmi(""), []);
 });
 
