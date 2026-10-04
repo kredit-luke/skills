@@ -199,7 +199,7 @@ export function shimScript(cmdFile: string): string | null {
   try { text = fs.readFileSync(cmdFile, "utf-8"); } catch { return null; }
   const m = /"%dp0%\\([^"]+\.(?:js|cjs|mjs))"/i.exec(text);
   if (!m) return null;
-  const script = path.join(path.dirname(cmdFile), m[1]);
+  const script = path.join(path.dirname(cmdFile), ...m[1].split(/[\\/]/));
   return fs.existsSync(script) ? script : null;
 }
 
