@@ -6,6 +6,8 @@ argument-hint: "[workspace folder]"
 
 # Doctor
 
+> **Plugin folder.** `${CLAUDE_PLUGIN_ROOT}` below is this plugin's folder (the one with `scripts/`, `references/` and `engine/`). Claude Code fills it in. GitHub Copilot CLI and OpenAI Codex CLI don't: there, use the folder two levels above this SKILL.md (`<plugin>/skills/<name>/SKILL.md` → `<plugin>`) wherever it appears.
+
 ```bash
 node "${CLAUDE_PLUGIN_ROOT}/scripts/doctor.mjs" <workspace>
 ```

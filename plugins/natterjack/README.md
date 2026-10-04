@@ -41,13 +41,23 @@ In Claude Code:
 
 (or from a shell: `claude plugin marketplace add lhoezee/skills` and `claude plugin install natterjack@lhoezee-skills`)
 
-Then, in the folder that holds (or will hold) your team's repos:
+In GitHub Copilot CLI (it reads the same marketplace):
 
 ```
-/natterjack:create
+copilot plugin marketplace add lhoezee/skills
+copilot plugin install natterjack@lhoezee-skills
 ```
 
-Needs: Claude Code, Git, and Node.js 24.15 or newer (the dashboard's Machine page helps with the rest).
+In OpenAI Codex CLI (`.agents/plugins/marketplace.json` and `.codex-plugin/plugin.json`):
+
+```
+codex plugin marketplace add lhoezee/skills
+codex plugin add natterjack@lhoezee-skills
+```
+
+Then, in the folder that holds (or will hold) your team's repos, ask for the **create** skill (`/natterjack:create` in Claude Code; in Copilot or Codex, "use the natterjack create skill"). The skills name their scripts with `${CLAUDE_PLUGIN_ROOT}`, which only Claude Code fills in; each skill tells other agents to use its plugin folder instead. Copilot asks before running a script outside the current folder (the plugin's): approve it.
+
+Needs: Claude Code, GitHub Copilot CLI or OpenAI Codex CLI, plus Git and Node.js 24.15 or newer (the dashboard's Machine page helps with the rest). The dashboard runs any of the three (the Agent picker in Ask and Run).
 
 ### Coming from agentic-os
 

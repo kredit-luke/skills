@@ -1,12 +1,12 @@
 # skills
 
-Claude Code plugins by Luke Hoezee, published as one marketplace.
+Plugins by Luke Hoezee, published as one marketplace for Claude Code, GitHub Copilot CLI and OpenAI Codex CLI.
 
 ```
 /plugin marketplace add lhoezee/skills
 ```
 
-(or from a shell: `claude plugin marketplace add lhoezee/skills`)
+(or from a shell: `claude plugin marketplace add lhoezee/skills`; `copilot plugin marketplace add lhoezee/skills`; `codex plugin marketplace add lhoezee/skills`)
 
 ## Plugins
 
@@ -28,6 +28,6 @@ tools/                            maintainer scripts
 ## Adding a plugin
 
 1. Create `plugins/<name>/` with `.claude-plugin/plugin.json` (name, version, description) and its `skills/<skill>/SKILL.md` files.
-2. Add an entry to `.claude-plugin/marketplace.json` (`name`, `source: "./plugins/<name>"`, `description`) and a row to the table above.
+2. Add an entry to `.claude-plugin/marketplace.json` (`name`, `source: "./plugins/<name>"`, `description`) and a row to the table above. For Codex, add it to `.agents/plugins/marketplace.json` too and give the plugin a `.codex-plugin/plugin.json` (same name and version, `"skills": "./skills/"`); Copilot reads the Claude files.
 3. Give it a `README.md`, and add its tests to `.github/workflows/test.yml`.
 4. `claude plugin validate .`, then commit. Tag releases `<name>-v<version>` so each plugin versions on its own.
