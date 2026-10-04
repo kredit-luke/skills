@@ -58,20 +58,24 @@ export function runClaude(args: string[], cwd: string, timeoutMs = 60_000): Prom
 // One cached health check per workspace folder, shared by this page and the Machine page.
 const HEALTH_TTL_MS = 60_000;
 interface Health { at: number | null; out: string; ok: boolean; entries: McpListEntry[] }
-const health = new Map<string, { last: Health | null; inflight: Promise<Health> | null }>();
+const health = new Map<string, { last: Health | null; inflight: Promise<Health> | null; rerun: Promise<Health> | null }>();
 
 export type ClaudeRunner = typeof runClaude;
 
 /** `claude mcp list` for `cwd`, cached for a minute (force: check again). */
 export function mcpHealth(cwd: string, force = false, run: ClaudeRunner = runClaude): Promise<Health> {
-  const slot = health.get(cwd) || { last: null, inflight: null };
+  const slot = health.get(cwd) || { last: null, inflight: null, rerun: null };
   health.set(cwd, slot);
   if (slot.last && !force && slot.last.at && Date.now() - slot.last.at < HEALTH_TTL_MS) return Promise.resolve(slot.last);
-  if (!slot.inflight) {
-    slot.inflight = run(["mcp", "list"], cwd, 120_000)
-      .then((r) => (slot.last = { at: Date.now(), out: r.out, ok: r.ok, entries: parseMcpList(r.out) }))
-      .finally(() => { slot.inflight = null; });
+  if (slot.inflight) {
+    if (!force) return slot.inflight;
+    // A forced check while one runs (e.g. right after an add or remove): that one may predate the change, so check again after it.
+    if (!slot.rerun) slot.rerun = slot.inflight.catch(() => {}).then(() => { slot.rerun = null; return mcpHealth(cwd, true, run); });
+    return slot.rerun;
   }
+  slot.inflight = run(["mcp", "list"], cwd, 120_000)
+    .then((r) => (slot.last = { at: Date.now(), out: r.out, ok: r.ok, entries: parseMcpList(r.out) }))
+    .finally(() => { slot.inflight = null; });
   return slot.inflight;
 }
 
@@ -113,11 +117,15 @@ export function mcpRule(name: string): string {
 
 const SECRET_ARG = /^(--?[\w-]*(key|token|secret|password|auth)[\w-]*=).+$/i;
 
-/** URL or command line to show: the URL without its query, a command with secret-looking flags masked. */
-function targetOf(c: any): string | null {
-  if (typeof c.url === "string") return c.url.replace(/[?#].*$/, "");
+const SECRET_FLAG = /^--?[\w-]*(key|token|secret|password|auth)[\w-]*$/i;
+
+/** URL or command line to show: the URL without its query or credentials, a command with secret-looking flags masked. */
+export function targetOf(c: any): string | null {
+  if (typeof c.url === "string") return c.url.replace(/[?#].*$/, "").replace(/^([a-z][\w+.-]*:\/\/)[^/@]*@/i, "$1");
   if (typeof c.command === "string") {
-    return [c.command, ...names(c.args)].map((a) => a.replace(SECRET_ARG, "$1•••")).join(" ");
+    const args = names(c.args);
+    // --token=abc, and the value after a bare --token.
+    return [c.command, ...args.map((a, i) => (i > 0 && SECRET_FLAG.test(args[i - 1]) && !a.startsWith("-") ? "•••" : a.replace(SECRET_ARG, "$1•••")))].join(" ");
   }
   return null;
 }
@@ -174,13 +182,14 @@ export function configVars(c: McpServerConfig | null): string[] {
 export function readRequired(): { required: Map<string, { name: string } & ConnectionRequired>; error: string | null; configured: boolean } {
   const { data, error } = readConfigFile("connections.json");
   const required = new Map<string, { name: string } & ConnectionRequired>();
+  const errors = error ? [error] : [];
   for (const r of Array.isArray(data?.required) ? data.required : []) {
     if (!r || typeof r.name !== "string" || !r.name.trim()) continue;
     let add: McpServerConfig | null = null;
-    try { add = r.add ? checkConfig(r.add) : null; } catch {}
+    try { add = r.add ? checkConfig(r.add) : null; } catch (e) { errors.push(`connections.json: "${r.name.trim()}" add: ${(e as Error).message}`); }
     required.set(r.name.trim().toLowerCase(), { name: r.name.trim(), why: typeof r.why === "string" ? r.why : "", add, vars: configVars(add) });
   }
-  return { required, error, configured: !!data };
+  return { required, error: errors.join(" ") || null, configured: !!data };
 }
 
 // ------------------------------------------------------------------ validation
@@ -356,9 +365,10 @@ export class Connections {
     const s = readMcpConfig(this.root).servers.filter((x) => x.name === n);
     const scope = s.find((x) => x.scope === "local") ? "local" : s.find((x) => x.scope === "user") ? "user" : null;
     if (!scope) throw httpError(400, s.length ? "That server is in the workspace's .mcp.json, which everyone shares: remove it there." : "No server by that name in your config.");
+    this.checkSettings("removing a server");
     const r = await this.run(["mcp", "remove", n, "-s", scope], this.root);
     if (!r.ok) throw httpError(400, lastLine(r.out) || "Couldn't remove it.");
-    this.setAllowed(n, false);
+    this.afterCli(() => this.setAllowed(n, false), "Removed, but its allow rule couldn't be taken out of .claude/settings.local.json");
     return this.refresh();
   }
 
@@ -370,9 +380,10 @@ export class Connections {
     if (configVars(config).length) throw httpError(400, `Fill in ${configVars(config).map((v) => "${" + v + "}").join(", ")} first.`);
     const json = JSON.stringify(config);
     if (claudeIsShim() && /[&|<>^%!]/.test(json)) throw httpError(400, "Claude Code is installed through npm here, so this server's settings can't be passed safely (they contain & | < > ^ % or !). Install Claude Code natively, or add it in a terminal with `claude mcp add`.");
+    if (body.allow) this.checkSettings("adding a server");
     const r = await this.run(["mcp", "add-json", name, json, "-s", scope], this.root);
     if (!r.ok) throw httpError(400, lastLine(r.out) || "Couldn't add it.");
-    if (body.allow) this.setAllowed(name, true);
+    if (body.allow) this.afterCli(() => this.setAllowed(name, true), "Added, but runs couldn't be allowed to use it in .claude/settings.local.json");
     return this.refresh();
   }
 
@@ -400,6 +411,16 @@ export class Connections {
     if (!on && readMcpConfig(this.root).allowOther.has(mcpRule(n))) throw httpError(400, "It's allowed in shared settings (.claude/settings.json or your user settings), not just yours: change it there.");
     this.setAllowed(n, on);
     return this.build();
+  }
+
+  /** Before a CLI change that's followed by a settings edit: fail now if settings.local.json can't be edited. */
+  private checkSettings(doing: string) {
+    try { editSettings(this.root, () => ({ changed: false, result: null }), doing); } catch (e) { throw httpError(400, (e as Error).message); }
+  }
+
+  /** The settings edit after a CLI change that already happened: say what's left over rather than "failed". */
+  private afterCli(edit: () => void, done: string) {
+    try { edit(); } catch (e) { throw httpError(500, `${done}: ${(e as Error).message}`); }
   }
 
   private setAllowed(name: string, on: boolean) {

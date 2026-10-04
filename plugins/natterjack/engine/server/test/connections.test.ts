@@ -16,7 +16,7 @@ process.env.DASHBOARD_LEDGER_DIR = path.join(ROOT, ".claude", "ledger");
 process.env.CLAUDE_CONFIG_DIR = HOME;
 
 const { parseMcpList, mcpState } = await import("../src/claude.ts");
-const { Connections, checkConfig, configVars, mcpRule, readMcpConfig, needsAttention } = await import("../src/connections.ts");
+const { Connections, checkConfig, configVars, mcpRule, readMcpConfig, needsAttention, targetOf, mcpHealth, readRequired } = await import("../src/connections.ts");
 
 // Real output (Claude Code 2.x), noise lines included.
 const LIST = [
@@ -179,4 +179,46 @@ test("add, remove and logout call the CLI with the right scope and arguments", a
   assert.deepEqual(calls[0], ["mcp", "logout", "plugin:engineering:slack"]);
   const failing = new Connections(ROOT, { run: async () => ({ ok: false, out: "[mcp-sdk] noise\nNo MCP server found with name: zzz\n" }) });
   await assert.rejects(failing.logout("zzz"), /No MCP server found/);
+});
+
+test("targetOf: no URL credentials or query, secret flag values masked in both forms", () => {
+  assert.equal(targetOf({ url: "https://user:pass@mcp.example.com/mcp?key=abc#x" }), "https://mcp.example.com/mcp");
+  assert.equal(targetOf({ url: "https://token@mcp.example.com/mcp" }), "https://mcp.example.com/mcp");
+  assert.equal(targetOf({ command: "npx", args: ["-y", "srv", "--api-key", "SECRET", "--token=abc", "--port", "80"] }), "npx -y srv --api-key ••• --token=••• --port 80");
+  assert.equal(targetOf({ command: "srv", args: ["--auth", "--verbose"] }), "srv --auth --verbose", "a flag after a bare flag isn't a value");
+});
+
+test("mcpHealth: a forced check while one runs checks again afterwards", async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "dash-conn-h-"));
+  let n = 0;
+  let release!: () => void;
+  const gate = new Promise<void>((r) => (release = r));
+  const run = async () => { const i = ++n; if (i === 1) await gate; return { ok: true, out: `s${i}: https://x/mcp (HTTP) - ✔ Connected` }; };
+  const first = mcpHealth(dir, false, run);
+  const again = mcpHealth(dir, false, run);
+  const forced = mcpHealth(dir, true, run);
+  assert.equal(again, first, "an unforced call shares the running check");
+  release();
+  assert.equal((await first).entries[0].name, "s1");
+  assert.equal((await forced).entries[0].name, "s2");
+  assert.equal(n, 2);
+  fs.rmSync(dir, { recursive: true, force: true });
+});
+
+test("readRequired: an invalid add is reported, not dropped silently", () => {
+  write(path.join(CFG, "connections.json"), { required: [{ name: "bad", add: { type: "http" } }, { name: "ok", add: { type: "http", url: "https://x/mcp" } }] });
+  const r = readRequired();
+  assert.match(r.error || "", /"bad" add:/);
+  assert.equal(r.required.get("bad")?.add, null);
+  assert.ok(r.required.get("ok")?.add);
+});
+
+test("remove and add: an unreadable settings.local.json stops them before the CLI runs", async () => {
+  fs.writeFileSync(settingsFile, "{ not json");
+  const conn = new Connections(ROOT, { run: fake });
+  calls.length = 0;
+  await assert.rejects(conn.remove("mine"), /isn't valid JSON/);
+  await assert.rejects(conn.add({ name: "notion", scope: "user", config: { type: "http", url: "https://mcp.notion.com/mcp" }, allow: true }), /isn't valid JSON/);
+  assert.equal(calls.filter((c) => c[1] === "remove" || c[1] === "add-json").length, 0);
+  fs.rmSync(settingsFile);
 });
