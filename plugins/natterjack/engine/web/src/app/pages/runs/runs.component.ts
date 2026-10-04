@@ -30,7 +30,7 @@ const parse = (s: string | null | undefined) => new Set(String(s || '').split(',
   changeDetection: ChangeDetectionStrategy.OnPush,
   styleUrl: './runs.component.scss',
   template: `
-    <dash-page-header eyebrow="Activity" title="Activity" sub="Everything Claude has worked on here: live transcript, subagents, questions it asks you, and replies." />
+    <dash-page-header eyebrow="Activity" title="Activity" sub="Everything the agents have worked on here: live transcript, subagents, questions it asks you, and replies." />
     <div class="runs-layout">
       <div class="col">
         <div class="panel">

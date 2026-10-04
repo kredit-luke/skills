@@ -6,6 +6,8 @@ argument-hint: "<tracker or code host>"
 
 # Add an adapter
 
+> **Plugin folder.** `${CLAUDE_PLUGIN_ROOT}` below is this plugin's folder (the one with `scripts/`, `references/` and `engine/`). Claude Code fills it in. GitHub Copilot CLI and OpenAI Codex CLI don't: there, use the folder two levels above this SKILL.md (`<plugin>/skills/<name>/SKILL.md` → `<plugin>`) wherever it appears.
+
 Read `${CLAUDE_PLUGIN_ROOT}/references/adapters.md` first: it has the `IssueTracker` interface, the normalized issue shapes, and a walkthrough of an existing adapter. `<engine>` below is the workspace's engine folder: `natterjack/` by default, `dashboard/` in older workspaces; `.claude/dashboard/engine.json` `dir` says which. Then:
 
 1. **Read the three existing adapters** in `<workspace>/<engine>/server/src/issues/` (`linear.ts` = GraphQL + pasted key, `jira.ts` = REST + email:token, `github.ts` = a CLI's own login). Pick the closest as your model.

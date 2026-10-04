@@ -12,7 +12,7 @@
 
 import fs from "node:fs";
 import { execFile } from "node:child_process";
-import { claudeEnv } from "./claude.ts";
+import { claudeEnv, spawnClaude } from "./claude.ts";
 
 const USAGE_TTL_MS = 2 * 60 * 1000;
 // Built-in commands that drive the interactive terminal (model pickers, context
@@ -23,6 +23,7 @@ const TERMINAL_ONLY = new Set([
   "mcp", "import", "extra-usage", "usage-credits", "auto-mode-setup", "workflow-launch-exec",
   "design-consent", "design-revoke", "team-onboarding", "goal", "loop", "ultrareview",
 ]);
+const COMMANDS_TIMEOUT_MS = 60000;
 const METER_RE =/^(.+?):\s*(\d+(?:\.\d+)?)% used(?:\s*·\s*resets\s+(.+?))?\s*$/;
 
 function parseUsage(text) {
@@ -53,6 +54,18 @@ function parseUsage(text) {
     if (current && /^\s+/.test(raw)) current.items.push(line.trim());
   }
   return { plan, meters, insights };
+}
+
+/** The command list from a stream-json initialize handshake's control_response, or null. */
+function parseCommandsResponse(text) {
+  for (const line of String(text || "").split("\n")) {
+    if (!line.trim()) continue;
+    let ev;
+    try { ev = JSON.parse(line); } catch { continue; }
+    const commands = ev.type === "control_response" ? ev.response?.response?.commands : null;
+    if (Array.isArray(commands)) return commands;
+  }
+  return null;
 }
 
 class Usage {
@@ -100,28 +113,22 @@ class Usage {
   _fetch(): Promise<any> {
     return new Promise((resolve) => {
       // execFile (no shell) so "/usage" isn't path-mangled by Git Bash/MSYS.
-      // stream-json + --verbose also yields the session's commands_changed event:
-      // every slash command (project/plugin skills, built-ins, MCP prompts) with
-      // descriptions and argument hints, which feeds the run box's autocomplete.
       execFile(
         "claude",
         ["-p", "/usage", "--output-format", "stream-json", "--verbose", "--no-session-persistence"],
         { timeout: 60000, windowsHide: true, maxBuffer: 16 * 1024 * 1024, env: claudeEnv() },
         (err, stdout) => {
           let text = "";
-          let commands = null;
           for (const line of String(stdout || "").split("\n")) {
             if (!line.trim()) continue;
             let ev;
             try { ev = JSON.parse(line); } catch { continue; }
             if (ev.type === "result" && typeof ev.result === "string") text = ev.result;
-            if (ev.type === "system" && ev.subtype === "commands_changed" && Array.isArray(ev.commands)) commands = ev.commands;
           }
           const parsed = parseUsage(text);
           resolve({
             ...parsed,
             raw: text,
-            commands,
             error: !parsed.meters.length ? (err ? err.message.split("\n")[0] : "Could not read /usage output") : null,
             fetchedAt: Date.now(),
           });
@@ -137,9 +144,6 @@ class Usage {
       if (!this.inflight) {
         this.inflight = this._fetch()
           .then((u) => {
-            // Held separately: the usage report is polled every few seconds, the command list isn't.
-            if (u.commands) this.commands = u.commands;
-            delete u.commands;
             this._snapshot(u);
             if (u.meters.length || !this.cache) this.cache = u;
             else this.cache.fetchedAt = Date.now();
@@ -157,16 +161,60 @@ class Usage {
   }
 
   /**
+   * Every slash command (project/plugin skills, built-ins, MCP prompts) with
+   * descriptions and argument hints: the reply to the stream-json initialize
+   * handshake, the same one the Agent SDK's supportedCommands() uses. No prompt
+   * is sent, so there's no model call; closing stdin ends the session.
+   */
+  _fetchCommands(): Promise<any[] | null> {
+    return new Promise((resolve) => {
+      let out = "";
+      let done = false;
+      const child = spawnClaude(
+        ["-p", "--input-format", "stream-json", "--output-format", "stream-json", "--verbose", "--no-session-persistence"],
+        { windowsHide: true, env: claudeEnv(), stdio: ["pipe", "pipe", "ignore"] },
+      );
+      const finish = (commands) => {
+        if (done) return;
+        done = true;
+        clearTimeout(timer);
+        try { child.kill(); } catch {}
+        resolve(commands);
+      };
+      const timer = setTimeout(() => finish(null), COMMANDS_TIMEOUT_MS);
+      child.stdout!.on("data", (d) => {
+        out += d;
+        const commands = parseCommandsResponse(out);
+        if (commands) finish(commands);
+      });
+      child.on("error", () => finish(null));
+      child.on("close", () => finish(parseCommandsResponse(out)));
+      child.stdin!.on("error", () => {});
+      child.stdin!.end(JSON.stringify({ type: "control_request", request_id: "commands", request: { subtype: "initialize" } }) + "\n");
+    });
+  }
+  _commandsInflight: Promise<void> | null = null;
+
+  /**
    * Slash commands usable from a headless run, for autocomplete. Built-ins that
-   * only make sense in the interactive terminal UI are dropped.
+   * only make sense in the interactive terminal UI are dropped. Fetched once; a
+   * failed or empty fetch is retried on the next call.
    */
   async listCommands() {
-    if (!this.commands) await this.get(true).catch(() => {});
+    if (!this.commands?.length) {
+      if (!this._commandsInflight) {
+        this._commandsInflight = this._fetchCommands()
+          .then((c) => { if (c?.length) this.commands = c; })
+          .finally(() => { this._commandsInflight = null; });
+      }
+      await this._commandsInflight;
+    }
     return (this.commands || [])
       .filter((c) => c && c.name && !c.name.startsWith("__") && !(c.builtin && TERMINAL_ONLY.has(c.name)))
       .map((c) => ({
         name: c.name,
-        description: String(c.description || "").replace(/\s*\((project|user|plugin)\)\s*$/i, "").trim(),
+        // The source tag goes: "(natterjack) Add support…", or older "Add support… (plugin)".
+        description: String(c.description || "").replace(/^\s*\([^)]+\)\s*/, "").replace(/\s*\((project|user|plugin)\)\s*$/i, "").trim(),
         argumentHint: c.argumentHint || "",
         aliases: c.aliases || [],
         source: c.builtin ? "built-in" : /\(MCP\)$/.test(c.name) ? "mcp" : c.name.includes(":") ? "plugin" : "skill",
@@ -174,4 +222,4 @@ class Usage {
   }
 }
 
-export { Usage, parseUsage };
+export { Usage, parseUsage, parseCommandsResponse };

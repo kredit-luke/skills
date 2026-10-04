@@ -106,10 +106,10 @@ export interface RoleConfig {
 /** Pages a reader has no use for (they start and stop apps, and worktrees). */
 export const DEFAULT_READER_HIDDEN_PAGES = ["apps", "workspaces"];
 
-/** A page id from hiddenPages: no leading slash; "reference" is the Infrastructure page's old name. */
+/** A page id from hiddenPages: no leading slash; "reference" and "docs" are the Infrastructure and Knowledge pages' old names. */
 function pageId(p: string): string {
   const id = p.replace(/^\/+/, "");
-  return id === "reference" ? "infrastructure" : id;
+  return id === "reference" ? "infrastructure" : id === "docs" ? "knowledge" : id;
 }
 
 const ROLE_ID = /^[a-z0-9][\w-]*$/i;

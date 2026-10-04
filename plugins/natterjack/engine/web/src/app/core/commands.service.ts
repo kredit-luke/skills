@@ -15,7 +15,8 @@ export class CommandsService {
   private loading: Promise<void> | null = null;
 
   load(): Promise<void> {
-    if (this.commands()) return Promise.resolve();
+    // An empty list (the CLI wasn't ready) is retried on the next focus.
+    if (this.commands()?.length) return Promise.resolve();
     if (!this.loading) {
       this.loading = this.api.get<{ commands: CommandInfo[] }>('/api/commands')
         .then((d) => this.commands.set(d.commands || []))

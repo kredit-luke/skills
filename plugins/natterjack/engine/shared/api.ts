@@ -74,7 +74,19 @@ export type RunStatus =
   | 'handedOff';   // continued in a terminal; the dashboard no longer drives it
 
 export type PermissionMode = 'auto' | 'acceptEdits' | 'dontAsk' | 'plan';
-export type Effort = 'low' | 'medium' | 'high' | 'xhigh' | 'max';
+export type Effort = 'low' | 'medium' | 'high' | 'xhigh' | 'max' | 'ultra' | 'none';
+
+/** The agent CLIs a run can use (server/src/agents/). */
+export type AgentId = 'claude' | 'copilot' | 'codex';
+export interface AgentModelInfo { id: string; label: string; efforts: string[] | null }
+/** GET /api/agents[?force=1] → { agents: AgentInfo[] }: each CLI, whether it can run here, and its models. */
+export interface AgentInfo {
+  id: AgentId; label: string; installed: boolean; signedIn: boolean; version: string | null;
+  /** Why it can't run (not installed / not signed in), or null. */
+  problem: string | null;
+  models: AgentModelInfo[]; efforts: string[]; defaultModel: string | null; defaultEffort: string | null;
+  capabilities: { planMode: boolean; costUsd: boolean; backgroundTasks: boolean; transcripts: boolean };
+}
 
 export interface QuestionOption { label: string; description?: string }
 export interface Question {
@@ -105,6 +117,10 @@ export interface RunMeta {
   docSources?: string[];
   /** Appended to the system prompt every turn (the docs sources' notes). */
   extraPrompt?: string | null;
+  /** Folders outside the workspace the run may read (a knowledge store's local copy). */
+  addDirs?: string[];
+  /** The agent CLI that runs it ('claude' when missing: runs from before agents). */
+  agent?: AgentId;
   status: RunStatus;
   startedAt: string;
   endedAt: string | null;      // end of the latest turn
@@ -264,6 +280,8 @@ export interface LaunchRequest {
   options?: Record<string, boolean>;
   prompt?: string;             // required without a preset
   workspace?: string;          // slug, default preset's or "main"
+  /** The agent CLI to run it with; omitted = the deck's default agent (Claude unless set). */
+  agent?: AgentId;
   model?: string;              // alias or full id; omitted/"" = CLI default
   effort?: Effort | '';
   permissionMode?: PermissionMode;
@@ -463,17 +481,71 @@ export interface GitInfo {
 // ---------------------------------------------------------------- docs sites
 
 /**
- * A docs source from .claude/dashboard/docs.json. 'site' and 'notes' live in the workspace
- * (repo = their folder); 'external' is elsewhere (Confluence, Notion, ...): url opens it.
+ * A knowledge source from .claude/dashboard/docs.json. 'site' and 'notes' live in the workspace
+ * (repo = their folder); 'store' is business notes in the team's bucket (a local copy, edited
+ * from the page); 'external' is elsewhere (Confluence, Notion, ...): url opens it.
  */
 export interface DocSite {
-  key: string; name: string; repo: string | null; kind: 'site' | 'notes' | 'external'; type: string;
+  key: string; name: string; repo: string | null; kind: 'site' | 'notes' | 'external' | 'store'; type: string;
   live: string | null; url: string | null; provider: string | null; description: string | null;
   available: boolean; previewUrl: string | null; docs: number;
-  /** An external source whose provider has an adapter: the Docs page can search and read it. */
+  /** "Use <source>" can be ticked for a run: an external source with an adapter, or a store with a copy. */
   searchable?: boolean;
+  /** docs.json area key, and the MCP server Claude reaches it through (as the Connections page names it). */
+  area?: string | null;
+  connection?: string | null;
+  /** Every connector name that reaches it (any one is enough); `connection` is the first. */
+  connectionAny?: string[];
+  /** The Knowledge setup wrote it (a catalog tool id, or "other"). */
+  tool?: string | null;
+  /** Notes past their area's review interval. */
+  stale?: number;
+  store?: KnowledgeStoreStatus | null;
 }
-/** GET /api/docs → { sites } ;  POST /api/docs/preview { site } → { url } */
+/** docs.json `areas`: parts of the business, each with an owner and how often its notes are reviewed (days). */
+export interface KnowledgeArea { key: string; label: string; owner: string | null; reviewEvery: number | null; description: string | null }
+/** GET /api/docs → { sites, areas } ;  POST /api/docs/preview { site } → { url } */
+export interface DocsResponse { sites: DocSite[]; areas: KnowledgeArea[] }
+
+/** A store's connection and sync. POST /api/knowledge/{connect {source,key}, disconnect, sync, claude-access {source,on}} → this. */
+export interface KnowledgeStoreStatus {
+  source: string; label: string; connected: boolean; problem: string | null;
+  /** Where the key comes from: 'env' (the deployment's) can't be disconnected here. */
+  keySource: 'env' | 'file' | null;
+  help: { title: string; steps: string[]; placeholder: string; needsKey: boolean } | null;
+  syncedAt: string | null; syncing: boolean; error: string | null; files: number;
+  /** The local copy (under the ledger). */
+  dir: string;
+  /** This person's Claude sessions in the workspace can read the copy (additionalDirectories). */
+  claudeAccess: boolean;
+}
+/** A tool teams keep knowledge in, and how Claude reaches it. GET /api/knowledge/setup → KnowledgeSetup. */
+export interface KnowledgeTool {
+  id: string; label: string; description: string; urlLabel: string; urlPlaceholder: string; urlRequired: boolean; urlPattern: string | null;
+  connections: string[]; provider: string | null; connectHelp: string;
+}
+export interface KnowledgeChosenTool { tool: string; key: string; name: string; url: string | null; area: string | null; connection: string[] }
+/**
+ * POST /api/knowledge/setup { tools: [{ tool, url?, name?, area?, connection? }] } → KnowledgeSetup (rewrites the tools in docs.json + connections.json).
+ * POST /api/knowledge/store-source { name, area?, store: { type, bucket | account+container, region?, prefix?, endpoint? } } → KnowledgeSetup.
+ * Both refused when hosted (the config is the workspace repo's).
+ */
+export interface KnowledgeSetup { catalog: KnowledgeTool[]; chosen: KnowledgeChosenTool[]; stores: string[]; canEdit: boolean }
+
+/** A note of a Markdown source (repo folder or store), with its links and freshness. */
+export interface KnowledgeNote {
+  rel: string; title: string; owner: string | null; reviewed: string | null; tags: string[]; updatedAt: string | null;
+  links: string[]; unresolved: string[]; backlinks: string[]; summary: string;
+  since: string | null; dueAt: string | null; stale: boolean;
+}
+/** GET /api/knowledge/notes?source= */
+export interface KnowledgeNotesResponse { source: string; notes: KnowledgeNote[]; tags: Record<string, number>; store: KnowledgeStoreStatus | null }
+/**
+ * GET /api/knowledge/note?source=&rel= → this. Stores only: POST /api/knowledge/save { source, rel, text, etag (null: new) } → { rel, etag },
+ * /delete { source, rel, etag }, /rename { source, from, to, etag } → { rel, etag }. Any notes source: /reviewed { source, rel }.
+ * A save that would overwrite someone else's newer change answers 409.
+ */
+export interface KnowledgeNoteText { rel: string; text: string; etag: string | null; editable: boolean; file: string }
 
 /**
  * External docs with a provider adapter (Confluence, …), read with each person's own key.
@@ -591,6 +663,8 @@ export interface ConnectionRequired {
   add: McpServerConfig | null;
   /** The ${VAR} names in `add`. */
   vars: string[];
+  /** Other names that meet it (the same tool reached another way); the first connected one carries the requirement. */
+  alternatives: string[];
 }
 export interface Connection {
   name: string;

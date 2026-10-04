@@ -3,6 +3,7 @@ import { NgTemplateOutlet } from '@angular/common';
 import type { Continuation, IssueDetail, RunDetail, RunEvent, RunMeta, TerminalResponse } from '../../../../../shared/api';
 import { ApiService } from '../../core/api.service';
 import { DataService, normaliseRun } from '../../core/data.service';
+import { agentLabel } from '../../core/agents';
 import { MdPipe } from '../../core/md.pipe';
 import { ToastService } from '../../core/toast.service';
 import { TrustedHtmlPipe } from '../../core/trusted-html.pipe';
@@ -340,6 +341,7 @@ export class RunDetailComponent implements OnDestroy {
   steps(c: AgentCard): number { return countSteps(c); }
   tok(n: number): string { return tokens(n); }
   d(ms: number | null): string { return dur(ms); }
+  agentName(id: string | null | undefined): string { return agentLabel(id); }
   money(n: number): string { return usd(n); }
   rel(t: string | null | undefined): string { return relTime(t); }
   started(r: RunMeta): string { return new Date(r.startedAt).toLocaleString(); }

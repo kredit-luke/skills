@@ -13,7 +13,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { frontmatter } from "./memory.ts";
-import { localDocSources } from "./docs.ts";
+import { docSources, notesDirOf } from "./docs.ts";
 import { skillFile } from "./config.ts";
 
 const REBUILD_MS = 30000;
@@ -129,7 +129,7 @@ class Search {
       .map((d) => ({
         id: d.id,
         title: d.title,
-        rel: d.rel.split("/").slice(1).join("/"),
+        rel: d.extra.path || d.rel.split("/").slice(1).join("/"),
         pagePath: d.extra.pagePath,
         format: d.format,
         live: d.extra.live,
@@ -270,8 +270,12 @@ class Search {
 
   _docs() {
     const out = [];
-    for (const [key, site] of Object.entries(localDocSources())) {
-      const dir = path.join(this.root, site.dir);
+    for (const site of docSources().sources) {
+      const key = site.key;
+      const dir = notesDirOf(this.root, site);
+      if (!dir) continue;
+      // A store's copy lives in the ledger: its ids and paths use knowledge/<key>.
+      const base = site.kind === "store" ? `knowledge/${key}` : site.dir;
       for (const file of walk(dir)) {
         const r = path.relative(dir, file).split(path.sep).join("/");
         const text = read(file);
@@ -280,11 +284,11 @@ class Search {
         const parsed = isHtml ? htmlSections(text) : { title: mdTitle(text), sections: mdSections(text) };
         const pagePath = r.replace(/(^|\/)index\.html$/i, "$1");
         out.push({
-          id: `doc:${site.dir}/${r}`, source: "doc",
+          id: `doc:${base}/${r}`, source: "doc",
           title: parsed.title || humanize(path.basename(file)), subtitle: `${site.name} · ${r}`,
-          rel: `${site.dir}/${r}`, file, format: isHtml ? "html" : "md",
+          rel: `${base}/${r}`, file, format: isHtml ? "html" : "md",
           content: isHtml ? parsed.sections.map((s) => (s.section ? `## ${s.section}\n\n` : "") + s.text).join("\n\n") : text,
-          extra: { site: key, siteName: site.name, kind: site.kind, pagePath, live: site.live ? site.live + pagePath : null },
+          extra: { site: key, siteName: site.name, kind: site.kind, path: r, pagePath, live: site.live ? site.live + pagePath : null },
           chunks: parsed.sections,
         });
       }

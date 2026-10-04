@@ -1,10 +1,12 @@
 import { ChangeDetectionStrategy, Component, computed, effect, inject, signal, untracked, viewChild } from '@angular/core';
 import { Router } from '@angular/router';
-import type { LaunchRequest, Preset, RunMeta } from '../../../../shared/api';
+import type { AgentId, LaunchRequest, Preset, RunMeta } from '../../../../shared/api';
+import { defaultsFor } from '../core/agents';
 import { ApiService } from '../core/api.service';
 import { DataService } from '../core/data.service';
 import { LaunchService, type LaunchOptions } from '../core/launch.service';
 import { ToastService } from '../core/toast.service';
+import { AgentFieldsComponent } from './agent-fields.component';
 import { AttachComponent } from './attach.component';
 import { SlashInputComponent } from './slash-input.component';
 
@@ -15,7 +17,7 @@ const PERM_LABELS: Record<string, string> = {
 /** The one dialog every "start a run" button goes through. */
 @Component({
   selector: 'dash-launch-dialog',
-  imports: [SlashInputComponent, AttachComponent],
+  imports: [SlashInputComponent, AttachComponent, AgentFieldsComponent],
   changeDetection: ChangeDetectionStrategy.OnPush,
   template: `
     @if (req(); as r) {
@@ -44,22 +46,15 @@ const PERM_LABELS: Record<string, string> = {
                 }
               </select>
             </label>
-            <label>Model
-              <select (change)="model.set($any($event.target).value); touched.set(true)">
-                @for (m of deck()?.options?.models || []; track m) { <option [value]="m" [selected]="m === model()">{{ m }}</option> }
-              </select>
-            </label>
-            <label>Effort
-              <select (change)="effort.set($any($event.target).value); touched.set(true)">
-                @for (e of deck()?.options?.efforts || []; track e) { <option [value]="e" [selected]="e === effort()">{{ e }}</option> }
-              </select>
-            </label>
+            <dash-agent-fields [(agent)]="agent" [(modelId)]="model" [(effort)]="effort" [(touched)]="touched" />
+            @if (agent() === 'claude') {
             <label>Permissions
               <select (change)="perm.set($any($event.target).value)" [disabled]="planMode()">
                 @for (p of permModes(); track p) { <option [value]="p" [selected]="p === perm()">{{ permLabel(p) }}</option> }
               </select>
             </label>
-            @if (capOn()) {
+            }
+            @if (capOn() && agent() === 'claude') {
               <label title="Claude stops when the run's API-equivalent cost passes this. On a subscription nothing is billed. Turn the cap off in Settings.">Runaway cap (API $)
                 <input type="number" min="0.5" max="100" step="0.5" [value]="budget()" (input)="budget.set(+$any($event.target).value)">
               </label>
@@ -111,6 +106,7 @@ export class LaunchDialogComponent {
   readonly args = signal<Record<string, string>>({});
   readonly opts = signal<Record<string, boolean>>({});
   readonly ws = signal('main');
+  readonly agent = signal<AgentId>('claude');
   readonly model = signal('');
   readonly effort = signal('');
   readonly perm = signal('auto');
@@ -150,9 +146,12 @@ export class LaunchDialogComponent {
       this.args.set({ ...(r.prefill || {}) });
       this.opts.set(Object.fromEntries((p?.options || []).map((o) => [o.name, r.options?.[o.name] ?? !!o.default])));
       this.ws.set(r.workspace || (p && p.workspace) || 'main');
-      // Always the default model/effort unless the caller or a preset sets one; a change here is for this run only.
-      this.model.set(r.model || (p && p.model) || this.launch.model());
-      this.effort.set(r.effort || (p && p.effort) || this.launch.effort());
+      // The agent picked last (or the caller's / preset's), and its default model/effort unless one is set; a change here is for this run only.
+      const agent = (r.agent || (p as any)?.agent || this.launch.agent()) as AgentId;
+      this.agent.set(agent);
+      const d = defaultsFor((this.data.agents() || []).find((a) => a.id === agent) || null, { model: this.launch.model(), effort: this.launch.effort() });
+      this.model.set(r.model || (p && p.model) || d.model);
+      this.effort.set(r.effort || (p && p.effort) || d.effort);
       this.perm.set((p && p.permissionMode) || 'auto');
       this.budget.set((p && p.budgetUsd) || 5);
       this.planMode.set(!!r.planMode);
@@ -186,6 +185,7 @@ export class LaunchDialogComponent {
     const p = this.preset();
     const body: LaunchRequest = {
       workspace: this.ws(),
+      agent: this.agent(),
       model: this.model(),
       effort: this.effort() as LaunchRequest['effort'],
       permissionMode: this.perm() as LaunchRequest['permissionMode'],
@@ -195,7 +195,7 @@ export class LaunchDialogComponent {
     };
     const docs = [...this.useDocs()].filter((k) => this.docSources().some((s) => s.key === k));
     if (docs.length) { body.docSources = docs; if (r.docPage && docs.length === 1) body.docPage = r.docPage; }
-    if (this.capOn()) body.budgetUsd = Number(this.budget()) || 5;
+    if (this.capOn() && this.agent() === 'claude') body.budgetUsd = Number(this.budget()) || 5;
     if (this.att()?.uploading()) { this.error.set('Wait for the files to finish uploading.'); return; }
     if (p) {
       body.presetId = p.id;

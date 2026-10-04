@@ -187,7 +187,8 @@ export function readRequired(): { required: Map<string, { name: string } & Conne
     if (!r || typeof r.name !== "string" || !r.name.trim()) continue;
     let add: McpServerConfig | null = null;
     try { add = r.add ? checkConfig(r.add) : null; } catch (e) { errors.push(`connections.json: "${r.name.trim()}" add: ${(e as Error).message}`); }
-    required.set(r.name.trim().toLowerCase(), { name: r.name.trim(), why: typeof r.why === "string" ? r.why : "", add, vars: configVars(add) });
+    const alternatives = Array.isArray(r.alternatives) ? r.alternatives.filter((a: unknown) => typeof a === "string" && a.trim()).map((a: string) => a.trim()) : [];
+    required.set(r.name.trim().toLowerCase(), { name: r.name.trim(), why: typeof r.why === "string" ? r.why : "", add, vars: configVars(add), alternatives });
   }
   return { required, error: errors.join(" ") || null, configured: !!data };
 }
@@ -272,12 +273,11 @@ export class Connections {
       const key = name.toLowerCase();
       const e = listed.get(key);
       const rule = mcpRule(name);
-      const r = req.required.get(key);
       return {
         name, scope: "unknown", transport: e?.transport || null, target: e?.target || null, envKeys: [], headerKeys: [],
         state: e ? e.state : null, status: e ? e.text : null, approval: null,
         allowed: cfg.allowLocal.has(rule) || cfg.allowOther.has(rule),
-        rule, required: r ? { why: r.why, add: r.add, vars: r.vars } : null, missing: false, actions: [], hint: null,
+        rule, required: null, missing: false, actions: [], hint: null,
         ...base,
       };
     };
@@ -294,11 +294,16 @@ export class Connections {
       const scope: McpScope = /^claude\.ai /i.test(e.name) ? "claude.ai" : /^plugin:/i.test(e.name) ? "plugin" : "unknown";
       rows.set(e.name.toLowerCase(), row(e.name, { scope }));
     }
-    // Required but not configured: only known once a check has run (claude.ai connectors and plugins aren't in files).
+    // Each requirement lands on the server that meets it: its name or an alternative (the same tool reached
+    // another way, e.g. a claude.ai connector or a server added by hand), the connected one first.
+    // None configured: a "missing" row, known only once a check has run (claude.ai connectors and plugins aren't in files).
     for (const [key, r] of req.required) {
-      if (rows.has(key)) continue;
+      const required = { why: r.why, add: r.add, vars: r.vars, alternatives: r.alternatives };
+      const found = [r.name, ...r.alternatives].map((n) => rows.get(n.toLowerCase())).filter((c): c is Connection => !!c && !c.required);
+      const best = found.find((c) => c.state === "connected") || found[0];
+      if (best) { best.required = required; continue; }
       if (!last?.at && !r.add) continue;
-      rows.set(key, row(r.name, { scope: /^claude\.ai /i.test(r.name) ? "claude.ai" : /^plugin:/i.test(r.name) ? "plugin" : "unknown", missing: true }));
+      rows.set(key, row(r.name, { scope: /^claude\.ai /i.test(r.name) ? "claude.ai" : /^plugin:/i.test(r.name) ? "plugin" : "unknown", missing: true, required }));
     }
 
     for (const c of rows.values()) this.decorate(c, cfg);

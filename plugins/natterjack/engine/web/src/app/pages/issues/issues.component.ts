@@ -143,7 +143,7 @@ export class IssuesComponent implements OnInit, OnDestroy {
   async explain(i: Issue): Promise<void> {
     this.busyTicket.set(i.id);
     try {
-      const r = await this.api.post<{ run: RunMeta }>('/api/issues/explain', { ticket: i.id });
+      const r = await this.api.post<{ run: RunMeta }>('/api/issues/explain', { ticket: i.id, agent: this.launch.agent() });
       this.data.upsertRun(r.run);
       this.router.navigate(['/runs', r.run.id]);
     } catch (e) { this.toast.error((e as Error).message); }

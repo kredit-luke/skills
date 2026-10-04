@@ -22,6 +22,8 @@ type CM = typeof import('./code-editor.cm');
 export class CodeEditorComponent {
   readonly doc = input.required<EditorDoc>();
   readonly readOnly = input(true);
+  /** Wrap long lines (prose, such as notes) instead of scrolling sideways. */
+  readonly wrap = input(false);
   /** The full text after each edit. */
   readonly changed = output<string>();
   /** Ctrl/Cmd+S. */
@@ -53,7 +55,7 @@ export class CodeEditorComponent {
     const state = this.cm.createState(doc.text, lang, this.readOnly(), {
       changed: (text) => this.changed.emit(text),
       save: () => this.save.emit(),
-    });
+    }, this.wrap());
     if (this.view) this.view.setState(state);
     else this.view = new this.cm.EditorView({ state, parent: this.host().nativeElement });
   }

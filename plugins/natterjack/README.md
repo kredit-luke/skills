@@ -18,12 +18,14 @@
 
 Natterjack is a Claude Code plugin that turns your team's repos into one workspace with a local **dashboard**. Engineers run apps and Claude from the browser, and everyone else can ask the code questions directly.
 
-- **Runs**: start Claude from the browser (type `/` in any chat box to pick a skill or command); when it needs a decision it asks on the page (buttons), and every run shows its transcript, subagents, and the code it changed. Type while Claude works and your message is queued for when the turn ends (edit or remove it until then), like typing ahead in the CLI. Turn on **Auto-send** and it goes out even if Claude stops to ask a question, so you can walk away.
+- **Agents**: runs use Claude Code, GitHub Copilot CLI or OpenAI Codex CLI, whichever are installed: pick one next to Model and Effort.
+- **Runs**: start an agent from the browser (type `/` in any chat box to pick a skill or command); when it needs a decision it asks on the page (buttons), and every run shows its transcript, subagents, and the code it changed. Type while Claude works and your message is queued for when the turn ends (edit or remove it until then), like typing ahead in the CLI. Turn on **Auto-send** and it goes out even if Claude stops to ask a question, so you can walk away.
 - **Issues**: your tracker's board (Linear, Jira or GitHub Issues), with **Explain** (read-only, against the real code) and **Implement** (runs your `/implement` skill).
 - **Apps & Workspaces**: start and stop your apps and stacks in the right order, per worktree, with logs.
 - **Connections**: every MCP server Claude can reach (claude.ai connectors, plugins, your own), whether it's working, and one-click fixes: sign in, approve, add, and let dashboard runs use it.
 - **Machine**: what this computer needs for your stack (Node, Go, PHP, Python, .NET, Java, Docker, databases…), checked live, with one-click installs.
-- **Docs, Links, Infrastructure**: your docs (repos, or Confluence/Notion/Drive), link tiles anyone can add to (for the team or just themselves), and your infrastructure (accounts, environments, URLs, databases, IPs) with click-to-copy values.
+- **Knowledge**: what the business knows, by area (Company, Customers, Finance…): notes in your own S3, Google Cloud Storage or Azure bucket that anyone can edit from the page (no GitHub seat needed), docs in the repos, and links to Notion, Confluence or Drive with whether Claude can reach them. Obsidian-style links, backlinks, tags and review dates; Claude reads all of it.
+- **Links, Infrastructure**: link tiles anyone can add to (for the team or just themselves), and your infrastructure (accounts, environments, URLs, databases, IPs) with click-to-copy values.
 - **Search, Skills, Usage, Memory, Explore, Settings**: search everything without spending tokens, run skills as cards, see plan usage, browse and edit files.
 
 It's tailored to your team by **discovery, not forms**: Claude scans your repos (stacks, ports, run commands, databases, CI, deploy targets, ticket keys in your branches, your design system), asks only what it couldn't work out, and writes the config. The dashboard itself is a finished engine copied into your workspace. You own that copy (change anything), and `upgrade` merges newer versions around your changes.
@@ -39,13 +41,23 @@ In Claude Code:
 
 (or from a shell: `claude plugin marketplace add lhoezee/skills` and `claude plugin install natterjack@lhoezee-skills`)
 
-Then, in the folder that holds (or will hold) your team's repos:
+In GitHub Copilot CLI (it reads the same marketplace):
 
 ```
-/natterjack:create
+copilot plugin marketplace add lhoezee/skills
+copilot plugin install natterjack@lhoezee-skills
 ```
 
-Needs: Claude Code, Git, and Node.js 24.15 or newer (the dashboard's Machine page helps with the rest).
+In OpenAI Codex CLI (`.agents/plugins/marketplace.json` and `.codex-plugin/plugin.json`):
+
+```
+codex plugin marketplace add lhoezee/skills
+codex plugin add natterjack@lhoezee-skills
+```
+
+Then, in the folder that holds (or will hold) your team's repos, ask for the **create** skill (`/natterjack:create` in Claude Code; in Copilot or Codex, "use the natterjack create skill"). The skills name their scripts with `${CLAUDE_PLUGIN_ROOT}`, which only Claude Code fills in; each skill tells other agents to use its plugin folder instead. Copilot asks before running a script outside the current folder (the plugin's): approve it.
+
+Needs: Claude Code, GitHub Copilot CLI or OpenAI Codex CLI, plus Git and Node.js 24.15 or newer (the dashboard's Machine page helps with the rest). The dashboard runs any of the three (the Agent picker in Ask and Run).
 
 ### Coming from agentic-os
 

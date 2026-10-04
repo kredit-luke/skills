@@ -27,7 +27,8 @@ import crypto from "node:crypto";
 import { execFile, type ChildProcess } from "node:child_process";
 import type { ServerResponse } from "node:http";
 import type { Attachment, Effort, PermissionMode, QueuedMessage, Question, RunEvent, RunMeta, RunWatch, WatchedPr } from "../../shared/api.ts";
-import { claudeEnv, spawnClaude } from "./claude.ts";
+import { AGENT_HEADLESS_RULES, agentOf, type ParseState } from "./agents/index.ts";
+import { expandSlash } from "./agents/skills.ts";
 import { promptWithAttachments, type Attachments } from "./attachments.ts";
 
 const RESULT_TEXT_MAX = 4000;
@@ -99,13 +100,17 @@ export interface StartSpec {
   /** Docs sources this run should use (docs.json keys), and the note that tells Claude how (appended every turn). */
   docSources?: string[];
   extraPrompt?: string | null;
+  /** Folders outside the workspace it may read (--add-dir), e.g. a knowledge store's local copy. */
+  addDirs?: string[];
+  /** The agent CLI that runs it (agents/): "claude" (the default), "copilot", "codex". */
+  agent?: string;
 }
 
 /**
  * Whether queued messages may go out now, and the reply options to send them with;
  * main.ts applies the same limits as a reply you send (concurrent runs, usage, budget).
  */
-export type QueueGate = () => { blocker: string | null; budgetUsd?: number | null };
+export type QueueGate = (meta: RunMeta) => { blocker: string | null; budgetUsd?: number | null };
 
 export interface ReplyOptions {
   /** A new per-turn cap; null removes it, undefined keeps the run's. */
@@ -256,6 +261,8 @@ export class RunManager {
       trigger: spec.trigger || "manual",
       docSources: spec.docSources && spec.docSources.length ? spec.docSources : undefined,
       extraPrompt: spec.extraPrompt || null,
+      addDirs: spec.addDirs && spec.addDirs.length ? spec.addDirs : undefined,
+      agent: agentOf(spec.agent).id,
       status: "running",
       startedAt: new Date().toISOString(),
       endedAt: null,
@@ -381,7 +388,7 @@ export class RunManager {
     if (this.live.has(id)) return;
     const meta = this.get(id);
     if (!meta || !drainable(meta)) return;
-    const gate = this.queueGate();
+    const gate = this.queueGate(meta);
     try {
       if (gate.blocker) throw new Error(gate.blocker);
       this.sendQueued(id, gate.budgetUsd === undefined ? {} : { budgetUsd: gate.budgetUsd });
@@ -579,31 +586,29 @@ export class RunManager {
       this._append(meta, { type: "human", text: prompt, turn: meta.turns, uuid: crypto.randomUUID(), timestamp: at, ...(files.length ? { attachments: files } : {}) });
     }
 
-    const mode = meta.planMode ? "plan" : meta.permissionMode;
-    const args = [
-      "-p", first ? prompt : promptWithAttachments(prompt, files),
-      "--output-format", "stream-json",
-      "--verbose",
-      ...(first ? ["--session-id", meta.sessionId, "--name", `dash: ${meta.label}`.slice(0, 80)] : ["--resume", meta.sessionId]),
-      "--permission-mode", mode,
-      // Headless: nobody can answer a permission prompt, so anything that would ask is denied.
-      "--permission-prompts", "none",
-      "--append-system-prompt", [HEADLESS_RULES, meta.planMode ? PLAN_MODE_RULE : null, meta.extraPrompt || null].filter(Boolean).join("\n\n"),
-    ];
-    if (meta.model) args.push("--model", meta.model);
-    if (meta.effort) args.push("--effort", meta.effort);
-    if (meta.budgetUsd) args.push("--max-budget-usd", String(meta.budgetUsd));
+    // The run's agent (agents/) builds the command line and translates what it prints.
+    const agent = agentOf(meta.agent);
     // The run's attachments live outside a worktree's folder; allow reading them
     // (permission prompts are denied here, so without this a worktree run couldn't).
     const filesDir = this.attachments ? this.attachments.runDir(meta.id) : null;
-    if (filesDir && fs.existsSync(filesDir)) args.push("--add-dir", filesDir);
+    const addDirs = [...(filesDir && fs.existsSync(filesDir) ? [filesDir] : []), ...(meta.addDirs || []).filter((d) => fs.existsSync(d))];
+    const args = agent.turnArgs({
+      first, sessionId: meta.sessionId, label: meta.label,
+      // Agents that don't load Claude Code's skills get a workspace skill's instructions for `/name args`.
+      prompt: (agent.id === "claude" ? (s: string) => s : (s: string) => expandSlash(s, meta.cwd))(first ? prompt : promptWithAttachments(prompt, files)),
+      model: meta.model, effort: meta.effort, planMode: !!meta.planMode, permissionMode: meta.permissionMode,
+      budgetUsd: agent.capabilities.costUsd ? meta.budgetUsd : null,
+      rules: [agent.id === "claude" ? HEADLESS_RULES : AGENT_HEADLESS_RULES, meta.extraPrompt || null].filter(Boolean).join("\n\n"),
+      planRule: meta.planMode ? PLAN_MODE_RULE : null,
+      addDirs,
+    });
 
-    const child = spawnClaude(args, {
+    const child = agent.spawn(args, {
       cwd: meta.cwd,
-      env: claudeEnv(),
       stdio: ["ignore", "pipe", "pipe"], // prompt is an argument; an open stdin can make the CLI wait forever
       windowsHide: true,
     });
+    const parseState: ParseState = { sessionId: first ? null : meta.sessionId, model: meta.model };
     const live: LiveTurn = { child, stopping: null, meta };
     this.live.set(meta.id, live);
 
@@ -619,6 +624,8 @@ export class RunManager {
 
     const handle = (ev: RunEvent) => {
       if (ev.type === "system" && (ev.subtype === "commands_changed" || ev.subtype === "thinking_tokens")) return; // bulky noise
+      // An agent that names its own session (Codex) tells us on its first turn: resume that one.
+      if (ev.type === "system" && ev.subtype === "init" && typeof ev.session_id === "string" && ev.session_id && ev.session_id !== meta.sessionId && agent.id !== "claude") meta.sessionId = ev.session_id;
       const main = ev.parent_tool_use_id == null;
 
       // Question blocks: remember the raw main-session text, store it without the block.
@@ -650,9 +657,9 @@ export class RunManager {
         const line = buf.slice(0, i).trim();
         buf = buf.slice(i + 1);
         if (!line) continue;
-        let ev: RunEvent;
-        try { ev = JSON.parse(line); } catch { continue; }
-        handle(ev);
+        let raw: any;
+        try { raw = JSON.parse(line); } catch { continue; }
+        for (const ev of agent.parse(raw, parseState)) handle(ev);
       }
     });
     child.stderr!.on("data", (d) => { stderr = (stderr + d).slice(-4000); });
@@ -675,7 +682,7 @@ export class RunManager {
         meta.status = "cancelled";
       } else if (spawnErr) {
         meta.status = "failed";
-        meta.error = `Could not start claude: ${spawnErr.message}`;
+        meta.error = `Could not start ${agent.label}: ${spawnErr.message}`;
       } else {
         const question = rawFinalText.includes("<<QUESTION>>") ? parseQuestion(rawFinalText) : null;
         if (question) {
@@ -687,7 +694,7 @@ export class RunManager {
         } else {
           // No result event arrived: the exit code is the verdict.
           meta.status = code === 0 ? "succeeded" : "failed";
-          if (code !== 0 && !meta.error) meta.error = stderr.trim().split("\n").slice(-3).join("\n") || `claude exited with code ${code}`;
+          if (code !== 0 && !meta.error) meta.error = stderr.trim().split("\n").slice(-3).join("\n") || `${agent.label} exited with code ${code}`;
         }
       }
       if (meta.status === "handedOff") endWatch(meta, "Continued in a terminal.");

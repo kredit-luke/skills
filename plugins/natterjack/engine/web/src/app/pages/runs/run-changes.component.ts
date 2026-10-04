@@ -22,7 +22,7 @@ const STATUS_LABEL: Record<string, string> = { M: 'modified', A: 'added', D: 'de
         <span>@if (data(); as d) { <b>{{ fileCount() }}</b> file{{ fileCount() === 1 ? '' : 's' }} changed in <b>{{ d.scopes.length }}</b> repo{{ d.scopes.length === 1 ? '' : 's' }} } @else { Checking the repos… }</span>
         @if (data() && !data()!.hasBaseline) { <span class="tag" title="This run started before snapshots were recorded, so each repo is compared with main">compared with main</span> }
         <span class="grow"></span>
-        @if (running()) { <span class="live"><span class="spin"></span> updating while Claude works</span> }
+        @if (running()) { <span class="live"><span class="spin"></span> updating while the agent works</span> }
         <button class="btn ghost sm" (click)="load(true)" [disabled]="busy()">Refresh</button>
       </div>
       @if (error()) { <div class="empty">{{ error() }}</div> }

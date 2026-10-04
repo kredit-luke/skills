@@ -124,7 +124,7 @@ test("Connections.build: merged rows, approval, actions, connections.json requir
   const by = Object.fromEntries(r.connections.map((c) => [c.name, c]));
   assert.equal(by["claude.ai Linear"].scope, "claude.ai");
   assert.equal(by["claude.ai Linear"].state, "connected");
-  assert.deepEqual(by["claude.ai Linear"].required, { why: "Issues page", add: null, vars: [] });
+  assert.deepEqual(by["claude.ai Linear"].required, { why: "Issues page", add: null, vars: [], alternatives: [] });
   assert.equal(by["shared-docs"].approval, "pending");
   assert.ok(by["shared-docs"].actions.includes("approve"));
   assert.equal(by.nope.approval, "rejected");
@@ -221,4 +221,18 @@ test("remove and add: an unreadable settings.local.json stops them before the CL
   await assert.rejects(conn.add({ name: "notion", scope: "user", config: { type: "http", url: "https://mcp.notion.com/mcp" }, allow: true }), /isn't valid JSON/);
   assert.equal(calls.filter((c) => c[1] === "remove" || c[1] === "add-json").length, 0);
   fs.rmSync(settingsFile);
+});
+
+test("a requirement is met by any of its alternatives, the connected one first", async () => {
+  write(path.join(CFG, "connections.json"), { required: [
+    { name: "claude.ai Confirm", why: "Docs", alternatives: ["octopusdeploy"] },
+    { name: "claude.ai Nowhere", why: "Wiki", alternatives: ["also-nowhere"] },
+  ] });
+  const r = await new Connections(ROOT, { run: fake }).list({ wait: true });
+  const by = Object.fromEntries(r.connections.map((c) => [c.name, c]));
+  assert.equal(by.octopusdeploy.required?.why, "Docs", "the connected alternative carries it");
+  assert.equal(by["claude.ai Confirm"].required, null, "not the signed-out one");
+  assert.ok(by["claude.ai Nowhere"].missing, "none configured: the main name shows as missing");
+  assert.deepEqual(by["claude.ai Nowhere"].required?.alternatives, ["also-nowhere"]);
+  assert.equal(r.problems, 1);
 });

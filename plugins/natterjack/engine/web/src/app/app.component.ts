@@ -46,6 +46,7 @@ interface NavItem { path: string; label: string; icon: string; exact?: boolean; 
                   @if (data.runningCount()) { <span class="pill" title="Running">{{ data.runningCount() }}</span> }
                 }
                 @case ('/apps') { @if (data.runningJobs()) { <span class="pill">{{ data.runningJobs() }}</span> } }
+                @case ('/knowledge') { @if (knowledgeStale()) { <span class="pill amber" title="Notes past their review date">{{ knowledgeStale() }}</span> } }
                 @case ('/connections') { @if (connectionProblems()) { <span class="pill red" title="Servers your team relies on that aren't working for you">{{ connectionProblems() }}</span> } }
                 @case ('/machine') { @if (machineProblems()) { <span class="pill red" title="Missing requirements">{{ machineProblems() }}</span> } }
               }
@@ -90,10 +91,10 @@ export class AppComponent implements OnInit {
   readonly nav: NavItem[] = [
     { path: '/', label: 'Home', icon: 'home', exact: true },
     { path: '/links', label: 'Links', icon: 'links', group: 'Company' },
-    { path: '/docs', label: 'Docs', icon: 'docs' },
+    { path: '/knowledge', label: 'Knowledge', icon: 'docs' },
     { path: '/infrastructure', label: 'Infrastructure', icon: 'infrastructure' },
     { path: '/issues', label: 'Issues', icon: 'issues' },
-    { path: '/ask', label: 'Ask', icon: 'ask', group: 'Claude' },
+    { path: '/ask', label: 'Ask', icon: 'ask', group: 'Agents' },
     { path: '/runs', label: 'Activity', icon: 'runs' },
     { path: '/skills', label: 'Skills', icon: 'skills' },
     { path: '/connections', label: 'Connections', icon: 'connections' },
@@ -121,6 +122,7 @@ export class AppComponent implements OnInit {
   });
   readonly machineProblems = computed(() => this.data.machine()?.problems || 0);
   readonly connectionProblems = computed(() => this.data.connections()?.problems || 0);
+  readonly knowledgeStale = computed(() => this.data.docSites().reduce((n, s) => n + (s.stale || 0), 0));
 
   /** The Restart link in the sidebar footer: idle, waiting for the new server, or it didn't come back. */
   readonly restarting = signal<'idle' | 'restarting' | 'failed'>('idle');
