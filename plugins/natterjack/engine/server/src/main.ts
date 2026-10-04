@@ -61,7 +61,7 @@ import { readProfile, reapplyProfile, setRole } from "./profile.ts";
 import { DocSites, docAreas, docSources } from "./docs.ts";
 import { Knowledge } from "./knowledge/index.ts";
 import { agentOf, agentStatuses, isAgentId, type AgentStatus } from "./agents/index.ts";
-import { addAgentServer, addArgs, agentServerName, claudeServersToCopy, listAgentServers, needsTerminal, removeAgentServer, terminalCommand, type OtherAgent } from "./agents/mcp.ts";
+import { addAgentServer, addArgs, agentServerName, claudeServersToCopy, listAgentServers, needsTerminal, removeAgentServer, signInSupport, terminalCommand, type OtherAgent } from "./agents/mcp.ts";
 import { checkConfig } from "./connections.ts";
 import { KNOWLEDGE_TOOLS, addStoreSource, chosenTools, saveTools } from "./knowledge/tools.ts";
 import { DocsProviders } from "./docs-providers/index.ts";
@@ -480,7 +480,9 @@ async function agentConnections(agent: OtherAgent) {
     .filter((s) => !(agent === "copilot" && s.from === "workspace"))
     .map((s) => ({ name: s.name, from: s.from, as: agentServerName(s.name), transport: s.config.type, target: s.config.type === "stdio" ? s.config.command : s.config.url }))
     .filter((s) => !have.has(s.as));
-  return { agent, servers, fromClaude };
+  // A remote server whose sign-in only takes pre-registered apps (claude.ai): the other agent can't sign in.
+  const withSignIn = await Promise.all(fromClaude.map(async (s) => ({ ...s, signIn: s.transport === "stdio" || !s.target ? "yes" : await signInSupport(s.target) })));
+  return { agent, servers, fromClaude: withSignIn };
 }
 
 /** The Knowledge setup panel: the catalog, what the team picked, its stores, and whether this dashboard can change it. */
@@ -1569,6 +1571,9 @@ async function handleApi(req: http.IncomingMessage, res: http.ServerResponse, ur
     if (what === "copy") {
       const src = (await claudeServersToCopy(MAIN_WORKSPACE_PATH)).find((s) => s.name === String(body.name || ""));
       if (!src) throw httpError(404, `Claude has no server ${String(body.name || "")} to copy.`);
+      if (src.config.type !== "stdio" && src.config.url && (await signInSupport(src.config.url)) === "no") {
+        throw httpError(400, `${src.name}'s sign-in only accepts apps registered with it in advance (such as claude.ai), so ${agentOf(agent).label} can't connect to it.`);
+      }
       return add(agentServerName(src.name), src.config);
     }
     if (what === "remove") { await removeAgentServer(agent, String(body.name || ""), MAIN_WORKSPACE_PATH); return sendJson(res, await agentConnections(agent)); }

@@ -9,7 +9,7 @@ interface AgentServer {
   name: string; source: 'user' | 'workspace' | 'plugin' | 'builtin'; transport: string; target: string | null;
   enabled: boolean; envKeys: string[]; headerKeys: string[]; auth: string | null; actions: Array<'remove' | 'login'>;
 }
-interface FromClaude { name: string; from: string; as: string; transport: string; target: string | null }
+interface FromClaude { name: string; from: string; as: string; transport: string; target: string | null; signIn: 'yes' | 'no' | 'unknown' }
 interface AgentConnections { agent: 'copilot' | 'codex'; servers: AgentServer[]; fromClaude: FromClaude[]; terminal?: { opened: boolean; command: string } }
 
 const SOURCE: Record<string, string> = { user: 'yours', workspace: 'workspace .mcp.json', plugin: 'plugin', builtin: 'built in' };
@@ -81,7 +81,11 @@ const SOURCE: Record<string, string> = { user: 'yours', workspace: 'workspace .m
               <div class="check info">
                 <span class="ic">+</span>
                 <span class="nm">{{ c.name }} <span class="tag">{{ c.from }}</span></span>
-                <button class="btn ghost sm" [disabled]="busy()" (click)="copy(c)" [title]="'Adds it to ' + who() + ' as ' + c.as">Add to {{ who() }}</button>
+                @if (c.signIn === 'no') {
+                  <span class="st" [title]="noSignIn(c)">claude.ai only</span>
+                } @else {
+                  <button class="btn ghost sm" [disabled]="busy()" (click)="copy(c)" [title]="'Adds it to ' + who() + ' as ' + c.as">Add to {{ who() }}</button>
+                }
                 @if (c.target) { <div class="tg" [title]="c.target">{{ c.transport !== 'stdio' ? c.transport.toUpperCase() + ' · ' : '' }}{{ c.target }}</div> }
               </div>
             }
@@ -112,6 +116,8 @@ export class AgentConnectionsComponent {
 
   who(): string { return agentLabel(this.agent()); }
   source(s: string): string { return SOURCE[s] || s; }
+  noSignIn(c: FromClaude): string { return `${this.host(c.target)} only lets apps registered with it in advance (such as claude.ai) sign in, so ${this.who()} can't connect to it.`; }
+  host(u: string | null): string { try { return u ? new URL(u).hostname : 'This service'; } catch { return 'This service'; } }
   shownCopies(): FromClaude[] { const all = this.list()?.fromClaude || []; return this.allCopies() ? all : all.slice(0, 8); }
   patch(p: Partial<ReturnType<typeof this.f>>): void { this.f.set({ ...this.f(), ...p }); }
 

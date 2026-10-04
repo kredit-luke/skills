@@ -229,3 +229,20 @@ test("an npm launcher that starts a native binary resolves to the binary (no con
   assert.equal(nativeBinary(path.join(pkg, "bin", "codex.js"), "codex"), path.join(bin, "codex.exe"));
   assert.equal(nativeBinary(path.join(pkg, "bin", "codex.js"), "other"), null);
 });
+
+test("signInSupport: can another app register with a remote server's OAuth (Google's can't; Notion's can)", async () => {
+  const { signInSupport } = await import("../src/agents/mcp.ts");
+  const docs: Record<string, unknown> = {
+    "https://g.example/.well-known/oauth-protected-resource/mcp/v1": { authorization_servers: ["https://accounts.example/"] },
+    "https://accounts.example/.well-known/openid-configuration": { authorization_endpoint: "https://accounts.example/auth", token_endpoint: "https://accounts.example/token" },
+    "https://n.example/.well-known/oauth-protected-resource/mcp": { authorization_servers: ["https://n.example"] },
+    "https://n.example/.well-known/oauth-authorization-server": { authorization_endpoint: "https://n.example/authorize", registration_endpoint: "https://n.example/register" },
+  };
+  const real = globalThis.fetch;
+  globalThis.fetch = (async (u: string) => (u in docs ? new Response(JSON.stringify(docs[u]), { status: 200 }) : new Response("nope", { status: 404 }))) as typeof fetch;
+  try {
+    assert.equal(await signInSupport("https://g.example/mcp/v1"), "no");
+    assert.equal(await signInSupport("https://n.example/mcp"), "yes");
+    assert.equal(await signInSupport("https://plain.example/mcp"), "unknown", "no OAuth metadata at all");
+  } finally { globalThis.fetch = real; }
+});

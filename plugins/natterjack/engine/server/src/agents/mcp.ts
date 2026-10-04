@@ -166,3 +166,49 @@ export async function claudeServersToCopy(root: string): Promise<{ name: string;
   }
   return out;
 }
+
+// ------------------------------------------------------------------ can another app sign in?
+
+const signInCache = new Map<string, { at: number; value: SignInSupport }>();
+const SIGN_IN_TTL_MS = 6 * 60 * 60_000;
+export type SignInSupport = "yes" | "no" | "unknown";
+
+async function getJson(url: string): Promise<any | null> {
+  try {
+    const r = await fetch(url, { signal: AbortSignal.timeout(8000), headers: { Accept: "application/json" } });
+    if (!r.ok) return null;
+    return await r.json();
+  } catch { return null; }
+}
+
+/** The well-known URL for a metadata document, with the resource's path after it (RFC 8414 / 9728). */
+function wellKnown(base: URL, doc: string): string[] {
+  const p = base.pathname.replace(/\/+$/, "");
+  return [...(p ? [`${base.origin}/.well-known/${doc}${p}`] : []), `${base.origin}/.well-known/${doc}`];
+}
+
+/**
+ * Whether a CLI can sign in to a remote MCP server by itself: its OAuth server must let
+ * clients register (a registration_endpoint). Google's (Gmail, Drive, Calendar) only take
+ * pre-registered apps such as claude.ai, so copying those to Codex or Copilot can't work.
+ * "unknown" when the server publishes no OAuth metadata (it may need none).
+ */
+export async function signInSupport(serverUrl: string): Promise<SignInSupport> {
+  const hit = signInCache.get(serverUrl);
+  if (hit && Date.now() - hit.at < SIGN_IN_TTL_MS) return hit.value;
+  let value: SignInSupport = "unknown";
+  try {
+    const url = new URL(serverUrl);
+    let prm: any = null;
+    for (const u of wellKnown(url, "oauth-protected-resource")) if ((prm = await getJson(u))) break;
+    const issuer = new URL(String(prm?.authorization_servers?.[0] || url.origin));
+    let meta: any = null;
+    for (const doc of ["oauth-authorization-server", "openid-configuration"]) {
+      for (const u of wellKnown(issuer, doc)) if ((meta = await getJson(u))) break;
+      if (meta) break;
+    }
+    if (meta && (meta.authorization_endpoint || meta.token_endpoint)) value = meta.registration_endpoint ? "yes" : "no";
+  } catch {}
+  signInCache.set(serverUrl, { at: Date.now(), value });
+  return value;
+}
