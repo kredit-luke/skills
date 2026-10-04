@@ -80,7 +80,6 @@ import { HOSTED_HIDDEN_PAGES, NOT_HOSTED, checkHostedRequest, hostedConfig } fro
 import { ClaudeLogin } from "./claude-login.ts";
 import { Models } from "./models/index.ts";
 import { isRoutedId, routeOf } from "./models/routes.ts";
-import { CATALOG } from "./machine-catalog.ts";
 
 const DIST_DIR = path.join(DASHBOARD_DIR, "dist", "browser");
 const VERSION = JSON.parse(fs.readFileSync(path.join(DASHBOARD_DIR, "package.json"), "utf-8")).version;
@@ -1431,11 +1430,9 @@ async function handleApi(req: http.IncomingMessage, res: http.ServerResponse, ur
     if (what === "test") return sendJson(res, await models.test(String(body.id || "")));
     if (what === "token") { models.setToken(String(body.id || ""), String(body.token || "").trim()); agentsNow().catch(() => {}); return sendJson(res, { ok: true }); }
     if (what === "install-ollama") {
-      // The command is the catalog's (or the update below), never the browser's.
-      const os = process.platform === "win32" ? "win" : process.platform === "darwin" ? "mac" : "linux";
-      const update = { win: "winget upgrade --id Ollama.Ollama -e", mac: "brew upgrade ollama", linux: "curl -fsSL https://ollama.com/install.sh | sh" };
-      const cmd = body.update ? update[os] : (CATALOG.ollama.install as any)?.[os];
-      if (!cmd) return sendError(res, 400, "There's no Ollama installer for this OS; see https://ollama.com/download.");
+      // The command is the server's (for where Ollama runs: this OS or WSL), never the browser's.
+      const cmd = await models.installCommand(!!body.update);
+      if (!cmd) return sendError(res, 400, "Ollama runs somewhere else (a container or another machine): update it there. See https://ollama.com/download.");
       return sendJson(res, await openTerminal(cmd, MAIN_WORKSPACE_PATH, body.update ? "Update Ollama" : "Setup: Ollama"));
     }
     return sendError(res, 404, "Unknown models action");

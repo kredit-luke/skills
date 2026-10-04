@@ -21,6 +21,10 @@
  * (.claude/ledger/model-tokens.json, never committed, never sent back to the browser).
  * Without `models`, the endpoint's own /v1/models list is used.
  *
+ * Where Ollama runs: on this OS (its CLI is here), in WSL on Windows (a common setup: the
+ * port is forwarded, the models and disk are Linux's), or somewhere else that answers on
+ * OLLAMA_HOST (a container, another machine). Disk space and the Update command follow it.
+ *
  * Hosted (hosted.ts): no local models (the container has no GPU); team endpoints only.
  */
 
@@ -96,6 +100,7 @@ export class Models {
   private tests = new Map<string, EndpointTest>();
   private discovered = new Map<string, string[]>();
   private cli: { at: number; installed: boolean; version: string | null } | null = null;
+  private wsl: { at: number; found: boolean; dir: string | null; freeGb: number | null; totalGb: number | null } | null = null;
   private last: { at: number; running: string | null; messagesApi: boolean; list: OllamaModel[] } = { at: 0, running: null, messagesApi: false, list: [] };
   private notifyAt = 0;
   onChange: () => void = () => {};
@@ -143,6 +148,44 @@ export class Models {
         resolve(this.cli);
       });
     });
+  }
+
+  /**
+   * Windows, Ollama answering but not installed here: is it WSL's? Only asked while it's running
+   * (so WSL is already up: asking would otherwise boot it). Also its models folder's disk space.
+   */
+  private wslOllama(): Promise<{ found: boolean; dir: string | null; freeGb: number | null; totalGb: number | null }> {
+    if (this.wsl && Date.now() - this.wsl.at < 60_000) return Promise.resolve(this.wsl);
+    const script = 'command -v ollama >/dev/null || exit 3; d=/usr/share/ollama/.ollama/models; [ -d "$d" ] || d="$HOME/.ollama/models"; echo "$d"; df -kP "$d" 2>/dev/null | tail -1';
+    return new Promise((resolve) => {
+      execFile("wsl.exe", ["-e", "sh", "-c", script], { timeout: 8000, windowsHide: true, encoding: "utf-8" }, (err, out) => {
+        const lines = String(out || "").split(/\r?\n/).map((l) => l.trim()).filter(Boolean);
+        const df = (lines[1] || "").split(/\s+/);
+        const kb = (n: string) => (Number.isFinite(Number(n)) ? round1((Number(n) * 1024) / GB) : null);
+        this.wsl = { at: Date.now(), found: !err && !!lines[0], dir: lines[0] || null, freeGb: kb(df[3]), totalGb: kb(df[1]) };
+        resolve(this.wsl);
+      });
+    });
+  }
+
+  /** Where Ollama runs: "here" (this OS), "wsl", "elsewhere" (answers, but neither), or null (not found). */
+  private async where(): Promise<"here" | "wsl" | "elsewhere" | null> {
+    if ((await this.ollamaCli()).installed) return "here";
+    if (!this.last.running) return null;
+    if (process.platform === "win32" && (await this.wslOllama()).found) return "wsl";
+    return "elsewhere";
+  }
+
+  /** The command that installs or updates Ollama where it runs (a terminal shows it; sudo may ask in WSL). */
+  async installCommand(update: boolean): Promise<string | null> {
+    const where = await this.where();
+    if (where === "wsl") return 'wsl -- sh -c "curl -fsSL https://ollama.com/install.sh | sh"';
+    if (where === "elsewhere") return null;
+    const os = process.platform === "win32" ? "win" : process.platform === "darwin" ? "mac" : "linux";
+    const cmds = update
+      ? { win: "winget upgrade --id Ollama.Ollama -e", mac: "brew upgrade ollama", linux: "curl -fsSL https://ollama.com/install.sh | sh" }
+      : { win: "winget install --id Ollama.Ollama -e", mac: "brew install ollama", linux: "curl -fsSL https://ollama.com/install.sh | sh" };
+    return cmds[os];
   }
 
   /** What Ollama has now (null when it isn't running), and each model's capabilities. */
@@ -309,8 +352,12 @@ export class Models {
     if (force || Date.now() - this.last.at > 3000) await this.refresh();
     const hosted = this.opts.hosted;
     const hw: Hardware = await hardware(this.opts.root);
-    const dir = ollamaModelsDir();
-    const disk = diskOf(dir);
+    const where = hosted ? null : await this.where();
+    const wsl = where === "wsl" ? await this.wslOllama() : null;
+    const dir = wsl ? `WSL: ${wsl.dir}` : ollamaModelsDir();
+    // Elsewhere: its disk isn't this computer's, so no number rather than a wrong one.
+    const disk = wsl ? (wsl.freeGb != null && wsl.totalGb != null ? { path: dir, freeGb: wsl.freeGb, totalGb: wsl.totalGb } : null)
+      : where === "elsewhere" ? null : diskOf(dir);
     const gpu = hw.gpus.reduce<{ vram: number | null; unified: boolean }>((best, g) => (g.vramGb != null && g.vramGb > (best.vram || 0) ? { vram: g.vramGb, unified: !!g.unified } : best), { vram: null, unified: false });
     const installedNames = new Set(this.last.list.map((m) => full(m.name)));
     const pulls = [...this.pulls.values()].map(({ abort: _a, ...p }) => p);
@@ -338,6 +385,7 @@ export class Models {
       modelsDir: disk ? { ...disk, path: dir } : null,
       contextLength: cfg.contextLength,
       ollama: {
+        where,
         installed: cli.installed || !!this.last.running,
         running: !!this.last.running,
         /** Speaks Anthropic's Messages API, which Claude Code needs (older Ollamas don't). */

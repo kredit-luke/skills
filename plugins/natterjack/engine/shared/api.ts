@@ -824,7 +824,8 @@ export interface ModelsView {
   modelsDir: MachineDisk | null;
   contextLength: number;
   /** messagesApi: it serves Anthropic's Messages API, which Claude Code needs (older versions don't). */
-  ollama: { installed: boolean; running: boolean; messagesApi: boolean; version: string | null; base: string };
+  /** where: on this OS, in WSL (Windows), somewhere else that answers (a container, another machine), or not found. */
+  ollama: { where: 'here' | 'wsl' | 'elsewhere' | null; installed: boolean; running: boolean; messagesApi: boolean; version: string | null; base: string };
   usedGb: number;
   recommended: RecommendedModel[];
   installed: InstalledModel[];

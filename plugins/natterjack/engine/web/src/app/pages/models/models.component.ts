@@ -57,16 +57,16 @@ const ENDPOINT_EXAMPLE = `{
                   <i class="mine" [style.width.%]="pct(m.usedGb, d.totalGb)"></i><i class="rest" [style.width.%]="pct(other(d), d.totalGb)"></i>
                 </div>
                 <div class="path">{{ d.path }}</div>
-              } @else { <div class="v dim">Unknown</div> }
+              } @else { <div class="v dim">{{ m.ollama.where === 'elsewhere' ? 'Wherever Ollama runs (not this computer\'s apps)' : 'Unknown' }}</div> }
             </div>
           </div>
           <div class="runtime" [class.ok]="m.ollama.running">
             @if (m.ollama.running && !m.ollama.messagesApi) {
-              <span class="tag amber">Ollama {{ m.ollama.version }}: update needed</span>
-              <span>This version doesn't have the Anthropic-compatible API Claude Code talks to, so runs can't use local models yet. Updating keeps your downloaded models.</span>
-              <button class="btn primary sm" [disabled]="installing()" (click)="installOllama(true)" title="Opens a terminal running the update, so you can see and approve any prompts">Update Ollama</button>
+              <span class="tag amber">Ollama {{ m.ollama.version }}{{ whereText() }}: update needed</span>
+              <span>This version doesn't have the Anthropic-compatible API Claude Code talks to, so runs can't use local models yet. Updating keeps your downloaded models.@if (m.ollama.where === 'wsl') { It runs in WSL, so the update asks for your Linux password. }@if (m.ollama.where === 'elsewhere') { It runs outside this computer's apps (a container or another machine): update it there. }</span>
+              @if (m.ollama.where !== 'elsewhere') { <button class="btn primary sm" [disabled]="installing()" (click)="installOllama(true)" title="Opens a terminal running the update, so you can see and approve any prompts">Update Ollama</button> }
             } @else if (m.ollama.running) {
-              <span class="tag good">Ollama {{ m.ollama.version }}</span>
+              <span class="tag good">Ollama {{ m.ollama.version }}{{ whereText() }}</span>
               <span>Running at <code>{{ m.ollama.base }}</code>. Downloaded models get a {{ ctxK(m.contextLength) }} context window for runs (Claude Code's own instructions need about 20k).</span>
             } @else if (m.ollama.installed) {
               <span class="tag amber">Ollama stopped</span>
@@ -223,6 +223,12 @@ export class ModelsComponent implements OnInit {
     if (!m) return [];
     const rec = new Set(m.recommended.map((r) => r.tag));
     return m.pulls.filter((p) => !rec.has(p.tag) && (!p.done || p.error));
+  });
+
+  /** " · in WSL" for a Windows computer whose Ollama runs in WSL. */
+  readonly whereText = computed(() => {
+    const w = this.data.models()?.ollama.where;
+    return w === 'wsl' ? ' · in WSL' : w === 'elsewhere' ? ' · elsewhere' : '';
   });
 
   ngOnInit(): void { this.data.loadModels(true); }
