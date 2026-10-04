@@ -1,25 +1,38 @@
 import type { AgentId, AgentInfo } from '../../../../shared/api';
 
-/** The agents a run can use here: installed and signed in. Claude stays listed while its status loads. */
+/**
+ * The agents a run can use here: installed and signed in. Claude also counts when it's installed and
+ * has local or team models (they run without a Claude sign-in); its own models then aren't offered.
+ */
 export function usableAgents(agents: AgentInfo[] | null): AgentInfo[] {
   if (!agents) return [];
-  return agents.filter((a) => a.installed && a.signedIn);
+  return agents.filter((a) => a.installed && (a.signedIn || (a.id === 'claude' && a.models.some((m) => isRoutedModel(m.id)))));
 }
 
-/** Model choices for an agent: Claude's come from deck.json options, the others' from their CLI. */
+/** A local or team open model (the Models page): "local/<tag>", "team/<endpoint>/<model>". */
+export function isRoutedModel(id: string | null | undefined): boolean {
+  return !!id && /^(local|team)\//.test(id);
+}
+
+/** Model choices for an agent: Claude's come from deck.json options (plus the Models page's local and team models), the others' from their CLI. */
 export function modelsFor(agent: AgentInfo | null, deckModels: string[]): { id: string; label: string }[] {
-  if (!agent || agent.id === 'claude') return deckModels.map((m) => ({ id: m, label: m }));
+  if (!agent || agent.id === 'claude') {
+    // Signed out, only the local and team models can run.
+    return [...(agent && !agent.signedIn ? [] : deckModels.map((m) => ({ id: m, label: m }))), ...(agent?.models || []).filter((m) => isRoutedModel(m.id)).map((m) => ({ id: m.id, label: m.label }))];
+  }
   return agent.models.map((m) => ({ id: m.id, label: m.label }));
 }
 
-/** Effort choices: the model's own list when it has one, else the agent's (Claude: deck.json options). */
+/** Effort choices: the model's own list when it has one, else the agent's (Claude: deck.json options; none for an open model). */
 export function effortsFor(agent: AgentInfo | null, modelId: string, deckEfforts: string[]): string[] {
+  if (isRoutedModel(modelId)) return [];
   if (!agent || agent.id === 'claude') return deckEfforts;
   return agent.models.find((m) => m.id === modelId)?.efforts || agent.efforts;
 }
 
 /** Where a run starts: Claude on deck.json's defaults; another agent on its CLI's own defaults. */
 export function defaultsFor(agent: AgentInfo | null, deck: { model: string; effort: string }): { model: string; effort: string } {
+  if (agent?.id === 'claude' && !agent.signedIn) return { model: agent.models.find((m) => isRoutedModel(m.id))?.id || deck.model, effort: '' };
   if (!agent || agent.id === 'claude') return deck;
   return { model: agent.defaultModel || agent.models[0]?.id || '', effort: agent.defaultEffort || '' };
 }

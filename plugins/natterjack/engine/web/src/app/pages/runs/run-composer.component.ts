@@ -4,7 +4,8 @@ import { ApiService } from '../../core/api.service';
 import { ToastService } from '../../core/toast.service';
 import { answerText } from '../../runs/answer';
 import { AttachComponent } from '../../shared/attach.component';
-import { agentLabel } from '../../core/agents';
+import { agentLabel, isRoutedModel, modelsFor } from '../../core/agents';
+import { DataService } from '../../core/data.service';
 import { SlashInputComponent } from '../../shared/slash-input.component';
 
 const REPLYABLE = new Set(['waiting', 'succeeded', 'failed', 'cancelled', 'interrupted']);
@@ -126,6 +127,18 @@ const AUTO_SEND_KEY = 'dash.queueAutoSend';
             <button class="btn primary" type="submit" [disabled]="busy() || att.uploading() || (!text().trim() && !att.ids().length)">{{ busy() ? 'Sending…' : 'Send' }}</button>
           </form>
           <dash-attach #att [compact]="true" />
+          @if (!r.agent || r.agent === 'claude') {
+            <div class="next-model">
+              @if (isRouted(r.model) && nextModel() === r.model) {
+                <button class="btn sm" type="button" [disabled]="busy()" (click)="nextModel.set('opus')" title="Send your next reply to Opus, on your Claude sign-in. The conversation so far carries over.">Continue with Opus</button>
+              }
+              <label>Next reply on
+                <select [value]="nextModel()" (change)="nextModel.set($any($event.target).value)" aria-label="Model for the next reply">
+                  @for (m of models(); track m.id) { <option [value]="m.id" [selected]="m.id === nextModel()">{{ m.label }}{{ m.id === r.model ? ' (this run so far)' : '' }}</option> }
+                </select>
+              </label>
+            </div>
+          }
           <div class="hint">Enter to send · Shift+Enter for a new line · paste a screenshot or drop files to attach them. Each reply resumes the same session (a few seconds to start).</div>
         }
       </div>
@@ -135,7 +148,18 @@ const AUTO_SEND_KEY = 'dash.queueAutoSend';
 export class RunComposerComponent {
   private readonly api = inject(ApiService);
   private readonly toast = inject(ToastService);
+  private readonly data = inject(DataService);
   readonly run = input.required<RunMeta>();
+  readonly isRouted = isRoutedModel;
+  /** The model the next reply goes to: the run's own unless changed (Claude runs; e.g. from a local model on to Opus). */
+  readonly nextModel = signal('');
+  /** Claude's models and the Models page's local and team ones, with the run's own first if it's none of them. */
+  readonly models = computed(() => {
+    const claude = (this.data.agents() || []).find((a) => a.id === 'claude') || null;
+    const list = modelsFor(claude, this.data.deck()?.options?.models || ['opus', 'sonnet', 'haiku', 'fable']);
+    const own = this.run().model || '';
+    return own && !list.some((m) => m.id === own) ? [{ id: own, label: own }, ...list] : list;
+  });
   /** The run's agent, for labels. */
   readonly who = computed(() => agentLabel(this.run().agent));
   readonly changed = output<RunMeta>();
@@ -165,6 +189,12 @@ export class RunComposerComponent {
     effect(() => {
       const q = this.run().id + ' ' + JSON.stringify(this.run().question || null);
       if (q !== lastQ) { lastQ = q; this.clearAnswers(); }
+    });
+    // Another run, or this one changed model: the next reply starts on the run's own.
+    let lastModel = '';
+    effect(() => {
+      const k = this.run().id + ' ' + (this.run().model || '');
+      if (k !== lastModel) { lastModel = k; this.nextModel.set(this.run().model || ''); }
     });
   }
 
@@ -298,7 +328,8 @@ export class RunComposerComponent {
     this.busy.set(true);
     try {
       const attachments = att?.ids() || [];
-      const res = await this.api.post<{ run: RunMeta }>('/api/runs/' + this.run().id + '/reply', { text, attachments });
+      const model = this.nextModel() && this.nextModel() !== (this.run().model || '') ? this.nextModel() : undefined;
+      const res = await this.api.post<{ run: RunMeta }>('/api/runs/' + this.run().id + '/reply', { text, attachments, ...(model ? { model } : {}) });
       if (clearText) this.text.set('');
       att?.clear();
       this.clearAnswers();

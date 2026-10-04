@@ -1,0 +1,507 @@
+/**
+ * The Models page: open models runs can use instead of Claude's, either on this computer
+ * (Ollama) or hosted by the team (models.json `endpoints`). It keeps routes.ts current,
+ * which is what puts them in the Model select and points a run's turns at them.
+ *
+ * Local: what's downloaded (`ollama list`), the recommended list (catalog.ts) with whether
+ * each fits this computer (hardware.ts), and downloads with byte progress. Claude Code's
+ * prompt alone is ~20k tokens and Ollama's default context is far smaller, so every model
+ * downloaded here gets a twin with a 64k window (models.json `local.contextLength`): an
+ * Ollama model `from` the original with num_ctx set, which shares its files and takes no
+ * disk. Runs use the twin; one downloaded elsewhere gets it from "Prepare for runs". A model
+ * whose own maximum is smaller gets that maximum; under 32k it's too small for Claude Code.
+ * Claude Code talks to Ollama through its Anthropic-compatible API (/v1/messages), which older
+ * Ollamas don't have: then the page offers an update and no local model is offered to runs.
+ *
+ * Team endpoints (models.json):
+ *   { "endpoints": [{ "id": "gpu", "label": "Team GPU", "baseUrl": "https://llm.example.com",
+ *       "token": "${TEAM_LLM_TOKEN}", "models": [{ "id": "qwen3.8:27b", "label": "Qwen3.8 27B", "tools": true }] }] }
+ * baseUrl is an Anthropic-compatible server (Ollama, vLLM, or LiteLLM in front of anything).
+ * The token comes from its env var, else from what the person saved on the Models page
+ * (.claude/ledger/model-tokens.json, never committed, never sent back to the browser).
+ * Without `models`, the endpoint's own /v1/models list is used.
+ *
+ * Where Ollama runs: on this OS (its CLI is here), in WSL on Windows (a common setup: the
+ * port is forwarded, the models and disk are Linux's), or somewhere else that answers on
+ * OLLAMA_HOST (a container, another machine). Disk space and the Update command follow it.
+ *
+ * Hosted (hosted.ts): no local models (the container has no GPU); team endpoints only.
+ */
+
+import { execFile, spawn } from "node:child_process";
+import os from "node:os";
+import fs from "node:fs";
+import path from "node:path";
+import { readConfigFile } from "../config.ts";
+import { MIN_NVIDIA_DRIVER, diskOf, driverTooOld, hardware, type Hardware } from "../hardware.ts";
+import { FIT_LABEL, RECOMMENDED, fitOf, type CatalogModel, type Fit } from "./catalog.ts";
+import { Ollama, ollamaModelsDir, type OllamaModel, type OllamaShow } from "./ollama.ts";
+import { explorerAgents, setExplorer, setRoutes, type Backend, type Route } from "./routes.ts";
+import { ModelRouter } from "./router.ts";
+
+export const DEFAULT_CONTEXT = 65536;
+/** Claude Code's own instructions and tools are ~20k tokens: below this there's no room to work. */
+export const MIN_CONTEXT = 32768;
+const GB = 1024 ** 3;
+const TAG_RE = /^[a-z0-9][a-z0-9._\-/]{0,100}(:[A-Za-z0-9._\-]{1,60})?$/;
+const ID_RE = /^[a-z0-9][a-z0-9-]{0,40}$/;
+const round1 = (n: number) => Math.round(n * 10) / 10;
+
+/** "qwen3.8:27b" + 65536 → "qwen3.8:27b-ctx64k" (the twin runs use). */
+export function twinName(tag: string, ctx: number): string {
+  const [name, t] = tag.includes(":") ? tag.split(/:(.*)/s) : [tag, "latest"];
+  return `${name}:${t}-ctx${Math.round(ctx / 1024)}k`;
+}
+export const isTwin = (name: string) => /-ctx\d+k$/.test(name);
+/** The window a model's twin gets: the configured one, or the model's own maximum if that's smaller. */
+export function contextFor(configured: number, contextMax: number | null | undefined): number {
+  return contextMax && contextMax < configured ? contextMax : configured;
+}
+/** "qwen3.8:27b" and "qwen3.8:27b-ctx64k" name the same model; "ornith" is "ornith:latest". */
+const full = (tag: string) => (tag.includes(":") ? tag : `${tag}:latest`);
+
+export interface PullState { tag: string; status: string; completed: number; total: number; error: string | null; startedAt: number; done: boolean }
+export interface EndpointTest { ok: boolean; ms: number | null; error: string | null; models: string[]; at: number }
+
+/** A base URL on this machine (localhost, 127.x, ::1, or 0.0.0.0 as OLLAMA_HOST writes "serve on all"). */
+export function isLoopback(base: string): boolean {
+  try { return /^(localhost|127\.\d+\.\d+\.\d+|\[::1\]|0\.0\.0\.0)$/i.test(new URL(base).hostname); } catch { return true; }
+}
+
+interface EndpointCfg { id: string; label: string; baseUrl: string; token: string | null; models: { id: string; label: string; tools: boolean | null; context: number | null }[] | null }
+
+/** models.json, normalized: bad entries are left out (validate.mjs says why). */
+export function modelsConfig(): { contextLength: number; recommended: CatalogModel[]; endpoints: EndpointCfg[]; error: string | null; configured: boolean } {
+  const { data, error } = readConfigFile("models.json");
+  const local = (data && data.local) || {};
+  const ctx = Number(local.contextLength);
+  const hide = new Set(Array.isArray(local.hide) ? local.hide.map(String) : []);
+  const extra: CatalogModel[] = (Array.isArray(local.recommended) ? local.recommended : [])
+    .filter((m: any) => m && typeof m.tag === "string" && TAG_RE.test(m.tag))
+    .map((m: any) => ({
+      tag: m.tag, label: String(m.label || m.tag), params: String(m.params || ""), diskGb: Number(m.diskGb) || 0,
+      context: Number(m.context) || 0, tools: m.tools !== false, goodFor: String(m.goodFor || ""), ...(m.notes ? { notes: String(m.notes) } : {}),
+    }));
+  const tags = new Set(extra.map((m) => m.tag));
+  const recommended = [...extra, ...RECOMMENDED.filter((m) => !tags.has(m.tag))].filter((m) => !hide.has(m.tag));
+  const endpoints: EndpointCfg[] = [];
+  for (const e of Array.isArray(data?.endpoints) ? data.endpoints : []) {
+    if (!e || !ID_RE.test(String(e.id || "")) || !/^https?:\/\/[^\s]+$/i.test(String(e.baseUrl || ""))) continue;
+    if (endpoints.some((x) => x.id === e.id)) continue;
+    endpoints.push({
+      id: e.id, label: String(e.label || e.id), baseUrl: String(e.baseUrl).replace(/\/+$/, "").replace(/\/v1$/, ""),
+      token: typeof e.token === "string" && e.token ? e.token : null,
+      models: Array.isArray(e.models)
+        ? e.models.filter((m: any) => m && typeof m.id === "string" && /^[A-Za-z0-9._:\-/]{1,120}$/.test(m.id))
+          .map((m: any) => ({ id: m.id, label: String(m.label || m.id), tools: typeof m.tools === "boolean" ? m.tools : null, context: Number(m.context) || null }))
+        : null,
+    });
+  }
+  return { contextLength: ctx >= 8192 && ctx <= 1048576 ? ctx : DEFAULT_CONTEXT, recommended, endpoints, error, configured: !!data };
+}
+
+export class Models {
+  readonly ollama: Ollama;
+  private pulls = new Map<string, PullState & { abort: AbortController }>();
+  private shows = new Map<string, OllamaShow>();
+  private tests = new Map<string, EndpointTest>();
+  private discovered = new Map<string, string[]>();
+  private cli: { at: number; installed: boolean; version: string | null } | null = null;
+  private wsl: { at: number; found: boolean; dir: string | null; freeGb: number | null; totalGb: number | null } | null = null;
+  private last: { at: number; running: string | null; messagesApi: boolean; list: OllamaModel[] } = { at: 0, running: null, messagesApi: false, list: [] };
+  private notifyAt = 0;
+  private router: ModelRouter | null = null;
+  onChange: () => void = () => {};
+
+  private readonly opts: { root: string; ledgerDir: string; hosted: boolean; ollama?: Ollama };
+
+  constructor(opts: { root: string; ledgerDir: string; hosted: boolean; ollama?: Ollama }) {
+    this.opts = opts;
+    this.ollama = opts.ollama || new Ollama();
+  }
+
+  private get tokenFile() { return path.join(this.opts.ledgerDir, "model-tokens.json"); }
+  private get routingFile() { return path.join(this.opts.ledgerDir, "model-routing.json"); }
+  private get agentsFile() { return path.join(this.opts.ledgerDir, "model-explorer-agents.json"); }
+
+  /** The model this person's Claude runs delegate exploring to (smart routing), or null when it's off. */
+  explorerId(): string | null {
+    try { return JSON.parse(fs.readFileSync(this.routingFile, "utf-8")).explorer || null; } catch { return null; }
+  }
+
+  /** Turn smart routing on (a local or team model's id) or off (null). */
+  async setExplorer(id: string | null): Promise<void> {
+    if (id !== null && !(await this.refresh().then(() => this.routeIds().includes(id)))) throw new Error(`${id} isn't available to runs. Download or prepare it first.`);
+    fs.mkdirSync(this.opts.ledgerDir, { recursive: true });
+    fs.writeFileSync(this.routingFile, JSON.stringify({ explorer: id }, null, 2) + "\n");
+    await this.applyExplorer();
+    this.changed(true);
+  }
+
+  private routeIds(): string[] { return this.currentRoutes.map((r) => r.id); }
+  private currentRoutes: Route[] = [];
+
+  /** Point routes.ts at the explorer (starting the router the first time), or switch it off. */
+  private async applyExplorer(): Promise<void> {
+    const id = this.opts.hosted ? null : this.explorerId();
+    const route = id ? this.currentRoutes.find((r) => r.id === id) || null : null;
+    if (!route) { setExplorer(null); return; }
+    if (!this.router) this.router = new ModelRouter();
+    const url = await this.router.start();
+    fs.mkdirSync(this.opts.ledgerDir, { recursive: true });
+    fs.writeFileSync(this.agentsFile, JSON.stringify(explorerAgents(route), null, 2) + "\n");
+    setExplorer({ route, agentsFile: this.agentsFile, url });
+  }
+  private savedTokens(): Record<string, string> {
+    try { return JSON.parse(fs.readFileSync(this.tokenFile, "utf-8")) || {}; } catch { return {}; }
+  }
+
+  /** An endpoint's token: its ${VAR} from the environment, else the one saved here, else a literal from models.json. */
+  private tokenOf(e: EndpointCfg): { token: string | null; ref: Backend["tokenRef"]; source: "env" | "saved" | "config" | null; envVar: string | null } {
+    const m = e.token ? /^\$\{([A-Z_][A-Z0-9_]*)\}$/i.exec(e.token) : null;
+    const envVar = m ? m[1] : null;
+    if (envVar && process.env[envVar]) return { token: process.env[envVar]!, ref: { env: envVar }, source: "env", envVar };
+    const saved = this.savedTokens()[e.id];
+    if (saved) return { token: saved, ref: { file: this.tokenFile, key: e.id }, source: "saved", envVar };
+    if (e.token && !envVar) return { token: e.token, ref: null, source: "config", envVar };
+    return { token: null, ref: null, source: null, envVar };
+  }
+
+  /** Save (or with "" clear) this person's token for an endpoint. */
+  setToken(id: string, token: string): void {
+    const cfg = modelsConfig();
+    if (!cfg.endpoints.some((e) => e.id === id)) throw new Error(`No endpoint ${id} in models.json.`);
+    const all = this.savedTokens();
+    if (token) all[id] = token; else delete all[id];
+    fs.mkdirSync(this.opts.ledgerDir, { recursive: true });
+    fs.writeFileSync(this.tokenFile, JSON.stringify(all, null, 2) + "\n", { mode: 0o600 });
+    this.refreshRoutes();
+  }
+
+  /**
+   * Ollama's CLI on this OS: on PATH, or where the native app installs it (a process started before
+   * the install has the old PATH, and the Mac app isn't on PATH until it's been opened once).
+   */
+  private ollamaCli(): Promise<{ installed: boolean; version: string | null }> {
+    if (this.cli && Date.now() - this.cli.at < 30_000) return Promise.resolve(this.cli);
+    const native = [
+      process.platform === "win32" ? path.join(process.env.LOCALAPPDATA || path.join(os.homedir(), "AppData", "Local"), "Programs", "Ollama", "ollama.exe") : null,
+      process.platform === "darwin" ? "/Applications/Ollama.app/Contents/Resources/ollama" : null,
+    ].find((f) => f && fs.existsSync(f));
+    return new Promise((resolve) => {
+      execFile(native || "ollama", ["--version"], { timeout: 5000, windowsHide: true, encoding: "utf-8" }, (err, out, errOut) => {
+        const text = `${out || ""}${errOut || ""}`;
+        this.cli = { at: Date.now(), installed: !err || /version/i.test(text), version: (/(\d+\.\d+\.\d+)/.exec(text) || [])[1] || null };
+        resolve(this.cli);
+      });
+    });
+  }
+
+  /**
+   * Windows, Ollama answering but not installed here: is it WSL's? Only asked while it's running
+   * (so WSL is already up: asking would otherwise boot it). Also its models folder's disk space.
+   */
+  private wslOllama(): Promise<{ found: boolean; dir: string | null; freeGb: number | null; totalGb: number | null }> {
+    if (this.wsl && Date.now() - this.wsl.at < 60_000) return Promise.resolve(this.wsl);
+    const script = 'command -v ollama >/dev/null || exit 3; pgrep -x ollama >/dev/null || exit 4; d=/usr/share/ollama/.ollama/models; [ -d "$d" ] || d="$HOME/.ollama/models"; echo "$d"; df -kP "$d" 2>/dev/null | tail -1';
+    return new Promise((resolve) => {
+      execFile("wsl.exe", ["-e", "sh", "-c", script], { timeout: 8000, windowsHide: true, encoding: "utf-8" }, (err, out) => {
+        const lines = String(out || "").split(/\r?\n/).map((l) => l.trim()).filter(Boolean);
+        const df = (lines[1] || "").split(/\s+/);
+        const kb = (n: string) => (Number.isFinite(Number(n)) ? round1((Number(n) * 1024) / GB) : null);
+        this.wsl = { at: Date.now(), found: !err && !!lines[0], dir: lines[0] || null, freeGb: kb(df[3]), totalGb: kb(df[1]) };
+        resolve(this.wsl);
+      });
+    });
+  }
+
+  /** Where Ollama runs: "here" (this OS), "wsl", "elsewhere" (answers, but neither), or null (not found). */
+  private async where(): Promise<"here" | "wsl" | "elsewhere" | null> {
+    // OLLAMA_HOST naming another machine: that's where it runs, whatever CLI is installed here.
+    if (!isLoopback(this.ollama.base)) return this.last.running ? "elsewhere" : null;
+    if ((await this.ollamaCli()).installed) return "here";
+    if (!this.last.running) return null;
+    if (process.platform === "win32" && (await this.wslOllama()).found) return "wsl";
+    return "elsewhere";
+  }
+
+  /** The command that installs or updates Ollama where it runs (a terminal shows it; sudo may ask in WSL). */
+  async installCommand(update: boolean): Promise<string | null> {
+    const where = await this.where();
+    if (where === "wsl") return 'wsl -- sh -c "curl -fsSL https://ollama.com/install.sh | sh"';
+    if (where === "elsewhere") return null;
+    const os = process.platform === "win32" ? "win" : process.platform === "darwin" ? "mac" : "linux";
+    // The native app on Windows and macOS: no admin, uses the GPU (Metal on a Mac), starts at login, updates itself.
+    const cmds = update
+      ? { win: "winget upgrade --id Ollama.Ollama -e", mac: "brew upgrade --cask ollama-app", linux: "curl -fsSL https://ollama.com/install.sh | sh" }
+      : { win: "winget install --id Ollama.Ollama -e", mac: "brew install --cask ollama-app", linux: "curl -fsSL https://ollama.com/install.sh | sh" };
+    return cmds[os];
+  }
+
+  /**
+   * Start an installed Ollama that isn't running: the app on Windows and macOS (it serves, and
+   * sits in the tray / menu bar), else `ollama serve` in the background. It outlives the dashboard.
+   */
+  async start(): Promise<{ running: boolean }> {
+    if (this.opts.hosted) throw new Error("There are no local models in a hosted dashboard.");
+    if (await this.ollama.version()) return { running: true };
+    const detached = (file: string, args: string[]) => new Promise<boolean>((resolve) => {
+      try {
+        const p = spawn(file, args, { detached: true, stdio: "ignore", windowsHide: true });
+        p.on("error", () => resolve(false));
+        p.on("spawn", () => { p.unref(); resolve(true); });
+      } catch { resolve(false); }
+    });
+    const app = process.platform === "win32" ? path.join(process.env.LOCALAPPDATA || path.join(os.homedir(), "AppData", "Local"), "Programs", "Ollama", "ollama app.exe") : null;
+    const started = (app && fs.existsSync(app) && (await detached(app, [])))
+      || (process.platform === "darwin" && (await detached("open", ["-a", "Ollama"])))
+      || (await detached("ollama", ["serve"]));
+    if (!started) throw new Error("Couldn't start Ollama. Is it installed? Install it above, or start it yourself.");
+    for (let i = 0; i < 30 && !(await this.ollama.version()); i++) await new Promise((r) => setTimeout(r, 500));
+    this.cli = null;
+    await this.refresh();
+    this.changed(true);
+    return { running: !!this.last.running };
+  }
+
+  /** What Ollama has now (null when it isn't running), and each model's capabilities. */
+  async refresh(): Promise<void> {
+    if (this.opts.hosted) { this.refreshRoutes(); return; }
+    const running = await this.ollama.version();
+    let list: OllamaModel[] = [];
+    // Asked once per Ollama version (an update can add it).
+    const messagesApi = running ? (this.last.running === running && this.last.messagesApi) || (await this.ollama.messagesApi()) : false;
+    if (running) {
+      // One failed refresh keeps the last list: it would otherwise drop every local model from runs.
+      try { list = await this.ollama.list(); } catch { list = this.last.running ? this.last.list : []; }
+      for (const m of list) {
+        const key = `${m.name}@${m.digest}`;
+        if (!this.shows.has(key)) {
+          try { this.shows.set(key, await this.ollama.show(m.name)); } catch {}
+        }
+      }
+    }
+    this.last = { at: Date.now(), running, messagesApi, list };
+    this.refreshRoutes();
+  }
+
+  private showOf(m: OllamaModel): OllamaShow | null { return this.shows.get(`${m.name}@${m.digest}`) || null; }
+
+  /** A downloaded model's state for runs: its twin's name and window, and why runs can't use it (or null). */
+  private localState(m: OllamaModel, configured: number): { twin: string; context: number; ready: boolean; problem: string | null } {
+    const show = this.showOf(m);
+    const context = contextFor(configured, show?.contextMax);
+    const twin = twinName(m.name, context);
+    const ready = this.last.list.some((x) => x.name === twin);
+    const k = (n: number) => `${Math.round(n / 1024)}k`;
+    const problem = show && !show.capabilities.includes("tools") ? "No tool calling, so runs can't use it."
+      : context < MIN_CONTEXT ? `Its context window (${k(context)}) is too small for Claude Code, which needs ${k(MIN_CONTEXT)} or more.`
+      : !ready ? `Needs a ${k(context)} context window before runs can use it.` : null;
+    return { twin, context, ready, problem };
+  }
+
+  /** Local models runs can use (downloaded, with tools), and every team endpoint's models. */
+  private refreshRoutes(): void {
+    const cfg = modelsConfig();
+    const routes: Route[] = [];
+    // Local: models with tool calling and their twin, on an Ollama that speaks Anthropic's API.
+    if (!this.opts.hosted && this.last.running && this.last.messagesApi) {
+      const local: Backend = { id: "local", label: "Ollama", baseUrl: this.ollama.base, token: null };
+      for (const m of this.last.list) {
+        if (isTwin(m.name)) continue;
+        const st = this.localState(m, cfg.contextLength);
+        if (st.problem) continue;
+        const rec = cfg.recommended.find((r) => full(r.tag) === full(m.name));
+        routes.push({ id: `local/${m.name}`, label: `Local · ${rec?.label || m.name}`, model: st.twin, backend: local, tools: true, context: st.context });
+      }
+    }
+    for (const e of cfg.endpoints) {
+      const t = this.tokenOf(e);
+      const backend: Backend = { id: `team/${e.id}`, label: e.label, baseUrl: e.baseUrl, token: t.token, tokenRef: t.ref };
+      const models = e.models || (this.discovered.get(e.id) || []).map((id) => ({ id, label: id, tools: null, context: null }));
+      for (const m of models) {
+        if (m.tools === false) continue;
+        routes.push({ id: `team/${e.id}/${m.id}`, label: `${e.label} · ${m.label}`, model: m.id, backend, tools: m.tools, context: m.context });
+      }
+    }
+    setRoutes(routes);
+    this.currentRoutes = routes;
+    // The explorer's model can change (a twin made, a model deleted): keep the routing in step.
+    this.applyExplorer().catch(() => setExplorer(null));
+  }
+
+  private changed(force = false): void {
+    if (!force && Date.now() - this.notifyAt < 500) return;
+    this.notifyAt = Date.now();
+    this.onChange();
+  }
+
+  /** Download a model, then make its 64k twin. Returns at once; progress shows in view(). */
+  async pull(tag: string): Promise<PullState> {
+    if (this.opts.hosted) throw new Error("Models can't be downloaded into a hosted dashboard.");
+    tag = String(tag || "").trim();
+    if (!TAG_RE.test(tag)) throw new Error(`"${tag}" isn't an Ollama model name (like qwen3.8:27b).`);
+    if (!(await this.ollama.version())) throw new Error("Ollama isn't running. Install or start it, then try again.");
+    const running = this.pulls.get(tag);
+    if (running && !running.done) throw Object.assign(new Error(`${tag} is already downloading.`), { status: 409 });
+    const abort = new AbortController();
+    const st: PullState & { abort: AbortController } = { tag, status: "starting", completed: 0, total: 0, error: null, startedAt: Date.now(), done: false, abort };
+    this.pulls.set(tag, st);
+    this.changed(true);
+    this.ollama.pull(tag, (p) => { st.status = p.status; st.completed = p.completed; st.total = p.total; this.changed(); }, abort.signal)
+      .then(async () => {
+        st.status = "preparing for runs";
+        this.changed(true);
+        await this.makeTwin(tag);
+        st.status = "done";
+      })
+      .catch((e) => { st.error = abort.signal.aborted ? "Cancelled" : e.message; st.status = "failed"; })
+      .finally(async () => {
+        // Done only once the list (and the Model select) has it.
+        await this.refresh().catch(() => {});
+        st.done = true;
+        this.changed(true);
+      });
+    const { abort: _a, ...pub } = st;
+    return pub;
+  }
+
+  cancel(tag: string): void {
+    const st = this.pulls.get(tag);
+    if (st && !st.done) st.abort.abort();
+  }
+
+  /** A model's twin with the window runs use (its own maximum if that's smaller); none when that's too small. */
+  private async makeTwin(name: string): Promise<void> {
+    const show = await this.ollama.show(name);
+    const ctx = contextFor(modelsConfig().contextLength, show.contextMax);
+    if (ctx < MIN_CONTEXT || !show.capabilities.includes("tools")) return;
+    await this.ollama.derive(twinName(name, ctx), name, { num_ctx: ctx });
+  }
+
+  /** Make the twin for a model downloaded outside the dashboard. */
+  async prepare(name: string): Promise<void> {
+    if (!TAG_RE.test(name) || isTwin(name)) throw new Error("Pick a downloaded model.");
+    await this.makeTwin(name);
+    await this.refresh();
+    this.changed(true);
+  }
+
+  /** Delete a model and its twin. */
+  async remove(name: string): Promise<void> {
+    if (this.opts.hosted) throw new Error("There are no local models in a hosted dashboard.");
+    if (!TAG_RE.test(name)) throw new Error("Pick a downloaded model.");
+    const twins = this.last.list.filter((m) => isTwin(m.name) && m.name.startsWith(`${full(name)}-ctx`)).map((m) => m.name);
+    for (const t of twins) await this.ollama.remove(t).catch(() => {});
+    await this.ollama.remove(name);
+    this.pulls.delete(name);
+    await this.refresh();
+    this.changed(true);
+  }
+
+  /** Reach an endpoint: GET /v1/models with its token (also how one without a `models` list gets its models). */
+  async test(id: string): Promise<EndpointTest> {
+    const e = modelsConfig().endpoints.find((x) => x.id === id);
+    if (!e) throw new Error(`No endpoint ${id} in models.json.`);
+    const { token } = this.tokenOf(e);
+    const started = Date.now();
+    let result: EndpointTest;
+    try {
+      const headers: Record<string, string> = { "anthropic-version": "2023-06-01" };
+      if (token) { headers["x-api-key"] = token; headers.authorization = `Bearer ${token}`; }
+      const r = await fetch(`${e.baseUrl}/v1/models`, { headers, signal: AbortSignal.timeout(8000) });
+      const body: any = await r.json().catch(() => null);
+      if (r.status === 401 || r.status === 403) throw new Error(token ? "The endpoint refused the token." : "The endpoint needs a token.");
+      if (!r.ok) throw new Error(`The endpoint answered ${r.status}.`);
+      const models = (Array.isArray(body?.data) ? body.data : Array.isArray(body?.models) ? body.models : [])
+        .map((m: any) => String(m?.id || m?.name || "")).filter((s: string) => /^[A-Za-z0-9._:\-/]{1,120}$/.test(s));
+      result = { ok: true, ms: Date.now() - started, error: null, models, at: Date.now() };
+      this.discovered.set(id, models);
+    } catch (err) {
+      const msg = (err as Error).name === "TimeoutError" ? "No answer in 8 seconds." : (err as Error).message;
+      result = { ok: false, ms: null, error: /fetch failed/i.test(msg) ? `Couldn't reach ${e.baseUrl}.` : msg, models: [], at: Date.now() };
+    }
+    this.tests.set(id, result);
+    this.refreshRoutes();
+    this.changed(true);
+    return result;
+  }
+
+  /** GET /api/models. */
+  async view(force = false) {
+    const cfg = modelsConfig();
+    if (force || Date.now() - this.last.at > 3000) await this.refresh();
+    const hosted = this.opts.hosted;
+    const hw: Hardware = await hardware(this.opts.root);
+    const where = hosted ? null : await this.where();
+    const wsl = where === "wsl" ? await this.wslOllama() : null;
+    const dir = wsl ? `WSL: ${wsl.dir}` : ollamaModelsDir();
+    // Elsewhere: its disk isn't this computer's, so no number rather than a wrong one.
+    const disk = wsl ? (wsl.freeGb != null && wsl.totalGb != null ? { path: dir, freeGb: wsl.freeGb, totalGb: wsl.totalGb } : null)
+      : where === "elsewhere" ? null : diskOf(dir);
+    // A GPU Ollama can't use (an NVIDIA driver that's too old) doesn't count toward what fits.
+    const usable = hw.gpus.filter((g) => !driverTooOld(g));
+    const gpu = usable.reduce<{ vram: number | null; unified: boolean }>((best, g) => (g.vramGb != null && g.vramGb > (best.vram || 0) ? { vram: g.vramGb, unified: !!g.unified } : best), { vram: null, unified: false });
+    const old = hw.gpus.find(driverTooOld);
+    const gpuWarning = old ? `The ${old.name}'s driver (${old.driver}) is older than Ollama needs (${MIN_NVIDIA_DRIVER} or newer), so models run on the CPU, many times slower. Update the driver (NVIDIA App, or your laptop maker's support page), restart Ollama, then Refresh.` : null;
+    const installedNames = new Set(this.last.list.map((m) => full(m.name)));
+    const pulls = [...this.pulls.values()].map(({ abort: _a, ...p }) => p);
+    const fit = (diskGb: number, installed: boolean): { fit: Fit; fitLabel: string } => {
+      const f = fitOf({ diskGb, vramGb: gpu.vram, unified: gpu.unified, memoryGb: hw.memoryGb, freeDiskGb: disk?.freeGb ?? null, installed });
+      return { fit: f, fitLabel: FIT_LABEL[f] };
+    };
+    const cli = hosted ? { installed: false, version: null } : await this.ollamaCli();
+    const installed = this.last.list.filter((m) => !isTwin(m.name)).map((m) => {
+      const show = this.showOf(m);
+      const st = this.localState(m, cfg.contextLength);
+      const rec = cfg.recommended.find((r) => full(r.tag) === full(m.name));
+      return {
+        name: m.name, label: rec?.label || m.name, sizeGb: round1(m.sizeBytes / GB), params: m.params, quantization: m.quantization,
+        tools: show ? show.capabilities.includes("tools") : null, capabilities: show?.capabilities || [], contextMax: show?.contextMax || null,
+        context: st.context, ready: st.ready, problem: st.problem,
+        /** Something "Prepare for runs" fixes (the twin is missing), rather than the model itself. */
+        preparable: !st.ready && st.context >= MIN_CONTEXT && (!show || show.capabilities.includes("tools")),
+        routeId: `local/${m.name}`, recommended: !!rec, ...fit(m.sizeBytes / GB, true),
+      };
+    });
+    return {
+      hosted,
+      hardware: hw,
+      gpuWarning,
+      modelsDir: disk ? { ...disk, path: dir } : null,
+      contextLength: cfg.contextLength,
+      ollama: {
+        where,
+        installed: cli.installed || !!this.last.running,
+        running: !!this.last.running,
+        /** Speaks Anthropic's Messages API, which Claude Code needs (older Ollamas don't). */
+        messagesApi: !!this.last.messagesApi,
+        version: this.last.running || cli.version,
+        base: this.ollama.base,
+      },
+      usedGb: round1(installed.reduce((s, m) => s + m.sizeGb, 0)),
+      recommended: hosted ? [] : cfg.recommended.map((m) => ({ ...m, installed: installedNames.has(full(m.tag)), ...fit(m.diskGb, installedNames.has(full(m.tag))) })),
+      installed,
+      pulls,
+      routing: {
+        explorer: this.explorerId(),
+        /** Set but not usable right now (its model is gone or Ollama is down): runs don't delegate. */
+        active: !!this.router?.url && this.currentRoutes.some((r) => r.id === this.explorerId()),
+        choices: this.currentRoutes.map((r) => ({ id: r.id, label: r.label })),
+        stats: this.router ? { ...this.router.stats } : null,
+      },
+      endpoints: cfg.endpoints.map((e) => {
+        const t = this.tokenOf(e);
+        const models = e.models || (this.discovered.get(e.id) || []).map((id) => ({ id, label: id, tools: null, context: null }));
+        return {
+          id: e.id, label: e.label, baseUrl: e.baseUrl, tokenSource: t.source, tokenVar: t.envVar,
+          needsToken: !!e.token && !t.token, discovered: !e.models,
+          models: models.map((m) => ({ ...m, routeId: `team/${e.id}/${m.id}` })),
+          test: this.tests.get(e.id) || null,
+        };
+      }),
+      configured: cfg.configured,
+      error: cfg.error,
+    };
+  }
+}

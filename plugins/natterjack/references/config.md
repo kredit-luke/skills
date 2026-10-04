@@ -234,6 +234,58 @@ The file is optional and names the servers the team relies on. They show first, 
 
 `name` is the name `claude mcp list` shows (`claude.ai <Connector>` for claude.ai connectors, `plugin:<plugin>:<server>` for plugins'). `add` (only for plain names; not for connectors or plugins) is what the page's **Add** button sets up for someone who doesn't have it: `type` `http`/`sse` with `url` and optional `headers`, or `stdio` with `command`, `args`, `env`. Never put a secret in it: write `${VAR}` and the Add dialog asks each person for theirs. A claude.ai connector that's missing points the person at claude.ai's connector settings (an org admin adds it to the organization first). If the team shares servers through a committed `.mcp.json`, list them here too, so people see the ones they haven't approved.
 
+## models.json: the Models page (local and team open models)
+
+The Models page (under Agents) lets runs use open models instead of Claude's, for code search and exploring at no Claude cost. A local or team model is Claude Code with another backend: the run's turns start `claude` with `ANTHROPIC_BASE_URL` set to an Anthropic-compatible server (Ollama, vLLM, or LiteLLM in front of anything). So runs keep their tools, skills, CLAUDE.md, plan mode and run page. Each model that can call tools appears in Ask and Run's **Model** select after Claude's own: `Local · Qwen3.8 27B` (run model `local/<ollama tag>`), or `<endpoint label> · <model>` (`team/<endpoint id>/<model>`). They take no effort setting, show no dollar cost, and don't count against the Claude usage meters or budgets.
+
+The backend is chosen per turn from the turn's model (`<engine>/server/src/models/routes.ts`). Turns on `opus`, `sonnet`, `haiku` or `fable` start exactly as before, on the person's own Claude sign-in (their subscription, when they have one). A local turn clears any provider settings from the shell (Bedrock, Vertex, a gateway's `ANTHROPIC_BASE_URL`) and sets its own, so none of them carry over. It also points Claude Code's subagents and background calls at the same model (the server has no Claude models) and turns off Claude Code's non-essential traffic. **Continue in terminal** sets the same variables first. A team token is read from its env var or the token file, never printed. A model that's no longer available stops the launch or reply with a pointer to the Models page; it never falls back to a Claude model.
+
+**Smart routing (experimental, per person).** The Models page's **Explorer** setting makes Claude's runs (Opus, Sonnet…) do their broad code searching on an open model:
+- Each Claude turn gets an `Explore` subagent on that model (passed with `--agents`, a file in `.claude/ledger/`). It takes the place of Claude Code's own Explore, so the exploring Claude already chooses to hand off runs free, and Claude does the planning, editing and final answer.
+- The turn's requests go through a small router on `127.0.0.1` (`<engine>/server/src/models/router.ts`):
+  - The explorer's model goes to its server without the person's Claude credentials, queued one at a time, with keep-alive pings while waiting.
+  - Everything else goes on to Anthropic (or the gateway `ANTHROPIC_BASE_URL` names) unchanged, on the person's own sign-in.
+- Off by default. It has no effect on runs that are already on a local or team model. Exploring takes longer on a small model than on Claude.
+- A run's "api-equiv" cost includes the explorer's tokens priced as if Claude ran them, so it overstates the real cost.
+- Local runs get a rule not to start parallel subagents, because the server answers one request at a time, and a 30-minute request timeout.
+
+**Changing model mid-run.** The reply box on a Claude run has **Next reply on**, plus **Continue with Opus** on a local or team model's run. The session carries on, on the new model.
+
+**On this computer (Ollama).**
+- The page shows:
+  - the GPU and its memory (`nvidia-smi`; Apple silicon shares RAM),
+  - RAM,
+  - free disk where Ollama keeps models (`OLLAMA_MODELS`, else `~/.ollama/models`) and how much the downloaded models use,
+  - a recommended list (`<engine>/server/src/models/catalog.ts`, refreshed each engine release). Each entry has its download size, context, **tool calling** yes/no, and a rough "fits this computer" verdict: on the GPU, partly on the GPU, CPU only, too big, or not enough disk.
+- **Install Ollama** opens a terminal with the catalog's installer (`winget` / `brew` / the install script). The Machine catalog also has it: `{ "use": "ollama" }`.
+- **Download** pulls through Ollama's API with byte progress, then makes a twin of the model with a 64k context window (`<tag>-ctx64k`). The twin is an Ollama model `from` the original with `num_ctx` set; it shares the original's files. Runs use the twin, because Claude Code's own instructions are ~20k tokens and Ollama's default window is smaller. A model pulled outside the dashboard gets its twin from **Prepare for runs**. **Delete** removes both.
+- A model without tool calling is listed but can't be picked. Claude Code works entirely through tools.
+- Hosted dashboards have no local models.
+
+**Team endpoints.** A bigger model the team hosts, listed here for everyone:
+
+```json
+{
+  "local": { "contextLength": 65536, "recommended": [{ "tag": "granite4.1:3b", "label": "Granite 4.1 3B", "params": "3B", "diskGb": 2.1, "context": 131072, "tools": true, "goodFor": "Old laptops" }], "hide": ["deepseek-r1:14b"] },
+  "endpoints": [
+    { "id": "gpu", "label": "Team GPU", "baseUrl": "https://llm.example.com", "token": "${TEAM_LLM_TOKEN}",
+      "models": [{ "id": "qwen3.8:27b", "label": "Qwen3.8 27B", "tools": true, "context": 262144 }] }
+  ]
+}
+```
+
+- `local` (optional):
+  - `contextLength`: the twins' window, from 8192 to 1048576 (default 65536; bigger takes more GPU memory).
+  - `recommended`: entries added to, or replacing, the engine's list by `tag`.
+  - `hide`: tags to leave out.
+- `endpoints[]`:
+  - `id`: lowercase letters, digits and dashes; it's part of the run's model name.
+  - `baseUrl`: the server's address, without `/v1`; Claude Code adds `/v1/messages`.
+  - `token`: always a `${VAR}`, never the secret itself. Leave it out for a server without one. Someone without the variable set saves their own token on the page, in `.claude/ledger/model-tokens.json`; it's never sent back to the browser.
+  - `models`: what to offer (`tools: false` hides one). Without `models`, **Test** asks the endpoint's `/v1/models` and offers what it lists.
+- The page's **Test** checks the endpoint is reachable and the token is accepted.
+- See [hosting.md](hosting.md#hosting-a-model-for-the-team) for running one.
+
 ## deck.json: skill cards, routines, limits, Issues view
 
 ```json
@@ -255,7 +307,7 @@ The file is optional and names the servers the team relies on. They show first, 
 }
 ```
 
-**Agents.** Runs can use Claude Code, GitHub Copilot CLI or OpenAI Codex CLI (`<engine>/server/src/agents/`). Ask and the launch dialog show an **Agent** select next to Model and Effort when more than one is installed and signed in on the machine; picking one swaps in its models and efforts (Copilot's from `copilot help config`, Codex's from `~/.codex/models_cache.json`) and is remembered in the browser. `defaults.agent` (`claude` | `copilot` | `codex`) sets the workspace's default; `defaults.model`/`effort` are Claude's (another agent starts on its own defaults). A run keeps its agent: replies resume the same session, and Continue in terminal runs that agent's resume command. Copilot and Codex get the dashboard's rules at the top of the first prompt (they have no system-prompt flag); plan mode is `--deny-tool write` for Copilot and the read-only sandbox for Codex; Codex edits in its workspace-write sandbox with network on. Team instructions: Copilot reads the workspace's CLAUDE.md itself; Codex reads AGENTS.md, so its runs (and Continue in terminal) pass `-c "project_doc_fallback_filenames=['CLAUDE.md']"` (add `project_doc_fallback_filenames = ["CLAUDE.md"]` to `~/.codex/config.toml` for your own Codex sessions). Skills: a Copilot or Codex prompt that starts with `/name args` (Issues' Implement, a preset, a slash in Ask) gets the workspace skill's instructions (`.claude/skills/<name>/SKILL.md`, or `.claude/commands/<name>.md`) with the arguments filled in; the run page still shows what was typed. Connections has a tab per installed agent: Copilot's and Codex's own MCP servers (their `mcp list --json`), add and remove, Codex's sign-in, and **Copy from Claude** (Claude's own and workspace servers by their config, claude.ai connectors by their address; the other agent signs in itself; Copilot already reads `.mcp.json`). Claude-only parts (the dollar cap, plan-usage meters, background-task tracking, connections.json requirements, memory) don't apply to them.
+**Agents.** Runs can use Claude Code, GitHub Copilot CLI or OpenAI Codex CLI (`<engine>/server/src/agents/`). Ask and the launch dialog show an **Agent** select next to Model and Effort when more than one is installed and signed in on the machine; picking one swaps in its models and efforts (Copilot's from `copilot help config`, Codex's from `~/.codex/models_cache.json`) and is remembered in the browser. `defaults.agent` (`claude` | `copilot` | `codex`) sets the workspace's default; `defaults.model`/`effort` are Claude's (another agent starts on its own defaults). Claude's Model select also lists the Models page's local and team open models (see models.json above); `defaults.model` or a preset's `model` can name one (`local/<tag>`, `team/<endpoint>/<model>`), e.g. an explore preset that runs locally. A run keeps its agent: replies resume the same session, and Continue in terminal runs that agent's resume command. Copilot and Codex get the dashboard's rules at the top of the first prompt (they have no system-prompt flag); plan mode is `--deny-tool write` for Copilot and the read-only sandbox for Codex; Codex edits in its workspace-write sandbox with network on. Team instructions: Copilot reads the workspace's CLAUDE.md itself; Codex reads AGENTS.md, so its runs (and Continue in terminal) pass `-c "project_doc_fallback_filenames=['CLAUDE.md']"` (add `project_doc_fallback_filenames = ["CLAUDE.md"]` to `~/.codex/config.toml` for your own Codex sessions). Skills: a Copilot or Codex prompt that starts with `/name args` (Issues' Implement, a preset, a slash in Ask) gets the workspace skill's instructions (`.claude/skills/<name>/SKILL.md`, or `.claude/commands/<name>.md`) with the arguments filled in; the run page still shows what was typed. Connections has a tab per installed agent: Copilot's and Codex's own MCP servers (their `mcp list --json`), add and remove, Codex's sign-in, and **Copy from Claude** (Claude's own and workspace servers by their config, claude.ai connectors by their address; the other agent signs in itself; Copilot already reads `.mcp.json`). Claude-only parts (the dollar cap, plan-usage meters, background-task tracking, connections.json requirements, memory) don't apply to them.
 
 Presets are the Home page's skill cards: `prompt` (with `{arg}` placeholders), `args` (`pattern` validates), `options` (checkboxes that `append` text), `agent`, `model`/`effort`/`permissionMode` (`auto` | `acceptEdits` | `dontAsk` | `plan`), `budgetUsd` (only used when the per-run cap is on in Settings), `pickWorkspace`, `workspace`. Icons: `sun`, `download`, `eye`, `package`, `shield`, `bolt`, `terminal`, and the nav icons. `issues`: which teams (Linear teams / Jira projects / GitHub repos) and states the board shows (empty = all; states in column order), the preset Implement runs, and which teams get Implement (empty = all). `routines` fire presets on a schedule while the dashboard runs (off by default). Everyone can override limits and defaults for themselves on the Settings page.
 

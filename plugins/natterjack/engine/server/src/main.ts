@@ -78,6 +78,8 @@ import { Explore, MAX_SAVE_BYTES, rawType, resolveSafe } from "./explore.ts";
 import { forgetAtlassianKeys } from "./atlassian.ts";
 import { HOSTED_HIDDEN_PAGES, NOT_HOSTED, checkHostedRequest, hostedConfig } from "./hosted.ts";
 import { ClaudeLogin } from "./claude-login.ts";
+import { Models } from "./models/index.ts";
+import { isRoutedId, routeOf } from "./models/routes.ts";
 
 const DIST_DIR = path.join(DASHBOARD_DIR, "dist", "browser");
 const VERSION = JSON.parse(fs.readFileSync(path.join(DASHBOARD_DIR, "package.json"), "utf-8")).version;
@@ -373,7 +375,7 @@ const runs = new RunManager(LEDGER_DIR, {
   onTurnStart: (meta) => { runChanges.snapshot({ ...meta }).catch(() => {}); },
   onChange: (meta) => live.publish("run", meta), // one run, not the whole list: a live run saves every 1.5 s
   // Messages queued during a turn go out under the same limits as a reply you send.
-  queueGate: (meta) => ({ blocker: launchBlocker(meta.agent), budgetUsd: deck.config().limits.runBudget ? undefined : null }),
+  queueGate: (meta) => ({ blocker: launchBlocker(meta.agent, meta.model), budgetUsd: deck.config().limits.runBudget ? undefined : null }),
   attachments,
 });
 const deck = new Deck(MAIN_WORKSPACE_PATH, path.join(LEDGER_DIR, "settings.json"));
@@ -510,6 +512,8 @@ function docsRunNote(keys: unknown, page: unknown): { keys: string[]; note: stri
 const memory = new Memory(MAIN_WORKSPACE_PATH);
 const knowledge = new Knowledge(MAIN_WORKSPACE_PATH, LEDGER_DIR);
 const connections = new Connections(MAIN_WORKSPACE_PATH);
+const models = new Models({ root: MAIN_WORKSPACE_PATH, ledgerDir: LEDGER_DIR, hosted: !!HOSTED });
+models.onChange = () => live.refresh("models");
 const mcpLogin = new McpLogin(MAIN_WORKSPACE_PATH);
 const explore = new Explore(MAIN_WORKSPACE_PATH);
 const search = new Search({
@@ -567,6 +571,8 @@ const AGENT_EFFORTS = [...EFFORTS, "ultra", "none"];
 const PERMISSION_MODES = ["auto", "acceptEdits", "dontAsk", "plan"];
 const TRIGGERS = new Set(["manual", "ask", "explain", "search", "issues", "make-changes"]);
 const MAX_RUN_BUDGET_USD = 100;
+// A run whose preset sets no cap gets this one while runBudget is on.
+const DEFAULT_RUN_BUDGET_USD = 5;
 const SESSIONS_TTL_MS = 5000;
 
 function startOfToday() {
@@ -578,13 +584,24 @@ function startOfToday() {
 /** The agents' last status (installed, signed in, models), refreshed in the background. */
 let agentsCache: { at: number; list: AgentStatus[] } | null = null;
 function agentsNow(force = false): Promise<AgentStatus[]> {
-  return agentStatuses(force).then((list) => { agentsCache = { at: Date.now(), list }; return list; });
+  // Local and team models are Claude's too: what's downloaded now decides which it lists.
+  return models.refresh().catch(() => {}).then(() => agentStatuses(force)).then((list) => { agentsCache = { at: Date.now(), list }; return list; });
 }
 agentsNow().catch(() => {});
 
 /** Shared guard for manual and scheduled launches (and replies). Returns an error string or null. */
-function launchBlocker(agentId: unknown = "claude"): string | null {
+function launchBlocker(agentId: unknown = "claude", model?: string | null): string | null {
   const agent = agentOf(agentId);
+  if (agent.id === "claude" && isRoutedId(model)) {
+    // A local or team model: Claude Code has to be here, but not signed in, and Claude's
+    // usage meters and dollar budgets don't apply (it isn't Claude's usage).
+    if (!routeOf(model)) return `${model.replace(/^(local|team)\//, "")} isn't available. Open the Models page to download it or check its endpoint.`;
+    const auth = claudeAuthCached();
+    if (auth && !auth.installed) return "Claude Code isn't installed on this machine. Open the Machine page to install it.";
+    const { limits } = deck.config();
+    if (runs.runningCount() >= limits.maxConcurrentRuns) return `Already ${runs.runningCount()} runs in flight (limit ${limits.maxConcurrentRuns}).`;
+    return null;
+  }
   if (agent.id !== "claude") {
     // Another agent: its last known status (installed, signed in); the dashboard's own limits still apply.
     if (!agentsCache || Date.now() - agentsCache.at > 60_000) agentsNow().catch(() => {});
@@ -625,8 +642,6 @@ function launchRun(body: LaunchRequest, trigger: string): RunMeta {
   const presetAgent = body.presetId ? (deck.preset(body.presetId) as any)?.agent : undefined;
   const agentId = body.agent ?? presetAgent ?? deck.config().defaults.agent ?? "claude";
   if (!isAgentId(agentId)) throw httpError(400, `Unknown agent ${agentId}`);
-  const blocker = launchBlocker(agentId);
-  if (blocker) throw httpError(429, blocker);
 
   const preset = body.presetId ? deck.preset(body.presetId) : null;
   if (body.presetId && !preset) throw httpError(400, `Unknown preset ${body.presetId}`);
@@ -639,13 +654,17 @@ function launchRun(body: LaunchRequest, trigger: string): RunMeta {
   // The deck's default model and effort are Claude's; another agent uses its own default unless one is picked.
   // A Claude alias (opus, sonnet…) means nothing to another agent: it uses its own default instead.
   const picked = pick("model");
-  const model = (agentId !== "claude" && MODELS.includes(picked) ? null : picked) || (agentId === "claude" ? defaults.model : null);
-  const effort = pick("effort") || (agentId === "claude" ? defaults.effort : null);
+  const model = (agentId !== "claude" && (MODELS.includes(picked) || isRoutedId(picked)) ? null : picked) || (agentId === "claude" ? defaults.model : null);
+  // A local or team model takes no effort (and no dollar budget: it isn't Claude's usage).
+  const routed = isRoutedId(model);
+  const effort = routed ? null : pick("effort") || (agentId === "claude" ? defaults.effort : null);
+  const blocker = launchBlocker(agentId, model);
+  if (blocker) throw httpError(429, blocker);
   const permissionMode = pick("permissionMode") || "auto";
   // No per-run cap unless the runBudget setting is on (on a subscription it only stops working runs).
-  const budgetUsd = limits.runBudget ? Number(pick("budgetUsd")) || 5 : null;
-  // A model becomes a CLI argument: aliases or full ids only (e.g. rejects "--bare").
-  if (model && !MODEL_RE.test(model)) throw httpError(400, `Invalid model ${model}`);
+  const budgetUsd = limits.runBudget && !routed ? Number(pick("budgetUsd")) || DEFAULT_RUN_BUDGET_USD : null;
+  // A model becomes a CLI argument: aliases or full ids only (e.g. rejects "--bare"); a routed one must be known (above).
+  if (model && !routed && !MODEL_RE.test(model)) throw httpError(400, `Invalid model ${model}`);
   if (effort && !(agentId === "claude" ? EFFORTS : AGENT_EFFORTS).includes(effort)) throw httpError(400, `Unknown effort ${effort}`);
   if (!PERMISSION_MODES.includes(permissionMode)) throw httpError(400, `Unsupported permission mode ${permissionMode}`);
   if (budgetUsd !== null && (budgetUsd <= 0 || budgetUsd > MAX_RUN_BUDGET_USD)) throw httpError(400, `Budget must be between $0 and $${MAX_RUN_BUDGET_USD}.`);
@@ -717,7 +736,7 @@ scheduler.start();
 // PR watches (<<WATCH>> blocks): a change on a watched PR is a reply to its run, under the same limits as yours.
 const watcher = new Watcher(runs, {
   wake: (id, text) => {
-    const blocker = launchBlocker(runs.get(id)?.agent);
+    const blocker = launchBlocker(runs.get(id)?.agent, runs.get(id)?.model);
     if (blocker) return blocker;
     try {
       runs.reply(id, text, { budgetUsd: deck.config().limits.runBudget ? undefined : null });
@@ -737,6 +756,7 @@ live.register("overview", getOverview, 5000);
 live.register("status", sharedStatus, 5000);
 live.register("deck", deckView, 30000);
 live.register("inbox", () => inbox.get(false), 60000);
+live.register("models", () => models.view(), 30000);
 
 let sessionsCache = { at: 0, data: [] as any[] };
 function listSessions(): Promise<any[]> {
@@ -1028,7 +1048,7 @@ function serveScreenshot(req: http.IncomingMessage, res: http.ServerResponse) {
 
 async function openTerminalForRun(run: RunMeta) {
   const agent = agentOf(run.agent);
-  const command = agent.resumeCommand(run.sessionId);
+  const command = agent.resumeCommand(run.sessionId, run.model);
   const r = await openTerminal(command, run.cwd, `${agent.label} · ${run.label}`.slice(0, 60), "Session ended. You can close this window.");
   return { opened: r.opened, command: `cd "${run.cwd}"; ${command}` };
 }
@@ -1077,7 +1097,7 @@ function serveExploreRaw(res: http.ServerResponse, pathname: string) {
 }
 
 /** POSTs that open something on the server's own screen or ports, refused when hosted. */
-const LOCAL_ONLY_POSTS = new Set(["/api/machine/install", "/api/knowledge/setup", "/api/knowledge/store-source", "/api/docs/preview", "/api/apps/action", "/api/restart"]);
+const LOCAL_ONLY_POSTS = new Set(["/api/models/routing", "/api/models/start", "/api/models/pull", "/api/models/cancel", "/api/models/delete", "/api/models/prepare", "/api/models/install-ollama", "/api/machine/install", "/api/knowledge/setup", "/api/knowledge/store-source", "/api/docs/preview", "/api/apps/action", "/api/restart"]);
 
 async function handleApi(req: http.IncomingMessage, res: http.ServerResponse, url: URL, user: string | null) {
   const p = url.pathname;
@@ -1211,6 +1231,7 @@ async function handleApi(req: http.IncomingMessage, res: http.ServerResponse, ur
     if (p === "/api/infrastructure") return sendJson(res, infrastructure(MAIN_WORKSPACE_PATH));
     if (p === "/api/memory") return sendJson(res, memory.list());
     if (p === "/api/agents") return sendJson(res, { agents: await agentsNow(force) });
+    if (p === "/api/models") return sendJson(res, await models.view(force));
     if (p === "/api/connections/agent") return sendJson(res, await agentConnections(otherAgent(q("agent"))));
     if (p === "/api/connections") return sendJson(res, await connections.list({ wait: q("wait") === "1", force }));
     if (p === "/api/search") {
@@ -1314,12 +1335,23 @@ async function handleApi(req: http.IncomingMessage, res: http.ServerResponse, ur
     return sendJson(res, { run: launchRun(body, "manual") }, 201);
   }
   if (runMatch && runMatch[2] === "reply") {
-    const blocker = launchBlocker(runs.get(runMatch[1])?.agent);
+    const run = runs.get(runMatch[1]);
+    // { model }: the rest of the run on another model (Claude runs: e.g. from a local model on to Opus).
+    const switchTo = body.model !== undefined && body.model !== run?.model ? String(body.model || "") : undefined;
+    if (switchTo !== undefined) {
+      if (agentOf(run?.agent).id !== "claude") return sendError(res, 400, "Only Claude runs can change model.");
+      if (!(isRoutedId(switchTo) ? routeOf(switchTo) : MODEL_RE.test(switchTo))) return sendError(res, 400, `Unknown model ${switchTo}`);
+    }
+    const model = switchTo ?? run?.model;
+    const blocker = launchBlocker(run?.agent, model);
     if (blocker) return sendError(res, 429, blocker);
     const ids = attachments.check(body.attachments);
-    // The cap follows the current setting: off drops it, even for a run started with one.
-    const budgetUsd = deck.config().limits.runBudget ? undefined : null;
-    return sendJson(res, { run: runs.reply(runMatch[1], body.text, { budgetUsd, attachments: ids }) });
+    // The cap follows the current setting: off drops it, even for a run started with one; none on a local or team model.
+    // A run started on one has no cap stored, so moving it on to Claude gets the default cap a new run would.
+    const budgetUsd = !deck.config().limits.runBudget || isRoutedId(model) ? null : run?.budgetUsd ? undefined : DEFAULT_RUN_BUDGET_USD;
+    // On to a Claude model: the effort asked for, else the deck's default (an open model takes none).
+    const effort = switchTo === undefined ? undefined : isRoutedId(switchTo) ? null : (EFFORTS.includes(body.effort) ? body.effort : deck.config().defaults.effort) || null;
+    return sendJson(res, { run: runs.reply(runMatch[1], body.text, { budgetUsd, attachments: ids, ...(switchTo !== undefined ? { model: switchTo, effort } : {}) }) });
   }
   if (runMatch && runMatch[2] === "rename") return sendJson(res, { run: runs.rename(runMatch[1], body.label) });
   // Queued messages: typed while Claude works, sent when the turn ends (shared/api.ts RunMeta.queued).
@@ -1328,13 +1360,13 @@ async function handleApi(req: http.IncomingMessage, res: http.ServerResponse, ur
   if (runMatch && runMatch[2] === "queue-edit") return sendJson(res, { run: runs.editQueued(runMatch[1], String(body.id || ""), body.text) });
   if (runMatch && runMatch[2] === "queue-remove") return sendJson(res, { run: runs.removeQueued(runMatch[1], String(body.id || "")) });
   if (runMatch && runMatch[2] === "queue-send") {
-    const blocker = launchBlocker(runs.get(runMatch[1])?.agent);
+    const blocker = launchBlocker(runs.get(runMatch[1])?.agent, runs.get(runMatch[1])?.model);
     if (blocker) return sendError(res, 429, blocker);
     return sendJson(res, { run: runs.sendQueued(runMatch[1], { budgetUsd: deck.config().limits.runBudget ? undefined : null }) });
   }
   if (p === "/api/settings") {
     try {
-      deck.savePersonal({ limits: body.limits, defaults: body.defaults, issues: body.issues }, { models: (m) => MODEL_RE.test(m), efforts: EFFORTS });
+      deck.savePersonal({ limits: body.limits, defaults: body.defaults, issues: body.issues }, { models: (m) => MODEL_RE.test(m) || isRoutedId(m), efforts: EFFORTS });
     } catch (e) {
       return sendError(res, 400, e.message);
     }
@@ -1401,6 +1433,25 @@ async function handleApi(req: http.IncomingMessage, res: http.ServerResponse, ur
     return sendJson(res, { run }, 201);
   }
   if (p === "/api/machine/install") return sendJson(res, await machine.install(String(body.id || ""))); // only the id crosses the wire
+  if (p.startsWith("/api/models/")) {
+    const what = p.slice("/api/models/".length);
+    const name = String(body.name || "");
+    if (what === "pull") return sendJson(res, { pull: await models.pull(name) }, 202);
+    if (what === "cancel") { models.cancel(name); return sendJson(res, { ok: true }); }
+    if (what === "delete") { await models.remove(name); agentsNow().catch(() => {}); return sendJson(res, { ok: true }); }
+    if (what === "prepare") { await models.prepare(name); agentsNow().catch(() => {}); return sendJson(res, { ok: true }); }
+    if (what === "test") return sendJson(res, await models.test(String(body.id || "")));
+    if (what === "start") { const r = await models.start(); agentsNow().catch(() => {}); return sendJson(res, r); }
+    if (what === "routing") { await models.setExplorer(body.explorer ? String(body.explorer) : null); return sendJson(res, { ok: true }); }
+    if (what === "token") { models.setToken(String(body.id || ""), String(body.token || "").trim()); agentsNow().catch(() => {}); return sendJson(res, { ok: true }); }
+    if (what === "install-ollama") {
+      // The command is the server's (for where Ollama runs: this OS or WSL), never the browser's.
+      const cmd = await models.installCommand(!!body.update);
+      if (!cmd) return sendError(res, 400, "Ollama runs somewhere else (a container or another machine): update it there. See https://ollama.com/download.");
+      return sendJson(res, await openTerminal(cmd, MAIN_WORKSPACE_PATH, body.update ? "Update Ollama" : "Setup: Ollama"));
+    }
+    return sendError(res, 404, "Unknown models action");
+  }
   if (p === "/api/repos/clone") {
     // Only names cross the wire; what to clone and from where is repos.json's.
     const names = Array.isArray(body.names) ? body.names.map(String) : null;

@@ -98,6 +98,11 @@ export const CATALOG: Record<string, CatalogEntry> = {
     detail: { missing: "Lets dashboard runs use Codex (the Agent picker in Ask and Run).", ok: "Signed in: pick Codex as the agent in Ask or Run." },
     install: { win: "npm install -g @openai/codex", mac: "npm install -g @openai/codex", linux: "npm install -g @openai/codex" },
   },
+  ollama: {
+    kind: "command", label: "Ollama", probe: cmd("ollama", ["--version"], "both"),
+    detail: { missing: "Runs open models on this computer (the Models page downloads them and lets runs use them).", ok: "Runs open models on this computer: see the Models page." },
+    install: { win: "winget install --id Ollama.Ollama -e", mac: "brew install --cask ollama-app", linux: "curl -fsSL https://ollama.com/install.sh | sh" },
+  },
   "claude-connector": {
     kind: "claude-connector", label: "claude.ai connector",
     install: { label: "Open claude.ai", win: "Start-Process https://claude.ai/settings/connectors", mac: "open https://claude.ai/settings/connectors", linux: "xdg-open https://claude.ai/settings/connectors" },

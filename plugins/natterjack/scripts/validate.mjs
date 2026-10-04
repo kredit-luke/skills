@@ -261,6 +261,36 @@ export function validate(root) {
     }
   }
 
+  // ---- models.json (local and team open models: the Models page)
+  const mdl = load("models.json");
+  if (mdl) {
+    const local = mdl.local;
+    if (local !== undefined && (typeof local !== "object" || Array.isArray(local))) err("models.json", "\"local\" must be an object");
+    else if (local) {
+      const ctx = local.contextLength;
+      if (ctx !== undefined && !(Number.isInteger(ctx) && ctx >= 8192 && ctx <= 1048576)) err("models.json", "local.contextLength must be a whole number of tokens from 8192 to 1048576 (65536 is the default)");
+      for (const m of Array.isArray(local.recommended) ? local.recommended : []) {
+        if (!m || !/^[a-z0-9][a-z0-9._\-/]{0,100}(:[A-Za-z0-9._\-]{1,60})?$/.test(m.tag || "")) err("models.json", `local.recommended: "${m && m.tag}" isn't an Ollama model name (like qwen3.8:27b)`);
+        else if (!(Number(m.diskGb) > 0)) warn("models.json", `local.recommended "${m.tag}" has no diskGb, so the page can't say whether it fits`);
+      }
+      if (local.hide !== undefined && !(Array.isArray(local.hide) && local.hide.every((x) => typeof x === "string"))) err("models.json", "local.hide is a list of Ollama model names");
+    }
+    const ids = new Set();
+    for (const e of Array.isArray(mdl.endpoints) ? mdl.endpoints : mdl.endpoints === undefined ? [] : (err("models.json", "\"endpoints\" must be a list"), [])) {
+      const id = e && e.id;
+      if (!/^[a-z0-9][a-z0-9-]{0,40}$/.test(id || "")) { err("models.json", `endpoint "${id}": the id must be lowercase letters, digits and dashes (it's part of the model's name in runs)`); continue; }
+      if (ids.has(id)) err("models.json", `endpoint "${id}" is listed twice`);
+      ids.add(id);
+      if (!/^https?:\/\/\S+$/i.test(e.baseUrl || "")) err("models.json", `endpoint "${id}": baseUrl must be the server's address, e.g. https://llm.example.com (an Anthropic-compatible server: Ollama, vLLM, LiteLLM)`);
+      else if (/\/v1\/?$/.test(e.baseUrl)) warn("models.json", `endpoint "${id}": baseUrl shouldn't end in /v1 (Claude Code adds /v1/messages itself)`);
+      if (typeof e.token === "string" && e.token && !/^\$\{[A-Z_][A-Z0-9_]*\}$/i.test(e.token)) err("models.json", `endpoint "${id}": token looks like a secret; use a placeholder such as "\${${id.toUpperCase().replace(/-/g, "_")}_TOKEN}" (or leave it out and each person saves theirs on the Models page)`);
+      if (e.models !== undefined) {
+        if (!Array.isArray(e.models)) err("models.json", `endpoint "${id}": models must be a list of { id, label?, tools?, context? }`);
+        else for (const m of e.models) if (!m || !/^[A-Za-z0-9._:\-/]{1,120}$/.test(m.id || "")) err("models.json", `endpoint "${id}": model "${m && m.id}" needs an id as the server names it`);
+      }
+    }
+  }
+
   // ---- deck.json
   const deck = load("deck.json");
   if (deck) {

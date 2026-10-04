@@ -296,7 +296,8 @@ export interface LaunchRequest {
 }
 
 /** POST /api/runs/:id/reply  { text, attachments? } → { run }   409 while a turn is running or after hand-off */
-export interface ReplyRequest { text: string; attachments?: string[] }
+/** model: the rest of the run on another model (Claude runs; e.g. a local model's run on to "opus"); effort with it. */
+export interface ReplyRequest { text: string; attachments?: string[]; model?: string; effort?: string }
 /** POST /api/runs/:id/rename  { label } → { run }   (any time, even mid-turn) */
 export interface RenameRequest { label: string }
 /** POST /api/runs/:id/plan-mode  { on } → { run }   409 while a turn is running or after hand-off */
@@ -767,11 +768,77 @@ export interface MachineCheck {
   install?: { label: string; cmd: string; cwd?: string } | null; action?: 'setup';
 }
 /** GET /api/machine[?force=1] ;  POST /api/machine/install { id } → { opened, command } */
+export interface MachineGpu { name: string; vramGb: number | null; unified?: boolean; vendor?: 'nvidia' | 'apple'; driver?: string }
+export interface MachineDisk { path: string; freeGb: number; totalGb: number }
 export interface MachineReport {
   host: string; os: string; osVersion: string; arch: string; cpus: number; memoryGb: number;
+  /** Older servers don't send these. */
+  freeMemoryGb?: number; gpus?: MachineGpu[]; disk?: MachineDisk | null;
   checks: MachineCheck[]; problems: number; warnings: number; checkedAt: number;
   blocked: Record<string, string[]>;
   /** machine.json exists (otherwise there are no checks to show). */
+  configured: boolean;
+  error: string | null;
+}
+
+// ---------------------------------------------------------------- models
+
+export type ModelFit = 'gpu' | 'partial' | 'cpu' | 'too-big' | 'no-disk';
+export interface ModelPull { tag: string; status: string; completed: number; total: number; error: string | null; startedAt: number; done: boolean }
+export interface RecommendedModel {
+  tag: string; label: string; params: string; diskGb: number; context: number; tools: boolean; goodFor: string; notes?: string;
+  installed: boolean; fit: ModelFit; fitLabel: string;
+}
+export interface InstalledModel {
+  name: string; label: string; sizeGb: number; params: string | null; quantization: string | null;
+  /** null: not known yet (Ollama hasn't said). */
+  tools: boolean | null; capabilities: string[]; contextMax: number | null;
+  /** The window runs give it (the configured one, or its own maximum if smaller). */
+  context: number;
+  /** Has its twin with that window, so runs can use it. */
+  ready: boolean;
+  /** Why runs can't use it (no tool calling, too small a window, not prepared), or null. */
+  problem: string | null;
+  /** "Prepare for runs" would fix it. */
+  preparable: boolean;
+  routeId: string; recommended: boolean; fit: ModelFit; fitLabel: string;
+}
+export interface ModelEndpoint {
+  id: string; label: string; baseUrl: string;
+  /** Where its token comes from: its env var, the one saved on the Models page, models.json itself, or none. */
+  tokenSource: 'env' | 'saved' | 'config' | null; tokenVar: string | null; needsToken: boolean;
+  /** No `models` in models.json: the list is whatever the endpoint's /v1/models said. */
+  discovered: boolean;
+  models: { id: string; label: string; tools: boolean | null; context: number | null; routeId: string }[];
+  test: { ok: boolean; ms: number | null; error: string | null; models: string[]; at: number } | null;
+}
+/**
+ * GET /api/models[?force=1] (and the live `models` topic) → ModelsView
+ * POST /api/models/pull { name } → 202 { pull } ;  /cancel { name } ;  /delete { name } ;  /prepare { name }
+ * POST /api/models/test { id } → ModelEndpoint['test'] ;  /token { id, token } (empty clears it)
+ * POST /api/models/install-ollama { update?: boolean } → { opened, command } ;  /start → { running }
+ * Run models: "local/<ollama tag>" and "team/<endpoint>/<model>" (Claude Code pointed at that server).
+ */
+export interface ModelsView {
+  hosted: boolean;
+  hardware: { memoryGb: number; freeMemoryGb: number; gpus: MachineGpu[]; disk: MachineDisk | null };
+  /** The GPU can't be used (e.g. an NVIDIA driver older than Ollama needs), and what to do; null when fine. */
+  gpuWarning: string | null;
+  modelsDir: MachineDisk | null;
+  contextLength: number;
+  /** messagesApi: it serves Anthropic's Messages API, which Claude Code needs (older versions don't). */
+  /** where: on this OS, in WSL (Windows), somewhere else that answers (a container, another machine), or not found. */
+  ollama: { where: 'here' | 'wsl' | 'elsewhere' | null; installed: boolean; running: boolean; messagesApi: boolean; version: string | null; base: string };
+  usedGb: number;
+  recommended: RecommendedModel[];
+  installed: InstalledModel[];
+  pulls: ModelPull[];
+  /**
+   * Smart routing (POST /api/models/routing { explorer: id | null }): Claude's runs' Explore
+   * subagent (code searching and reading) runs on this model, through a router on 127.0.0.1.
+   */
+  routing: { explorer: string | null; active: boolean; choices: { id: string; label: string }[]; stats: { local: number; claude: number; queued: number } | null };
+  endpoints: ModelEndpoint[];
   configured: boolean;
   error: string | null;
 }

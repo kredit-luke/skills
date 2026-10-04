@@ -30,6 +30,7 @@ import { claudeAuth, connectorState } from "./claude.ts";
 import { mcpHealth } from "./connections.ts";
 import { agentStatuses } from "./agents/index.ts";
 import { NOT_HOSTED } from "./hosted.ts";
+import { hardware } from "./hardware.ts";
 
 const IS_WIN = process.platform === "win32";
 const IS_MAC = process.platform === "darwin";
@@ -315,6 +316,7 @@ class Machine {
   }
 
   async _check() {
+    const hw = hardware(this.root, true);
     await refreshPath();
     const { specs, error, configured } = resolvedSpecs(this.root);
 
@@ -365,6 +367,7 @@ class Machine {
       host: os.hostname(),
       cpus: os.cpus().length,
       memoryGb: Math.round(os.totalmem() / 1024 ** 3),
+      ...(({ freeMemoryGb, gpus, disk }) => ({ freeMemoryGb, gpus, disk }))(await hw),
       checks,
       blocked, // appKey -> labels of missing requirements (Apps cards show these)
       problems: checks.filter((c) => c.status === "missing").length,

@@ -27,7 +27,8 @@ import crypto from "node:crypto";
 import { execFile, type ChildProcess } from "node:child_process";
 import type { ServerResponse } from "node:http";
 import type { Attachment, Effort, PermissionMode, QueuedMessage, Question, RunEvent, RunMeta, RunWatch, WatchedPr } from "../../shared/api.ts";
-import { AGENT_HEADLESS_RULES, agentOf, type ParseState } from "./agents/index.ts";
+import { AGENT_HEADLESS_RULES, agentOf, type ParseState, type TurnInput } from "./agents/index.ts";
+import { LOCAL_MODEL_RULE, isRoutedId } from "./models/routes.ts";
 import { expandSlash } from "./agents/skills.ts";
 import { promptWithAttachments, type Attachments } from "./attachments.ts";
 
@@ -39,10 +40,70 @@ const QUEUE_MAX = 10;
 const QUEUE_RETRY_MS = 30000;
 /** Backstop for run files edited outside this server (a file added or removed is caught by name). */
 const LIST_TTL_MS = 10000;
-const QUESTION_RE = /<<QUESTION>>([\s\S]*?)(?:<<\/QUESTION>>|$)/;
-const QUESTION_STRIP_RE = /\s*<<QUESTION>>[\s\S]*?(?:<<\/QUESTION>>|$)\s*/g;
-const WATCH_RE = /<<WATCH>>([\s\S]*?)(?:<<\/WATCH>>|$)/;
-const WATCH_STRIP_RE = /\s*<<WATCH>>[\s\S]*?(?:<<\/WATCH>>|$)\s*/g;
+/**
+ * Where a markdown text has code: fenced blocks (``` or ~~~, closed by a fence of the same
+ * character at least as long; unclosed runs to the end) and inline spans (a run of N backticks
+ * up to the next run of exactly N). Half-open [start, end) offsets.
+ */
+export function codeRanges(text: string): [number, number][] {
+  const out: [number, number][] = [];
+  const inline = (from: number, to: number) => {
+    const s = text.slice(from, to);
+    const runs = /`+/g;
+    for (let m: RegExpExecArray | null; (m = runs.exec(s)); ) {
+      const n = m[0].length;
+      const next = /`+/g;
+      next.lastIndex = m.index + n;
+      let c: RegExpExecArray | null;
+      while ((c = next.exec(s)) && c[0].length !== n) {}
+      if (c) { out.push([from + m.index, from + c.index + n]); runs.lastIndex = c.index + n; }
+    }
+  };
+  const fenceRe = /^[ \t]{0,3}(`{3,}|~{3,})/;
+  let pos = 0, prose = 0;
+  let open: { ch: string; len: number; start: number } | null = null;
+  for (const line of text.split("\n")) {
+    const lineEnd = pos + line.length;
+    const f = fenceRe.exec(line);
+    if (open) {
+      if (f && f[1][0] === open.ch && f[1].length >= open.len && !line.slice(f[0].length).trim()) { out.push([open.start, lineEnd]); open = null; prose = lineEnd + 1; }
+    } else if (f && !(f[1][0] === "`" && line.slice(f[0].length).includes("`"))) {
+      inline(prose, pos);
+      open = { ch: f[1][0], len: f[1].length, start: pos };
+    }
+    pos = lineEnd + 1;
+  }
+  if (open) out.push([open.start, text.length]);
+  else inline(prose, text.length);
+  return out;
+}
+
+/**
+ * A <<QUESTION>> or <<WATCH>> block: the first marker that isn't inside code (codeRanges). A
+ * marker in code (Claude explaining how runs work) is just text: matching it would turn the
+ * rest of the answer into a question and cut the answer off there.
+ */
+export function findBlock(text: string, tag: "QUESTION" | "WATCH"): { start: number; end: number; body: string } | null {
+  text = text || "";
+  const open = new RegExp(`<<${tag}>>`, "g");
+  let code: [number, number][] | null = null;
+  for (let m: RegExpExecArray | null; (m = open.exec(text)); ) {
+    const start = m.index;
+    code ??= codeRanges(text);
+    if (code.some(([a, b]) => start >= a && start < b)) continue;
+    const from = m.index + m[0].length;
+    const close = text.indexOf(`<</${tag}>>`, from);
+    const end = close < 0 ? text.length : close + `<</${tag}>>`.length;
+    return { start, end, body: text.slice(from, close < 0 ? text.length : close) };
+  }
+  return null;
+}
+
+/** The text without its block (if any). */
+export function stripBlock(text: string, tag: "QUESTION" | "WATCH"): string {
+  const b = findBlock(text, tag);
+  return b ? `${text.slice(0, b.start).trimEnd()}\n${text.slice(b.end).trimStart()}`.trim() : text;
+}
 const WATCH_DEFAULT_MINUTES = 5;
 const WATCH_MIN_MINUTES = 2;
 const WATCH_MAX_MINUTES = 60;
@@ -115,6 +176,12 @@ export type QueueGate = (meta: RunMeta) => { blocker: string | null; budgetUsd?:
 export interface ReplyOptions {
   /** A new per-turn cap; null removes it, undefined keeps the run's. */
   budgetUsd?: number | null;
+  /**
+   * Another model from this turn on (checked by the caller; Claude runs only), and its effort.
+   * The session carries on: e.g. a run that explored on a local model continues on Opus.
+   */
+  model?: string;
+  effort?: Effort | null;
   attachments?: string[];
 }
 
@@ -298,6 +365,11 @@ export class RunManager {
     if (meta.status === "handedOff") throw httpError(409, "This run continued in a terminal; reply there.");
     if (!REPLYABLE.has(meta.status)) throw httpError(409, `Can't reply to a ${meta.status} run.`);
     if (opts.budgetUsd !== undefined) meta.budgetUsd = opts.budgetUsd;
+    if (opts.model !== undefined && opts.model !== meta.model) {
+      meta.model = opts.model;
+      meta.effort = opts.effort ?? null;
+      meta.resolvedModel = null;
+    }
     const files = this._claim(id, ids);
     this._turn(meta, text || "See the attached files.", files);
     return meta;
@@ -592,22 +664,23 @@ export class RunManager {
     // (permission prompts are denied here, so without this a worktree run couldn't).
     const filesDir = this.attachments ? this.attachments.runDir(meta.id) : null;
     const addDirs = [...(filesDir && fs.existsSync(filesDir) ? [filesDir] : []), ...(meta.addDirs || []).filter((d) => fs.existsSync(d))];
-    const args = agent.turnArgs({
+    const turn: TurnInput = {
       first, sessionId: meta.sessionId, label: meta.label,
       // Agents that don't load Claude Code's skills get a workspace skill's instructions for `/name args`.
       prompt: (agent.id === "claude" ? (s: string) => s : (s: string) => expandSlash(s, meta.cwd))(first ? prompt : promptWithAttachments(prompt, files)),
       model: meta.model, effort: meta.effort, planMode: !!meta.planMode, permissionMode: meta.permissionMode,
       budgetUsd: agent.capabilities.costUsd ? meta.budgetUsd : null,
-      rules: [agent.id === "claude" ? HEADLESS_RULES : AGENT_HEADLESS_RULES, meta.extraPrompt || null].filter(Boolean).join("\n\n"),
+      rules: [agent.id === "claude" ? HEADLESS_RULES : AGENT_HEADLESS_RULES, isRoutedId(meta.model) ? LOCAL_MODEL_RULE : null, meta.extraPrompt || null].filter(Boolean).join("\n\n"),
       planRule: meta.planMode ? PLAN_MODE_RULE : null,
       addDirs,
-    });
+    };
+    const args = agent.turnArgs(turn);
 
     const child = agent.spawn(args, {
       cwd: meta.cwd,
       stdio: ["ignore", "pipe", "pipe"], // prompt is an argument; an open stdin can make the CLI wait forever
       windowsHide: true,
-    });
+    }, turn);
     const parseState: ParseState = { sessionId: first ? null : meta.sessionId, model: meta.model };
     const live: LiveTurn = { child, stopping: null, meta };
     this.live.set(meta.id, live);
@@ -633,14 +706,14 @@ export class RunManager {
         for (const b of ev.message.content) {
           if (b.type === "text" && typeof b.text === "string" && b.text.trim()) {
             rawFinalText = b.text;
-            if (b.text.includes("<<QUESTION>>")) b.text = b.text.replace(QUESTION_STRIP_RE, "\n").trim();
-            if (b.text.includes("<<WATCH>>")) b.text = b.text.replace(WATCH_STRIP_RE, "\n").trim();
+            if (b.text.includes("<<QUESTION>>")) b.text = stripBlock(b.text, "QUESTION");
+            if (b.text.includes("<<WATCH>>")) b.text = stripBlock(b.text, "WATCH");
           }
         }
       }
       if (ev.type === "result" && typeof ev.result === "string") {
         if (ev.result.trim()) rawFinalText = ev.result;
-        ev.result = ev.result.replace(QUESTION_STRIP_RE, "\n").replace(WATCH_STRIP_RE, "\n").trim();
+        ev.result = stripBlock(stripBlock(ev.result, "QUESTION"), "WATCH").trim();
       }
 
       watchBackground(watch, ev);
@@ -862,9 +935,9 @@ function parseWatchedPr(v: any): { repo: string; number: number } | null {
 
 /** Parse a <<WATCH>> block. Null when there's no marker; { error } when it can't be used. */
 export function parseWatch(text: string): WatchBlock | null {
-  const m = WATCH_RE.exec(text || "");
+  const m = findBlock(text || "", "WATCH");
   if (!m) return null;
-  const body = m[1].trim().replace(/^```(?:json)?\s*/i, "").replace(/\s*```$/, "").trim();
+  const body = m.body.trim().replace(/^```(?:json)?\s*/i, "").replace(/\s*```$/, "").trim();
   let data: any = null;
   try { data = JSON.parse(body); } catch { return { error: "The watch block isn't valid JSON." }; }
   if (!data || typeof data !== "object") return { error: "The watch block isn't a JSON object." };
@@ -964,7 +1037,8 @@ function applyEvent(meta: RunMeta, ev: RunEvent, main: boolean, costBefore: numb
     // model); each carries running totals, so the last one wins. total_cost_usd covers
     // the whole session, earlier (resumed) turns included, so it is the run's total:
     // adding it to the previous turns' total counted them again.
-    meta.costUsd = Math.max(costBefore, ev.total_cost_usd || 0);
+    // A local or team model costs nothing here (Claude Code would price it as a Claude model).
+    meta.costUsd = isRoutedId(meta.model) ? costBefore : Math.max(costBefore, ev.total_cost_usd || 0);
     meta.numTurns = roundTripsBefore + (ev.num_turns || 0);
     const text = typeof ev.result === "string" ? ev.result : "";
     meta.resultText = text.slice(0, RESULT_TEXT_MAX);
@@ -995,9 +1069,9 @@ export function toolLabel(name: string, input: any): string {
 
 /** Parse the <<QUESTION>> block. Never returns null for text that has the marker. */
 export function parseQuestion(text: string): Question[] | null {
-  const m = QUESTION_RE.exec(text);
+  const m = findBlock(text, "QUESTION");
   if (!m) return null;
-  let body = m[1].trim().replace(/^```(?:json)?\s*/i, "").replace(/\s*```$/, "").trim();
+  let body = m.body.trim().replace(/^```(?:json)?\s*/i, "").replace(/\s*```$/, "").trim();
   let data: any = null;
   try { data = JSON.parse(body); } catch {}
   const list = Array.isArray(data?.questions) ? data.questions : Array.isArray(data) ? data : data && typeof data === "object" ? [data] : null;
@@ -1013,7 +1087,7 @@ export function parseQuestion(text: string): Question[] | null {
     }));
   if (questions.length) return questions;
   // Unparseable: still a question, answered in free text.
-  const before = text.slice(0, m.index).trim().split("\n").pop() || "";
+  const before = text.slice(0, m.start).trim().split("\n").pop() || "";
   return [{ question: body && !body.startsWith("{") ? body : before || "Claude needs your input to continue.", options: [] }];
 }
 

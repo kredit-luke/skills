@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { AgentInfo } from '../../../../shared/api';
-import { agentLabel, defaultsFor, effortsFor, modelsFor, startAgent, usableAgents } from './agents';
+import { agentLabel, defaultsFor, effortsFor, isRoutedModel, modelsFor, startAgent, usableAgents } from './agents';
 
 const agent = (id: AgentInfo['id'], over: Partial<AgentInfo> = {}): AgentInfo => ({
   id, label: agentLabel(id), installed: true, signedIn: true, version: '1', problem: null,
@@ -32,5 +32,28 @@ describe('agent picker', () => {
     expect(startAgent(usable, null, null)).toBe('claude');
     expect(startAgent([codex], null, null), 'Claude not usable').toBe('codex');
     expect(agentLabel(undefined)).toBe('Claude');
+  });
+});
+
+describe('local and team models (the Models page)', () => {
+  const claude = agent('claude', { models: [
+    { id: 'opus', label: 'Opus', efforts: null },
+    { id: 'local/ornith:9b', label: 'Local · Ornith 9B', efforts: [] },
+    { id: 'team/gpu/glm-5.3', label: 'Team GPU · GLM 5.3', efforts: [] },
+  ] });
+
+  it("follow Claude's own models in the Model select, and take no effort", () => {
+    expect(modelsFor(claude, ['opus', 'sonnet']).map((m) => m.id)).toEqual(['opus', 'sonnet', 'local/ornith:9b', 'team/gpu/glm-5.3']);
+    expect(modelsFor(null, ['opus']).map((m) => m.id)).toEqual(['opus']);
+    expect(effortsFor(claude, 'local/ornith:9b', ['low', 'high'])).toEqual([]);
+    expect(effortsFor(claude, 'opus', ['low', 'high'])).toEqual(['low', 'high']);
+    expect(isRoutedModel('team/gpu/x') && !isRoutedModel('opus') && !isRoutedModel(null)).toBe(true);
+  });
+  it('keep Claude usable without a Claude sign-in, offering only them', () => {
+    const signedOut = { ...claude, signedIn: false };
+    expect(usableAgents([signedOut, codex]).map((a) => a.id)).toEqual(['claude', 'codex']);
+    expect(usableAgents([agent('claude', { signedIn: false }), codex]).map((a) => a.id), 'nothing to run on').toEqual(['codex']);
+    expect(modelsFor(signedOut, ['opus']).map((m) => m.id)).toEqual(['local/ornith:9b', 'team/gpu/glm-5.3']);
+    expect(defaultsFor(signedOut, { model: 'opus', effort: 'medium' })).toEqual({ model: 'local/ornith:9b', effort: '' });
   });
 });
