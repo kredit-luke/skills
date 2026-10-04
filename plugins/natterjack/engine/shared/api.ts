@@ -815,7 +815,7 @@ export interface ModelEndpoint {
  * GET /api/models[?force=1] (and the live `models` topic) → ModelsView
  * POST /api/models/pull { name } → 202 { pull } ;  /cancel { name } ;  /delete { name } ;  /prepare { name }
  * POST /api/models/test { id } → ModelEndpoint['test'] ;  /token { id, token } (empty clears it)
- * POST /api/models/install-ollama { update?: boolean } → { opened, command }
+ * POST /api/models/install-ollama { update?: boolean } → { opened, command } ;  /start → { running }
  * Run models: "local/<ollama tag>" and "team/<endpoint>/<model>" (Claude Code pointed at that server).
  */
 export interface ModelsView {

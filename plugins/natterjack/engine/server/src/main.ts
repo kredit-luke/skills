@@ -1095,7 +1095,7 @@ function serveExploreRaw(res: http.ServerResponse, pathname: string) {
 }
 
 /** POSTs that open something on the server's own screen or ports, refused when hosted. */
-const LOCAL_ONLY_POSTS = new Set(["/api/models/pull", "/api/models/cancel", "/api/models/delete", "/api/models/prepare", "/api/models/install-ollama", "/api/machine/install", "/api/knowledge/setup", "/api/knowledge/store-source", "/api/docs/preview", "/api/apps/action", "/api/restart"]);
+const LOCAL_ONLY_POSTS = new Set(["/api/models/start", "/api/models/pull", "/api/models/cancel", "/api/models/delete", "/api/models/prepare", "/api/models/install-ollama", "/api/machine/install", "/api/knowledge/setup", "/api/knowledge/store-source", "/api/docs/preview", "/api/apps/action", "/api/restart"]);
 
 async function handleApi(req: http.IncomingMessage, res: http.ServerResponse, url: URL, user: string | null) {
   const p = url.pathname;
@@ -1428,6 +1428,7 @@ async function handleApi(req: http.IncomingMessage, res: http.ServerResponse, ur
     if (what === "delete") { await models.remove(name); agentsNow().catch(() => {}); return sendJson(res, { ok: true }); }
     if (what === "prepare") { await models.prepare(name); agentsNow().catch(() => {}); return sendJson(res, { ok: true }); }
     if (what === "test") return sendJson(res, await models.test(String(body.id || "")));
+    if (what === "start") { const r = await models.start(); agentsNow().catch(() => {}); return sendJson(res, r); }
     if (what === "token") { models.setToken(String(body.id || ""), String(body.token || "").trim()); agentsNow().catch(() => {}); return sendJson(res, { ok: true }); }
     if (what === "install-ollama") {
       // The command is the server's (for where Ollama runs: this OS or WSL), never the browser's.

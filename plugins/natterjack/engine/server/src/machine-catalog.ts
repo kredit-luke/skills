@@ -101,7 +101,7 @@ export const CATALOG: Record<string, CatalogEntry> = {
   ollama: {
     kind: "command", label: "Ollama", probe: cmd("ollama", ["--version"], "both"),
     detail: { missing: "Runs open models on this computer (the Models page downloads them and lets runs use them).", ok: "Runs open models on this computer: see the Models page." },
-    install: { win: "winget install --id Ollama.Ollama -e", mac: "brew install ollama", linux: "curl -fsSL https://ollama.com/install.sh | sh" },
+    install: { win: "winget install --id Ollama.Ollama -e", mac: "brew install --cask ollama-app", linux: "curl -fsSL https://ollama.com/install.sh | sh" },
   },
   "claude-connector": {
     kind: "claude-connector", label: "claude.ai connector",

@@ -28,7 +28,8 @@
  * Hosted (hosted.ts): no local models (the container has no GPU); team endpoints only.
  */
 
-import { execFile } from "node:child_process";
+import { execFile, spawn } from "node:child_process";
+import os from "node:os";
 import fs from "node:fs";
 import path from "node:path";
 import { readConfigFile } from "../config.ts";
@@ -182,10 +183,37 @@ export class Models {
     if (where === "wsl") return 'wsl -- sh -c "curl -fsSL https://ollama.com/install.sh | sh"';
     if (where === "elsewhere") return null;
     const os = process.platform === "win32" ? "win" : process.platform === "darwin" ? "mac" : "linux";
+    // The native app on Windows and macOS: no admin, uses the GPU (Metal on a Mac), starts at login, updates itself.
     const cmds = update
-      ? { win: "winget upgrade --id Ollama.Ollama -e", mac: "brew upgrade ollama", linux: "curl -fsSL https://ollama.com/install.sh | sh" }
-      : { win: "winget install --id Ollama.Ollama -e", mac: "brew install ollama", linux: "curl -fsSL https://ollama.com/install.sh | sh" };
+      ? { win: "winget upgrade --id Ollama.Ollama -e", mac: "brew upgrade --cask ollama-app", linux: "curl -fsSL https://ollama.com/install.sh | sh" }
+      : { win: "winget install --id Ollama.Ollama -e", mac: "brew install --cask ollama-app", linux: "curl -fsSL https://ollama.com/install.sh | sh" };
     return cmds[os];
+  }
+
+  /**
+   * Start an installed Ollama that isn't running: the app on Windows and macOS (it serves, and
+   * sits in the tray / menu bar), else `ollama serve` in the background. It outlives the dashboard.
+   */
+  async start(): Promise<{ running: boolean }> {
+    if (this.opts.hosted) throw new Error("There are no local models in a hosted dashboard.");
+    if (await this.ollama.version()) return { running: true };
+    const detached = (file: string, args: string[]) => new Promise<boolean>((resolve) => {
+      try {
+        const p = spawn(file, args, { detached: true, stdio: "ignore", windowsHide: true });
+        p.on("error", () => resolve(false));
+        p.on("spawn", () => { p.unref(); resolve(true); });
+      } catch { resolve(false); }
+    });
+    const app = process.platform === "win32" ? path.join(process.env.LOCALAPPDATA || path.join(os.homedir(), "AppData", "Local"), "Programs", "Ollama", "ollama app.exe") : null;
+    const started = (app && fs.existsSync(app) && (await detached(app, [])))
+      || (process.platform === "darwin" && (await detached("open", ["-a", "Ollama"])))
+      || (await detached("ollama", ["serve"]));
+    if (!started) throw new Error("Couldn't start Ollama. Is it installed? Install it above, or start it yourself.");
+    for (let i = 0; i < 30 && !(await this.ollama.version()); i++) await new Promise((r) => setTimeout(r, 500));
+    this.cli = null;
+    await this.refresh();
+    this.changed(true);
+    return { running: !!this.last.running };
   }
 
   /** What Ollama has now (null when it isn't running), and each model's capabilities. */

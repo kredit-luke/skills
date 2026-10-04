@@ -60,6 +60,11 @@ const ENDPOINT_EXAMPLE = `{
               } @else { <div class="v dim">{{ m.ollama.where === 'elsewhere' ? 'Wherever Ollama runs (not this computer\'s apps)' : 'Unknown' }}</div> }
             </div>
           </div>
+          @if (m.ollama.where === 'wsl') {
+            <div class="runtime">
+              <span>Ollama runs in WSL here, so this page can use it but not install, start or update it. To have the page manage it, switch to the native app (it uses the same GPU): stop the WSL one with <code (click)="copy('sudo systemctl disable --now ollama')" title="Click to copy">sudo systemctl disable --now ollama</code> in WSL, then Refresh and Install.</span>
+            </div>
+          }
           <div class="runtime" [class.ok]="m.ollama.running">
             @if (m.ollama.running && !m.ollama.messagesApi) {
               <span class="tag amber">Ollama {{ m.ollama.version }}{{ whereText() }}: update needed</span>
@@ -70,7 +75,8 @@ const ENDPOINT_EXAMPLE = `{
               <span>Running at <code>{{ m.ollama.base }}</code>. Downloaded models get a {{ ctxK(m.contextLength) }} context window for runs (Claude Code's own instructions need about 20k).</span>
             } @else if (m.ollama.installed) {
               <span class="tag amber">Ollama stopped</span>
-              <span>Ollama is installed but not running. Start the Ollama app, or run <code (click)="copy('ollama serve')" title="Click to copy">ollama serve</code>, then Refresh.</span>
+              <span>Ollama is installed but not running.</span>
+              <button class="btn primary sm" [disabled]="starting()" (click)="startOllama()">{{ starting() ? 'Starting…' : 'Start Ollama' }}</button>
             } @else {
               <span class="tag">No Ollama</span>
               <span>Local models run in <a href="https://ollama.com" target="_blank" rel="noopener">Ollama</a>, a free app that downloads and serves open models.</span>
@@ -212,6 +218,7 @@ export class ModelsComponent implements OnInit {
   private readonly toast = inject(ToastService);
   readonly busy = signal(false);
   readonly installing = signal(false);
+  readonly starting = signal(false);
   /** The model or endpoint an action is running on. */
   readonly working = signal<string | null>(null);
   readonly example = ENDPOINT_EXAMPLE;
@@ -267,6 +274,17 @@ export class ModelsComponent implements OnInit {
       else { await copyText(r.command); this.toast.error('Couldn\'t open a terminal; copied the command instead.'); }
     } catch (e) { this.toast.error((e as Error).message); }
     finally { setTimeout(() => this.installing.set(false), 3000); }
+  }
+
+  async startOllama(): Promise<void> {
+    this.starting.set(true);
+    try {
+      const r = await this.api.post<{ running: boolean }>('/api/models/start', {});
+      if (r.running) this.toast.show('Ollama is running');
+      else this.toast.error('Ollama didn\'t start in 15 seconds. Try starting the Ollama app yourself.');
+      await this.data.loadModels(true);
+    } catch (e) { this.toast.error((e as Error).message); }
+    finally { this.starting.set(false); }
   }
 
   async pull(tag: string): Promise<void> {

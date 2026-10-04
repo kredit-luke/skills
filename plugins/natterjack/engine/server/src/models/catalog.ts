@@ -28,8 +28,10 @@ export interface CatalogModel {
 export const RECOMMENDED: CatalogModel[] = [
   { tag: "qwen3.8:27b", label: "Qwen3.8 27B", params: "27B", diskGb: 18, context: 262144, tools: true, goodFor: "Coding and planning; the strongest all-rounder that fits one GPU" },
   { tag: "qwen3.6:35b-a3b-coding", label: "Qwen3.6 35B Coding", params: "35B (3B active)", diskGb: 24, context: 262144, tools: true, goodFor: "Agentic coding; fast for its size (mixture of experts)" },
+  { tag: "gemma4:26b", label: "Gemma 4 26B", params: "25B (3.8B active)", diskGb: 16, context: 262144, tools: true, goodFor: "Google's open model: coding and agent work, fast for its size; reads images too" },
   { tag: "nemotron-3.5-lightning:30b", label: "Nemotron 3.5 Lightning", params: "30B (3B active)", diskGb: 25, context: 1048576, tools: true, goodFor: "Long agent sessions; very long context" },
   { tag: "ornith:9b", label: "Ornith 9B", params: "9B", diskGb: 5.6, context: 262144, tools: true, goodFor: "Code search and exploring on an ordinary laptop" },
+  { tag: "gemma4:12b", label: "Gemma 4 12B", params: "12B", diskGb: 7.7, context: 262144, tools: true, goodFor: "Google's open model at laptop size; long context" },
   { tag: "granite4.1:8b", label: "Granite 4.1 8B", params: "8B", diskGb: 5.3, context: 131072, tools: true, goodFor: "Small and quick; reliable tool calls and JSON" },
   { tag: "deepseek-r1:14b", label: "DeepSeek-R1 14B", params: "14B", diskGb: 9, context: 131072, tools: false, goodFor: "Reasoning and chat", notes: "No tool calling, so it can't read or search code in a run." },
 ];
