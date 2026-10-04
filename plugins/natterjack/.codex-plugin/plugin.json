@@ -1,6 +1,6 @@
 {
   "name": "natterjack",
-  "version": "0.10.0",
+  "version": "0.10.1",
   "description": "Set up Natterjack for your team: a multi-repo workspace with a local dashboard (runs with Claude, Copilot or Codex, issues, apps, machine setup, knowledge, links) tailored to your stack, tools and brand.",
   "author": {
     "name": "Luke Hoezee"
