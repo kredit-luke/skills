@@ -1,8 +1,10 @@
-.check-groups { display: grid; grid-template-columns: repeat(auto-fill, minmax(460px, 1fr)); gap: 16px; align-items: start; }
-@media (max-width: 700px) { .check-groups { grid-template-columns: 1fr; } }
+/* Groups stack full width and their rows flow into columns, so a short group never leaves a hole beside a long one. */
+.check-groups { display: grid; gap: 16px; }
+.check-groups > .panel { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(460px, 100%), 1fr)); }
+.check-groups > .panel > :not(.check) { grid-column: 1 / -1; }
 .n.bad { background: var(--red-bg) !important; color: var(--risk) !important; }
-.check { display: grid; grid-template-columns: 22px 1fr auto; gap: 4px 10px; padding: 11px 14px; border-bottom: 1px solid var(--line-soft); align-items: start; }
-.check:last-child { border-bottom: 0; }
+/* Each row draws its top and left divider and overlaps its neighbours' by 1px; the panel clips the outer edges. */
+.check { display: grid; grid-template-columns: 22px 1fr auto; gap: 4px 10px; padding: 11px 14px; border-top: 1px solid var(--line-soft); border-left: 1px solid var(--line-soft); margin: -1px 0 0 -1px; align-items: start; }
 .ic { width: 18px; height: 18px; border-radius: 50%; display: grid; place-items: center; font-size: 11px; font-weight: 700; margin-top: 1px; }
 .check.ok .ic { background: var(--ok-soft); color: var(--ok-strong); }
 .check.warn .ic { background: var(--yellow-bg); color: var(--yellow); }

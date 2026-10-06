@@ -31,7 +31,7 @@ const ICON: Record<string, string> = { ok: '✓', warn: '!', missing: '✕', inf
       <div class="check-groups">
         @for (g of groups(); track g.name) {
           <div class="panel">
-            <div class="panel-h"><h2>{{ g.name }} @if (g.bad) { <span class="n bad">{{ g.bad }}</span> }</h2></div>
+            <div class="panel-h"><h2>{{ g.name }} <span class="n">{{ g.items.length }}</span> @if (g.bad) { <span class="n bad">{{ g.bad }}</span> }</h2></div>
             @for (c of g.items; track c.id) {
               <div class="check" [class]="'check ' + c.status">
                 <span class="ic" [title]="c.status">{{ icon(c.status) }}</span>
