@@ -3,8 +3,22 @@
 import { execFile } from "node:child_process";
 import { resolveCli } from "../claude.ts";
 
+/**
+ * How a run keeps a process going past its turn, for both rule sets. `appsCli` is the
+ * command that runs bin/dashboard.mjs (`node "<path>"`), or null when the dashboard can't
+ * start apps (hosted, or no apps configured): then only a workspace's own detached
+ * launcher, the Apps page or a terminal.
+ */
+export function keepRunningRule(appsCli: string | null): string {
+  if (!appsCli) {
+    return "If a workspace skill or script starts it as a detached OS process that outlives this one (e.g. a --detached mode), use that when the user asks for it, and tell them how to stop it. Otherwise say so and point to the dashboard's Apps page (it starts and stops the workspace apps) or a terminal.";
+  }
+  return `To start, stop or restart the workspace's apps (dev servers, APIs...) when the user asks, run \`${appsCli} apps start --stack <id>\` or \`--app <id>\` (likewise \`apps stop\`, \`apps restart --app <id>\`; \`apps status\` lists the ids and what's up). The dashboard runs them detached and shows them on its Apps page, so they outlive this turn; the command waits until they're up or failed. Then tell the user they're running and how to stop them. For anything else that must outlive the turn, use a workspace skill or script that starts it as a detached OS process if there is one; otherwise say so and point to a terminal.`;
+}
+
 /** The rules every non-Claude agent gets (Claude gets its own wording, with its tool names). */
-export const AGENT_HEADLESS_RULES = `You are running headless inside the workspace dashboard: nobody can answer an interactive prompt or approve a tool, and there is no terminal to type into.
+export function agentHeadlessRules(appsCli: string | null = null): string {
+  return `You are running headless inside the workspace dashboard: nobody can answer an interactive prompt or approve a tool, and there is no terminal to type into.
 Whenever you need a decision from the user before you can continue (an approval gate, a choice between options, missing input), do NOT guess, do NOT skip the step, and do NOT treat silence as approval. Instead, end your turn with exactly one block in this format and then stop:
 <<QUESTION>>
 {"questions":[{"question":"<full question>","header":"<short label>","multiSelect":false,"options":[{"label":"<option>","description":"<what it means>"}]}]}
@@ -12,13 +26,14 @@ Whenever you need a decision from the user before you can continue (an approval 
 Put any explanation the user needs before the block. The user's answer arrives as your next message.
 
 This process exits the moment your turn ends, and anything it started in the background stops with it:
-- Run commands in the foreground and wait for them. A process that must keep running after your turn (e.g. dev servers) can't be started as a background job. If a workspace skill or script starts it as a detached OS process that outlives this one (e.g. a --detached mode), use that when the user asks for it, and tell them how to stop it; otherwise say so and point to the dashboard's Apps page or a terminal.
+- Run commands in the foreground and wait for them. A process that must keep running after your turn (e.g. dev servers) can't be started as a background job. ${keepRunningRule(appsCli)}
 - To keep monitoring GitHub pull requests, do one check now, then end your turn with a watch block instead of a loop; the dashboard resumes this conversation when something changes:
 <<WATCH>>
 {"prs":["owner/repo#123"],"everyMinutes":5,"prompt":"<what to do on each wake-up>"}
 <</WATCH>>
 
 Don't end on a to-do list for the user. If you finish with follow-up steps you could do yourself (commit, open a PR, deploy), end with the question block offering to do them, recommended option first. If your turn ends with the user doing something and reporting back (test a change, reload a page), end with the question block too. End without a block only when the work is actually finished.`;
+}
 
 /** Rules for agents with no system-prompt flag ride at the top of the prompt, marked off from it. */
 export function withRules(rules: string, prompt: string): string {

@@ -8,7 +8,8 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 
-const { agentOf, isAgentId, withRules, AGENT_HEADLESS_RULES } = await import("../src/agents/index.ts");
+const { agentOf, isAgentId, withRules, agentHeadlessRules } = await import("../src/agents/index.ts");
+const { headlessRules } = await import("../src/runs.ts");
 const { translateCopilot, parseCopilotModels } = await import("../src/agents/copilot.ts");
 const { translateCodex, parseCodexModels } = await import("../src/agents/codex.ts");
 const { shimScript } = await import("../src/claude.ts");
@@ -23,8 +24,22 @@ test("agentOf: unknown or missing ids are Claude (runs from before agents)", () 
   assert.equal(agentOf("nope").id, "claude");
   assert.equal(agentOf("codex").id, "codex");
   assert.ok(isAgentId("copilot") && !isAgentId("gpt"));
-  assert.match(AGENT_HEADLESS_RULES, /<<QUESTION>>/);
-  assert.doesNotMatch(AGENT_HEADLESS_RULES, /AskUserQuestion|run_in_background/, "no Claude tool names for other agents");
+  assert.match(agentHeadlessRules(), /<<QUESTION>>/);
+  assert.doesNotMatch(agentHeadlessRules('node "/w/engine/bin/dashboard.mjs"'), /AskUserQuestion|run_in_background/, "no Claude tool names for other agents");
+});
+
+test("headless rules: apps go through the dashboard's apps command when it can start them, else the Apps page", () => {
+  const cli = 'node "/w/engine/bin/dashboard.mjs"';
+  for (const rules of [headlessRules, agentHeadlessRules]) {
+    const withCli = rules(cli);
+    assert.ok(withCli.includes(`\`${cli} apps start --stack <id>\``), "names the real command");
+    assert.match(withCli, /apps stop/);
+    assert.match(withCli, /apps status/);
+    assert.match(withCli, /Apps page/);
+    const without = rules(null);
+    assert.doesNotMatch(without, /dashboard\.mjs|apps start/, "hosted or no apps: no command to offer");
+    assert.match(without, /Apps page/);
+  }
 });
 
 test("Claude: the same command line as before agents", () => {

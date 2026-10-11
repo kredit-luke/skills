@@ -1,7 +1,7 @@
 ---
 name: {{skill}}
-description: Start, stop, restart or check the workspace dashboard (the local web console for runs, issues, apps, machine setup, docs and links). Use when the user wants to open, start, launch, restart, reload, stop or check the dashboard, or after pulling updates to {{engineDir}}/. Also use when a dashboard page looks broken right after an update (it usually just needs a restart).
-argument-hint: "[start|stop|restart|status]"
+description: Start, stop, restart or check the workspace dashboard (the local web console for runs, issues, apps, machine setup, docs and links), and start or stop the workspace's apps through it so they keep running. Use when the user wants to open, start, launch, restart, reload, stop or check the dashboard, or after pulling updates to {{engineDir}}/. Also use when a dashboard page looks broken right after an update (it usually just needs a restart), and to start, stop or check the workspace's apps or stacks (dev servers) from a terminal or a dashboard run.
+argument-hint: "[start|stop|restart|status|apps ...]"
 ---
 
 # Workspace dashboard
@@ -14,6 +14,19 @@ node {{engineDir}}/bin/dashboard.mjs status
 node {{engineDir}}/bin/dashboard.mjs restart        # after pulling changes to {{engineDir}}/
 node {{engineDir}}/bin/dashboard.mjs stop
 ```
+
+The same script starts and stops the workspace's **apps** through the running dashboard, exactly as its Apps page does (detached: they keep running after this terminal or Claude session ends, and show on the Apps page with their logs):
+
+```bash
+node {{engineDir}}/bin/dashboard.mjs apps status                    # the apps, their ports, up or down; the stack and app ids
+node {{engineDir}}/bin/dashboard.mjs apps start --stack <id>        # or --app <id>; waits until they're up (or failed)
+node {{engineDir}}/bin/dashboard.mjs apps stop --stack <id>         # or --app <id>
+node {{engineDir}}/bin/dashboard.mjs apps restart --app <id>
+node {{engineDir}}/bin/dashboard.mjs apps stop-all                  # every app in the workspace
+node {{engineDir}}/bin/dashboard.mjs apps setup                     # the apps.json setup step
+```
+
+They act on the workspace holding the current folder (a worktree's own, else main); `--workspace <slug or path>` picks another. `--no-wait` returns once the job is accepted; `--timeout <sec>` caps the wait (default 540, under a headless run's 10-minute command limit; the job carries on in the dashboard if the wait ends first). Exit code 0 = it worked, 1 = it failed (the error and the log's path are printed), 2 = bad arguments. The dashboard must be running (start it first); it isn't available in a hosted dashboard.
 
 Pick the command from what the user asked; `start` is the default. Run it in the foreground: the first start installs packages and builds the UI (a minute or two) and prints progress; after that it returns in a second. The server then keeps running on its own, so never use `run_in_background` for it.
 

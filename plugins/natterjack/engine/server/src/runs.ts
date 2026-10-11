@@ -27,7 +27,7 @@ import crypto from "node:crypto";
 import { execFile, type ChildProcess } from "node:child_process";
 import type { ServerResponse } from "node:http";
 import type { Attachment, Effort, PermissionMode, QueuedMessage, Question, RunEvent, RunMeta, RunWatch, WatchedPr } from "../../shared/api.ts";
-import { AGENT_HEADLESS_RULES, agentOf, type ParseState, type TurnInput } from "./agents/index.ts";
+import { agentHeadlessRules, agentOf, keepRunningRule, type ParseState, type TurnInput } from "./agents/index.ts";
 import { LOCAL_MODEL_RULE, isRoutedId } from "./models/routes.ts";
 import { expandSlash } from "./agents/skills.ts";
 import { promptWithAttachments, type Attachments } from "./attachments.ts";
@@ -118,7 +118,9 @@ const REPLYABLE = new Set(["waiting", "succeeded", "failed", "cancelled", "inter
 /** Finished for the purposes of stats and verdicts. */
 const SETTLED = new Set(["waiting", "succeeded", "failed", "cancelled", "interrupted", "handedOff"]);
 
-export const HEADLESS_RULES = `You are running headless inside the workspace dashboard (claude -p). The AskUserQuestion tool is not available and there is no terminal to type into.
+/** Claude's headless rules. `appsCli`: the command for bin/dashboard.mjs when the dashboard can start apps (keepRunningRule). */
+export function headlessRules(appsCli: string | null = null): string {
+  return `You are running headless inside the workspace dashboard (claude -p). The AskUserQuestion tool is not available and there is no terminal to type into.
 Whenever you would call AskUserQuestion, or you otherwise need a decision from the user before you can continue (an approval gate, a choice between options, missing input), do NOT guess, do NOT skip the step, and do NOT treat silence as approval. Instead, end your turn with exactly one block in this format and then stop:
 <<QUESTION>>
 {"questions":[{"question":"<full question>","header":"<short label>","multiSelect":false,"options":[{"label":"<option>","description":"<what it means>"}]}]}
@@ -129,7 +131,7 @@ Background work does not survive here. This process exits the moment your turn e
 So, overriding any skill or instruction that says otherwise (for example a code-review skill, or "run_in_background: true"):
 - Never set run_in_background (on Bash or on the Agent tool), and never plan to "wait for a notification". Subagents are fine: call the Agent tool normally, in the foreground, and wait for its result.
 - Run long commands in the foreground and wait for them, with a Bash timeout of up to 600000 ms. If one needs longer than 10 minutes, tell the user it has to continue in a terminal.
-- A process that must keep running after your turn (e.g. dev servers) cannot be started as a background task: it dies when this process exits. If a workspace skill or script starts it as a detached OS process that outlives this one (e.g. a --detached mode), use that when the user asks for it, and tell them how to stop it. Otherwise say so and point to the dashboard's Apps page (it starts and stops the workspace apps) or a terminal.
+- A process that must keep running after your turn (e.g. dev servers) cannot be started as a background task: it dies when this process exits. ${keepRunningRule(appsCli)}
 - Never tell the user a background task is still running at the end of your turn; it will not be. Only a process you started detached (above) is still running, and only if you checked it came up.
 - Don't schedule recurring checks (CronCreate, /loop, ScheduleWakeup, Monitor): the schedule stops when your turn ends.
 - To keep monitoring GitHub pull requests (a PR monitor, babysitting reviews or checks), do one check now, then end your turn with a watch block instead of a loop. The dashboard checks the PRs every few minutes and resumes this conversation only when something changes (a new review or comment, checks failing, the branch falling behind or conflicting, approval), sending you the changes followed by your prompt. It stops by itself once every PR is merged or closed.
@@ -141,6 +143,7 @@ So, overriding any skill or instruction that says otherwise (for example a code-
 Don't end on a to-do list for the user. If you finish with follow-up steps you could do yourself (commit, open a PR, deploy, publish, update the ticket), end with the question block offering to do them, recommended option first, instead of listing them as "next steps". Otherwise the dashboard shows the run as Done while work is still waiting.
 
 The same goes for handing work back: if your turn ends with the user doing something and reporting back (test a change, reload a page, add a secret, check an email, try again), end with the question block too, e.g. "How did it go?" with options like "It worked", "It failed (I'll paste the error)" and "Still testing". End without a block only when the work is actually finished.`;
+}
 
 export const PLAN_MODE_RULE = `Plan mode is on for this turn: you can read and search, but not edit files, run commands with side effects, or post anything externally. If the user asks for something that needs any of those, don't work around it (e.g. by writing into a plan file); tell them to click "Turn off plan mode" in the dashboard and reply again. Otherwise never mention plan mode.`;
 
@@ -211,6 +214,8 @@ export class RunManager {
   onChange: (meta: RunMeta) => void;
   queueGate: QueueGate;
   attachments: Attachments | null;
+  /** The command for bin/dashboard.mjs when the dashboard can start this workspace's apps, else null (asked each turn). */
+  appsCli: () => string | null;
   private _cont = new Map<string, any>();
   private _paths = new Map<string, string>();
   /** list() parses every run file; kept until a write, a file added or removed, or LIST_TTL_MS. */
@@ -218,7 +223,7 @@ export class RunManager {
   /** Events in each streamed run's file: the SSE id of its next live event. */
   private _counts = new Map<string, number>();
 
-  constructor(ledgerDir: string, { onFinish, onTurnStart, onChange, queueGate, attachments }: { onFinish?: (meta: RunMeta) => void; onTurnStart?: (meta: RunMeta) => void; onChange?: (meta: RunMeta) => void; queueGate?: QueueGate; attachments?: Attachments } = {}) {
+  constructor(ledgerDir: string, { onFinish, onTurnStart, onChange, queueGate, attachments, appsCli }: { onFinish?: (meta: RunMeta) => void; onTurnStart?: (meta: RunMeta) => void; onChange?: (meta: RunMeta) => void; queueGate?: QueueGate; attachments?: Attachments; appsCli?: () => string | null } = {}) {
     this.runsDir = path.join(ledgerDir, "runs");
     fs.mkdirSync(this.runsDir, { recursive: true });
     this.onFinish = onFinish || (() => {});
@@ -226,6 +231,7 @@ export class RunManager {
     this.onChange = onChange || (() => {});
     this.queueGate = queueGate || (() => ({ blocker: null }));
     this.attachments = attachments || null;
+    this.appsCli = appsCli || (() => null);
     this._markOrphansInterrupted();
     // A queue held back by a limit (concurrent runs, usage) goes out once the limit clears.
     setInterval(() => {
@@ -637,6 +643,10 @@ export class RunManager {
   }
 
   /** `files` are a reply's attachments (the first turn's are already in `prompt`). */
+  private _appsCli(): string | null {
+    try { return this.appsCli(); } catch { return null; }
+  }
+
   private _turn(meta: RunMeta, prompt: string, files: Attachment[] = []) {
     const first = meta.turns === 0;
     meta.turns += 1;
@@ -670,7 +680,7 @@ export class RunManager {
       prompt: (agent.id === "claude" ? (s: string) => s : (s: string) => expandSlash(s, meta.cwd))(first ? prompt : promptWithAttachments(prompt, files)),
       model: meta.model, effort: meta.effort, planMode: !!meta.planMode, permissionMode: meta.permissionMode,
       budgetUsd: agent.capabilities.costUsd ? meta.budgetUsd : null,
-      rules: [agent.id === "claude" ? HEADLESS_RULES : AGENT_HEADLESS_RULES, isRoutedId(meta.model) ? LOCAL_MODEL_RULE : null, meta.extraPrompt || null].filter(Boolean).join("\n\n"),
+      rules: [(agent.id === "claude" ? headlessRules : agentHeadlessRules)(this._appsCli()), isRoutedId(meta.model) ? LOCAL_MODEL_RULE : null, meta.extraPrompt || null].filter(Boolean).join("\n\n"),
       planRule: meta.planMode ? PLAN_MODE_RULE : null,
       addDirs,
     };

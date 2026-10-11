@@ -96,6 +96,16 @@ const HOSTED = (() => {
   try { return hostedConfig(); } catch (e) { console.error(e.message); process.exit(1); }
 })();
 const screenshotsSubdir = () => workspaceConfig().worktrees.screenshots;
+/**
+ * How a run calls bin/dashboard.mjs: by the workspace's own engine folder when there is one
+ * (a linked engine finds its workspace from there), absolute so it works from a worktree.
+ * Forward slashes and quotes: the same text works in bash, PowerShell and cmd.
+ */
+const APPS_CLI = (() => {
+  const inWorkspace = path.join(WORKSPACE_ROOT, ENGINE_FOLDER, "bin", "dashboard.mjs");
+  const script = fs.existsSync(inWorkspace) ? inWorkspace : path.join(DASHBOARD_DIR, "bin", "dashboard.mjs");
+  return `node "${script.replace(/\\/g, "/")}"`;
+})();
 
 const IMAGE_CONTENT_TYPES: Record<string, string> = {
   ".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".gif": "image/gif", ".webp": "image/webp",
@@ -377,6 +387,8 @@ const runs = new RunManager(LEDGER_DIR, {
   // Messages queued during a turn go out under the same limits as a reply you send.
   queueGate: (meta) => ({ blocker: launchBlocker(meta.agent, meta.model), budgetUsd: deck.config().limits.runBudget ? undefined : null }),
   attachments,
+  // Runs start and stop apps through this dashboard (bin/dashboard.mjs apps), so they outlive the turn.
+  appsCli: () => (HOSTED || !appsConfig().configured ? null : APPS_CLI),
 });
 const deck = new Deck(MAIN_WORKSPACE_PATH, path.join(LEDGER_DIR, "settings.json"));
 

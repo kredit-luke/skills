@@ -110,4 +110,4 @@ export async function agentStatuses(force = false): Promise<AgentStatus[]> {
   }))));
 }
 
-export { AGENT_HEADLESS_RULES, clip, withRules } from "./util.ts";
+export { agentHeadlessRules, keepRunningRule, clip, withRules } from "./util.ts";

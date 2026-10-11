@@ -7,6 +7,16 @@
  *   node <engine>/bin/dashboard.mjs status
  *   node <engine>/bin/dashboard.mjs run        (foreground, for a container: references/hosting.md)
  *
+ * and start, stop or check the workspace's apps through the running dashboard (what its
+ * Apps page does: detached, they outlive the terminal or Claude run; see bin/apps.mjs):
+ *
+ *   node <engine>/bin/dashboard.mjs apps status   [--workspace <slug|path>]
+ *   node <engine>/bin/dashboard.mjs apps start    (--stack <id> | --app <id>) [--workspace ...] [--no-wait] [--timeout <sec>]
+ *   node <engine>/bin/dashboard.mjs apps stop     (--stack <id> | --app <id>) [--workspace ...]
+ *   node <engine>/bin/dashboard.mjs apps restart  --app <id> [--workspace ...]
+ *   node <engine>/bin/dashboard.mjs apps stop-all [--workspace ...]
+ *   node <engine>/bin/dashboard.mjs apps setup    [--workspace ...]
+ *
  * <engine> is the folder the engine is installed in: natterjack/ by default, dashboard/
  * in older workspaces (.claude/dashboard/engine.json `dir` says which). The workspace is
  * the nearest folder above it with .claude/dashboard/, or WORKSPACE_ROOT.
@@ -375,9 +385,25 @@ async function run() {
   });
 }
 
-const commands = { start, stop, status, run, restart: () => { flags.restart = true; return start(); } };
+/** `apps ...`: the workspace's apps, through the running dashboard (bin/apps.mjs). */
+async function apps() {
+  // Loaded only here: everything else in this file must work on its own.
+  const { appsMain } = await import("./apps.mjs");
+  process.exitCode = await appsMain({
+    argv: rest,
+    // The configured port, then the one the running dashboard recorded (a start with --port).
+    ports: [PORT, readRecord().port],
+    ledger: LEDGER,
+    root: ROOT,
+    cwd: process.cwd(),
+    self: `node ${path.relative(process.cwd(), SELF) || SELF}`,
+  });
+}
+
+const commands = { start, stop, status, run, apps, restart: () => { flags.restart = true; return start(); } };
 if (!commands[cmd]) {
-  console.error(`Usage: node ${path.relative(process.cwd(), SELF) || SELF} <start|stop|restart|status|run> [--port N] [--restart] [--open] [--skip-build]`);
+  const self = path.relative(process.cwd(), SELF) || SELF;
+  console.error(`Usage: node ${self} <start|stop|restart|status|run> [--port N] [--restart] [--open] [--skip-build]\n       node ${self} apps <status|start|stop|restart|stop-all|setup> [--workspace <slug|path>] [--stack <id> | --app <id>] [--no-wait] [--timeout <sec>]   (apps help: details)`);
   process.exit(2);
 }
 await commands[cmd]();
