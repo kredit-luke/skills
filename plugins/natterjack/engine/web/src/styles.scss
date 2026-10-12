@@ -198,6 +198,8 @@ textarea { font-family: var(--mono); font-size: 0.75rem; resize: vertical; width
 .sdot.cancelled, .sdot.interrupted, .sdot.warning { background: var(--yellow); }
 .sdot.waiting { background: #F6C35B; box-shadow: 0 0 0 3px var(--yellow-bg); }
 .sdot.handedOff { background: var(--brand-700); }
+/* Stands in for the status dot on a run flagged "Needs me". */
+.sflag { width: 8px; flex-shrink: 0; display: inline-flex; justify-content: center; font-size: 13px; line-height: 1; color: var(--yellow); }
 .tag { font-family: var(--font-mono); font-size: 10px; padding: 1px 7px; border-radius: 6px; background: var(--paper-2); color: var(--ink-soft); font-weight: 500; text-transform: uppercase; letter-spacing: .12em; white-space: nowrap; }
 .tag.good { background: var(--green-bg); color: var(--green); }
 .tag.bad { background: var(--red-bg); color: var(--red); }
