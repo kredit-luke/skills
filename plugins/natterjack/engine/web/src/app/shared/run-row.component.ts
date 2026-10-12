@@ -12,7 +12,8 @@ import { runStatus, toReview } from './run-status';
   template: `
     @let r = run();
     <a class="row" [class.selected]="selected()" [routerLink]="['/runs', r.id]" [queryParamsHandling]="keepQuery() ? 'preserve' : ''">
-      <span [class]="'sdot ' + st().dot" [title]="st().label"></span>
+      @if (r.flagged) { <span class="sflag" [title]="'Flagged as needing you · ' + st().label">⚑</span> }
+      @else { <span [class]="'sdot ' + st().dot" [title]="st().label"></span> }
       <div class="main">
         <div class="title">{{ r.label }}
           @if (r.flagged) { <span class="tag amber" title="You flagged this run as needing you">⚑ needs me</span> }
