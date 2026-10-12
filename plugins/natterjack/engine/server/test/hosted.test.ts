@@ -150,15 +150,17 @@ test("hosted server: /healthz needs nothing; everything else needs the proxy", a
 test("hosted server: boot says who's signed in and hides the machine-only pages", async () => {
   const boot = JSON.parse((await request("GET", "/api/boot", signedIn)).text);
   assert.deepEqual(boot.hosted, { user: "ana@example.com" });
-  for (const page of ["apps", "workspaces"]) assert.ok(boot.profile.hiddenPages.includes(page), page);
+  for (const page of ["apps", "workspaces", "people"]) assert.ok(boot.profile.hiddenPages.includes(page), page);
 });
 
 test("hosted server: features that open things on the server's own machine are refused", async () => {
-  for (const [p, body] of [["/api/machine/install", { id: "claude-code" }], ["/api/docs/preview", { site: "x" }], ["/api/apps/action", { action: "stop-all", workspace: "main" }]] as const) {
+  for (const [p, body] of [["/api/machine/install", { id: "claude-code" }], ["/api/docs/preview", { site: "x" }], ["/api/apps/action", { action: "stop-all", workspace: "main" }], ["/api/people/action", { action: "provision", email: "bo@example.com" }]] as const) {
     const r = await post(p, body);
     assert.equal(r.status, 400, p);
     assert.match(r.text, /hosted dashboard/, p);
   }
+  // The People page drives the engineer's own kubectl and cloud CLIs: not even readable here.
+  assert.equal((await request("GET", "/api/people", signedIn)).status, 400);
 });
 
 test("hosted server: Claude sign-in from the page", async () => {

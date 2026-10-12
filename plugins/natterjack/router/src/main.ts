@@ -16,7 +16,7 @@ import http from "node:http";
 import https from "node:https";
 import { SECRET_HEADER, checkHostedRequest } from "../../engine/server/src/hosted.ts";
 import { routerConfig } from "./config.ts";
-import { backendUrl, makeBackend, type Backend } from "./backends.ts";
+import { HOP, backendHeaders, backendUrl, makeBackend, type Backend } from "./backends.ts";
 
 const cfg = (() => {
   try { return routerConfig(process.env, (f) => { try { return fs.readFileSync(f, "utf-8"); } catch { return null; } }); }
@@ -34,7 +34,6 @@ const touch = (email: string, d: number) => {
   activity.set(email, a);
 };
 
-const HOP = new Set(["connection", "keep-alive", "proxy-authenticate", "proxy-authorization", "proxy-connection", "te", "trailer", "transfer-encoding", "upgrade"]);
 const esc = (s: string) => s.replace(/[&<>"']/g, (c) => `&#${c.charCodeAt(0)};`);
 
 function page(res: http.ServerResponse, status: number, title: string, text: string, refresh = false) {
@@ -62,19 +61,7 @@ function startOnce(email: string) {
   startsInFlight.set(email, p);
 }
 
-/** Headers for the dashboard: the client's, minus anything identity-like it sent, plus ours. */
-function backendHeaders(req: http.IncomingMessage, email: string): http.OutgoingHttpHeaders {
-  const out: http.OutgoingHttpHeaders = {};
-  for (const [k, v] of Object.entries(req.headers)) {
-    if (HOP.has(k) || k === SECRET_HEADER || k === cfg.front.identityHeader || k === cfg.backendIdentityHeader) continue;
-    out[k] = v;
-  }
-  out[SECRET_HEADER] = cfg.backendSecret;
-  out[cfg.backendIdentityHeader] = email;
-  return out; // Host and Origin pass through: each dashboard's DASHBOARD_PUBLIC_URL is this one address.
-}
-
-function proxy(req: http.IncomingMessage, res: http.ServerResponse, base: string, email: string) {
+function proxy(req: http.IncomingMessage, res: http.ServerResponse, base: string, email: string, host?: string) {
   const target = backendUrl(base, req.url || "/");
   const lib = target.protocol === "https:" ? https : http;
   touch(email, +1);
@@ -82,7 +69,7 @@ function proxy(req: http.IncomingMessage, res: http.ServerResponse, base: string
   const finish = () => { if (!done) { done = true; touch(email, -1); } };
   res.on("close", finish);
 
-  const up = lib.request(target, { method: req.method, headers: backendHeaders(req, email) }, (r) => {
+  const up = lib.request(target, { method: req.method, headers: backendHeaders(cfg, req.headers, email, host) }, (r) => {
     const headers: http.OutgoingHttpHeaders = {};
     for (const [k, v] of Object.entries(r.headers)) if (!HOP.has(k)) headers[k] = v;
     res.writeHead(r.statusCode || 502, headers);
@@ -121,7 +108,7 @@ const server = http.createServer(async (req, res) => {
     return page(res, 403, "No dashboard for you yet", `There's no dashboard set up for ${email}.${cfg.admin ? ` Ask ${cfg.admin} to add you.` : " Ask whoever runs the dashboards to add you."}`);
   }
   if (!target.ready && target.canStart) { touch(email, 0); startOnce(email); return starting(req, res); }
-  proxy(req, res, target.url, email);
+  proxy(req, res, target.url, email, target.host);
 });
 // Run streams stay open as long as their page; don't time out a quiet one.
 server.requestTimeout = 0;
@@ -131,10 +118,10 @@ server.keepAliveTimeout = 65_000;
 // ------------------------------------------------------------------ idle stop
 
 /** Is a Claude run going in this person's dashboard? (A run waiting for an answer can stop: it resumes.) */
-async function hasRunningRun(base: string, email: string): Promise<boolean> {
+async function hasRunningRun(base: string, email: string, host?: string): Promise<boolean> {
   const target = backendUrl(base, "/api/runs?limit=50");
   const lib = target.protocol === "https:" ? https : http;
-  const headers = { [SECRET_HEADER]: cfg.backendSecret, [cfg.backendIdentityHeader]: email, host: [...cfg.front.hosts][0], accept: "application/json" };
+  const headers = { [SECRET_HEADER]: cfg.backendSecret, [cfg.backendIdentityHeader]: email, host: host || [...cfg.front.hosts][0], accept: "application/json" };
   return new Promise((resolve) => {
     const req = lib.request(target, { headers, timeout: 10000 }, (r) => {
       let text = "";
@@ -164,7 +151,7 @@ async function sweep() {
     try {
       const t = await backend.find(email);
       if (!t || !t.canStart) { activity.delete(email); continue; }
-      if (await hasRunningRun(t.url, email)) continue;
+      if (await hasRunningRun(t.url, email, t.host)) continue;
       await backend.stop!(email);
       activity.delete(email);
       console.log(`Stopped ${email}'s dashboard after ${cfg.idleMinutes} idle minutes.`);

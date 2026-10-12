@@ -8,6 +8,7 @@
 import fs from "node:fs";
 import http from "node:http";
 import https from "node:https";
+import { SECRET_HEADER } from "../../engine/server/src/hosted.ts";
 import type { RouterConfig } from "./config.ts";
 
 export interface Target {
@@ -17,6 +18,8 @@ export interface Target {
   ready: boolean;
   /** The router may start it (and stop it when idle). */
   canStart: boolean;
+  /** Send this Host instead of the browser's (App Service routes by Host); the dashboard lists it in DASHBOARD_ALLOWED_HOSTS. */
+  host?: string;
 }
 
 export interface Backend {
@@ -43,8 +46,27 @@ export function backendUrl(base: string, reqUrl: string): URL {
   return target;
 }
 
+export const HOP = new Set(["connection", "keep-alive", "proxy-authenticate", "proxy-authorization", "proxy-connection", "te", "trailer", "transfer-encoding", "upgrade"]);
+
+/** Headers for the dashboard: the client's, minus anything identity-like it sent, plus ours. */
+export function backendHeaders(cfg: Pick<RouterConfig, "front" | "backendSecret" | "backendIdentityHeader">, inbound: http.IncomingHttpHeaders, email: string, host?: string): http.OutgoingHttpHeaders {
+  const out: http.OutgoingHttpHeaders = {};
+  for (const [k, v] of Object.entries(inbound)) {
+    if (HOP.has(k) || k === SECRET_HEADER || k === cfg.front.identityHeader || k === cfg.backendIdentityHeader) continue;
+    out[k] = v;
+  }
+  out[SECRET_HEADER] = cfg.backendSecret;
+  out[cfg.backendIdentityHeader] = email;
+  // Host and Origin pass through: each dashboard's DASHBOARD_PUBLIC_URL is this one address.
+  // Except where the platform routes by Host (App Service): then the backend's, which the dashboard allows.
+  if (host) out.host = host;
+  return out;
+}
+
 export function makeBackend(cfg: RouterConfig): Backend {
-  return cfg.backend === "kubernetes" ? new KubernetesBackend(cfg.kubernetes) : new StaticBackend(cfg.staticFile);
+  if (cfg.backend === "kubernetes") return new KubernetesBackend(cfg.kubernetes);
+  if (cfg.backend === "azure-app-service") return new AppServiceBackend(cfg.azure);
+  return new StaticBackend(cfg.staticFile);
 }
 
 // ------------------------------------------------------------------ static
@@ -180,4 +202,98 @@ export class KubernetesBackend implements Backend {
   async running(): Promise<string[]> {
     return [...(await this.dashboards()).entries()].filter(([, d]) => d.replicas > 0).map(([e]) => e);
   }
+}
+
+// ------------------------------------------------------------------ Azure App Service
+
+interface Site { name: string; host: string; running: boolean }
+const ARM_API = "2023-12-01";
+
+/**
+ * One Web App per person in a resource group (templates/hosted/app-service-person.bicep),
+ * naming them in the natterjack-owner tag. The router reaches each at its own
+ * <app>.azurewebsites.net address, with that as the Host (App Service routes by it), and
+ * starts and stops it. Signs in with the router app's managed identity, which needs
+ * Reader and Website Contributor on the resource group, nothing else.
+ */
+export class AppServiceBackend implements Backend {
+  private cfg: RouterConfig["azure"];
+  private token: { value: string; until: number } | null = null;
+  private cache: { at: number; byEmail: Map<string, Site> } | null = null;
+  private inflight: Promise<Map<string, Site>> | null = null;
+
+  constructor(cfg: RouterConfig["azure"]) { this.cfg = cfg; }
+
+  private async bearer(): Promise<string> {
+    if (this.cfg.token) return this.cfg.token;
+    if (this.token && Date.now() < this.token.until) return this.token.value;
+    if (!this.cfg.identityEndpoint || !this.cfg.identityHeader) throw new Error("No managed identity: turn on the router app's system-assigned identity (IDENTITY_ENDPOINT isn't set).");
+    const u = `${this.cfg.identityEndpoint}?resource=${encodeURIComponent("https://management.azure.com/")}&api-version=2019-08-01`;
+    const res = await fetch(u, { headers: { "X-IDENTITY-HEADER": this.cfg.identityHeader }, signal: AbortSignal.timeout(15_000) });
+    if (!res.ok) throw new Error(`Managed identity token: ${res.status} ${(await res.text()).slice(0, 200)}`);
+    const body: any = await res.json();
+    const expires = Number(body.expires_on) * 1000 || Date.now() + 30 * 60_000;
+    this.token = { value: body.access_token, until: expires - 5 * 60_000 };
+    return this.token.value;
+  }
+
+  private async arm(method: string, p: string): Promise<any> {
+    const url = p.startsWith("http") ? p : `${this.cfg.arm}${p}`;
+    const res = await fetch(url, { method, headers: { Authorization: `Bearer ${await this.bearer()}`, Accept: "application/json" }, signal: AbortSignal.timeout(15_000) });
+    const text = await res.text();
+    if (!res.ok) throw new Error(`Azure ${method} ${new URL(url).pathname}: ${res.status} ${text.slice(0, 200)}`);
+    return text ? JSON.parse(text) : {};
+  }
+
+  private group(): string {
+    return `/subscriptions/${encodeURIComponent(this.cfg.subscription)}/resourceGroups/${encodeURIComponent(this.cfg.resourceGroup)}/providers/Microsoft.Web/sites`;
+  }
+
+  private async sites(force = false): Promise<Map<string, Site>> {
+    if (!force && this.cache && Date.now() - this.cache.at < 5000) return this.cache.byEmail;
+    if (!this.inflight) {
+      this.inflight = (async () => {
+        const byEmail = new Map<string, Site>();
+        let next: string | null = `${this.group()}?api-version=${ARM_API}`;
+        for (let i = 0; next && i < 50; i++) {
+          const page = await this.arm("GET", next);
+          for (const s of page.value || []) {
+            const owner = ownerOf(s.tags || {});
+            if (!owner || !s.properties?.defaultHostName) continue;
+            byEmail.set(owner, { name: s.name, host: String(s.properties.defaultHostName).toLowerCase(), running: s.properties.state === "Running" });
+          }
+          next = page.nextLink || null;
+        }
+        this.cache = { at: Date.now(), byEmail };
+        return byEmail;
+      })().finally(() => { this.inflight = null; });
+    }
+    return this.inflight;
+  }
+
+  async find(email: string): Promise<Target | null> {
+    const s = (await this.sites()).get(email);
+    return s ? { url: `https://${s.host}`, host: s.host, ready: s.running, canStart: true } : null;
+  }
+
+  private async power(email: string, action: "start" | "stop") {
+    const s = (await this.sites()).get(email);
+    if (!s || s.running === (action === "start")) return;
+    await this.arm("POST", `${this.group()}/${encodeURIComponent(s.name)}/${action}?api-version=${ARM_API}`);
+    this.cache = null;
+  }
+
+  start(email: string) { return this.power(email, "start"); }
+  stop(email: string) { return this.power(email, "stop"); }
+
+  async running(): Promise<string[]> {
+    return [...(await this.sites()).entries()].filter(([, s]) => s.running).map(([e]) => e);
+  }
+}
+
+/** natterjack-owner; or, for one set up by hand before the People page, owner on a hosted-workspace-dashboard. */
+export function ownerOf(tags: Record<string, string>): string | null {
+  const t = Object.fromEntries(Object.entries(tags).map(([k, v]) => [k.toLowerCase(), String(v)]));
+  const owner = t["natterjack-owner"] || (t.purpose === "hosted-workspace-dashboard" ? t.owner : "");
+  return owner ? owner.trim().toLowerCase() : null;
 }

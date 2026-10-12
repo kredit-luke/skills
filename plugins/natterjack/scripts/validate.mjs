@@ -224,6 +224,32 @@ export function validate(root) {
   if (infraName === "reference.json") warn("reference.json", "rename it to infrastructure.json (the Reference page is now Infrastructure)");
   if (infra && infra.file && !dirExists(infra.file)) warn(infraName, `file "${infra.file}" isn't in the workspace`);
 
+  // ---- hosting.json (the People page: who has a hosted dashboard; engine people/config.ts has the full checks)
+  const hosting = load("hosting.json");
+  if (hosting) {
+    const H = "hosting.json";
+    const d = hosting.directory || {};
+    if (!["google", "entra", "manual"].includes(d.type)) err(H, '"directory.type" must be google, entra or manual');
+    else if (d.type !== "manual" && !/^[a-z0-9.-]+\.[a-z]{2,}$/i.test(String(d.domain || ""))) err(H, `"directory.domain" is the company's email domain, e.g. "acme.com"`);
+    const pl = hosting.platform || {};
+    const appService = pl.type === "azure-app-service";
+    if (pl.type !== "kubernetes" && !appService) err(H, '"platform.type" must be "kubernetes" or "azure-app-service"');
+    if (pl.type === "kubernetes" && !pl.namespace) err(H, '"platform.namespace" is the namespace the dashboards run in');
+    if (appService && !pl.resourceGroup) err(H, '"platform.resourceGroup" is the resource group the Web Apps go in');
+    if (appService && pl.appName !== undefined && !String(pl.appName).includes("{person}")) err(H, '"platform.appName" needs {person} in it, e.g. "dash-{person}"');
+    if (!pl.template) err(H, `"platform.template" is a workspace path to your copy of templates/hosted/${appService ? "app-service-person.bicep" : "kubernetes-person.yaml"}`);
+    else if (!fs.existsSync(path.join(root, pl.template))) err(H, `"platform.template" ${pl.template} isn't in the workspace`);
+    const areas = hosting.areas || {};
+    for (const [k, a] of Object.entries(areas)) {
+      if (!a || !a.secret) err(H, `area "${k}" needs "secret": ${appService ? "the Key Vault secret holding its key" : "the Kubernetes Secret holding its keys"}`);
+      else if (appService && !a.env) err(H, `area "${k}" needs "env": the setting it becomes, e.g. "KNOWLEDGE_${k.toUpperCase()}_KEY"`);
+    }
+    const profiles = hosting.profiles || {};
+    if (!Object.keys(profiles).length) err(H, '"profiles" needs at least one profile');
+    for (const [id, pr] of Object.entries(profiles)) for (const a of (pr && pr.areas) || []) if (!areas[a]) err(H, `profile "${id}" uses area "${a}", which isn't in "areas"`);
+    if (hosting.defaultProfile && !profiles[hosting.defaultProfile]) err(H, `"defaultProfile" "${hosting.defaultProfile}" isn't one of the profiles`);
+  }
+
   // ---- links.json
   const links = load("links.json");
   if (links) {

@@ -90,7 +90,11 @@ class Deck {
   config() {
     const team = this.teamConfig();
     const mine = this.personal();
-    return { ...team, limits: { ...team.limits, ...mine.limits }, defaults: { ...team.defaults, ...mine.defaults } };
+    const limits = { ...team.limits, ...mine.limits };
+    // A hosted dashboard's profile (People page) caps runs from the deployment; it beats the files.
+    const pinned = parseInt(process.env.DASHBOARD_MAX_CONCURRENT_RUNS || "", 10);
+    if (pinned >= 1 && pinned <= 10) limits.maxConcurrentRuns = pinned;
+    return { ...team, limits, defaults: { ...team.defaults, ...mine.defaults } };
   }
 
   /** Your overrides from the Settings page (only the keys you changed). */

@@ -121,6 +121,14 @@ test("scaffold + validate on a scratch workspace", () => {
 
   // Worktree slots and fallback: bad values, duplicate/oversized offsets, a slot port on main's.
   const cfg = path.join(root, ".claude", "dashboard");
+
+  // hosting.json (People page): a missing template, an unknown area, a bad directory.
+  fs.writeFileSync(path.join(cfg, "hosting.json"), JSON.stringify({ directory: { type: "google" }, platform: { type: "kubernetes", namespace: "d", template: "hosting/p.yaml" }, profiles: { m: { areas: ["fin"] } } }));
+  const herrs = validate(root).errors.join("\n");
+  assert.match(herrs, /hosting\.json: "directory\.domain"/);
+  assert.match(herrs, /hosting\/p\.yaml isn't in the workspace/);
+  assert.match(herrs, /profile "m" uses area "fin"/);
+  fs.unlinkSync(path.join(cfg, "hosting.json"));
   fs.writeFileSync(path.join(cfg, "machine.json"), JSON.stringify({ checks: [] }));
   fs.writeFileSync(path.join(cfg, "workspace.json"), JSON.stringify({ name: "Test", dashboard: { port: 3399 }, worktrees: { ports: { base: 8000, slotSize: 50 } } }));
   fs.writeFileSync(path.join(cfg, "apps.json"), JSON.stringify({ apps: {

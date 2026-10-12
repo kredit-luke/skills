@@ -88,8 +88,8 @@ export function checkHostedRequest(cfg: HostedConfig, headers: Record<string, st
   return { ok: true, user };
 }
 
-/** Pages that need the person's own machine: starting apps, and worktrees. */
-export const HOSTED_HIDDEN_PAGES = ["apps", "workspaces"];
+/** Pages that need the person's own machine: starting apps, worktrees, and managing people (their CLIs). */
+export const HOSTED_HIDDEN_PAGES = ["apps", "workspaces", "people"];
 
 /** The error for a feature that opens something on the server's own screen or ports. */
 export const NOT_HOSTED = "That isn't available in the hosted dashboard: it needs the dashboard running on your own computer.";

@@ -49,6 +49,11 @@
       }
     },
     {
+      "use": "gcloud",
+      "optional": true,
+      "group": "Optional"
+    },
+    {
       "use": "docker",
       "optional": true,
       "group": "Optional",

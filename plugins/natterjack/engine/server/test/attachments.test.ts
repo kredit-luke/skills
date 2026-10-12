@@ -76,3 +76,23 @@ test("personal settings override the team file key by key, and null goes back", 
   assert.throws(() => deck.savePersonal({ limits: { dailyBudgetUsd: 5 } }, allowed), /Unknown setting/);
   assert.throws(() => deck.savePersonal({ defaults: { effort: "turbo" } }, allowed), /Unknown effort/);
 });
+
+test("DASHBOARD_MAX_CONCURRENT_RUNS (a hosted profile's cap) beats the team and personal limits; a bad value doesn't", () => {
+  const root = tmp();
+  fs.mkdirSync(path.join(root, ".claude", "dashboard"), { recursive: true });
+  fs.writeFileSync(path.join(root, ".claude", "dashboard", "deck.json"), JSON.stringify({ limits: { maxConcurrentRuns: 3 } }));
+  const deck = new Deck(root, path.join(root, "settings.json"));
+  deck.savePersonal({ limits: { maxConcurrentRuns: 5 } }, { models: () => true, efforts: [] });
+  const was = process.env.DASHBOARD_MAX_CONCURRENT_RUNS;
+  try {
+    process.env.DASHBOARD_MAX_CONCURRENT_RUNS = "2";
+    assert.equal(deck.config().limits.maxConcurrentRuns, 2);
+    for (const bad of ["0", "11", "-1", "lots", ""]) {
+      process.env.DASHBOARD_MAX_CONCURRENT_RUNS = bad;
+      assert.equal(deck.config().limits.maxConcurrentRuns, 5, `"${bad}" leaves the personal limit`);
+    }
+  } finally {
+    if (was === undefined) delete process.env.DASHBOARD_MAX_CONCURRENT_RUNS;
+    else process.env.DASHBOARD_MAX_CONCURRENT_RUNS = was;
+  }
+});

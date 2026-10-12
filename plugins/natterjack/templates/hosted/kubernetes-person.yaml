@@ -5,6 +5,11 @@
 #   PERSON=ana EMAIL=ana@example.com envsubst '$PERSON $EMAIL' < kubernetes-person.yaml | kubectl apply -n dashboards -f -
 #
 # Removing someone: delete the StatefulSet and Service (and the volume, if their history can go).
+#
+# Or let the People page do all of this from your local dashboard (references/hosting.md,
+# "Managing people from your dashboard"): it applies your copy of this file per person and
+# sets the dashboard container's limits, DASHBOARD_MAX_CONCURRENT_RUNS and area envFrom from
+# their profile.
 ---
 apiVersion: apps/v1
 kind: StatefulSet

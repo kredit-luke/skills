@@ -288,6 +288,62 @@ The backend is chosen per turn from the turn's model (`<engine>/server/src/model
 - The page's **Test** checks the endpoint is reachable and the token is accepted.
 - See [hosting.md](hosting.md#hosting-a-model-for-the-team) for running one.
 
+## hosting.json: the People page (who has a hosted dashboard)
+
+Only for teams that host dashboards ([hosting.md](hosting.md)), and only read by an engineer's **local** dashboard: the People page runs the engineer's own `kubectl` or `az`, `gcloud` for a Google directory, and `git`, and is hidden (and its API refused) on hosted dashboards. Without this file the page explains itself and offers to have Claude write it. No secrets go here.
+
+```json
+{
+  "$comment": "Who has a hosted dashboard (People page). See the natterjack plugin's references/hosting.md.",
+  "directory": { "type": "google", "domain": "acme.com", "orgUnit": "/Product" },
+  "platform": { "type": "kubernetes", "context": "gke_acme_eu_dashboards", "namespace": "dashboards", "template": "hosting/kubernetes-person.yaml" },
+  "areas": { "company": { "secret": "natterjack-area-company" }, "finance": { "secret": "natterjack-area-finance" } },
+  "defaultProfile": "member",
+  "profiles": {
+    "member": { "name": "Member", "areas": ["company"], "memory": "2Gi", "maxConcurrentRuns": 3 },
+    "support": { "name": "Support", "areas": ["company"], "memory": "1Gi", "maxConcurrentRuns": 1 },
+    "finance": { "name": "Finance", "areas": ["company", "finance"] }
+  }
+}
+```
+
+On Azure App Service instead (one Web App per person, deployed from `templates/hosted/app-service-person.bicep`):
+
+```json
+{
+  "directory": { "type": "google", "domain": "acme.com", "project": "acme-admin" },
+  "platform": {
+    "type": "azure-app-service", "resourceGroup": "dashboard-rg", "appName": "dash-{person}",
+    "template": "hosting/app-service-person.bicep",
+    "parameters": {
+      "plan": "dashboard-asp", "storageAccount": "acmedashdata", "registry": "acmedashacr", "image": "natterjack-dashboard:1",
+      "keyVault": "acme-natterjack-kv", "publicUrl": "https://natterjack.acme.com"
+    }
+  },
+  "areas": { "finance": { "secret": "natterjack-area-finance", "env": "KNOWLEDGE_FINANCE_KEY" } },
+  "defaultProfile": "member",
+  "profiles": {
+    "member": { "name": "Member", "maxConcurrentRuns": 3 },
+    "finance": { "name": "Finance", "areas": ["finance"], "parameters": { "plan": "dashboard-asp-p1" } }
+  }
+}
+```
+
+| Key | Notes |
+|---|---|
+| `directory.type` | `google` (Google Workspace), `entra` (Microsoft Entra ID) or `manual` (type emails in on the page). |
+| `directory.domain` | The company's email domain. Everyone in it is listed; an engineer picks who gets a dashboard. Only addresses in it can be set up. |
+| `directory.orgUnit` | Google only: list one OU (and the OUs under it), e.g. `/Product`. |
+| `directory.department` / `directory.adminUnit` | Entra only: list one department (by name), or the members of one administrative unit (its id). |
+| `directory.project` | Google only: the Cloud project to bill the Admin SDK calls to, when gcloud's own project doesn't have the Admin SDK API enabled. |
+| `platform` (Kubernetes) | `type` `kubernetes`. `context` is the kubectl context (default: the current one); `namespace` where the dashboards run; `template` a workspace path to your copy of `templates/hosted/kubernetes-person.yaml`. |
+| `platform` (App Service) | `type` `azure-app-service`. `resourceGroup` (and optional `subscription`) the Web Apps go in; `appName` each person's Web App name, with `{person}` for their short name (default `dash-{person}`); `template` your copy of `templates/hosted/app-service-person.bicep`; `parameters` the template's parameters for everyone (plan, storage account, registry, image, Key Vault, the shared address). |
+| `areas` | A key only some people get, usually a Knowledge store's `KNOWLEDGE_<STORE>_KEY`. Kubernetes: `secret` is a Secret holding it, created once by an engineer. App Service: `secret` is a Key Vault secret and `env` the setting it becomes (a Key Vault reference, so the key isn't in the app's config). |
+| `profiles` | Picked per person on the page. `areas` they get; `maxConcurrentRuns` (1–10) becomes `DASHBOARD_MAX_CONCURRENT_RUNS`. Kubernetes: `memory` and `cpu` set the container's limits. App Service: `parameters` go over `platform.parameters` (sizing is per plan, so a profile picks its `plan`). |
+| `defaultProfile` | The one a new person starts with (default: the first). |
+
+**people.json**, next to it, is the roster: who has a hosted dashboard, their profile, and who set them up and when. The People page writes it; commit it like any other config (the page has a **Commit** button that commits just this file; pushing is yours). Git history is its audit log. It holds names and emails, no secrets.
+
 ## deck.json: skill cards, routines, limits, Issues view
 
 ```json

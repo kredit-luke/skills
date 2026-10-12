@@ -66,6 +66,7 @@ import { checkConfig } from "./connections.ts";
 import { KNOWLEDGE_TOOLS, addStoreSource, chosenTools, saveTools } from "./knowledge/tools.ts";
 import { DocsProviders } from "./docs-providers/index.ts";
 import { Memory } from "./memory.ts";
+import { People } from "./people/index.ts";
 import { Connections, listedName } from "./connections.ts";
 import { McpLogin, PTY_SIGN_IN } from "./mcp-login.ts";
 import { Search } from "./search.ts";
@@ -523,6 +524,7 @@ function docsRunNote(keys: unknown, page: unknown): { keys: string[]; note: stri
 }
 const memory = new Memory(MAIN_WORKSPACE_PATH);
 const knowledge = new Knowledge(MAIN_WORKSPACE_PATH, LEDGER_DIR);
+const people = new People(MAIN_WORKSPACE_PATH);
 const connections = new Connections(MAIN_WORKSPACE_PATH);
 const models = new Models({ root: MAIN_WORKSPACE_PATH, ledgerDir: LEDGER_DIR, hosted: !!HOSTED });
 models.onChange = () => live.refresh("models");
@@ -1116,6 +1118,8 @@ async function handleApi(req: http.IncomingMessage, res: http.ServerResponse, ur
   const q = (k: string) => url.searchParams.get(k);
   const force = q("force") === "1";
   const runMatch = p.match(RUN_ROUTE);
+  // The People page drives kubectl and cloud CLIs with the engineer's own sign-in: never from a hosted dashboard.
+  if (HOSTED && p.startsWith("/api/people")) return sendError(res, 400, NOT_HOSTED);
 
   if (req.method === "GET") {
     const fileMatch = p.match(RUN_FILE_ROUTE);
@@ -1241,6 +1245,7 @@ async function handleApi(req: http.IncomingMessage, res: http.ServerResponse, ur
       return r ? sendJson(res, r) : sendError(res, 404, "No README in that repo");
     }
     if (p === "/api/infrastructure") return sendJson(res, infrastructure(MAIN_WORKSPACE_PATH));
+    if (p === "/api/people") return sendJson(res, await people.view(force));
     if (p === "/api/memory") return sendJson(res, memory.list());
     if (p === "/api/agents") return sendJson(res, { agents: await agentsNow(force) });
     if (p === "/api/models") return sendJson(res, await models.view(force));
@@ -1597,6 +1602,8 @@ async function handleApi(req: http.IncomingMessage, res: http.ServerResponse, ur
     externalDocs(body.site).provider.disconnect();
     return sendJson(res, await externalDocsStatus(body.site));
   }
+  if (p === "/api/people/action") return sendJson(res, await people.act(body));
+  if (p === "/api/people/commit") return sendJson(res, await people.commitRoster());
   if (p === "/api/links/save") return sendJson(res, saveLink(MAIN_WORKSPACE_PATH, body));
   if (p === "/api/links/delete") return sendJson(res, deleteLink(MAIN_WORKSPACE_PATH, body));
   if (p === "/api/connections/login") {

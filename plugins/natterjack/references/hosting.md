@@ -34,6 +34,7 @@ Hosted mode is set by the container's environment, never by `workspace.json`:
 | `DASHBOARD_ALLOWED_HOSTS` | none | Extra `Host` values, comma-separated, for a proxy or router that rewrites Host. |
 | `DASHBOARD_BIND` | `0.0.0.0` | `127.0.0.1` when the proxy is a sidecar in the same pod (the Kubernetes template does this). |
 | `DASHBOARD_CLAUDE_BIN` | `claude` on PATH | The exact CLI to run. The image sets it. |
+| `DASHBOARD_MAX_CONCURRENT_RUNS` | `deck.json` `limits` | 1–10. Caps this person's runs at once, over `deck.json` and their own settings. The People page sets it from their profile. |
 
 The dashboard refuses to start when `DASHBOARD_HOSTED` is on and the URL or secret is missing. `GET /healthz` answers `ok` without any of the checks, for liveness probes.
 
@@ -96,7 +97,7 @@ browser ── login proxy (adds the email and ROUTER_PROXY_SECRET)
 | `ROUTER_PUBLIC_URL` | (required) | The shared address, e.g. `https://dashboard.example.com`. |
 | `ROUTER_PROXY_SECRET` | (required) | 32+ characters; the login proxy sends it as `X-Dashboard-Proxy-Secret`. |
 | `ROUTER_BACKEND_SECRET` | (required) | 32+ characters; every dashboard's `DASHBOARD_PROXY_SECRET`. |
-| `ROUTER_BACKEND` | (required) | `kubernetes` or `static` (below). |
+| `ROUTER_BACKEND` | (required) | `kubernetes`, `azure-app-service` or `static` (below). |
 | `ROUTER_IDLE_MINUTES` | 0 (never) | Stop a container this long after its last request. Never while a run is going (it asks the dashboard), and not while a page has a stream open. Only for backends that can stop containers. |
 | `ROUTER_ADMIN` | none | Who to ask for a dashboard, shown to people without one. |
 | `ROUTER_IDENTITY_HEADER` / `ROUTER_BACKEND_IDENTITY_HEADER` | `X-Forwarded-Email` | Where the login proxy puts the email, and where the dashboards expect it. |
@@ -109,7 +110,11 @@ Backends:
   - Starting and stopping is scaling between 1 and 0, which keeps the volume.
   - Inside the cluster it uses its service account, which needs `list` on statefulsets and `patch` on statefulsets/scale (the Role in `kubernetes-router.yaml`).
   - `ROUTER_K8S_NAMESPACE` and `ROUTER_K8S_SELECTOR` override the defaults.
-- **`static`.** `ROUTER_STATIC_FILE` names a JSON file of `{ "<email>": "<dashboard URL>" }`, re-read when it changes. Use it for containers someone else keeps running: a VM with Docker, App Service apps, ECS services. The router never starts or stops them.
+- **`azure-app-service`.** Each person's dashboard is a Web App (`templates/hosted/app-service-person.bicep`) in one resource group, naming them in the `natterjack-owner` tag. (One set up by hand before the People page, tagged `owner` and `purpose: hosted-workspace-dashboard`, counts too.)
+  - Set `ROUTER_AZ_SUBSCRIPTION` and `ROUTER_AZ_RESOURCE_GROUP`. The router runs as a Web App itself, with its system-assigned managed identity turned on; give that identity **Reader** and **Website Contributor** on the resource group, nothing else.
+  - It reaches each dashboard at `https://<app>.azurewebsites.net` with that as the Host (App Service routes by Host); the template lists it in the dashboard's `DASHBOARD_ALLOWED_HOSTS`.
+  - Starting and stopping is `start` / `stop` on the Web App, which keeps its file share.
+- **`static`.** `ROUTER_STATIC_FILE` names a JSON file of `{ "<email>": "<dashboard URL>" }`, re-read when it changes. Use it for containers someone else keeps running: a VM with Docker, ECS services. The router never starts or stops them.
 - **Another platform.** Implement `Backend` in `router/src/backends.ts` (find a person's URL, and optionally start/stop/list running ones) and add it to `makeBackend()`.
 
 Build it from `plugins/natterjack`, so it gets the engine's shared request checks:
@@ -117,6 +122,46 @@ Build it from `plugins/natterjack`, so it gets the engine's shared request check
 ```sh
 docker build -f plugins/natterjack/router/Dockerfile -t <registry>/natterjack-router:1 plugins/natterjack
 ```
+
+## Managing people from your dashboard
+
+The **People** page sets people up, changes their profile and removes them, from an engineer's own local dashboard, on Kubernetes or Azure App Service. It needs `.claude/dashboard/hosting.json` ([config.md](config.md#hostingjson-the-people-page-who-has-a-hosted-dashboard)) and the CLIs that engineer already uses: `kubectl` or `az` for where the dashboards run, `gcloud` or `az` for the directory, and `git`. Natterjack has no credentials of its own for any of them, and the page doesn't exist on a hosted dashboard.
+
+It puts three things side by side, one row per person:
+- **The directory:** everyone in the company's domain, or one Google OU or Entra department. Nobody gets a dashboard automatically: an engineer clicks **Set up**.
+- **The roster:** `.claude/dashboard/people.json`, committed with the rest of the config: who has a dashboard, their profile, and who set them up and when. Natterjack has no database; this is the shared record, and git history is its audit log. After a change the page shows what isn't committed yet, with a **Commit** button that commits just that file; pushing is yours. A change that isn't pushed yet shows up for other engineers as **Not in roster** or **Missing**, so nothing goes unnoticed. It holds names and emails, no secrets (hosted dashboards that get the workspace can read it).
+- **Where they run:** each person's StatefulSet (Kubernetes) or Web App (App Service), the same ones the router finds, so the page shows whether it's running or stopped.
+
+What it shows and offers:
+- **Not set up:** in the directory, no dashboard. **Set up…** picks a profile and applies the template.
+- **Running / Stopped:** **Start**, **Stop**, change the **Profile** (re-applies and restarts it), **Remove** (keeps their volume or file share unless you tick "also delete").
+- **Needs update:** the template, their profile or the image changed since it was applied. **Update** re-applies it.
+- **Left:** their account is suspended or gone, or they've left the OU. **Remove** them.
+- **Not in roster:** a dashboard someone made by hand. **Adopt** adds it to the roster without changing it; **Update** then brings it in line with the template.
+- **Missing:** in the roster, but its StatefulSet or Web App is gone. **Set up again**, or **Forget** it.
+
+Every change is checked first: the page shows the platform's own preview (`kubectl apply --dry-run=server`, or `az deployment group what-if`) and only applies after you confirm. Deleting someone's volume or file share asks you to type their email.
+
+**Profiles** are what a person can do, set per person on the page: which knowledge areas they get, their run limit, and their size. On Kubernetes an area is a Secret mounted with `envFrom` and the size is the `dashboard` container's limits; on App Service an area is a Key Vault reference in the app's settings and the size is which plan they're on. Everything else in the template is yours.
+
+### Setting it up
+
+1. Copy the template into the workspace (e.g. `hosting/`), fill in your settings, and commit it:
+   - **Kubernetes:** `templates/hosted/kubernetes-person.yaml`. `${PERSON}` and `${EMAIL}` are filled in per person. For each area, create its Secret in the namespace: `kubectl create secret generic natterjack-area-finance --from-literal=KNOWLEDGE_FINANCE_KEY=...`.
+   - **App Service:** `templates/hosted/app-service-person.bicep`, and the one-time Azure setup under "Azure App Service" below.
+2. Write `hosting.json` (the page's **Ask Claude to set it up** does this from what your CLIs can see).
+3. Sign in to the directory:
+   - **Microsoft:** `az login`. Members can read the directory by default.
+   - **Google:** Google blocks the directory scope for gcloud's own sign-in ("This app is blocked"), so the team makes its own internal OAuth client once:
+     1. In a Google Cloud project in your Workspace's organization, enable the **Admin SDK API**.
+     2. **Google Auth Platform → Branding/Audience:** set the audience to **Internal** (only your Workspace's accounts; no Google review). Under **Data access**, add the `admin.directory.user.readonly` scope.
+     3. **Clients → Create client → Desktop app**, and download its JSON. Share it with the engineers who manage people (it identifies the app, it isn't a password; keep it out of the repo all the same).
+
+     Then each of those engineers, who needs a Workspace admin role that can read users (a custom role with Users > Read is enough), signs in once:
+     ```sh
+     gcloud auth application-default login --client-id-file=<the client JSON> --scopes="https://www.googleapis.com/auth/admin.directory.user.readonly,https://www.googleapis.com/auth/cloud-platform"
+     ```
+     Set `directory.project` in hosting.json to that project, so the Admin SDK calls are billed to it. In PowerShell, run it through cmd with the whole line in single quotes, `cmd /c 'gcloud auth application-default login ...'`: PowerShell drops the inner quotes and gcloud then splits the scopes at the comma ("cloud-platform scope is required but not requested").
 
 ## Running it
 
@@ -142,13 +187,34 @@ On every cloud:
 ### Without Kubernetes
 
 - **A VM with Docker:** one container per person, each with its own volume, plus oauth2-proxy and the router with the `static` backend, behind Caddy or Traefik for TLS. This is the simplest setup for a handful of people.
-- **Azure App Service** (Web App for Containers, Linux): one app per person. Either put the router (with `static`) in front of them all, or give each app its own address.
-  - Run the image with oauth2-proxy as a sidecar container in front of it, and point the app's port (`WEBSITES_PORT`) at the sidecar's 4180. App Service's built-in sign-in (Easy Auth) passes the person's identity in `X-MS-CLIENT-PRINCIPAL-NAME`, but it can't add the proxy secret, so on its own it isn't enough.
-  - Mount an Azure Files share at `/data` (path mappings).
-  - Publish the snapshots to a blob container (`azure-blob`) and inject a read-only SAS as `SNAPSHOT_AZURE_SAS`. Issue it from a stored access policy so you can revoke it.
-  - Turn on **Always On**, or idle apps are unloaded mid-run.
-  - Pick a plan with 2 GB+ per app for the first start's build.
+- **Azure App Service** (Web App for Containers, Linux): see the next section.
 - **Managed container services** (Cloud Run, ECS on Fargate, Azure Container Apps) work if they can keep a persistent volume (a filesystem mount; EFS for Fargate, Azure Files for Container Apps) and keep the CPU allocated between requests. Runs carry on in the background after the page closes, so don't let the platform throttle or scale the container to zero while a run is going.
+
+### Azure App Service
+
+One Web App per person, on a shared App Service plan, behind the router at one address of your own (e.g. `natterjack.example.com`). The People page creates and updates them from `templates/hosted/app-service-person.bicep`.
+
+```
+browser ── login proxy (Cloudflare Access, or oauth2-proxy) at natterjack.example.com
+        │   adds the email and ROUTER_PROXY_SECRET
+        └─ router (a Web App, ROUTER_BACKEND=azure-app-service, managed identity)
+              └─ dash-<person>.azurewebsites.net, one Web App each
+                    /data = Azure Files share <app name>; secrets = Key Vault references
+```
+
+- **The shared address.** Point a subdomain of yours (`natterjack.example.com`, `agent-os.example.com`) at the router's Web App and bind it there. The login proxy in front adds the signed-in email and the router's proxy secret:
+  - **Cloudflare Access:** proxy the DNS record through Cloudflare, protect the hostname with an Access application for your identity provider, and add a Transform Rule that sets `X-Dashboard-Proxy-Secret`. Set `ROUTER_IDENTITY_HEADER=Cf-Access-Authenticated-User-Email`.
+  - **oauth2-proxy:** run it as a sidecar container in the router's Web App, in front of the router, as in `kubernetes-router.yaml`.
+  - App Service's built-in sign-in (Easy Auth) can't add the proxy secret, so on its own it isn't enough.
+- **One-time setup**, in one resource group:
+  - an App Service plan (Linux, B2 or bigger; several dashboards share it, and a profile can pick a bigger plan);
+  - a storage account for the file shares (the template makes each person's share);
+  - a container registry with the dashboard image (`templates/hosted/Dockerfile`);
+  - a Key Vault using Azure RBAC, holding the router's backend secret as `dashboard-backend-secret`, the snapshot SAS as `snapshot-azure-sas` if you install from a snapshot, and each area's key;
+  - the router's Web App (`router/Dockerfile`), with its managed identity, `ROUTER_BACKEND=azure-app-service`, `ROUTER_AZ_SUBSCRIPTION`, `ROUTER_AZ_RESOURCE_GROUP`, and Reader and Website Contributor on the resource group.
+- **Each person's app** (the template): their own managed identity reads their secrets from the vault (Key Vault Secrets User) and pulls the image (AcrPull), so no password sits in the app's settings. **Always On** is on, or idle apps are unloaded mid-run. The router stops idle ones (`ROUTER_IDLE_MINUTES`), which frees room on the plan.
+- **Who deploys** needs Contributor on the resource group, permission to create role assignments on the vault and registry (Owner, or Role Based Access Control Administrator), and to list the storage account's keys (for the `/data` mount).
+- **Dashboards set up by hand** before the People page (tagged `owner` and `purpose: hosted-workspace-dashboard`) show as **Not in roster**. **Adopt** them, then **Update** to move them onto the template; their name and file share stay.
 
 ## Hosting a model for the team
 

@@ -11,6 +11,8 @@
  *   links.json      Links page tiles (+ .claude/ledger/links.local.json, personal)
  *   connections.json  MCP servers the team relies on (Connections page)
  *   deck.json       presets, routines, limits, defaults, issues view
+ *   hosting.json    hosted dashboards: directory, cluster, profiles (People page; people/config.ts)
+ *   people.json     who has a hosted dashboard, written by the People page (people/roster.ts)
  *
  * Every file is optional: a missing one means "not configured" and its page
  * shows how to set it up instead of failing. Files are re-read when they change

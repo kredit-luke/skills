@@ -972,3 +972,36 @@ export interface ExploreFile {
 /** POST /api/explore/save → ExploreSaveResponse; 409 if the file changed since baseMtimeMs (unless force). */
 export interface ExploreSaveRequest { path: string; content: string; eol: 'lf' | 'crlf'; bom: boolean; baseMtimeMs: number; force?: boolean }
 export interface ExploreSaveResponse { path: string; mtimeMs: number; size: number; eol: 'lf' | 'crlf'; bom: boolean }
+
+// ---------------------------------------------------------------- people (local dashboard only)
+
+export type PersonState = 'not-set-up' | 'running' | 'starting' | 'stopped' | 'left' | 'missing' | 'unmanaged';
+export interface PersonRow {
+  email: string; name: string;
+  /** In the directory and active; null when the directory couldn't be read or is "manual". */
+  active: boolean | null;
+  state: PersonState; slug: string | null; profile: string | null; needsUpdate: boolean;
+  provisionedAt: string | null; provisionedBy: string | null;
+}
+/** people.json and its git state (GET /api/people .roster; POST /api/people/commit returns it). */
+export interface PeopleRoster { file: string; uncommitted: boolean; changes: string[] }
+/** GET /api/people: hosting.json's directory + the roster (.claude/dashboard/people.json) + the cluster. */
+export interface PeopleResponse {
+  configured: boolean;
+  problems: string[];
+  errors: { source: 'directory' | 'roster' | 'cluster' | 'template'; message: string; fix: string | null }[];
+  directory: { label: string; type: string; count: number | null };
+  /** people.json, and whether it has changes that aren't committed (one line per change). */
+  roster: PeopleRoster | null;
+  /** Where the dashboards run ("context x, namespace y", "resource group z"). */
+  cluster: string | null;
+  /** What a person keeps between restarts there: "volume" (Kubernetes), "file share" (App Service). */
+  dataLabel: string | null;
+  profiles: { id: string; name: string; areas: string[] }[];
+  defaultProfile: string | null;
+  rows: PersonRow[];
+}
+export type PeopleActionName = 'provision' | 'update' | 'profile' | 'start' | 'stop' | 'remove' | 'adopt' | 'forget';
+/** POST /api/people/action */
+export interface PeopleActionRequest { action: PeopleActionName; email: string; profile?: string; keepVolume?: boolean; dryRun?: boolean }
+export interface PeopleActionResponse { ok: true; dryRun: boolean; output: string; objects?: unknown[] }

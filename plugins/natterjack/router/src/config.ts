@@ -7,7 +7,7 @@
  *   ROUTER_PROXY_SECRET=<32+ chars>                    the login proxy sends it to the router
  *   ROUTER_BACKEND_SECRET=<32+ chars>                  the router sends it to every dashboard
  *                                                      (their DASHBOARD_PROXY_SECRET)
- *   ROUTER_BACKEND=static | kubernetes                 how it finds (and starts) each person's container
+ *   ROUTER_BACKEND=static | kubernetes | azure-app-service   how it finds (and starts) each person's container
  *   ROUTER_IDLE_MINUTES=60                             optional: stop a container this long after
  *                                                      its last request, unless a run is going
  */
@@ -26,7 +26,7 @@ export interface RouterConfig {
   idleMinutes: number;
   /** Who to ask for a dashboard, shown to someone who doesn't have one yet. */
   admin: string | null;
-  backend: "static" | "kubernetes";
+  backend: "static" | "kubernetes" | "azure-app-service";
   /** static: a JSON file of { "<email>": "<dashboard URL>" }. */
   staticFile: string;
   kubernetes: {
@@ -40,6 +40,16 @@ export interface RouterConfig {
     /** How to reach a dashboard: {service}, {namespace} and {port} are filled in. */
     urlTemplate: string;
     port: number;
+  };
+  azure: {
+    /** Azure Resource Manager; tests point it at a fake. */
+    arm: string;
+    subscription: string;
+    resourceGroup: string;
+    /** App Service's managed identity endpoint (set by the platform), or a fixed token for tests. */
+    identityEndpoint: string | null;
+    identityHeader: string | null;
+    token: string | null;
   };
 }
 
@@ -56,7 +66,11 @@ export function routerConfig(env: NodeJS.ProcessEnv = process.env, readFile: (f:
   const backendSecret = String(env.ROUTER_BACKEND_SECRET || "");
   if (backendSecret.length < MIN_SECRET) problems.push(`ROUTER_BACKEND_SECRET must be at least ${MIN_SECRET} characters (every dashboard's DASHBOARD_PROXY_SECRET)`);
   const backend = String(env.ROUTER_BACKEND || "").trim();
-  if (backend !== "static" && backend !== "kubernetes") problems.push("ROUTER_BACKEND must be static or kubernetes");
+  if (!["static", "kubernetes", "azure-app-service"].includes(backend)) problems.push("ROUTER_BACKEND must be static, kubernetes or azure-app-service");
+  if (backend === "azure-app-service") {
+    if (!String(env.ROUTER_AZ_SUBSCRIPTION || "").trim()) problems.push("ROUTER_AZ_SUBSCRIPTION must be the subscription id the dashboards' Web Apps are in");
+    if (!String(env.ROUTER_AZ_RESOURCE_GROUP || "").trim()) problems.push("ROUTER_AZ_RESOURCE_GROUP must be the resource group the dashboards' Web Apps are in");
+  }
   const staticFile = String(env.ROUTER_STATIC_FILE || "").trim();
   if (backend === "static" && !staticFile) problems.push("ROUTER_STATIC_FILE must name the JSON file of { \"<email>\": \"<dashboard URL>\" }");
   const idle = Number(env.ROUTER_IDLE_MINUTES || 0);
@@ -81,7 +95,7 @@ export function routerConfig(env: NodeJS.ProcessEnv = process.env, readFile: (f:
     backendIdentityHeader: (String(env.ROUTER_BACKEND_IDENTITY_HEADER || "").trim() || "x-forwarded-email").toLowerCase(),
     idleMinutes: idle,
     admin: String(env.ROUTER_ADMIN || "").trim() || null,
-    backend: backend as "static" | "kubernetes",
+    backend: backend as RouterConfig["backend"],
     staticFile,
     kubernetes: {
       api,
@@ -91,6 +105,14 @@ export function routerConfig(env: NodeJS.ProcessEnv = process.env, readFile: (f:
       selector: String(env.ROUTER_K8S_SELECTOR || "").trim() || "app=natterjack-dashboard",
       urlTemplate: String(env.ROUTER_K8S_URL_TEMPLATE || "").trim() || "http://{service}.{namespace}.svc:{port}",
       port: parseInt(String(env.ROUTER_K8S_PORT || ""), 10) || 3333,
+    },
+    azure: {
+      arm: (String(env.ROUTER_AZ_ARM || "").trim() || "https://management.azure.com").replace(/\/+$/, ""),
+      subscription: String(env.ROUTER_AZ_SUBSCRIPTION || "").trim(),
+      resourceGroup: String(env.ROUTER_AZ_RESOURCE_GROUP || "").trim(),
+      identityEndpoint: String(env.IDENTITY_ENDPOINT || "").trim() || null,
+      identityHeader: String(env.IDENTITY_HEADER || "").trim() || null,
+      token: String(env.ROUTER_AZ_TOKEN || "").trim() || null,
     },
   };
 }

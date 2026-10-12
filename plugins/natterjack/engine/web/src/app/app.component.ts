@@ -103,6 +103,7 @@ export class AppComponent implements OnInit {
     { path: '/apps', label: 'Apps', icon: 'apps', group: 'Workspace' },
     { path: '/workspaces', label: 'Workspaces', icon: 'workspaces' },
     { path: '/repos', label: 'Repos', icon: 'repos' },
+    { path: '/people', label: 'People', icon: 'people' },
     { path: '/explore', label: 'Explore', icon: 'explore' },
     { path: '/memory', label: 'Memory', icon: 'memory' },
     { path: '/machine', label: 'Machine', icon: 'machine' },
