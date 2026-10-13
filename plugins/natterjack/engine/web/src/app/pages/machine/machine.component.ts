@@ -1,6 +1,7 @@
 import { ChangeDetectionStrategy, Component, HostListener, OnInit, computed, inject, signal } from '@angular/core';
 import type { MachineCheck } from '../../../../../shared/api';
 import { ApiService } from '../../core/api.service';
+import { CommandsService } from '../../core/commands.service';
 import { DataService } from '../../core/data.service';
 import { ToastService } from '../../core/toast.service';
 import { copyText, relTime } from '../../core/util';
@@ -79,6 +80,7 @@ export class MachineComponent implements OnInit {
   readonly data = inject(DataService);
   readonly api = inject(ApiService);
   private readonly toast = inject(ToastService);
+  private readonly commands = inject(CommandsService);
   readonly busy = signal(false);
   readonly installing = signal<string | null>(null);
   readonly hosted = this.api.hosted;
@@ -154,7 +156,14 @@ export class MachineComponent implements OnInit {
     this.signingIn.set(true);
     try {
       const r = await this.api.post<{ ok: boolean; message: string }>('/api/claude/login', { action: 'code', code });
-      if (r.ok) { this.toast.show(r.message); this.signInUrl.set(null); await this.recheck(); }
+      if (r.ok) {
+        this.toast.show(r.message);
+        this.signInUrl.set(null);
+        // Ask's model list and the slash-command list were loaded signed out: load them again.
+        this.data.loadAgents(true);
+        this.commands.refresh();
+        await this.recheck();
+      }
       else { this.toast.error(r.message); if (/start again/i.test(r.message)) this.signInUrl.set(null); }
     } catch (e) { this.toast.error((e as Error).message); }
     finally { this.signingIn.set(false); }

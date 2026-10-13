@@ -37,3 +37,42 @@ test("lists commands for autocomplete: source tag stripped, terminal-only built-
     { name: "org-skills:skill-creator", description: "Create new skills.", argumentHint: "", aliases: [], source: "organization" },
   ]);
 });
+
+test("a stale list is served while a fresh one loads; forgetCommands makes the next call wait for it", async () => {
+  const usage = new Usage();
+  let fetches = 0;
+  let release: (c: any[]) => void = () => {};
+  usage._fetchCommands = () => { fetches++; return new Promise((r) => { release = r; }); };
+  usage.commands = [commands[1]];
+  usage.commandsAt = Date.now();
+  assert.equal((await usage.listCommands()).length, 1);
+  assert.equal(fetches, 0, "a fresh list isn't fetched again");
+
+  usage.commandsAt = Date.now() - 11 * 60 * 1000;
+  assert.equal((await usage.listCommands()).length, 1, "the stale list answers straight away");
+  assert.equal(fetches, 1);
+  release(commands);
+  await usage._commandsInflight;
+  assert.equal((await usage.listCommands()).length, 4);
+
+  usage.forgetCommands();
+  const next = usage.listCommands();
+  assert.equal(fetches, 2);
+  release([commands[0]]);
+  assert.deepEqual((await next).map((c) => c.name), ["natterjack:add-adapter"]);
+});
+
+test("a fetch started before forgetCommands can't store its (signed-out) list", async () => {
+  const usage = new Usage();
+  const releases: ((c: any[]) => void)[] = [];
+  usage._fetchCommands = () => new Promise((r) => { releases.push(r); });
+  const before = usage.listCommands();
+  usage.forgetCommands();
+  const after = usage.listCommands();
+  assert.equal(releases.length, 2, "forgetCommands lets a new fetch start");
+  releases[0]([commands[1]]);
+  await before;
+  assert.equal(usage.commands, null, "the old fetch's list is dropped");
+  releases[1]([commands[0]]);
+  assert.deepEqual((await after).map((c) => c.name), ["natterjack:add-adapter"]);
+});
