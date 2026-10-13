@@ -293,6 +293,19 @@ test("infrastructure.json: scaffold writes it (also from the old plan key); vali
   assert.match(v, /reference\.json: file "docs\/infra\.md" isn't in the workspace/);
 });
 
+test("meetings.json: scaffold writes it; validate wants a source the engine has an adapter for", () => {
+  const ws = fs.mkdtempSync(path.join(os.tmpdir(), "aos-meetings-"));
+  const cfg = path.join(ws, ".claude", "dashboard");
+  scaffold(ws, { workspace: { name: "T" }, meetings: { source: "roam" } });
+  assert.equal(JSON.parse(fs.readFileSync(path.join(cfg, "meetings.json"), "utf-8")).source, "roam");
+  assert.ok(!validate(ws).errors.some((e) => e.startsWith("meetings.json")));
+
+  fs.writeFileSync(path.join(cfg, "meetings.json"), JSON.stringify({ source: "zoom" }));
+  assert.match(validate(ws).errors.join("\n"), /meetings\.json: source "zoom" has no adapter \(known: roam\)/);
+  fs.writeFileSync(path.join(cfg, "meetings.json"), JSON.stringify({ label: "Calls" }));
+  assert.match(validate(ws).errors.join("\n"), /meetings\.json: "source" names the meeting tool/);
+});
+
 test("engineDirOf: engine.json dir, else dashboard/ (older workspaces)", async () => {
   const { engineDirOf, DEFAULT_ENGINE_DIR, LEGACY_ENGINE_DIR, reposSchema } = await import("../lib.mjs");
   assert.equal(DEFAULT_ENGINE_DIR, "natterjack");

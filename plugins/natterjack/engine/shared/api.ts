@@ -36,6 +36,8 @@ export interface Boot {
     copy: Record<string, any>;
   };
   issues: IssuesBoot;
+  /** The team's meeting tool (.claude/dashboard/meetings.json); null = no meetings.json, so no Meetings page. */
+  meetings: MeetingsBoot | null;
   /**
    * This person's role and its profile; the role's pages are hidden (reload after changing it).
    * `ask`: the team has roles and this person hasn't picked one (the first-start question).
@@ -60,6 +62,14 @@ export interface IssuesBoot {
   ticketPattern: string;
   /** Issue URL with an {id} placeholder, or null when the tracker can't build one. */
   urlTemplate: string | null;
+}
+
+/** The configured meeting tool, as the nav and the Meetings page need it. */
+export interface MeetingsBoot {
+  /** Adapter: 'roam' (see server/src/meetings/index.ts). */
+  source: string;
+  /** "Roam", ... */
+  label: string;
 }
 
 // ---------------------------------------------------------------- runs
@@ -758,6 +768,28 @@ export interface IssueDetail { id: string; title: string; url: string; team: str
  * POST /api/issues/explain { ticket } → 201 { run }  (plan-mode run with the issue embedded)
  * (The /api/linear/* names of these still work.)
  */
+
+// ---------------------------------------------------------------- meetings
+
+/** GET /api/meetings/status: whether the meeting tool can be read yet. */
+export interface MeetingsStatus {
+  source: string;
+  label: string;
+  /** meetings.json is there. */
+  configured: boolean;
+  /** The engine has an adapter for `source`. */
+  supported: boolean;
+  connected: boolean;
+  /** The adapter is a placeholder: the page says what's coming instead of listing meetings. */
+  comingSoon: boolean;
+  message: string;
+}
+/** Which meetings to list; dates are ISO. */
+export interface MeetingFilter { since?: string; until?: string; query?: string }
+export interface Meeting { id: string; title: string; startedAt: string; endedAt: string | null; participants: string[]; url: string | null }
+export interface ActionItem { text: string; owner: string | null; due: string | null }
+/** One meeting with what the tool wrote up from it. summary is markdown. */
+export interface MeetingDetail extends Meeting { summary: string; actionItems: ActionItem[] }
 
 // ---------------------------------------------------------------- machine
 

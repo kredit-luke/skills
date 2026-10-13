@@ -13,6 +13,7 @@
  *   deck.json       presets, routines, limits, defaults, issues view
  *   hosting.json    hosted dashboards: directory, cluster, profiles (People page; people/config.ts)
  *   people.json     who has a hosted dashboard, written by the People page (people/roster.ts)
+ *   meetings.json   the team's meeting tool (Meetings page; meetings/index.ts)
  *
  * Every file is optional: a missing one means "not configured" and its page
  * shows how to set it up instead of failing. Files are re-read when they change

@@ -13,8 +13,11 @@ import { LogsDialogComponent, LogsService } from './shared/logs-dialog.component
 import { RolePromptComponent } from './shared/role-prompt.component';
 import { SearchPaletteComponent } from './shared/search-palette.component';
 
-/** `group` starts a labelled section of the sidebar at that item. */
-interface NavItem { path: string; label: string; icon: string; exact?: boolean; group?: string }
+/**
+ * `group` starts a labelled section of the sidebar at that item. `needs`: a boot field the
+ * page depends on; while it's null the page isn't in the nav (meetings: meetings.json).
+ */
+interface NavItem { path: string; label: string; icon: string; exact?: boolean; group?: string; needs?: 'meetings' }
 
 @Component({
   selector: 'dash-root',
@@ -94,6 +97,7 @@ export class AppComponent implements OnInit {
     { path: '/knowledge', label: 'Knowledge', icon: 'docs' },
     { path: '/infrastructure', label: 'Infrastructure', icon: 'infrastructure' },
     { path: '/issues', label: 'Issues', icon: 'issues' },
+    { path: '/meetings', label: 'Meetings', icon: 'meetings', needs: 'meetings' },
     { path: '/ask', label: 'Ask', icon: 'ask', group: 'Agents' },
     { path: '/runs', label: 'Activity', icon: 'runs' },
     { path: '/skills', label: 'Skills', icon: 'skills' },
@@ -109,14 +113,15 @@ export class AppComponent implements OnInit {
     { path: '/machine', label: 'Machine', icon: 'machine' },
     { path: '/settings', label: 'Settings', icon: 'settings' },
   ];
-  /** The nav minus the pages this person's role hides; a hidden group's first page hands its heading on. */
+  /** The nav minus the pages this person's role hides and the ones this workspace hasn't set up; a hidden group's first page hands its heading on. */
   readonly visibleNav = computed<NavItem[]>(() => {
-    const hidden = new Set(this.api.boot()?.profile?.hiddenPages || []);
+    const boot = this.api.boot();
+    const hidden = new Set(boot?.profile?.hiddenPages || []);
     const out: NavItem[] = [];
     let heading: string | undefined;
     for (const n of this.nav) {
       if (n.group) heading = n.group;
-      if (hidden.has(n.path.replace(/^\//, ''))) continue;
+      if (hidden.has(n.path.replace(/^\//, '')) || (n.needs && !boot?.[n.needs])) continue;
       out.push(heading ? { ...n, group: heading } : { ...n, group: undefined });
       heading = undefined;
     }

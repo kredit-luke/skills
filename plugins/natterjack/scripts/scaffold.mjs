@@ -16,6 +16,7 @@
  *     "infrastructure": { ...infrastructure.json },  only when the team has infrastructure info ("reference" is the old key)
  *     "links":     { ...links.json },
  *     "connections": { ...connections.json },        only when the team relies on MCP servers
+ *     "meetings":  { ...meetings.json },             only when the team's meeting tool has a source (roam)
  *     "deck":      { ...deck.json },
  *     "repos":     [{ "name", "relativePath", "remote", "layer"?, "dependencies"? }],   written as repos.json
  *                  (the older "directory" / "url" are accepted and written under the new names)
@@ -38,7 +39,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { DEFAULT_ENGINE_DIR, ENGINE_DIR, SOURCE_REPO, TAG_PREFIX, TEMPLATES_DIR, args, copyTree, engineDirOf, engineVersion, isMain, listFiles, normalizeRepo, readJson, readRepos, reposSchema, safeEngineDir, writeJson } from "./lib.mjs";
 
-const CONFIG_FILES = { workspace: "workspace.json", apps: "apps.json", machine: "machine.json", docs: "docs.json", infrastructure: "infrastructure.json", links: "links.json", connections: "connections.json", deck: "deck.json" };
+const CONFIG_FILES = { workspace: "workspace.json", apps: "apps.json", machine: "machine.json", docs: "docs.json", infrastructure: "infrastructure.json", links: "links.json", connections: "connections.json", meetings: "meetings.json", deck: "deck.json" };
 
 // What each file is, for its $comment (kept short; the full schema is references/config.md).
 const comments = (dir) => ({
@@ -49,6 +50,7 @@ const comments = (dir) => ({
   infrastructure: "Infrastructure page: a Markdown doc in the workspace about the team's infrastructure (accounts, environments, URLs, databases, IPs, firewall rules) and the quick facts to pull out of it. Schema: references/config.md.",
   links: "Links page tiles for the team (personal ones: .claude/ledger/links.local.json). Edit them from the Links page. Schema: references/config.md.",
   connections: "MCP servers this workspace relies on (Connections page). Names as `claude mcp list` shows them. Schema: references/config.md.",
+  meetings: "Meetings page: the team's meeting tool (source: roam). Without this file the page isn't in the nav. Schema: references/config.md.",
   deck: "Skill cards, routines, limits, default model and the Issues view. Schema: references/config.md.",
 });
 
