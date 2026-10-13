@@ -10,7 +10,7 @@ import { checkHosting, readHosting } from "../src/people/config.ts";
 import { makeDirectory, type Fetcher } from "../src/people/directory.ts";
 import { Roster, describe } from "../src/people/roster.ts";
 import { People, uniqueSlug } from "../src/people/index.ts";
-import type { CliResult, Runner } from "../src/people/cli.ts";
+import { parseJsonStream, type CliResult, type Runner } from "../src/people/cli.ts";
 
 const ok = (stdout = ""): CliResult => ({ ok: true, code: 0, stdout, stderr: "" });
 const bad = (stderr: string, code: number | string = 1): CliResult => ({ ok: false, code, stdout: "", stderr });
@@ -75,7 +75,8 @@ function world(cfg = "") {
       const rest = args.slice(args.indexOf("dashboards") + 1);
       const r = rest.join(" ");
       if (r.startsWith("get statefulsets")) return ok(JSON.stringify({ items: state.statefulsets }));
-      if (r.startsWith("create --dry-run=client")) return ok(JSON.stringify(templateList(opts.input!)));
+      // Real kubectl (1.34) prints one pretty document per object, not a List.
+      if (r.startsWith("create --dry-run=client")) return ok(templateList(opts.input!).items.map((o) => JSON.stringify(o, null, 4)).join("\n"));
       if (r.startsWith("apply")) {
         const list = JSON.parse(opts.input!);
         state.applies.push({ dryRun: r.includes("--dry-run=server"), list });
@@ -521,4 +522,16 @@ test("People (App Service): a Key Vault (or plan, storage, registry) that doesn'
   }
   assert.equal(az.deployments.length, 0, "no what-if and no deployment ran");
   assert.equal(az.apps["dash-bo"], undefined);
+});
+
+test("parseJsonStream: kubectl's one-document-per-object output, braces inside strings, a List, and junk", () => {
+  const two = `{\n    "kind": "StatefulSet",\n    "x": "a } { \\" quoted"\n}\n{\n    "kind": "Service"\n}\n`;
+  assert.deepEqual(parseJsonStream(two, "t").map((d) => d.kind), ["StatefulSet", "Service"]);
+  assert.equal(parseJsonStream(two, "t")[0].x, 'a } { " quoted');
+  assert.deepEqual(parseJsonStream(`{"kind":"List","items":[{"kind":"Service"}]}`, "t")[0].items, [{ kind: "Service" }]);
+  assert.throws(() => parseJsonStream("error: something went wrong", "t"), /didn't return JSON/);
+  assert.throws(() => parseJsonStream(`{"kind": "StatefulSet"`, "t"), /didn't return JSON/);
+  assert.throws(() => parseJsonStream("", "t"), /didn't return JSON/);
+  assert.throws(() => parseJsonStream(`{} "unterminated`, "t"), /didn't return JSON/);
+  assert.throws(() => parseJsonStream(`"ignored" {}`, "t"), /didn't return JSON/);
 });

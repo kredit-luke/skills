@@ -42,3 +42,22 @@ export function cliError(what: string, r: CliResult, fix?: string): Error {
 export function parseJson(text: string, what: string): any {
   try { return JSON.parse(text); } catch { throw new Error(`${what} didn't return JSON.`); }
 }
+
+/** Several JSON documents one after another, as `kubectl create -o json` prints a multi-object file. */
+export function parseJsonStream(text: string, what: string): any[] {
+  const docs: any[] = [];
+  let depth = 0, start = -1, inString = false, escaped = false;
+  for (let i = 0; i < text.length; i++) {
+    const c = text[i];
+    if (inString) {
+      if (escaped) escaped = false;
+      else if (c === "\\") escaped = true;
+      else if (c === '"') inString = false;
+    } else if (c === '"' && depth > 0) inString = true;   // a top-level string isn't a document: it's rejected below
+    else if (c === "{" || c === "[") { if (depth++ === 0) start = i; }
+    else if (c === "}" || c === "]") { if (--depth === 0) docs.push(parseJson(text.slice(start, i + 1), what)); }
+    else if (depth === 0 && !/\s/.test(c)) throw new Error(`${what} didn't return JSON.`);
+  }
+  if (depth !== 0 || !docs.length) throw new Error(`${what} didn't return JSON.`);
+  return docs;
+}
