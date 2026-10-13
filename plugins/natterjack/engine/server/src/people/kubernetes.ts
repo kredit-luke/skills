@@ -16,7 +16,7 @@ import crypto from "node:crypto";
 import fs from "node:fs";
 import type { HostingConfig, KubernetesPlatform } from "./config.ts";
 import type { Dashboard, Person, Platform, Rendered } from "./platform.ts";
-import { cliError, notInstalled, parseJson, type Runner } from "./cli.ts";
+import { cliError, notInstalled, parseJson, parseJsonStream, type Runner } from "./cli.ts";
 
 export const SELECTOR = "app=natterjack-dashboard";
 const PERSON = "__natterjack_person__";
@@ -84,8 +84,8 @@ export class Kubernetes implements Platform {
     const yaml = fs.readFileSync(file, "utf-8").replaceAll("${PERSON}", PERSON).replaceAll("${EMAIL}", EMAIL);
     // Client-side only: nothing is sent to the cluster.
     const out = await this.kubectl("Reading the template", ["create", "--dry-run=client", "--validate=false", "-o", "json", "-f", "-"], yaml);
-    const parsed = parseJson(out, "kubectl create --dry-run");
-    const objects = parsed.kind === "List" ? parsed.items || [] : [parsed];
+    // One document per object (a List only from older kubectl).
+    const objects = parseJsonStream(out, "kubectl create --dry-run").flatMap((d: any) => (d.kind === "List" ? d.items || [] : [d]));
     if (!objects.some((o: any) => o.kind === "StatefulSet")) throw Object.assign(new Error("The template has no StatefulSet."), { status: 400 });
     this.template = { mtimeMs: st.mtimeMs, objects };
     return objects;

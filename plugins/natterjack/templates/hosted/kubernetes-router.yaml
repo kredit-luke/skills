@@ -107,10 +107,12 @@ data:
           uri: http://127.0.0.1:8080
           timeout: 1h   # run streams stay open
     injectRequestHeaders:
+      # Nested in oauth2-proxy's alpha config (claimSource / secretSource; checked on v7.15); the flat
+      # { claim } / { fromEnv } form fails at startup with "has invalid keys".
       - name: X-Forwarded-Email
-        values: [{ claim: email }]
+        values: [{ claimSource: { claim: email } }]
       - name: X-Dashboard-Proxy-Secret
-        values: [{ fromEnv: ROUTER_PROXY_SECRET }]
+        values: [{ secretSource: { fromEnv: ROUTER_PROXY_SECRET } }]
     providers:
       # Generic OIDC: Google Workspace (https://accounts.google.com), Entra ID
       # (https://login.microsoftonline.com/<tenant id>/v2.0), Okta, Auth0, Cognito, Keycloak.

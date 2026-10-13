@@ -181,6 +181,7 @@ The parts that differ by cloud:
 
 On every cloud:
 - **Separate nodes.** Put the pods on their own node pool with a taint, away from production workloads.
+- **Keep one node in that pool if your CNI taints new nodes** (Cilium's `node.cilium.io/agent-not-ready`, until its agent is up). From 0 nodes the cluster autoscaler simulates a node with that taint and never scales up ("Pod didn't trigger scale-up: untolerated taint"); with one real node it simulates from that, so growing works. Don't make the pods tolerate the taint instead: they could start before the CNI enforces network policy. A pool in one zone keeps replacement nodes where people's zonal volumes are. Some platforms (GKE) don't grow a pool to its new minimum by themselves; resize it to 1 once.
 - **Network policy.** Keep the NetworkPolicy, and check your CNI enforces it. It blocks the cluster's own network and the metadata endpoint, and allows HTTPS out.
 - **Long streams.** Raise the ingress read timeout: runs stream over server-sent events.
 
