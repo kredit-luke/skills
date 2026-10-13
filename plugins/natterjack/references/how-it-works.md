@@ -14,7 +14,7 @@ Read this when you need to change the engine, debug it, or explain a behavior. E
 ## Runs (the heart of it)
 
 A run is a conversation; **each turn is a new `claude -p` process**:
-`claude -p <prompt> --output-format stream-json --verbose --session-id <uuid> | --resume <uuid> --permission-mode <mode> --permission-prompts none --append-system-prompt <headlessRules() [+ PLAN_MODE_RULE]> [--model] [--effort] [--max-budget-usd] [--add-dir <attachments>]`
+`claude -p <prompt> --output-format stream-json --verbose --session-id <uuid> | --resume <uuid> --permission-mode <mode> --permission-prompts none --append-system-prompt <headlessRules() [+ outputsRule()] [+ PLAN_MODE_RULE]> [--model] [--effort] [--max-budget-usd] [--add-dir <attachments>]`
 
 - **Questions**: headless Claude can't use AskUserQuestion, so `headlessRules()` (in `runs.ts`; other agents get `agentHeadlessRules()` in `agents/util.ts`) tells it to end the turn with `<<QUESTION>>{"questions":[…]}<</QUESTION>>`. The server strips it from the transcript, sets the run to `waiting`, and the page renders the options as buttons; the answer is the next turn.
 - **Permissions**: `--permission-prompts none` denies anything that would prompt. Work that needs approvals belongs in a terminal ("Continue in terminal" hands the session to `claude --resume`).
@@ -24,6 +24,8 @@ A run is a conversation; **each turn is a new `claude -p` process**:
 - **Plan mode** is a per-run switch applied each turn.
 - **Limits**: concurrent runs, and new runs pause when `/usage` says the session or weekly window is past the threshold; optional per-run cap (`--max-budget-usd`). `total_cost_usd` in results is cumulative across resumed turns (don't sum it).
 - **Environment**: runs get the user's environment minus Claude session markers. `ANTHROPIC_API_KEY` is also removed when this machine is signed in to a Claude subscription (so a stray key can't silently switch runs to per-token billing), and kept when it isn't (teams on an API key, Bedrock or Vertex). Sign-in state comes from `claude auth status` (`server/src/claude.ts`, cached a minute); runs refuse to start with a clear message while Claude is missing or signed out.
+- **Attachments**: files you attach to a prompt or reply are uploaded to `<ledger>/attachments/_staged/`, move to `attachments/<runId>/` when sent, and their paths go in the prompt; that folder is passed as `--add-dir`. GET `/api/runs/<id>/files/<file>` serves them.
+- **Files a run makes**: each run has an outputs folder, `attachments/<runId>/outputs/`, made before every turn. The run's rules name it (`outputsRule()` in `agents/util.ts`, for every agent), and the agent's process gets it as `DASHBOARD_OUTPUTS`, so a script can write there (`--output "$DASHBOARD_OUTPUTS/report.pdf"`) or the agent copies a file in. GET `/api/runs/<id>` lists what's in it (`outputs`: up to 200, subfolders flattened to `a/b.pdf`, dotfiles and links skipped), and the run page shows them under **Files**, re-read when a turn starts or ends. GET `/api/runs/<id>/outputs/<path>` serves one: only regular files inside the folder once links are resolved; PDFs and images inline, everything else (HTML and SVG included) as a download. Outputs are deleted with the run's attachments (Settings, **Keep attachments for**).
 - **Changes tab**: each turn snapshots every repo's HEAD + `git stash create` + untracked list; the tab diffs against the first snapshot.
 - Restarting the dashboard kills in-flight turns (marked `interrupted`; replying resumes). Apps it started keep running.
 

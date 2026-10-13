@@ -172,7 +172,7 @@ export class SettingsComponent implements OnInit {
     { key: 'pauseAtWeeklyPct', label: 'Pause at weekly usage', min: 10, max: 100, unit: '%',
       help: 'The same, for your weekly limit.' },
     { key: 'keepAttachmentsDays', label: 'Keep attachments for', min: 0, max: 365, unit: 'days',
-      help: 'Files you attach to a run are deleted this long after it\'s done (not running, not waiting on you). 0 keeps them forever. Checked every 6 hours, and right away when you change this.' },
+      help: 'Files you attach to a run, and files it makes for you, are deleted this long after it\'s done (not running, not waiting on you). 0 keeps them forever. Checked every 6 hours, and right away when you change this.' },
   ];
 
   readonly profile = signal<ProfileInfo | null>(null);

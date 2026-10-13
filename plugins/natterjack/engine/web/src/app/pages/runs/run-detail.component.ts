@@ -1,6 +1,6 @@
 import { ChangeDetectionStrategy, Component, ElementRef, OnDestroy, computed, effect, inject, input, signal, untracked, viewChild } from '@angular/core';
 import { NgTemplateOutlet } from '@angular/common';
-import type { Continuation, IssueDetail, RunDetail, RunEvent, RunMeta, TerminalResponse } from '../../../../../shared/api';
+import type { Continuation, IssueDetail, RunDetail, RunEvent, RunMeta, RunOutput, TerminalResponse } from '../../../../../shared/api';
 import { ApiService } from '../../core/api.service';
 import { DataService, normaliseRun } from '../../core/data.service';
 import { agentLabel, isRoutedModel } from '../../core/agents';
@@ -15,6 +15,7 @@ import { runWorkspace } from '../../../../../shared/run-workspace';
 import { runStatus, toReview } from '../../shared/run-status';
 import { RunComposerComponent } from './run-composer.component';
 import { RunChangesComponent } from './run-changes.component';
+import { RunOutputsComponent } from './run-outputs.component';
 import { DiffViewComponent } from '../workspaces/diff-view.component';
 import { editDiff, editStat } from '../../runs/edit-diff';
 import { AttachmentListComponent } from '../../shared/attachment-list.component';
@@ -37,7 +38,7 @@ const eventCache = new RunEventCache();
  */
 @Component({
   selector: 'dash-run-detail',
-  imports: [NgTemplateOutlet, RunComposerComponent, RunChangesComponent, DiffViewComponent, AttachmentListComponent,
+  imports: [NgTemplateOutlet, RunComposerComponent, RunChangesComponent, RunOutputsComponent, DiffViewComponent, AttachmentListComponent,
     IssueSummaryComponent, WorkspaceAppsComponent, MdPipe, TrustedHtmlPipe],
   changeDetection: ChangeDetectionStrategy.OnPush,
   styleUrl: './run-detail.component.scss',
@@ -52,6 +53,8 @@ export class RunDetailComponent implements OnDestroy {
   readonly run = signal<RunMeta | null>(null);
   readonly events = signal<RunEvent[]>([]);
   readonly cont = signal<Continuation | null>(null);
+  /** Files in the run's outputs folder (GET /api/runs/:id), re-read when a turn starts or ends. */
+  readonly outputs = signal<RunOutput[]>([]);
   readonly loadError = signal<string | null>(null);
   readonly terminalCmd = signal<string | null>(null);
   readonly expanded = signal<Set<string>>(new Set());
@@ -78,6 +81,8 @@ export class RunDetailComponent implements OnDestroy {
   private tick: ReturnType<typeof setInterval> | null = null;
   private stick = true;
   private loadSeq = 0;
+  /** The run and turn state the outputs were last read for. */
+  private outputsKey = '';
 
   readonly active = computed(() => this.run()?.status === 'running');
   /** A PR watch waiting for its next check: the clock ticks so the countdown moves. */
@@ -160,6 +165,17 @@ export class RunDetailComponent implements OnDestroy {
       if (el && this.stick) setTimeout(() => { el.scrollTop = el.scrollHeight; });
     });
     this.tick = setInterval(() => { if (this.active() || this.watching()) this.now.set(Date.now()); }, 1000);
+    // A turn starting or ending (status, endedAt over the stream's meta): re-read the outputs folder,
+    // so a file the last turn made shows without a reload. load() reads them for a newly opened run.
+    effect(() => {
+      const r = this.run();
+      const key = r ? r.id + '|' + r.status + '|' + (r.endedAt || '') : '';
+      untracked(() => {
+        const prev = this.outputsKey;
+        this.outputsKey = key;
+        if (r && prev !== key && prev.startsWith(r.id + '|')) this.loadOutputs(r.id);
+      });
+    });
     effect(() => {
       const t = this.ticket();
       if (t) untracked(() => this.loadIssue(t.id));
@@ -193,6 +209,7 @@ export class RunDetailComponent implements OnDestroy {
     this.cur = eventCache.open(id);
     this.events.set(this.cur.events);
     this.cont.set(null);
+    this.outputs.set([]);
     this.loadError.set(null);
     this.terminalCmd.set(null);
     this.titleDraft.set(null);
@@ -206,6 +223,7 @@ export class RunDetailComponent implements OnDestroy {
       const d = await this.api.get<RunDetail>('/api/runs/' + encodeURIComponent(id) + '?events=0');
       if (seq !== this.loadSeq) return;
       this.setRun(d.run);
+      this.outputs.set(d.outputs || []);
     } catch (e) {
       if (seq === this.loadSeq) this.loadError.set((e as Error).message);
       return;
@@ -261,6 +279,13 @@ export class RunDetailComponent implements OnDestroy {
       this.cur.next = Math.max(this.cur.next, d.events.length);
       eventCache.grow(id, JSON.stringify(d.events).length);
     } catch { /* the error state is set by load() */ }
+  }
+
+  private async loadOutputs(id: string): Promise<void> {
+    try {
+      const d = await this.api.get<RunDetail>('/api/runs/' + encodeURIComponent(id) + '?events=0');
+      if (this.runId() === id) this.outputs.set(d.outputs || []);
+    } catch { /* keep the last list */ }
   }
 
   private closeStream(): void {

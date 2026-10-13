@@ -37,6 +37,7 @@
       </div>
       <div class="prompt-box">{{ r.prompt }}</div>
       <dash-attachment-list [runId]="r.id" [files]="r.attachments || []" [removed]="!!r.attachmentsRemovedAt" />
+      <dash-run-outputs [runId]="r.id" [files]="outputs()" />
       @if (r.warning) {
         <div class="warn-note"><b>Background work stopped.</b> {{ r.warning }} Headless runs end when Claude's turn ends; for long or ongoing work, continue in a terminal.</div>
       }
