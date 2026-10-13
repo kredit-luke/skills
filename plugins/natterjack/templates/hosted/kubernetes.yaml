@@ -149,10 +149,12 @@ data:
           # Run streams stay open for a long time; the default 30s would cut them.
           timeout: 1h
     injectRequestHeaders:
+      # Nested in oauth2-proxy's alpha config (claimSource / secretSource; checked on v7.15); the flat
+      # { claim } / { fromEnv } form fails at startup with "has invalid keys".
       - name: X-Forwarded-Email
-        values: [{ claim: email }]
+        values: [{ claimSource: { claim: email } }]
       - name: X-Dashboard-Proxy-Secret
-        values: [{ fromEnv: DASHBOARD_PROXY_SECRET }]
+        values: [{ secretSource: { fromEnv: DASHBOARD_PROXY_SECRET } }]
     providers:
       # Generic OIDC covers Google Workspace (https://accounts.google.com), Microsoft
       # Entra ID (https://login.microsoftonline.com/<tenant id>/v2.0), Okta, Auth0,

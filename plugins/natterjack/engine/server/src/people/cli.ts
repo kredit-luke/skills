@@ -53,7 +53,7 @@ export function parseJsonStream(text: string, what: string): any[] {
       if (escaped) escaped = false;
       else if (c === "\\") escaped = true;
       else if (c === '"') inString = false;
-    } else if (c === '"') inString = true;
+    } else if (c === '"' && depth > 0) inString = true;   // a top-level string isn't a document: it's rejected below
     else if (c === "{" || c === "[") { if (depth++ === 0) start = i; }
     else if (c === "}" || c === "]") { if (--depth === 0) docs.push(parseJson(text.slice(start, i + 1), what)); }
     else if (depth === 0 && !/\s/.test(c)) throw new Error(`${what} didn't return JSON.`);

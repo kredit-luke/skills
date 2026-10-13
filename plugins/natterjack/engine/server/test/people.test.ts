@@ -532,4 +532,6 @@ test("parseJsonStream: kubectl's one-document-per-object output, braces inside s
   assert.throws(() => parseJsonStream("error: something went wrong", "t"), /didn't return JSON/);
   assert.throws(() => parseJsonStream(`{"kind": "StatefulSet"`, "t"), /didn't return JSON/);
   assert.throws(() => parseJsonStream("", "t"), /didn't return JSON/);
+  assert.throws(() => parseJsonStream(`{} "unterminated`, "t"), /didn't return JSON/);
+  assert.throws(() => parseJsonStream(`"ignored" {}`, "t"), /didn't return JSON/);
 });
