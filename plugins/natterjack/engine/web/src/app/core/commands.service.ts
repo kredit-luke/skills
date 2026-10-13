@@ -2,7 +2,7 @@ import { Injectable, inject, signal } from '@angular/core';
 import type { CommandInfo } from '../../../../shared/api';
 import { ApiService } from './api.service';
 
-const SOURCE_ORDER: Record<string, number> = { skill: 0, plugin: 1, 'built-in': 2, mcp: 3 };
+const SOURCE_ORDER: Record<string, number> = { skill: 0, organization: 1, plugin: 2, 'built-in': 3, mcp: 4 };
 
 /**
  * Every slash command Claude Code knows (project + plugin skills, prompt-style

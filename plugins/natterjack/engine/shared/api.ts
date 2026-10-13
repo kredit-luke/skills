@@ -381,8 +381,8 @@ export interface DeckResponse {
   options: { models: string[]; efforts: Effort[]; permissionModes: PermissionMode[] };
 }
 
-/** GET /api/commands → { commands }  (every slash command the CLI knows; for autocomplete) */
-export interface CommandInfo { name: string; description: string; argumentHint: string; aliases: string[]; source: 'skill' | 'plugin' | 'built-in' | 'mcp' }
+/** GET /api/commands → { commands }  (every slash command the CLI knows; for autocomplete). `organization`: a claude.ai organization skill. */
+export interface CommandInfo { name: string; description: string; argumentHint: string; aliases: string[]; source: 'skill' | 'organization' | 'plugin' | 'built-in' | 'mcp' }
 
 // ---------------------------------------------------------------- overview / usage / inbox
 

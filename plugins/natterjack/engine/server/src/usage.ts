@@ -24,6 +24,7 @@ const TERMINAL_ONLY = new Set([
   "design-consent", "design-revoke", "team-onboarding", "goal", "loop", "ultrareview",
 ]);
 const COMMANDS_TIMEOUT_MS = 60000;
+const ORG_SKILL_TAG = /\s*\(claude\.ai sync\)\s*$/i;
 const METER_RE =/^(.+?):\s*(\d+(?:\.\d+)?)% used(?:\s*·\s*resets\s+(.+?))?\s*$/;
 
 function parseUsage(text) {
@@ -211,14 +212,19 @@ class Usage {
     }
     return (this.commands || [])
       .filter((c) => c && c.name && !c.name.startsWith("__") && !(c.builtin && TERMINAL_ONLY.has(c.name)))
-      .map((c) => ({
-        name: c.name,
-        // The source tag goes: "(natterjack) Add support…", or older "Add support… (plugin)".
-        description: String(c.description || "").replace(/^\s*\([^)]+\)\s*/, "").replace(/\s*\((project|user|plugin)\)\s*$/i, "").trim(),
-        argumentHint: c.argumentHint || "",
-        aliases: c.aliases || [],
-        source: c.builtin ? "built-in" : /\(MCP\)$/.test(c.name) ? "mcp" : c.name.includes(":") ? "plugin" : "skill",
-      }));
+      .map((c) => {
+        const description = String(c.description || "");
+        // Skills a claude.ai organization shares with its members, synced in after sign-in.
+        const organization = ORG_SKILL_TAG.test(description);
+        return {
+          name: c.name,
+          // The source tag goes: "(natterjack) Add support…", or older "Add support… (plugin)".
+          description: description.replace(ORG_SKILL_TAG, "").replace(/^\s*\([^)]+\)\s*/, "").replace(/\s*\((project|user|plugin)\)\s*$/i, "").trim(),
+          argumentHint: c.argumentHint || "",
+          aliases: c.aliases || [],
+          source: c.builtin ? "built-in" : /\(MCP\)$/.test(c.name) ? "mcp" : organization ? "organization" : c.name.includes(":") ? "plugin" : "skill",
+        };
+      });
   }
 }
 

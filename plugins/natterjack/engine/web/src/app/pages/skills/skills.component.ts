@@ -1,5 +1,6 @@
-import { ChangeDetectionStrategy, Component, computed, inject, signal } from '@angular/core';
+import { ChangeDetectionStrategy, Component, OnInit, computed, inject, signal } from '@angular/core';
 import type { Preset } from '../../../../../shared/api';
+import { CommandsService } from '../../core/commands.service';
 import { DataService } from '../../core/data.service';
 import { LaunchService } from '../../core/launch.service';
 import { SearchService } from '../../core/search.service';
@@ -47,10 +48,28 @@ import { PageHeaderComponent } from '../../shared/page-header.component';
       </div>
       <div class="hint">Runs headless. Skills that ask questions partway through now ask them on the run page, where you can answer; for long interactive work use Continue in terminal.</div>
     </div>
+
+    @if (orgSkills().length) {
+      <div class="group-title">Organization skills <span class="ty">{{ orgFiltered().length }} of {{ orgSkills().length }} · shared from claude.ai</span></div>
+      <div class="panel">
+        <div class="panel-b">
+          @for (s of orgFiltered(); track s.name) {
+            <div class="skill">
+              <div class="main">
+                <div class="t">/{{ s.name }} @if (s.argumentHint) { <span class="ah">{{ s.argumentHint }}</span> }</div>
+                <div class="sub">{{ s.description }}</div>
+              </div>
+              <button class="btn sm" (click)="runSkill(s.name)">Run</button>
+            </div>
+          } @empty { <div class="empty">No skills match.</div> }
+        </div>
+      </div>
+    }
   `,
 })
-export class SkillsComponent {
+export class SkillsComponent implements OnInit {
   readonly data = inject(DataService);
+  private readonly commands = inject(CommandsService);
   readonly search = inject(SearchService);
   private readonly launch = inject(LaunchService);
   readonly q = signal('');
@@ -59,6 +78,19 @@ export class SkillsComponent {
     const list = this.data.deck()?.skills || [];
     return q ? list.filter((s) => (s.name + ' ' + s.description).toLowerCase().includes(q)) : list;
   });
+  /** claude.ai organization skills, from the CLI's command list (they aren't files in the workspace). */
+  readonly orgSkills = computed(() => {
+    const project = new Set((this.data.deck()?.skills || []).map((s) => s.name));
+    return (this.commands.commands() || [])
+      .filter((c) => c.source === 'organization' && !project.has(c.name))
+      .sort((a, b) => a.name.localeCompare(b.name));
+  });
+  readonly orgFiltered = computed(() => {
+    const q = this.q().toLowerCase().trim();
+    return q ? this.orgSkills().filter((s) => (s.name + ' ' + s.description).toLowerCase().includes(q)) : this.orgSkills();
+  });
+
+  ngOnInit(): void { this.commands.load(); }
 
   meta(p: Preset): string { return [p.model || this.launch.model(), p.effort || this.launch.effort(), p.permissionMode].filter(Boolean).join(' · '); }
   stats(id: string): string {
