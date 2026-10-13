@@ -47,6 +47,7 @@ import { UsageHistory } from "./usage-history.ts";
 import { AppLauncher, appsConfig } from "./apps.ts";
 import { LiveHub } from "./live.ts";
 import { Trackers } from "./issues/index.ts";
+import { Meetings } from "./meetings/index.ts";
 import { readLinks, saveLink, deleteLink, readRepoReadme } from "./links.ts";
 import { Machine, openTerminal } from "./machine.ts";
 import { cloneStep, cloneTargets, readRepos, reposStatus } from "./repos.ts";
@@ -404,6 +405,7 @@ cleanupAttachments();
 setInterval(cleanupAttachments, 6 * 3600 * 1000).unref();
 const inbox = new Inbox(runs);
 const trackers = new Trackers(LEDGER_DIR);
+const meetings = new Meetings();
 const machine = new Machine(MAIN_WORKSPACE_PATH, { hosted: !!HOSTED });
 const claudeLogin = new ClaudeLogin();
 const docSites = new DocSites(MAIN_WORKSPACE_PATH);
@@ -951,6 +953,7 @@ function bootInfo(user: string | null): Boot {
       // {id} placeholder; built from the adapter so the UI never hardcodes a tracker's URLs.
       urlTemplate: tracker.issueUrl("{id}"),
     },
+    meetings: meetings.boot(),
     profile: (() => {
       const me = readProfile(LEDGER_DIR, ws.roles);
       // ask: the team has roles and this person hasn't picked one yet (the first-start question).
@@ -1245,6 +1248,7 @@ async function handleApi(req: http.IncomingMessage, res: http.ServerResponse, ur
       return r ? sendJson(res, r) : sendError(res, 404, "No README in that repo");
     }
     if (p === "/api/infrastructure") return sendJson(res, infrastructure(MAIN_WORKSPACE_PATH));
+    if (p === "/api/meetings/status") return sendJson(res, meetings.status());
     if (p === "/api/people") return sendJson(res, await people.view(force));
     if (p === "/api/memory") return sendJson(res, memory.list());
     if (p === "/api/agents") return sendJson(res, { agents: await agentsNow(force) });

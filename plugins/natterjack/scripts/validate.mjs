@@ -224,6 +224,16 @@ export function validate(root) {
   if (infraName === "reference.json") warn("reference.json", "rename it to infrastructure.json (the Reference page is now Infrastructure)");
   if (infra && infra.file && !dirExists(infra.file)) warn(infraName, `file "${infra.file}" isn't in the workspace`);
 
+  // ---- meetings.json (the Meetings page; without the file the page isn't in the nav)
+  const mtg = load("meetings.json");
+  if (mtg) {
+    const sources = literalKeys(path.join(engine, "server", "src", "meetings", "index.ts"), "const SOURCES");
+    const source = typeof mtg.source === "string" ? mtg.source.trim().toLowerCase() : "";
+    if (!source) err("meetings.json", '"source" names the meeting tool, e.g. "roam"');
+    else if (!sources.length) warn("meetings.json", "this engine has no Meetings page yet: upgrade it");
+    else if (!sources.includes(source)) err("meetings.json", `source "${mtg.source}" has no adapter (known: ${sources.join(", ")})`);
+  }
+
   // ---- hosting.json (the People page: who has a hosted dashboard; engine people/config.ts has the full checks)
   const hosting = load("hosting.json");
   if (hosting) {

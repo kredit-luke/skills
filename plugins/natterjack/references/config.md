@@ -49,7 +49,7 @@ Running it on company infrastructure for people without a dev machine (hosted mo
 | `codeHost.kind` | `github` | The Home page's Needs-you inbox (your PRs, reviews requested, red CI). `github` uses the `gh` CLI; `none` turns it off. |
 | `codeHost.ciRepos` / `ciBranch` | `[]` / `main` | Repos (`owner/name`) that get a CI health dot. |
 | `brand.logo` / `favicon` | none | Files in `brand/`. Use a light logo: the sidebar is dark. No logo = the `name` as text. |
-| `copy` | none | Wording overrides: `linksSub`, `docsSub`, `infrastructureSub`, `issuesSub`, `connectionsSub`, `searchExamples` (array), `askPlaceholder`. |
+| `copy` | none | Wording overrides: `linksSub`, `docsSub`, `infrastructureSub`, `issuesSub`, `meetingsSub`, `connectionsSub`, `searchExamples` (array), `askPlaceholder`. |
 | `roles` | Developer, Reader | The roles people pick from, in order: `{ "<id>": { label, description?, profile?, outputStyle?, hiddenPages?, hiddenSkills? } }`. See **Roles** below. With `roles` set, everyone is asked which is theirs (the Windows installer asks first; the dashboard asks on first start); without it nobody is asked. |
 | `profiles.reader` | `{ hiddenPages: ["apps", "workspaces"], hiddenSkills: [] }` | What every role on the **reader** profile hides (people who read and ask about the code but don't build or run it); each role adds its own. `hiddenPages`: nav routes (Home also drops the tiles of a hidden page: Apps up, Workspaces). `hiddenSkills`: project skills. Readers never get Implement. |
 
@@ -199,6 +199,14 @@ The page is for **infrastructure only**: cloud accounts and projects, environmen
 ```
 
 The page shows the groups as click-to-copy fact tables, then the whole doc. Group kinds: `rows` (`header` = a `**Header:** value` line; `regex` = first capture group anywhere; `table`+`key`+`match`+`value` = one cell of a key/value table), `table` (one row per row of the pipe table under that exact heading; `label` may be a list of columns (first non-empty wins); `firstOf` keeps the first of a comma list; `noteFromHeading` notes which table it came from), `kv` (one row per key/value table), `extract` (every regex match in one column; merged by label). A group whose table is missing just doesn't show. No `groups` = just the doc. No doc yet? Only write one from real sources (infrastructure code such as Terraform, Helm, CloudFormation, Pulumi or Kubernetes manifests; cloud CLIs the user is signed in to; existing infrastructure docs): a `##` section with a table each for Accounts and projects, Environments, Public URLs, Databases, Egress IPs, Allowed inbound, DNS, never any secrets, and a closing list of what the sources couldn't answer. Nothing to write it from: leave `infrastructure.json` out.
+
+## meetings.json: the Meetings page
+
+```json
+{ "source": "roam", "label": "Roam" }
+```
+
+Adds a Meetings page under Company. Without this file the page isn't in the nav; a role can still hide it with `"meetings"` in `hiddenPages`. `source` is the meeting tool: `roam` is the only one so far (`label` defaults to its name). For now the page only says what's coming: the team's meetings from that tool with their summaries and action items, and asking Claude whether an action item should become a ticket. Adding a tool is one file in `<engine>/server/src/meetings/` implementing `MeetingSource`, registered in `SOURCES`. An unknown `source` shows the page with what's wrong, and validate reports it.
 
 ## links.json: the Links page
 
@@ -449,7 +457,7 @@ In these docs `<engine>/` means that folder.
 
 ```json
 {
-  "workspace": { … }, "apps": { … }, "machine": { … }, "docs": { … }, "infrastructure": { … }, "links": { … }, "connections": { … }, "deck": { … },
+  "workspace": { … }, "apps": { … }, "machine": { … }, "docs": { … }, "infrastructure": { … }, "links": { … }, "connections": { … }, "meetings": { … }, "deck": { … },
   "repos": [{ "name": "API", "relativePath": "api", "remote": "https://github.com/acme/api.git", "dependencies": [] }],
   "engineDir": "natterjack",
   "skillName": "natterjack",

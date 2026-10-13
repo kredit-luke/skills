@@ -25,6 +25,7 @@ export class ApiService {
             token: '', platform: navigator.platform.toLowerCase().startsWith('win') ? 'win32' : 'darwin', workspaceRoot: '', engineDir: 'dashboard', version: '', startedAt: '', port: 0,
             workspace: { name: '', title: 'Workspace Dashboard', logo: null, logoAlt: '', favicon: null, copy: {} },
             issues: { kind: 'none', label: 'Issues', configured: false, ticketPattern: '^[A-Z][A-Z0-9]*-\\d+$', urlTemplate: null },
+            meetings: null,
             profile: { current: 'developer', role: 'developer', roleLabel: 'Developer', ask: false, hiddenPages: [] },
             hosted: null,
           });
