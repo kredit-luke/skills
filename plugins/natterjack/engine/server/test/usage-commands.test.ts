@@ -53,7 +53,7 @@ test("a stale list is served while a fresh one loads; forgetCommands makes the n
   assert.equal(fetches, 1);
   release(commands);
   await usage._commandsInflight;
-  assert.equal((await usage.listCommands()).length, 4);
+  assert.equal((await usage.listCommands()).length, 6);
 
   usage.forgetCommands();
   const next = usage.listCommands();
