@@ -112,6 +112,7 @@ interface Pending { row: PersonRow; action: PeopleActionName; profile?: string; 
                     } @else {
                       <select [value]="r.role || ''" (change)="ask(r, 'role', undefined, $any($event.target).value); $any($event.target).value = r.role || ''">
                         <option value="">They choose</option>
+                        @if (r.role && !knownRole(r.role)) { <option [value]="r.role">{{ r.role }} (removed)</option> }
                         @for (ro of view()!.roles; track ro.id) { <option [value]="ro.id">{{ ro.label }}</option> }
                       </select>
                     }
@@ -153,7 +154,7 @@ interface Pending { row: PersonRow; action: PeopleActionName; profile?: string; 
                 @for (p of view()!.profiles; track p.id) { <option [value]="p.id">{{ p.name }}@if (p.areas.length) { ({{ p.areas.join(', ') }}) }</option> }
               </select>
             </label>
-            @if (hasRoles()) {
+            @if (view()!.roles.length) {
               <label>Role
                 <select [value]="pd.role || ''" (change)="setPending({ role: $any($event.target).value })">
                   <option value="">Let them choose</option>
@@ -240,7 +241,9 @@ export class PeopleComponent implements OnInit {
   tag(s: PersonState) { return TAG[s]; }
   rel(t: string) { return relTime(t); }
   profileName(id: string | null) { return this.view()?.profiles.find((p) => p.id === id)?.name || id; }
-  readonly hasRoles = computed(() => !!this.view()?.roles.length);
+  // Also while anyone still has a role the workspace dropped, so it can be cleared ("They choose").
+  readonly hasRoles = computed(() => !!this.view()?.roles.length || !!this.view()?.rows.some((r) => r.role));
+  knownRole(id: string | null) { return !!id && !!this.view()?.roles.some((r) => r.id === id); }
   roleLabel(id: string) { return this.view()?.roles.find((r) => r.id === id)?.label || id; }
   sourceLabel(s: string) { return ({ directory: 'Directory', roster: 'Roster', cluster: 'Dashboards', template: 'Template' } as Record<string, string>)[s] || s; }
   confirmLabel(a: PeopleActionName) { return ({ provision: 'Set up', update: 'Update', profile: 'Change profile', role: 'Change role', start: 'Start', stop: 'Stop', remove: 'Remove', adopt: 'Adopt', forget: 'Forget' } as Record<string, string>)[a]; }

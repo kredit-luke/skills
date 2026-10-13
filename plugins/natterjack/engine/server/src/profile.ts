@@ -159,12 +159,15 @@ export function setRole(ledgerDir: string, root: string, pick: { role: string } 
 
 /**
  * On start: someone's hidden skills and output style follow workspace.json if it changed since.
- * A `locked` role (DASHBOARD_ROLE) is applied as if they'd picked it, whatever they had.
+ * A `locked` role (DASHBOARD_ROLE) is applied as if they'd picked it, whatever they had; if
+ * that fails (say settings.local.json isn't valid JSON) this throws, so the dashboard doesn't
+ * start with the role picker locked but the permissions of the role they had before.
  */
 export function reapplyProfile(ledgerDir: string, root: string, roles: RoleConfig[] = workspaceConfig().roles, locked: string | null = null) {
   const p = readProfile(ledgerDir, roles);
   if (!p.chosen && !locked) return;
-  try { setRole(ledgerDir, root, locked ? { role: locked } : p.role ? { role: p.role } : { profile: p.profile }, roles); } catch {}
+  try { setRole(ledgerDir, root, locked ? { role: locked } : p.role ? { role: p.role } : { profile: p.profile }, roles); }
+  catch (e) { if (locked) throw new Error(`Couldn't apply the assigned role "${locked}" (DASHBOARD_ROLE): ${(e as Error).message}`); }
 }
 
 export const ROLE_LOCKED = "Your role is set by whoever manages your hosted dashboard.";

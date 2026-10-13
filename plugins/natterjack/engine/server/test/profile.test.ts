@@ -207,6 +207,14 @@ test("DASHBOARD_ROLE: an assigned role is applied at startup over what they pick
   reapplyProfile(ledger, root, roles, null);
   assert.equal(readProfile(ledger, roles).current.id, "eng");
 
+  // A settings.local.json that can't be edited: unlocked, start anyway; locked, refuse to start
+  // rather than run with the picker locked and eng's permissions.
+  fs.writeFileSync(path.join(root, ".claude", "settings.local.json"), "{ not json");
+  reapplyProfile(ledger, root, roles, null);
+  assert.throws(() => reapplyProfile(ledger, root, roles, "finance"), /Couldn't apply the assigned role "finance" \(DASHBOARD_ROLE\)/);
+  assert.equal(readProfile(ledger, roles).current.id, "eng");
+  fs.writeFileSync(path.join(root, ".claude", "settings.local.json"), "{}");
+
   // POST /api/profile: any other role (or a bare profile) is refused; the same role, or no lock, goes through.
   assert.equal(refuseRoleChange("finance", { role: "eng" }), ROLE_LOCKED);
   assert.equal(refuseRoleChange("finance", { profile: "developer" }), ROLE_LOCKED);
