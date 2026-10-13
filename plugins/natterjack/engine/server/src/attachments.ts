@@ -26,6 +26,8 @@ export const MAX_ATTACHMENT_BYTES = 20 * 1024 * 1024;
 export const MAX_ATTACHMENTS = 10;
 /** Most output files a run page lists. */
 export const MAX_OUTPUTS = 200;
+// Files looked at before picking the newest MAX_OUTPUTS, so a huge folder can't stall a request.
+const MAX_OUTPUTS_SCAN = 5000;
 const ID_RE = /^[a-f0-9]{12}$/;
 const RUN_ID_RE = /^[a-z0-9-]+$/i;
 /** Opened in the browser; every other output (HTML and SVG included) is a download. */
@@ -106,11 +108,31 @@ export class Attachments {
 
   outputsDir(runId: string): string { return path.join(this.runDir(runId), "outputs"); }
 
-  /** The run's outputs folder, created if it isn't there yet (before each turn). */
+  /**
+   * The outputs folder's real path, or null unless it's a plain folder at exactly
+   * <attachments>/<runId>/outputs: a run can write there, so it could swap in a link
+   * (to the folder, or to the run's folder above it) pointing anywhere it can read.
+   */
+  outputsRoot(runId: string): string | null {
+    if (!RUN_ID_RE.test(runId)) return null;
+    try {
+      const real = fs.realpathSync(this.outputsDir(runId));
+      return real === path.join(fs.realpathSync(this.root), runId, "outputs") ? real : null;
+    } catch {
+      return null;
+    }
+  }
+
+  /** The run's outputs folder, created if it isn't there yet (before each turn); a link in its place is removed. */
   ensureOutputs(runId: string): string {
     if (!RUN_ID_RE.test(runId)) throw new Error("Bad run id");
     const dir = this.outputsDir(runId);
     fs.mkdirSync(dir, { recursive: true });
+    if (this.outputsRoot(runId)) return dir;
+    // Remove the link itself, never what it points to (unlink for a symlink, rmdir for a Windows junction).
+    if (fs.lstatSync(dir).isSymbolicLink()) { try { fs.unlinkSync(dir); } catch { fs.rmdirSync(dir); } }
+    fs.mkdirSync(dir, { recursive: true });
+    if (!this.outputsRoot(runId)) throw new Error("The run's outputs folder isn't a plain folder.");
     return dir;
   }
 
@@ -119,14 +141,15 @@ export class Attachments {
    * no dotfiles or dot folders, no symlinks, at most MAX_OUTPUTS.
    */
   outputs(runId: string): RunOutput[] {
-    if (!RUN_ID_RE.test(runId)) return [];
+    const root = this.outputsRoot(runId);
+    if (!root) return [];
     const out: RunOutput[] = [];
     const walk = (dir: string, rel: string, depth: number) => {
       let entries: fs.Dirent[];
       try { entries = fs.readdirSync(dir, { withFileTypes: true }); } catch { return; }
       entries.sort((a, b) => a.name.localeCompare(b.name));
       for (const e of entries) {
-        if (out.length >= MAX_OUTPUTS) return;
+        if (out.length >= MAX_OUTPUTS_SCAN) return;
         if (e.name.startsWith(".")) continue;
         const full = path.join(dir, e.name);
         const name = rel ? `${rel}/${e.name}` : e.name;
@@ -136,8 +159,9 @@ export class Attachments {
         }
       }
     };
-    walk(this.outputsDir(runId), "", 0);
-    return out.sort((a, b) => b.modifiedAt.localeCompare(a.modifiedAt) || a.name.localeCompare(b.name));
+    walk(root, "", 0);
+    // The cap after sorting: the newest files, not the first ones by name.
+    return out.sort((a, b) => b.modifiedAt.localeCompare(a.modifiedAt) || a.name.localeCompare(b.name)).slice(0, MAX_OUTPUTS);
   }
 
   /**
@@ -150,7 +174,8 @@ export class Attachments {
     const parts = rel.split(/[\\/]/);
     if (path.isAbsolute(rel) || /^[a-z]:/i.test(rel) || parts.some((s) => !s || s.startsWith("."))) return null;
     try {
-      const root = fs.realpathSync(this.outputsDir(runId));
+      const root = this.outputsRoot(runId);
+      if (!root) return null;
       const full = fs.realpathSync(path.join(root, ...parts));
       const inside = path.relative(root, full);
       if (!inside || inside.startsWith("..") || path.isAbsolute(inside)) return null;

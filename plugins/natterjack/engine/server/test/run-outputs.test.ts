@@ -108,8 +108,12 @@ test("outputs lists files by path inside the folder, newest first, without dotfi
   assert.deepEqual(a.outputs("../x"), []);
 
   const many = a.ensureOutputs("20260101000000-many00");
-  for (let i = 0; i < MAX_OUTPUTS + 5; i++) fs.writeFileSync(path.join(many, `f${i}.txt`), "x");
-  assert.equal(a.outputs("20260101000000-many00").length, MAX_OUTPUTS);
+  const hourAgo = new Date(Date.now() - 3600_000);
+  for (let i = 0; i < MAX_OUTPUTS + 5; i++) { const f = path.join(many, `f${String(i).padStart(3, "0")}.txt`); fs.writeFileSync(f, "x"); fs.utimesSync(f, hourAgo, hourAgo); }
+  fs.writeFileSync(path.join(many, "zz-newest.pdf"), "x"); // sorts last by name, first by date
+  const capped = a.outputs("20260101000000-many00");
+  assert.equal(capped.length, MAX_OUTPUTS);
+  assert.equal(capped[0].name, "zz-newest.pdf", "the cap keeps the newest, not the first by name");
 });
 
 test("output only resolves files inside the folder: no traversal, absolute paths, dotfiles, folders or links out", () => {
@@ -137,6 +141,29 @@ test("output only resolves files inside the folder: no traversal, absolute paths
   let fileLink = false;
   try { fs.symlinkSync(path.join(outside, "secret.txt"), path.join(dir, "secret.txt"), "file"); fileLink = true; } catch { /* Windows without symlink rights */ }
   if (fileLink) assert.equal(a.output(RUN, "secret.txt"), null, "a file symlink out of the folder");
+});
+
+test("a link in place of the outputs folder (or the run's folder) is never followed, and the next turn replaces it", () => {
+  const a = new Attachments(tmp());
+  const outside = fs.mkdtempSync(path.join(TMP, "outside-root-"));
+  fs.writeFileSync(path.join(outside, "secret.txt"), "s");
+
+  const run = "20260101000000-link00";
+  fs.mkdirSync(a.runDir(run), { recursive: true });
+  if (!linkDir(outside, a.outputsDir(run))) return; // no folder links here
+  assert.equal(a.output(run, "secret.txt"), null, "the outputs folder is a link");
+  assert.deepEqual(a.outputs(run), []);
+  const dir = a.ensureOutputs(run);
+  assert.ok(!fs.lstatSync(dir).isSymbolicLink(), "ensureOutputs makes a real folder again");
+  assert.ok(fs.existsSync(path.join(outside, "secret.txt")), "and leaves what the link pointed to alone");
+  assert.deepEqual(a.outputs(run), []);
+
+  const run2 = "20260101000000-link01";
+  fs.mkdirSync(path.join(outside, "outputs"));
+  fs.writeFileSync(path.join(outside, "outputs", "secret.txt"), "s");
+  linkDir(outside, a.runDir(run2));
+  assert.equal(a.output(run2, "secret.txt"), null, "the run's folder is a link");
+  assert.deepEqual(a.outputs(run2), []);
 });
 
 test("outputHeaders: PDFs and images inline, HTML, SVG and the rest as downloads, never sniffed", () => {

@@ -15,7 +15,7 @@ const OPENABLE = /\.(pdf|png|jpe?g|gif|webp)$/i;
         @for (f of files(); track f.name) {
           <span class="chip" [title]="f.name + ' · ' + size(f.size) + ' · ' + rel(f.modifiedAt)">
             <a [href]="url(f)" [attr.download]="base(f)">{{ icon(f) }} {{ f.name }} <span class="sz">{{ size(f.size) }}</span></a>
-            @if (openable(f)) { <a class="open" [href]="url(f)" target="_blank" rel="noopener" title="Open in a new tab" aria-label="Open in a new tab">↗</a> }
+            @if (openable(f)) { <a class="open" [href]="url(f)" target="_blank" rel="noopener" title="Open in a new tab" [attr.aria-label]="'Open ' + f.name + ' in a new tab'">↗</a> }
           </span>
         }
       </div>
