@@ -58,7 +58,7 @@ import type { SnapshotFile } from "./snapshot-sources/index.ts";
 import type { Manifest } from "./snapshot-sources/manifest.ts";
 import { SnapshotSources } from "./snapshot-sources/index.ts";
 import type { SnapshotSource } from "./snapshot-sources/index.ts";
-import { readProfile, reapplyProfile, setRole } from "./profile.ts";
+import { lockedRole, readProfile, reapplyProfile, refuseRoleChange, setRole } from "./profile.ts";
 import { DocSites, docAreas, docSources } from "./docs.ts";
 import { Knowledge } from "./knowledge/index.ts";
 import { agentOf, agentStatuses, isAgentId, type AgentStatus } from "./agents/index.ts";
@@ -411,8 +411,10 @@ const claudeLogin = new ClaudeLogin();
 const docSites = new DocSites(MAIN_WORKSPACE_PATH);
 const docsProviders = new DocsProviders(() => ({ ledgerDir: LEDGER_DIR, issues: workspaceConfig().issues }));
 const snapshotSources = new SnapshotSources(() => ({ ledgerDir: LEDGER_DIR, issues: workspaceConfig().issues }));
+// The role assigned on the People page (DASHBOARD_ROLE), if any: in effect, and theirs to see but not change.
+const ROLE_LOCK = ((ws) => lockedRole(ws.rolesConfigured ? ws.roles : []))(workspaceConfig());
 // Someone's hidden skills and output style follow workspace.json roles if they changed while the dashboard was down.
-reapplyProfile(LEDGER_DIR, MAIN_WORKSPACE_PATH);
+reapplyProfile(LEDGER_DIR, MAIN_WORKSPACE_PATH, undefined, ROLE_LOCK);
 
 const isReader = () => readProfile(LEDGER_DIR).profile === "reader";
 
@@ -424,6 +426,7 @@ function profileInfo(): ProfileInfo {
     role: p.current.id,
     chosen: p.chosen,
     roleChosen: p.roleChosen,
+    roleLocked: !!ROLE_LOCK,
     configured: ws.rolesConfigured,
     // Their own outputStyle in settings.local.json wins over the role's.
     styleApplied: !p.current.outputStyle || p.outputStyle === p.current.outputStyle,
@@ -958,7 +961,7 @@ function bootInfo(user: string | null): Boot {
       const me = readProfile(LEDGER_DIR, ws.roles);
       // ask: the team has roles and this person hasn't picked one yet (the first-start question).
       const hiddenPages = HOSTED ? [...new Set([...me.current.hiddenPages, ...HOSTED_HIDDEN_PAGES])] : me.current.hiddenPages;
-      return { current: me.profile, role: me.current.id, roleLabel: me.current.label, ask: ws.rolesConfigured && !me.roleChosen, hiddenPages };
+      return { current: me.profile, role: me.current.id, roleLabel: me.current.label, ask: ws.rolesConfigured && !me.roleChosen && !ROLE_LOCK, roleLocked: !!ROLE_LOCK, hiddenPages };
     })(),
     hosted: HOSTED ? { user } : null,
   };
@@ -1582,6 +1585,8 @@ async function handleApi(req: http.IncomingMessage, res: http.ServerResponse, ur
     const pick = typeof body.role === "string" ? { role: body.role }
       : body.profile === "reader" || body.profile === "developer" ? { profile: body.profile as "reader" | "developer" } : null;
     if (!pick) return sendError(res, 400, 'Send { role: "<id>" } (one of workspace.json roles).');
+    const refused = refuseRoleChange(ROLE_LOCK, pick);
+    if (refused) return sendError(res, 403, refused);
     try { setRole(LEDGER_DIR, MAIN_WORKSPACE_PATH, pick); }
     catch (e) { return sendError(res, 400, e.message); }
     return sendJson(res, profileInfo());

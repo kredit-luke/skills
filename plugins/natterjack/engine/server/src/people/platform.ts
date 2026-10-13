@@ -23,7 +23,8 @@ export interface Dashboard {
   applied: string | null;
 }
 
-export interface Person { email: string; slug: string; profile: Profile }
+/** `role`: the workspace role assigned to them (DASHBOARD_ROLE); null leaves it to them. */
+export interface Person { email: string; slug: string; profile: Profile; role: string | null }
 
 /** What would be applied for one person: `objects` for the preview, `hash` for "needs update". */
 export interface Rendered { objects: unknown[]; hash: string }

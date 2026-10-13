@@ -6,10 +6,10 @@
  *
  * The template is the team's copy of templates/hosted/kubernetes-person.yaml. No YAML
  * package: kubectl turns it into JSON once (with placeholders for ${PERSON} and ${EMAIL}),
- * and each person's objects are that JSON with their values and their profile's fields
- * (resources, run limit, area Secrets) set on the "dashboard" container. The result's
- * hash goes in the natterjack/applied annotation, so the page can tell who needs an update
- * after the template, a profile or the image changes.
+ * and each person's objects are that JSON with their values, their profile's fields
+ * (resources, run limit, area Secrets) and their role set on the "dashboard" container.
+ * The result's hash goes in the natterjack/applied annotation, so the page can tell who
+ * needs an update after the template, a profile, a role or the image changes.
  */
 
 import crypto from "node:crypto";
@@ -106,8 +106,9 @@ export class Kubernetes implements Platform {
       c.resources ||= {};
       c.resources.limits = { ...(c.resources.limits || {}), ...(p.profile.memory ? { memory: p.profile.memory } : {}), ...(p.profile.cpu ? { cpu: p.profile.cpu } : {}) };
     }
-    c.env = (c.env || []).filter((e: any) => e.name !== "DASHBOARD_MAX_CONCURRENT_RUNS");
+    c.env = (c.env || []).filter((e: any) => e.name !== "DASHBOARD_MAX_CONCURRENT_RUNS" && e.name !== "DASHBOARD_ROLE");
     if (p.profile.maxConcurrentRuns) c.env.push({ name: "DASHBOARD_MAX_CONCURRENT_RUNS", value: String(p.profile.maxConcurrentRuns) });
+    if (p.role) c.env.push({ name: "DASHBOARD_ROLE", value: p.role });
     const secrets = p.profile.areas.map((a) => this.cfg.areas[a]?.secret).filter(Boolean);
     const areaSecrets = new Set(Object.values(this.cfg.areas).map((a) => a.secret));
     c.envFrom = [...(c.envFrom || []).filter((e: any) => !areaSecrets.has(e.secretRef?.name)), ...secrets.map((name) => ({ secretRef: { name } }))];

@@ -30,6 +30,8 @@ param profile string = ''
 param applied string = ''
 @description('1-10 caps their runs at once; 0 leaves deck.json\'s limit.')
 param maxConcurrentRuns int = 0
+@description('A workspace.json role id assigned to them (DASHBOARD_ROLE, which they can\'t change); empty lets them pick.')
+param role string = ''
 @description('Their areas: [{ name: "KNOWLEDGE_FINANCE_KEY", secretName: "natterjack-area-finance" }], each a Key Vault secret.')
 param areaSettings array = []
 
@@ -68,6 +70,7 @@ var baseSettings = [
   { name: 'DASHBOARD_PROXY_SECRET', value: '@Microsoft.KeyVault(SecretUri=${kvRef}/dashboard-backend-secret)' }
 ]
 var runSettings = maxConcurrentRuns > 0 ? [{ name: 'DASHBOARD_MAX_CONCURRENT_RUNS', value: string(maxConcurrentRuns) }] : []
+var roleSettings = !empty(role) ? [{ name: 'DASHBOARD_ROLE', value: role }] : []
 var workspaceSettings = !empty(snapshotConfig)
   ? [
       { name: 'SNAPSHOT_CONFIG', value: snapshotConfig }
@@ -110,7 +113,7 @@ resource app 'Microsoft.Web/sites@2023-12-01' = {
       http20Enabled: true
       ftpsState: 'Disabled'
       minTlsVersion: '1.2'
-      appSettings: concat(baseSettings, runSettings, workspaceSettings, areaAppSettings)
+      appSettings: concat(baseSettings, runSettings, roleSettings, workspaceSettings, areaAppSettings)
       azureStorageAccounts: {
         data: {
           type: 'AzureFiles'

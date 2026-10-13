@@ -44,18 +44,22 @@ interface NumberRow { key: LimitKey; label: string; help: string; min: number; m
                     @if (p.styleApplied) { Claude answers in the <b>{{ r.outputStyle }}</b> style. }
                     @else { This role's <b>{{ r.outputStyle }}</b> style isn't used: you set <code>outputStyle</code> yourself in <code>.claude/settings.local.json</code>. }
                   }
-                  Only this machine changes.
+                  @if (p.roleLocked) { Your role is set by whoever manages your hosted dashboard. } @else { Only this machine changes. }
                 </div>
               }
             </div>
             <div class="ctl">
-              <select [disabled]="profileSaving()" (change)="saveRole($any($event.target).value)">
-                <!-- Not picked yet: a placeholder, so picking the first role is a change too. -->
-                @if (p.configured && !p.roleChosen) { <option value="" disabled selected>Pick your role</option> }
-                @for (r of p.roles; track r.id) {
-                  <option [value]="r.id" [selected]="(p.roleChosen || !p.configured) && r.id === p.role">{{ r.label }}</option>
-                }
-              </select>
+              <!-- Assigned on the People page (DASHBOARD_ROLE): shown, not changeable. -->
+              @if (p.roleLocked) { <b>{{ currentRole()?.label || p.role }}</b> }
+              @else {
+                <select [disabled]="profileSaving()" (change)="saveRole($any($event.target).value)">
+                  <!-- Not picked yet: a placeholder, so picking the first role is a change too. -->
+                  @if (p.configured && !p.roleChosen) { <option value="" disabled selected>Pick your role</option> }
+                  @for (r of p.roles; track r.id) {
+                    <option [value]="r.id" [selected]="(p.roleChosen || !p.configured) && r.id === p.role">{{ r.label }}</option>
+                  }
+                </select>
+              }
             </div>
           </div>
           @if (source(); as src) {

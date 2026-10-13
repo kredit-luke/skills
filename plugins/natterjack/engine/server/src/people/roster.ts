@@ -1,12 +1,14 @@
 /**
  * The roster: .claude/dashboard/people.json, committed with the rest of the workspace
- * config. It's who should have a hosted dashboard and their profile; the cluster stays
- * the truth for whether one is running. No secrets: names, emails, profiles and who set
+ * config. It's who should have a hosted dashboard, their profile and their role; the
+ * cluster stays the truth for whether one is running. No secrets: names, emails, profiles and who set
  * each person up. Git history is its audit log, and a change reaches other engineers once
  * it's committed and pushed (the page commits it; pushing is the engineer's).
  *
- *   { "people": { "ana@acme.com": { "name": "Ana Silva", "slug": "ana", "profile": "member",
+ *   { "people": { "ana@acme.com": { "name": "Ana Silva", "slug": "ana", "profile": "member", "role": "finance",
  *                                   "provisionedAt": "...", "provisionedBy": "luke@acme.com" } } }
+ *
+ * `role` (a workspace.json role, optional) is assigned to them and locked; without it they pick their own.
  */
 
 import fs from "node:fs";
@@ -17,6 +19,8 @@ export interface RosterPerson {
   name: string;
   slug: string;
   profile: string;
+  /** The workspace.json role assigned to them; absent: they pick their own. */
+  role?: string;
   provisionedAt: string;
   provisionedBy: string;
   updatedAt?: string;
@@ -113,14 +117,17 @@ function parse(text: string, what: string): RosterDoc {
   return { people };
 }
 
-/** One line per person who was added, removed, or changed profile since `before`. */
+/** One line per person who was added, removed, or changed profile or role since `before`. */
 export function describe(before: RosterDoc | null, after: RosterDoc): string[] {
   const was = before?.people || {};
   const now = after.people;
   const out: string[] = [];
   for (const [email, p] of Object.entries(now)) {
-    if (!was[email]) out.push(`Added ${email} (${p.profile})`);
-    else if (was[email].profile !== p.profile) out.push(`Changed ${email}'s profile to ${p.profile}`);
+    if (!was[email]) out.push(`Added ${email} (${p.profile}${p.role ? `, role ${p.role}` : ""})`);
+    else {
+      if (was[email].profile !== p.profile) out.push(`Changed ${email}'s profile to ${p.profile}`);
+      if ((was[email].role || null) !== (p.role || null)) out.push(p.role ? `Changed ${email}'s role to ${p.role}` : `Let ${email} pick their own role`);
+    }
   }
   for (const email of Object.keys(was)) if (!now[email]) out.push(`Removed ${email}`);
   return out.length ? out : ["Updated people.json"];

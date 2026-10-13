@@ -15,6 +15,9 @@
  * they're set to "off" in settings.local.json `skillOverrides`, which removes them from
  * the / menu and refuses them by name. Only what this file set is ever removed or
  * changed again; a skill override or output style someone set there themselves wins.
+ *
+ * On a hosted dashboard the role can be assigned instead (DASHBOARD_ROLE, which the
+ * People page sets): it's applied at startup, and the person can't change it.
  */
 
 import fs from "node:fs";
@@ -154,9 +157,36 @@ export function setRole(ledgerDir: string, root: string, pick: { role: string } 
   return readProfile(ledgerDir, roles);
 }
 
-/** On start: someone's hidden skills and output style follow workspace.json if it changed since. */
-export function reapplyProfile(ledgerDir: string, root: string, roles: RoleConfig[] = workspaceConfig().roles) {
+/**
+ * On start: someone's hidden skills and output style follow workspace.json if it changed since.
+ * A `locked` role (DASHBOARD_ROLE) is applied as if they'd picked it, whatever they had; if
+ * that fails (say settings.local.json isn't valid JSON) this throws, so the dashboard doesn't
+ * start with the role picker locked but the permissions of the role they had before.
+ */
+export function reapplyProfile(ledgerDir: string, root: string, roles: RoleConfig[] = workspaceConfig().roles, locked: string | null = null) {
   const p = readProfile(ledgerDir, roles);
-  if (!p.chosen) return;
-  try { setRole(ledgerDir, root, p.role ? { role: p.role } : { profile: p.profile }, roles); } catch {}
+  if (!p.chosen && !locked) return;
+  try { setRole(ledgerDir, root, locked ? { role: locked } : p.role ? { role: p.role } : { profile: p.profile }, roles); }
+  catch (e) { if (locked) throw new Error(`Couldn't apply the assigned role "${locked}" (DASHBOARD_ROLE): ${(e as Error).message}`); }
+}
+
+export const ROLE_LOCKED = "Your role is set by whoever manages your hosted dashboard.";
+
+/**
+ * DASHBOARD_ROLE: the role whoever manages this hosted dashboard assigned it (the People
+ * page sets it). Null when it isn't set, or isn't one of `roles` (with a warning: the
+ * person then picks their own, as without it).
+ */
+export function lockedRole(roles: RoleConfig[], env: NodeJS.ProcessEnv = process.env, warn: (msg: string) => void = console.warn): string | null {
+  const id = String(env.DASHBOARD_ROLE || "").trim();
+  if (!id) return null;
+  if (roles.some((r) => r.id === id)) return id;
+  warn(`DASHBOARD_ROLE "${id}" isn't one of this workspace's roles (${roles.map((r) => r.id).join(", ") || "none"}); people pick their own.`);
+  return null;
+}
+
+/** POST /api/profile under a locked role: the refusal, or null when nothing would change. */
+export function refuseRoleChange(locked: string | null, pick: { role: string } | { profile: Profile }): string | null {
+  if (!locked) return null;
+  return "role" in pick && pick.role === locked ? null : ROLE_LOCKED;
 }

@@ -6,9 +6,9 @@
  *
  * Each person's deployment is the template plus parameters: hosting.json's
  * platform.parameters, their profile's parameters (its plan), and theirs (appName, email,
- * their area keys as Key Vault references). The hash of template and parameters goes in the
- * natterjack-applied tag, so the page can tell who needs an update. Preview is
- * `az deployment group what-if`.
+ * their role if they were given one, their area keys as Key Vault references). The hash of
+ * template and parameters goes in the natterjack-applied tag, so the page can tell who
+ * needs an update. Preview is `az deployment group what-if`.
  */
 
 import crypto from "node:crypto";
@@ -110,6 +110,8 @@ export class AppService implements Platform {
       email: person.email,
       profile: person.profile.id,
       maxConcurrentRuns: person.profile.maxConcurrentRuns || 0,
+      // Only when assigned: a team's older copy of the template has no role parameter.
+      ...(person.role ? { role: person.role } : {}),
       areaSettings,
     };
     const hash = crypto.createHash("sha256").update(template).update(JSON.stringify(sortKeys(parameters))).digest("hex").slice(0, 12);

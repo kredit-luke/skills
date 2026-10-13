@@ -41,8 +41,9 @@ export interface Boot {
   /**
    * This person's role and its profile; the role's pages are hidden (reload after changing it).
    * `ask`: the team has roles and this person hasn't picked one (the first-start question).
+   * `roleLocked`: the role was assigned to them (DASHBOARD_ROLE), so they're never asked.
    */
-  profile: { current: 'developer' | 'reader'; role: string; roleLabel: string; ask: boolean; hiddenPages: string[] };
+  profile: { current: 'developer' | 'reader'; role: string; roleLabel: string; ask: boolean; roleLocked: boolean; hiddenPages: string[] };
   /**
    * Hosted mode (server/src/hosted.ts): this dashboard runs in a container behind the company's
    * login proxy, so nothing opens on "this computer" (terminals, apps, local previews).
@@ -977,6 +978,8 @@ export interface ProfileInfo {
   chosen: boolean;
   /** They picked one of the team's roles. */
   roleChosen: boolean;
+  /** Their role was assigned on the People page (DASHBOARD_ROLE): shown, but they can't change it. */
+  roleLocked: boolean;
   /** workspace.json has roles (else there are just Developer and Reader). */
   configured: boolean;
   /** False when their own outputStyle in .claude/settings.local.json is kept instead of the role's. */
@@ -1013,6 +1016,8 @@ export interface PersonRow {
   /** In the directory and active; null when the directory couldn't be read or is "manual". */
   active: boolean | null;
   state: PersonState; slug: string | null; profile: string | null; needsUpdate: boolean;
+  /** The workspace role assigned to them (DASHBOARD_ROLE); null: they pick their own. */
+  role: string | null;
   provisionedAt: string | null; provisionedBy: string | null;
 }
 /** people.json and its git state (GET /api/people .roster; POST /api/people/commit returns it). */
@@ -1031,9 +1036,12 @@ export interface PeopleResponse {
   dataLabel: string | null;
   profiles: { id: string; name: string; areas: string[] }[];
   defaultProfile: string | null;
+  /** workspace.json roles one can be assigned; empty when the team has none. */
+  roles: { id: string; label: string }[];
   rows: PersonRow[];
 }
-export type PeopleActionName = 'provision' | 'update' | 'profile' | 'start' | 'stop' | 'remove' | 'adopt' | 'forget';
+export type PeopleActionName = 'provision' | 'update' | 'profile' | 'role' | 'start' | 'stop' | 'remove' | 'adopt' | 'forget';
 /** POST /api/people/action */
-export interface PeopleActionRequest { action: PeopleActionName; email: string; profile?: string; keepVolume?: boolean; dryRun?: boolean }
+/** `role`: a workspace role id, or "" for "they pick their own" (provision, role). */
+export interface PeopleActionRequest { action: PeopleActionName; email: string; profile?: string; role?: string; keepVolume?: boolean; dryRun?: boolean }
 export interface PeopleActionResponse { ok: true; dryRun: boolean; output: string; objects?: unknown[] }
