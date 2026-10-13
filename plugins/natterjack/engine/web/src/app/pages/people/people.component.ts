@@ -101,6 +101,7 @@ interface Pending { row: PersonRow; action: PeopleActionName; profile?: string; 
                     <span class="muted">{{ profileName(r.profile) || '—' }}</span>
                   } @else {
                     <select (change)="ask(r, 'profile', $any($event.target).value); $any($event.target).value = r.profile || ''">
+                      @if (r.profile && !knownProfile(r.profile)) { <option [value]="r.profile" selected>{{ r.profile }} (removed)</option> }
                       @for (p of view()!.profiles; track p.id) { <option [value]="p.id" [selected]="p.id === r.profile">{{ p.name }}</option> }
                     </select>
                   }
@@ -243,6 +244,7 @@ export class PeopleComponent implements OnInit {
   profileName(id: string | null) { return this.view()?.profiles.find((p) => p.id === id)?.name || id; }
   // Also while anyone still has a role the workspace dropped, so it can be cleared ("They choose").
   readonly hasRoles = computed(() => !!this.view()?.roles.length || !!this.view()?.rows.some((r) => r.role));
+  knownProfile(id: string | null) { return !!id && !!this.view()?.profiles.some((p) => p.id === id); }
   knownRole(id: string | null) { return !!id && !!this.view()?.roles.some((r) => r.id === id); }
   roleLabel(id: string) { return this.view()?.roles.find((r) => r.id === id)?.label || id; }
   sourceLabel(s: string) { return ({ directory: 'Directory', roster: 'Roster', cluster: 'Dashboards', template: 'Template' } as Record<string, string>)[s] || s; }
