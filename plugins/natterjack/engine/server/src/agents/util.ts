@@ -16,6 +16,11 @@ export function keepRunningRule(appsCli: string | null): string {
   return `To start, stop or restart the workspace's apps (dev servers, APIs...) when the user asks, run \`${appsCli} apps start --stack <id>\` or \`--app <id>\` (likewise \`apps stop\`, \`apps restart --app <id>\`; \`apps status\` lists the ids and what's up). The dashboard runs them detached and shows them on its Apps page, so they outlive this turn; the command waits until they're up or failed. Then tell the user they're running and how to stop them. For anything else that must outlive the turn, use a workspace skill or script that starts it as a detached OS process if there is one; otherwise say so and point to a terminal.`;
 }
 
+/** Where files made for the person go (the run's outputs folder, also in DASHBOARD_OUTPUTS), in every agent's rules. */
+export function outputsRule(dir: string): string {
+  return `Files you make for the user to keep (reports, PDFs, spreadsheets, exports) go in ${dir} (also in the DASHBOARD_OUTPUTS environment variable); they can download them from the run page. Write them there directly, or copy them there when a tool or script writes elsewhere (including paths like /mnt/user-data/outputs that don't exist here).`;
+}
+
 /** The rules every non-Claude agent gets (Claude gets its own wording, with its tool names). */
 export function agentHeadlessRules(appsCli: string | null = null): string {
   return `You are running headless inside the workspace dashboard: nobody can answer an interactive prompt or approve a tool, and there is no terminal to type into.

@@ -68,7 +68,9 @@ export class ClaudeAgent implements Agent {
 
   spawn(args: string[], opts: SpawnOptions, turn?: TurnInput): ChildProcess {
     // Claude's models: claudeEnv() as always (the person's own sign-in). A routed model: its server's.
-    return spawnClaude(args, { ...opts, env: turn ? turnEnv(turn.model) : claudeEnv() });
+    // Either way on top of the run's environment (opts.env, e.g. DASHBOARD_OUTPUTS).
+    const base = opts.env || process.env;
+    return spawnClaude(args, { ...opts, env: turn ? turnEnv(turn.model, base) : claudeEnv(base) });
   }
 
   parse(line: any, _state: ParseState): RunEvent[] {

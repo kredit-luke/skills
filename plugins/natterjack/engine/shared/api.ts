@@ -242,6 +242,11 @@ export interface Attachment { id: string; name: string; file: string; size: numb
  * Held until a launch or reply names its id in `attachments`; dropped after a day otherwise.
  */
 export interface StagedAttachment { id: string; name: string; size: number; kind: Attachment['kind'] }
+/**
+ * A file the run made for the person, in its outputs folder (DASHBOARD_OUTPUTS). `name` is
+ * its path inside that folder, with `/`; served at GET /api/runs/:id/outputs/:name.
+ */
+export interface RunOutput { name: string; size: number; modifiedAt: string }
 
 export interface PresetStats { runs: number; succeeded: number; rated: number; good: number; costUsd: number; durationMs: number; lastRunAt: string | null }
 
@@ -249,11 +254,12 @@ export interface PresetStats { runs: number; succeeded: number; rated: number; g
 export interface RunsResponse { runs: RunMeta[]; stats: Record<string, PresetStats> }
 
 /**
- * GET /api/runs/:id → { run, events }
+ * GET /api/runs/:id → { run, events, outputs }
  * `events` are the raw stream-json objects the CLI printed (see RunEvent), plus the
- * dashboard's own `human` (a reply you sent) and `turn` markers, in order.
+ * dashboard's own `human` (a reply you sent) and `turn` markers, in order. `outputs`:
+ * the files in its outputs folder right now, newest first (at most 200).
  */
-export interface RunDetail { run: RunMeta; events: RunEvent[] }
+export interface RunDetail { run: RunMeta; events: RunEvent[]; outputs?: RunOutput[] }
 
 /**
  * GET /api/runs/:id/stream  (Server-Sent Events, stays open until the client closes it)

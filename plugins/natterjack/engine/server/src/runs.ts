@@ -27,7 +27,7 @@ import crypto from "node:crypto";
 import { execFile, type ChildProcess } from "node:child_process";
 import type { ServerResponse } from "node:http";
 import type { Attachment, Effort, PermissionMode, QueuedMessage, Question, RunEvent, RunMeta, RunWatch, WatchedPr } from "../../shared/api.ts";
-import { agentHeadlessRules, agentOf, keepRunningRule, type ParseState, type TurnInput } from "./agents/index.ts";
+import { agentHeadlessRules, agentOf, keepRunningRule, outputsRule, type ParseState, type TurnInput } from "./agents/index.ts";
 import { LOCAL_MODEL_RULE, isRoutedId } from "./models/routes.ts";
 import { expandSlash } from "./agents/skills.ts";
 import { promptWithAttachments, type Attachments } from "./attachments.ts";
@@ -670,8 +670,10 @@ export class RunManager {
 
     // The run's agent (agents/) builds the command line and translates what it prints.
     const agent = agentOf(meta.agent);
-    // The run's attachments live outside a worktree's folder; allow reading them
-    // (permission prompts are denied here, so without this a worktree run couldn't).
+    // The run's attachments and outputs folder live outside a worktree's folder; allow using
+    // them (permission prompts are denied here, so without this a worktree run couldn't).
+    let outputsDir: string | null = null;
+    try { outputsDir = this.attachments ? this.attachments.ensureOutputs(meta.id) : null; } catch {}
     const filesDir = this.attachments ? this.attachments.runDir(meta.id) : null;
     const addDirs = [...(filesDir && fs.existsSync(filesDir) ? [filesDir] : []), ...(meta.addDirs || []).filter((d) => fs.existsSync(d))];
     const turn: TurnInput = {
@@ -680,7 +682,7 @@ export class RunManager {
       prompt: (agent.id === "claude" ? (s: string) => s : (s: string) => expandSlash(s, meta.cwd))(first ? prompt : promptWithAttachments(prompt, files)),
       model: meta.model, effort: meta.effort, planMode: !!meta.planMode, permissionMode: meta.permissionMode,
       budgetUsd: agent.capabilities.costUsd ? meta.budgetUsd : null,
-      rules: [(agent.id === "claude" ? headlessRules : agentHeadlessRules)(this._appsCli()), isRoutedId(meta.model) ? LOCAL_MODEL_RULE : null, meta.extraPrompt || null].filter(Boolean).join("\n\n"),
+      rules: [(agent.id === "claude" ? headlessRules : agentHeadlessRules)(this._appsCli()), isRoutedId(meta.model) ? LOCAL_MODEL_RULE : null, outputsDir ? outputsRule(outputsDir) : null, meta.extraPrompt || null].filter(Boolean).join("\n\n"),
       planRule: meta.planMode ? PLAN_MODE_RULE : null,
       addDirs,
     };
@@ -688,6 +690,7 @@ export class RunManager {
 
     const child = agent.spawn(args, {
       cwd: meta.cwd,
+      env: outputsDir ? { ...process.env, DASHBOARD_OUTPUTS: outputsDir } : process.env,
       stdio: ["ignore", "pipe", "pipe"], // prompt is an argument; an open stdin can make the CLI wait forever
       windowsHide: true,
     }, turn);

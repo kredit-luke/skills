@@ -75,7 +75,7 @@ import { claudeAuth, claudeAuthCached, claudeEnv } from "./claude.ts";
 import { infrastructure } from "./infrastructure.ts";
 import { RunChanges } from "./run-changes.ts";
 import type { RunWorktree } from "./run-changes.ts";
-import { Attachments, MAX_ATTACHMENT_BYTES, contentTypeOf } from "./attachments.ts";
+import { Attachments, MAX_ATTACHMENT_BYTES, contentTypeOf, outputHeaders } from "./attachments.ts";
 import { Explore, MAX_SAVE_BYTES, rawType, resolveSafe } from "./explore.ts";
 import { forgetAtlassianKeys } from "./atlassian.ts";
 import { HOSTED_HIDDEN_PAGES, NOT_HOSTED, checkHostedRequest, hostedConfig } from "./hosted.ts";
@@ -1075,6 +1075,7 @@ async function openTerminalForRun(run: RunMeta) {
 
 const RUN_ROUTE = /^\/api\/runs\/([a-z0-9-]+)(?:\/(stream|cancel|verdict|flag|terminal|continuation|reply|plan-mode|changes|diff|rename|watch-stop|queue|queue-edit|queue-remove|queue-send|queue-auto))?$/i;
 const RUN_FILE_ROUTE = /^\/api\/runs\/([a-z0-9-]+)\/files\/([^/]+)$/i;
+const RUN_OUTPUT_ROUTE = /^\/api\/runs\/([a-z0-9-]+)\/outputs\/(.+)$/i;
 
 /** One of a run's attached files: images and PDFs inline, anything else as a download. */
 function serveRunFile(res: http.ServerResponse, runId: string, file: string) {
@@ -1092,6 +1093,14 @@ function serveRunFile(res: http.ServerResponse, runId: string, file: string) {
     "Content-Security-Policy": "default-src 'none'; img-src 'self'; style-src 'unsafe-inline'",
     "Content-Disposition": `${inline ? "inline" : "attachment"}; filename="${name.replace(/"/g, "")}"`,
   });
+  fs.createReadStream(full).pipe(res);
+}
+
+/** A file the run made, from its outputs folder (`rel` may name a subfolder): PDFs and images inline, the rest downloads. */
+function serveRunOutput(res: http.ServerResponse, runId: string, rel: string) {
+  const full = attachments.output(runId, rel);
+  if (!full) return sendError(res, 404, "That file is gone (a run's files are deleted a while after it's done).");
+  res.writeHead(200, outputHeaders(full, fs.statSync(full).size));
   fs.createReadStream(full).pipe(res);
 }
 
@@ -1130,6 +1139,12 @@ async function handleApi(req: http.IncomingMessage, res: http.ServerResponse, ur
   if (req.method === "GET") {
     const fileMatch = p.match(RUN_FILE_ROUTE);
     if (fileMatch) return serveRunFile(res, fileMatch[1], decodeURIComponent(fileMatch[2]));
+    const outputMatch = p.match(RUN_OUTPUT_ROUTE);
+    if (outputMatch) {
+      let rel: string;
+      try { rel = decodeURIComponent(outputMatch[2]); } catch { return sendError(res, 400, "Bad path"); }
+      return serveRunOutput(res, outputMatch[1], rel);
+    }
     if (p === "/api/settings") return sendJson(res, settingsView());
     if (p.startsWith("/api/explore/raw/")) return serveExploreRaw(res, p);
     if (p === "/api/explore/list") return sendJson(res, explore.list(q("path")));
@@ -1276,7 +1291,7 @@ async function handleApi(req: http.IncomingMessage, res: http.ServerResponse, ur
       const meta = runs.get(runMatch[1]);
       if (!meta) return sendError(res, 404, "Unknown run");
       // ?events=0: the run page gets the events from the stream's replay instead.
-      return sendJson(res, { run: meta, events: q("events") === "0" ? [] : runs.events(meta.id) });
+      return sendJson(res, { run: meta, events: q("events") === "0" ? [] : runs.events(meta.id), outputs: attachments.outputs(meta.id) });
     }
     if (runMatch && runMatch[2] === "changes") {
       const meta = runs.get(runMatch[1]);
