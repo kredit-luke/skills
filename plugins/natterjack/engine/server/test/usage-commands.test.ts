@@ -9,6 +9,8 @@ const commands = [
   { name: "compact", description: "Clear history but keep a summary", argumentHint: "", builtin: true },
   { name: "review", description: "Review a pull request", argumentHint: "", builtin: true },
   { name: "linear:issue (MCP)", description: "Get an issue", argumentHint: "" },
+  { name: "ticket-standards", description: "House rules for tickets. (claude.ai sync)", argumentHint: "", aliases: ["org-skills:ticket-standards"] },
+  { name: "org-skills:skill-creator", description: "Create new skills. (claude.ai sync)", argumentHint: "" },
 ];
 
 test("reads the command list from the initialize control_response", () => {
@@ -31,5 +33,7 @@ test("lists commands for autocomplete: source tag stripped, terminal-only built-
     { name: "worktree", description: "Make a worktree", argumentHint: "<TICKET>", aliases: [], source: "skill" },
     { name: "review", description: "Review a pull request", argumentHint: "", aliases: [], source: "built-in" },
     { name: "linear:issue (MCP)", description: "Get an issue", argumentHint: "", aliases: [], source: "mcp" },
+    { name: "ticket-standards", description: "House rules for tickets.", argumentHint: "", aliases: ["org-skills:ticket-standards"], source: "organization" },
+    { name: "org-skills:skill-creator", description: "Create new skills.", argumentHint: "", aliases: [], source: "organization" },
   ]);
 });
