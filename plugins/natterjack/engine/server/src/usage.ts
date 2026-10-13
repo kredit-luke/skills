@@ -25,6 +25,9 @@ const TERMINAL_ONLY = new Set([
 ]);
 const COMMANDS_TIMEOUT_MS = 60000;
 const ORG_SKILL_TAG = /\s*\(claude\.ai sync\)\s*$/i;
+// Skills come and go while the dashboard runs (claude.ai organization skills sync in after
+// sign-in), so a list older than this is fetched again in the background.
+const COMMANDS_FRESH_MS = 10 * 60 * 1000;
 const METER_RE =/^(.+?):\s*(\d+(?:\.\d+)?)% used(?:\s*·\s*resets\s+(.+?))?\s*$/;
 
 function parseUsage(text) {
@@ -73,6 +76,7 @@ class Usage {
   cache: any;
   inflight: any;
   commands: any;
+  commandsAt = 0;
   snapFile: string | null;
 
   /** @param snapFile where each /usage reading is appended (JSONL), for the limits-over-time chart */
@@ -196,20 +200,36 @@ class Usage {
   }
   _commandsInflight: Promise<void> | null = null;
 
+  // Bumped by forgetCommands, so a fetch started before it (signed out) can't store its list.
+  _commandsGen = 0;
+
+  _refreshCommands(): Promise<void> {
+    if (!this._commandsInflight) {
+      const gen = this._commandsGen;
+      const p: Promise<void> = this._fetchCommands()
+        .then((c) => { if (gen === this._commandsGen && c?.length) { this.commands = c; this.commandsAt = Date.now(); } })
+        .finally(() => { if (this._commandsInflight === p) this._commandsInflight = null; });
+      this._commandsInflight = p;
+    }
+    return this._commandsInflight;
+  }
+
+  /** Drop the list (after a Claude sign-in: the account's skills change), so the next call fetches it. */
+  forgetCommands() {
+    this.commands = null;
+    this.commandsAt = 0;
+    this._commandsGen++;
+    this._commandsInflight = null;
+  }
+
   /**
    * Slash commands usable from a headless run, for autocomplete. Built-ins that
-   * only make sense in the interactive terminal UI are dropped. Fetched once; a
-   * failed or empty fetch is retried on the next call.
+   * only make sense in the interactive terminal UI are dropped. A failed or empty
+   * fetch is retried on the next call; a stale list is served while a fresh one loads.
    */
   async listCommands() {
-    if (!this.commands?.length) {
-      if (!this._commandsInflight) {
-        this._commandsInflight = this._fetchCommands()
-          .then((c) => { if (c?.length) this.commands = c; })
-          .finally(() => { this._commandsInflight = null; });
-      }
-      await this._commandsInflight;
-    }
+    if (!this.commands?.length) await this._refreshCommands();
+    else if (this.commandsAt && Date.now() - this.commandsAt > COMMANDS_FRESH_MS) this._refreshCommands();
     return (this.commands || [])
       .filter((c) => c && c.name && !c.name.startsWith("__") && !(c.builtin && TERMINAL_ONLY.has(c.name)))
       .map((c) => {

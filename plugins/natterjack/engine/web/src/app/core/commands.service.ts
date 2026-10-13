@@ -14,9 +14,9 @@ export class CommandsService {
   readonly commands = signal<CommandInfo[] | null>(null);
   private loading: Promise<void> | null = null;
 
-  load(): Promise<void> {
+  load(force = false): Promise<void> {
     // An empty list (the CLI wasn't ready) is retried on the next focus.
-    if (this.commands()?.length) return Promise.resolve();
+    if (!force && this.commands()?.length) return Promise.resolve();
     if (!this.loading) {
       this.loading = this.api.get<{ commands: CommandInfo[] }>('/api/commands')
         .then((d) => this.commands.set(d.commands || []))
@@ -24,6 +24,12 @@ export class CommandsService {
         .finally(() => { this.loading = null; });
     }
     return this.loading;
+  }
+
+  /** Fetch the list again (after a Claude sign-in, which changes the skills). */
+  refresh(): Promise<void> {
+    // A request already on its way may be the signed-out one: fetch again once it's done.
+    return (this.loading || Promise.resolve()).then(() => this.load(true));
   }
 
   find(name: string): CommandInfo | undefined {

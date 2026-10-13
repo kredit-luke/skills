@@ -1340,7 +1340,12 @@ async function handleApi(req: http.IncomingMessage, res: http.ServerResponse, ur
   if (p === "/api/claude/login") {
     // { action: "start" } → { url } to open; { action: "code", code } → { ok, message }.
     if (body.action === "start") return sendJson(res, await claudeLogin.start(user));
-    if (body.action === "code") return sendJson(res, await claudeLogin.finish(String(body.code || "")));
+    if (body.action === "code") {
+      const r = await claudeLogin.finish(String(body.code || ""));
+      // The new account brings its own skills (claude.ai organization skills among them).
+      if (r.ok) usage.forgetCommands();
+      return sendJson(res, r);
+    }
     if (body.action === "cancel") { claudeLogin.cancel(); return sendJson(res, { ok: true }); }
     return sendError(res, 400, "Unknown action");
   }
