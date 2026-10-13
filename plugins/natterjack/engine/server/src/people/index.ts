@@ -1,15 +1,15 @@
 /**
  * The People page (an engineer's local dashboard only): everyone in the directory, who
- * has a hosted dashboard, and their profile. Three sources, one row per email:
+ * has a hosted dashboard, and their profile and role. Three sources, one row per email:
  *
  *   directory (who could have one)  +  roster (people.json in the repo: who should)  +  cluster (who does)
  *
- * and the actions that bring them in line: provision, update, change profile, start,
+ * and the actions that bring them in line: provision, update, change profile or role, start,
  * stop, remove (keeping the volume or not), adopt one made by hand, forget a missing one.
  * Every write can be previewed first (dryRun). Nothing here runs on a hosted dashboard.
  */
 
-import { CONFIG_DIR } from "../config.ts";
+import { CONFIG_DIR, workspaceConfig, type RoleConfig } from "../config.ts";
 import type { HostingConfig, Profile } from "./config.ts";
 import { readHosting } from "./config.ts";
 import { runCli, type Runner } from "./cli.ts";
@@ -28,6 +28,8 @@ export interface PersonRow {
   slug: string | null;
   profile: string | null;
   needsUpdate: boolean;
+  /** The workspace role assigned to them (DASHBOARD_ROLE); null: they pick their own. */
+  role: string | null;
   provisionedAt: string | null;
   provisionedBy: string | null;
 }
@@ -43,13 +45,17 @@ export interface PeopleView {
   dataLabel: string | null;
   profiles: { id: string; name: string; areas: string[] }[];
   defaultProfile: string | null;
+  /** workspace.json roles one can be assigned; empty when the team has none. */
+  roles: { id: string; label: string }[];
   rows: PersonRow[];
 }
 
 export interface PeopleAction {
-  action: "provision" | "update" | "profile" | "start" | "stop" | "remove" | "adopt" | "forget";
+  action: "provision" | "update" | "profile" | "role" | "start" | "stop" | "remove" | "adopt" | "forget";
   email: string;
   profile?: string;
+  /** A workspace role id, or "" for "they pick their own" (provision, role). */
+  role?: string;
   keepVolume?: boolean;
   dryRun?: boolean;
 }
@@ -63,15 +69,18 @@ export class People {
   private readonly run: Runner;
   private readonly fetcher?: Fetcher;
   private readonly configDir: string;
+  private readonly roles: () => RoleConfig[];
   private dirCache: { key: string; at: number; people: DirectoryPerson[] } | null = null;
   private platformCache: { key: string; p: Platform } | null = null;
   private me: string | null = null;
 
-  constructor(workspaceRoot: string, opts: { run?: Runner; fetcher?: Fetcher; configDir?: string } = {}) {
+  constructor(workspaceRoot: string, opts: { run?: Runner; fetcher?: Fetcher; configDir?: string; roles?: () => RoleConfig[] } = {}) {
     this.root = workspaceRoot;
     this.run = opts.run || runCli;
     this.fetcher = opts.fetcher;
     this.configDir = opts.configDir || CONFIG_DIR;
+    // Only a team's own roles can be assigned (without any there's just Developer and Reader, nothing to pick).
+    this.roles = opts.roles || (() => { const ws = workspaceConfig(); return ws.rolesConfigured ? ws.roles : []; });
   }
 
 
@@ -104,7 +113,7 @@ export class People {
 
   async view(force = false): Promise<PeopleView> {
     const { cfg, problems, configured } = this.config();
-    const empty: PeopleView = { configured, problems, errors: [], directory: { label: "", type: "", count: null }, roster: null, cluster: null, dataLabel: null, profiles: [], defaultProfile: null, rows: [] };
+    const empty: PeopleView = { configured, problems, errors: [], directory: { label: "", type: "", count: null }, roster: null, cluster: null, dataLabel: null, profiles: [], defaultProfile: null, roles: [], rows: [] };
     if (!cfg) return empty;
     const k = this.platform(cfg);
     const roster = this.roster();
@@ -138,12 +147,12 @@ export class People {
       let needsUpdate = false;
       if (c && r && !templateError) {
         const profile = this.profile(cfg, r.profile);
-        try { needsUpdate = (await k.render({ email, slug: r.slug, profile }, c)).hash !== c.applied; }
+        try { needsUpdate = (await k.render({ email, slug: r.slug, profile, role: r.role || null }, c)).hash !== c.applied; }
         catch (e) { templateError = e; }
       }
       rows.push({
         email, name: d?.name || r?.name || email, active, state,
-        slug: r?.slug || c?.slug || null, profile: r?.profile || c?.profile || null, needsUpdate,
+        slug: r?.slug || c?.slug || null, profile: r?.profile || c?.profile || null, needsUpdate, role: r?.role || null,
         provisionedAt: r?.provisionedAt || null, provisionedBy: r?.provisionedBy || null,
       });
     }
@@ -155,6 +164,7 @@ export class People {
       roster: ros.status === "fulfilled" ? ros.value.status : null, cluster: k.where, dataLabel: k.dataLabel,
       profiles: cfg.profiles.map((p) => ({ id: p.id, name: p.name, areas: p.areas })),
       defaultProfile: cfg.defaultProfile,
+      roles: this.roles().map((r) => ({ id: r.id, label: r.label })),
       rows,
     };
   }
@@ -191,6 +201,14 @@ export class People {
       if (!p) throw httpError(400, `There's no profile "${want}".`);
       return p;
     };
+    // undefined keeps `fallback`; "" means they pick their own.
+    const pickRole = (id: string | undefined, fallback?: string | null): string | null => {
+      const want = id === undefined ? fallback || null : id || null;
+      if (!want) return null;
+      const roles = this.roles();
+      if (!roles.some((r) => r.id === want)) throw httpError(400, roles.length ? `There's no role "${want}" (this workspace has ${roles.map((r) => r.id).join(", ")}).` : "This workspace has no roles to assign (workspace.json roles).");
+      return want;
+    };
 
     switch (a.action) {
       case "provision": {
@@ -198,36 +216,42 @@ export class People {
         if (c) throw httpError(409, `${email} already has a dashboard (${c.name}).`);
         const doc = roster.load();
         const profile = pickProfile(a.profile, doc.people[email]?.profile);
+        const role = pickRole(a.role, doc.people[email]?.role);
         const slug = doc.people[email]?.slug || uniqueSlug(email, doc, cluster);
-        const rendered = await k.render({ email, slug, profile }, null);
+        const rendered = await k.render({ email, slug, profile, role }, null);
         const objects = rendered.objects;
         const output = await k.apply(rendered, dryRun);
         if (dryRun) return { ok: true, dryRun, output, objects };
         const name = await this.nameOf(cfg, email);
         roster.update((d) => {
           const was = d.people[email];
-          d.people[email] = { name, slug, profile: profile.id, provisionedAt: was?.provisionedAt || at, provisionedBy: was?.provisionedBy || by, ...(was ? { updatedAt: at, updatedBy: by } : {}) };
+          d.people[email] = { name, slug, profile: profile.id, ...(role ? { role } : {}), provisionedAt: was?.provisionedAt || at, provisionedBy: was?.provisionedBy || by, ...(was ? { updatedAt: at, updatedBy: by } : {}) };
           return true;
         });
         return { ok: true, dryRun, output };
       }
       case "update":
-      case "profile": {
+      case "profile":
+      case "role": {
         const r = roster.load().people[email];
         if (!r) throw httpError(404, `${email} isn't in the roster. Adopt or provision them first.`);
         const profile = pickProfile(a.action === "profile" ? a.profile : r.profile);
+        // A role change re-applies like a profile change: their dashboard restarts with the new DASHBOARD_ROLE.
+        const role = a.action === "role" ? pickRole(a.role ?? "") : r.role || null;
         let output = "";
         let objects: unknown[] | undefined;
         if (c) {
-          const rendered = await k.render({ email, slug: r.slug, profile }, c);
+          const rendered = await k.render({ email, slug: r.slug, profile, role }, c);
           objects = rendered.objects;
           output = await k.apply(rendered, dryRun);
         } else if (a.action === "update") throw httpError(404, `${email} has no dashboard on the cluster. Provision it again.`);
-        if (dryRun) return { ok: true, dryRun, output: output || `Would set ${email}'s profile to ${profile.name}.`, objects };
-        if (r.profile !== profile.id) {
+        const would = a.action === "role" ? (role ? `Would set ${email}'s role to ${role}.` : `Would let ${email} pick their own role.`) : `Would set ${email}'s profile to ${profile.name}.`;
+        if (dryRun) return { ok: true, dryRun, output: output || would, objects };
+        if (r.profile !== profile.id || (r.role || null) !== role) {
           roster.update((d) => {
             if (!d.people[email]) return false;
-            d.people[email] = { ...d.people[email], profile: profile.id, updatedAt: at, updatedBy: by };
+            const { role: _was, ...rest } = d.people[email];
+            d.people[email] = { ...rest, profile: profile.id, ...(role ? { role } : {}), updatedAt: at, updatedBy: by };
             return true;
           });
         }

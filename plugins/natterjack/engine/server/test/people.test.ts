@@ -231,6 +231,9 @@ test("Roster: describe() lists who was added, removed, or changed profile", () =
   assert.deepEqual(describe({ people: { "a@x.io": p("m"), "b@x.io": p("m") } }, { people: { "a@x.io": p("f"), "c@x.io": p("m") } }),
     ["Changed a@x.io's profile to f", "Added c@x.io (m)", "Removed b@x.io"]);
   assert.deepEqual(describe({ people: { "a@x.io": p("m") } }, { people: { "a@x.io": { ...p("m"), name: "New" } } }), ["Updated people.json"]);
+  assert.deepEqual(describe({ people: { "a@x.io": p("m") } }, { people: { "a@x.io": { ...p("m"), role: "finance" }, "c@x.io": { ...p("m"), role: "ops" } } }),
+    ["Changed a@x.io's role to finance", "Added c@x.io (m, role ops)"]);
+  assert.deepEqual(describe({ people: { "a@x.io": { ...p("m"), role: "finance" } } }, { people: { "a@x.io": p("m") } }), ["Let a@x.io pick their own role"]);
 });
 
 // ------------------------------------------------------------------ the page
@@ -302,6 +305,51 @@ test("People: changing a profile re-applies and keeps them running; a template c
   await people.act({ action: "update", email: "bo@acme.com" });
   bo = (await people.view()).rows.find((r) => r.email === "bo@acme.com")!;
   assert.equal(bo.needsUpdate, false);
+});
+
+const ROLES = [{ id: "finance", label: "Finance" }, { id: "product", label: "Product" }].map((r) => ({ ...r, description: "", profile: "reader" as const, outputStyle: null, hiddenPages: [], hiddenSkills: [] }));
+
+test("People: a role assigned at set-up goes in the roster and reaches their dashboard as DASHBOARD_ROLE; changing it re-applies", async () => {
+  const { root, cfg } = workspace();
+  const { run, fetcher, state, roster } = world(cfg);
+  const people = new People(root, { run, fetcher, configDir: cfg, roles: () => ROLES });
+  const roleEnv = (o: any[]) => o.find((x) => x.kind === "StatefulSet").spec.template.spec.containers[0].env.find((e: any) => e.name === "DASHBOARD_ROLE");
+  assert.deepEqual((await people.view()).roles, [{ id: "finance", label: "Finance" }, { id: "product", label: "Product" }]);
+
+  const preview = await people.act({ action: "provision", email: "ana@acme.com", role: "finance", dryRun: true });
+  assert.deepEqual(roleEnv(preview.objects!), { name: "DASHBOARD_ROLE", value: "finance" });
+  await people.act({ action: "provision", email: "ana@acme.com", role: "finance" });
+  assert.equal(roster().people["ana@acme.com"].role, "finance");
+  assert.equal((await people.view()).rows.find((r) => r.email === "ana@acme.com")!.role, "finance");
+
+  // Left to them (the default): no role in the roster, no DASHBOARD_ROLE.
+  await people.act({ action: "provision", email: "bo@acme.com" });
+  assert.equal("role" in roster().people["bo@acme.com"], false);
+  assert.equal(roleEnv([state.statefulsets.find((s) => s.metadata.name === "dashboard-bo")]), undefined);
+
+  await assert.rejects(people.act({ action: "provision", email: "cy@acme.com", role: "sales" }), /no role "sales" \(this workspace has finance, product\)/);
+  await assert.rejects(people.act({ action: "role", email: "ana@acme.com", role: "sales" }), /no role "sales"/);
+  assert.equal(roster().people["cy@acme.com"], undefined);
+
+  // Changing it re-applies like a profile change, and a profile change keeps it.
+  await people.act({ action: "start", email: "ana@acme.com" });
+  await people.act({ action: "role", email: "ana@acme.com", role: "product" });
+  let ana = state.statefulsets.find((s) => s.metadata.name === "dashboard-ana");
+  assert.deepEqual(roleEnv([ana]), { name: "DASHBOARD_ROLE", value: "product" });
+  assert.equal(ana.spec.replicas, 1, "running stays running");
+  assert.equal(roster().people["ana@acme.com"].role, "product");
+  await people.act({ action: "profile", email: "ana@acme.com", profile: "finance" });
+  ana = state.statefulsets.find((s) => s.metadata.name === "dashboard-ana");
+  assert.deepEqual(roleEnv([ana]), { name: "DASHBOARD_ROLE", value: "product" });
+  // "" hands it back to them.
+  await people.act({ action: "role", email: "ana@acme.com", role: "" });
+  assert.equal(roleEnv([state.statefulsets.find((s) => s.metadata.name === "dashboard-ana")]), undefined);
+  assert.equal("role" in roster().people["ana@acme.com"], false);
+  assert.equal((await people.view()).rows.find((r) => r.email === "ana@acme.com")!.needsUpdate, false);
+
+  // A workspace without roles has none to assign.
+  const none = new People(root, { run, fetcher, configDir: cfg, roles: () => [] });
+  await assert.rejects(none.act({ action: "role", email: "ana@acme.com", role: "finance" }), /no roles to assign/);
 });
 
 test("People: left, unmanaged and missing rows, and their actions", async () => {
@@ -456,6 +504,7 @@ test("People (App Service): a hand-made Web App can be adopted; provision previe
   assert.equal(p.plan, "dashboard-asp-big", "the profile's parameters win over hosting.json's");
   assert.equal(p.storageAccount, "confirmdashdata");
   assert.equal(p.maxConcurrentRuns, 1);
+  assert.equal("role" in p, false, "no role parameter unless one is assigned (older templates don't have it)");
   assert.deepEqual(p.areaSettings, [{ name: "KNOWLEDGE_COMPANY_KEY", secretName: "nj-area-company" }, { name: "KNOWLEDGE_FINANCE_KEY", secretName: "nj-area-finance" }]);
   assert.match(p.applied, /^[0-9a-f]{12}$/);
   assert.ok(az.deployments[0].whatIf);
@@ -476,8 +525,9 @@ test("People (App Service): a hand-made Web App can be adopted; provision previe
 test("People (App Service): stop, start, and remove keeping or deleting the file share", async () => {
   const { root, cfg } = appServiceWorkspace();
   const az = azWorld(cfg);
-  const people = new People(root, { run: az.run, fetcher: az.fetcher, configDir: cfg });
-  await people.act({ action: "provision", email: "bo@acme.com" });
+  const people = new People(root, { run: az.run, fetcher: az.fetcher, configDir: cfg, roles: () => ROLES });
+  await people.act({ action: "provision", email: "bo@acme.com", role: "finance" });
+  assert.equal(az.deployments.at(-1)!.params.role, "finance", "the template turns it into DASHBOARD_ROLE");
   await people.act({ action: "stop", email: "bo@acme.com" });
   assert.equal(az.apps["dash-bo"].state, "Stopped");
   assert.equal((await people.view()).rows.find((r) => r.email === "bo@acme.com")!.state, "stopped");

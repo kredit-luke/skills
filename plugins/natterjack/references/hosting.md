@@ -35,6 +35,7 @@ Hosted mode is set by the container's environment, never by `workspace.json`:
 | `DASHBOARD_BIND` | `0.0.0.0` | `127.0.0.1` when the proxy is a sidecar in the same pod (the Kubernetes template does this). |
 | `DASHBOARD_CLAUDE_BIN` | `claude` on PATH | The exact CLI to run. The image sets it. |
 | `DASHBOARD_MAX_CONCURRENT_RUNS` | `deck.json` `limits` | 1–10. Caps this person's runs at once, over `deck.json` and their own settings. The People page sets it from their profile. |
+| `DASHBOARD_ROLE` | none | A `workspace.json` role id. That role is theirs from the first start: they're never asked, and Settings shows it without a way to change it. The People page sets it when you assign a role. An id that isn't one of the team's roles is logged and ignored. |
 
 The dashboard refuses to start when `DASHBOARD_HOSTED` is on and the URL or secret is missing. `GET /healthz` answers `ok` without any of the checks, for liveness probes.
 
@@ -133,8 +134,8 @@ It puts three things side by side, one row per person:
 - **Where they run:** each person's StatefulSet (Kubernetes) or Web App (App Service), the same ones the router finds, so the page shows whether it's running or stopped.
 
 What it shows and offers:
-- **Not set up:** in the directory, no dashboard. **Set up…** picks a profile and applies the template. To set up someone the list doesn't show (the directory isn't readable yet, or misses them), type their email in the box at the top; it has to be in the company's domain.
-- **Running / Stopped:** **Start**, **Stop**, change the **Profile** (re-applies and restarts it), **Remove** (keeps their volume or file share unless you tick "also delete").
+- **Not set up:** in the directory, no dashboard. **Set up…** picks a profile (and a role, when `workspace.json` has `roles`) and applies the template. To set up someone the list doesn't show (the directory isn't readable yet, or misses them), type their email in the box at the top; it has to be in the company's domain.
+- **Running / Stopped:** **Start**, **Stop**, change the **Profile** or **Role** (re-applies and restarts it), **Remove** (keeps their volume or file share unless you tick "also delete").
 - **Needs update:** the template, their profile or the image changed since it was applied. **Update** re-applies it.
 - **Left:** their account is suspended or gone, or they've left the OU. **Remove** them.
 - **Not in roster:** a dashboard someone made by hand. **Adopt** adds it to the roster without changing it; **Update** then brings it in line with the template.
@@ -143,6 +144,8 @@ What it shows and offers:
 Every change is checked first: the page shows the platform's own preview (`kubectl apply --dry-run=server`, or `az deployment group what-if`) and only applies after you confirm. Deleting someone's volume or file share asks you to type their email.
 
 **Profiles** are what a person can do, set per person on the page: which knowledge areas they get, their run limit, and their size. On Kubernetes an area is a Secret mounted with `envFrom` and the size is the `dashboard` container's limits; on App Service an area is a Key Vault reference in the app's settings and the size is which plan they're on. Everything else in the template is yours.
+
+**Roles** (`workspace.json` `roles`, [config.md](config.md#workspacejson-who-this-workspace-is)) can be assigned on the page too. The default, **Let them choose**, leaves it to the person as on a local dashboard. An assigned role is stored in `people.json` and passed as `DASHBOARD_ROLE`, and the person can't change it; on App Service it's the template's `role` parameter, so a copy of `app-service-person.bicep` from before roles needs that parameter added.
 
 ### Setting it up
 

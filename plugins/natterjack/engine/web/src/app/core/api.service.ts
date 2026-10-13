@@ -26,7 +26,7 @@ export class ApiService {
             workspace: { name: '', title: 'Workspace Dashboard', logo: null, logoAlt: '', favicon: null, copy: {} },
             issues: { kind: 'none', label: 'Issues', configured: false, ticketPattern: '^[A-Z][A-Z0-9]*-\\d+$', urlTemplate: null },
             meetings: null,
-            profile: { current: 'developer', role: 'developer', roleLabel: 'Developer', ask: false, hiddenPages: [] },
+            profile: { current: 'developer', role: 'developer', roleLabel: 'Developer', ask: false, roleLocked: false, hiddenPages: [] },
             hosted: null,
           });
           return b;

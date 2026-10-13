@@ -15,7 +15,7 @@ process.env.WORKSPACE_ROOT = ROOT;
 process.env.DASHBOARD_LEDGER_DIR = LEDGER;
 
 const { workspaceConfig } = await import("../src/config.ts");
-const { readProfile, setRole, syncSkillOverrides } = await import("../src/profile.ts");
+const { lockedRole, readProfile, reapplyProfile, refuseRoleChange, setRole, ROLE_LOCKED, syncSkillOverrides } = await import("../src/profile.ts");
 type Role = import("../src/config.ts").RoleConfig;
 
 const role = (id: string, profile: "developer" | "reader", hiddenSkills: string[] = [], outputStyle: string | null = null): Role =>
@@ -176,4 +176,41 @@ test("a profile without a role still asks; an unknown role is refused; a role th
   fs.writeFileSync(path.join(ledger, "profile.json"), JSON.stringify({ profile: "reader", chosenAt: null, skillsOff: [] }));
   p = readProfile(ledger, roles);
   assert.deepEqual([p.chosen, p.roleChosen, p.profile, p.current.id], [true, false, "reader", "product"]);
+});
+
+test("DASHBOARD_ROLE: an assigned role is applied at startup over what they picked, and they can't change it", () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "dash-profile-lock-"));
+  const ledger = path.join(root, ".claude", "ledger");
+  const roles = [role("eng", "developer"), role("finance", "reader", ["run"], "Concise")];
+  const warnings: string[] = [];
+  const warn = (m: string) => warnings.push(m);
+
+  assert.equal(lockedRole(roles, {}, warn), null, "not set: they pick their own");
+  assert.equal(lockedRole(roles, { DASHBOARD_ROLE: " finance " }, warn), "finance");
+  assert.equal(lockedRole(roles, { DASHBOARD_ROLE: "sales" }, warn), null, "unknown: as if it weren't set");
+  assert.match(warnings.join("\n"), /DASHBOARD_ROLE "sales" isn't one of this workspace's roles \(eng, finance\)/);
+
+  // Nothing picked yet: the locked role is theirs from the first start, with its skills and style.
+  reapplyProfile(ledger, root, roles, "finance");
+  let p = readProfile(ledger, roles);
+  assert.deepEqual([p.roleChosen, p.current.id, p.profile, p.skillsOff, p.outputStyle], [true, "finance", "reader", ["run"], "Concise"]);
+  assert.deepEqual(JSON.parse(fs.readFileSync(path.join(root, ".claude", "settings.local.json"), "utf-8")), { skillOverrides: { run: "off" }, outputStyle: "Concise" });
+
+  // They'd picked eng before the role was assigned: the assigned one wins on the next start.
+  setRole(ledger, root, { role: "eng" }, roles);
+  assert.equal(readProfile(ledger, roles).current.id, "eng");
+  reapplyProfile(ledger, root, roles, "finance");
+  p = readProfile(ledger, roles);
+  assert.deepEqual([p.current.id, p.skillsOff], ["finance", ["run"]]);
+  // Without a lock nothing is forced.
+  setRole(ledger, root, { role: "eng" }, roles);
+  reapplyProfile(ledger, root, roles, null);
+  assert.equal(readProfile(ledger, roles).current.id, "eng");
+
+  // POST /api/profile: any other role (or a bare profile) is refused; the same role, or no lock, goes through.
+  assert.equal(refuseRoleChange("finance", { role: "eng" }), ROLE_LOCKED);
+  assert.equal(refuseRoleChange("finance", { profile: "developer" }), ROLE_LOCKED);
+  assert.equal(refuseRoleChange("finance", { role: "finance" }), null);
+  assert.equal(refuseRoleChange(null, { role: "eng" }), null);
+  assert.equal(ROLE_LOCKED, "Your role is set by whoever manages your hosted dashboard.");
 });

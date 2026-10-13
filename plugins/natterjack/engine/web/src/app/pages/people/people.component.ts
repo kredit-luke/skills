@@ -17,7 +17,8 @@ const TAG: Record<PersonState, string> = {
 };
 type Filter = 'set-up' | 'not-set-up' | 'attention' | 'all';
 
-interface Pending { row: PersonRow; action: PeopleActionName; profile?: string; keepVolume?: boolean; preview: PeopleActionResponse | null; error: string | null; busy: boolean; confirmText: string }
+/** `role`: a workspace role id, or '' for "they pick their own". */
+interface Pending { row: PersonRow; action: PeopleActionName; profile?: string; role?: string; keepVolume?: boolean; preview: PeopleActionResponse | null; error: string | null; busy: boolean; confirmText: string }
 
 /**
  * Who in the company has a hosted dashboard (references/hosting.md): the directory (the
@@ -86,7 +87,7 @@ interface Pending { row: PersonRow; action: PeopleActionName; profile?: string; 
 
       <div class="panel">
         <table class="people">
-          <thead><tr><th>Person</th><th>Dashboard</th><th>Profile</th><th>Set up</th><th></th></tr></thead>
+          <thead><tr><th>Person</th><th>Dashboard</th><th title="hosting.json profiles: memory, CPU, runs at once and areas">Profile</th>@if (hasRoles()) { <th title="workspace.json roles: what their dashboard shows them; they can't change it">Role</th> }<th>Set up</th><th></th></tr></thead>
           <tbody>
             @for (r of shown(); track r.email) {
               <tr [class.dim]="r.state === 'not-set-up'">
@@ -104,6 +105,18 @@ interface Pending { row: PersonRow; action: PeopleActionName; profile?: string; 
                     </select>
                   }
                 </td>
+                @if (hasRoles()) {
+                  <td>
+                    @if (r.state === 'not-set-up' || r.state === 'unmanaged' || r.state === 'missing') {
+                      <span class="muted">{{ r.role ? roleLabel(r.role) : '—' }}</span>
+                    } @else {
+                      <select [value]="r.role || ''" (change)="ask(r, 'role', undefined, $any($event.target).value); $any($event.target).value = r.role || ''">
+                        <option value="">They choose</option>
+                        @for (ro of view()!.roles; track ro.id) { <option [value]="ro.id">{{ ro.label }}</option> }
+                      </select>
+                    }
+                  </td>
+                }
                 <td class="muted">@if (r.provisionedAt) { {{ rel(r.provisionedAt) }} by {{ r.provisionedBy }} }</td>
                 <td class="acts">
                   @switch (r.state) {
@@ -120,7 +133,7 @@ interface Pending { row: PersonRow; action: PeopleActionName; profile?: string; 
                 </td>
               </tr>
             } @empty {
-              <tr><td colspan="5" class="empty">{{ query() ? 'Nobody matches.' : filter() === 'set-up' ? 'Nobody has a hosted dashboard yet. Find someone under "Not set up".' : 'Nobody here.' }}</td></tr>
+              <tr><td [attr.colspan]="hasRoles() ? 6 : 5" class="empty">{{ query() ? 'Nobody matches.' : filter() === 'set-up' ? 'Nobody has a hosted dashboard yet. Find someone under "Not set up".' : 'Nobody here.' }}</td></tr>
             }
           </tbody>
         </table>
@@ -140,6 +153,15 @@ interface Pending { row: PersonRow; action: PeopleActionName; profile?: string; 
                 @for (p of view()!.profiles; track p.id) { <option [value]="p.id">{{ p.name }}@if (p.areas.length) { ({{ p.areas.join(', ') }}) }</option> }
               </select>
             </label>
+            @if (hasRoles()) {
+              <label>Role
+                <select [value]="pd.role || ''" (change)="setPending({ role: $any($event.target).value })">
+                  <option value="">Let them choose</option>
+                  @for (ro of view()!.roles; track ro.id) { <option [value]="ro.id">{{ ro.label }}</option> }
+                </select>
+              </label>
+              <p class="muted">An assigned role is fixed: they see it in Settings but can't change it.</p>
+            }
           }
           @if (pd.action === 'remove') {
             <label class="check"><input type="checkbox" [checked]="!pd.keepVolume" (change)="setPending({ keepVolume: !$any($event.target).checked })" />
@@ -148,7 +170,7 @@ interface Pending { row: PersonRow; action: PeopleActionName; profile?: string; 
               <label>Type <b>{{ pd.row.email }}</b> to confirm <input type="text" [value]="pd.confirmText" (input)="setPending({ confirmText: $any($event.target).value })" /></label>
             }
           }
-          @if (pd.action === 'profile' || pd.action === 'update') { <p class="muted">This restarts their dashboard. A run in progress is interrupted (they can reply to it to carry on).</p> }
+          @if (pd.action === 'profile' || pd.action === 'role' || pd.action === 'update') { <p class="muted">This restarts their dashboard. A run in progress is interrupted (they can reply to it to carry on).</p> }
           @if (pd.error) { <div class="warn-note err">{{ pd.error }}</div> }
           @if (pd.preview) { <div class="pv-h">Preview (nothing has changed yet):</div><pre class="pv">{{ pd.preview.output || 'OK' }}</pre> }
           @else if (pd.busy) { <div class="muted">Checking the change with {{ view()!.cluster }}…</div> }
@@ -183,7 +205,7 @@ export class PeopleComponent implements OnInit {
 
   readonly sub = computed(() => {
     const v = this.view();
-    if (!v?.configured || v.problems.length) return 'Who has a hosted dashboard, and their profile.';
+    if (!v?.configured || v.problems.length) return 'Who has a hosted dashboard, and their profile and role.';
     const n = v.rows.filter((r) => r.state !== 'not-set-up').length;
     return `${n} with a hosted dashboard · ${v.directory.label}${v.directory.count !== null ? ` (${v.directory.count} people)` : ''} · ${v.cluster}`;
   });
@@ -218,23 +240,26 @@ export class PeopleComponent implements OnInit {
   tag(s: PersonState) { return TAG[s]; }
   rel(t: string) { return relTime(t); }
   profileName(id: string | null) { return this.view()?.profiles.find((p) => p.id === id)?.name || id; }
+  readonly hasRoles = computed(() => !!this.view()?.roles.length);
+  roleLabel(id: string) { return this.view()?.roles.find((r) => r.id === id)?.label || id; }
   sourceLabel(s: string) { return ({ directory: 'Directory', roster: 'Roster', cluster: 'Dashboards', template: 'Template' } as Record<string, string>)[s] || s; }
-  confirmLabel(a: PeopleActionName) { return ({ provision: 'Set up', update: 'Update', profile: 'Change profile', start: 'Start', stop: 'Stop', remove: 'Remove', adopt: 'Adopt', forget: 'Forget' } as Record<string, string>)[a]; }
+  confirmLabel(a: PeopleActionName) { return ({ provision: 'Set up', update: 'Update', profile: 'Change profile', role: 'Change role', start: 'Start', stop: 'Stop', remove: 'Remove', adopt: 'Adopt', forget: 'Forget' } as Record<string, string>)[a]; }
   title(p: Pending) {
     const who = p.row.name;
-    return ({ provision: `Set up a dashboard for ${who}`, update: `Update ${who}'s dashboard`, profile: `Change ${who}'s profile to ${this.profileName(p.profile || null)}`, start: `Start ${who}'s dashboard`, stop: `Stop ${who}'s dashboard`, remove: `Remove ${who}'s dashboard`, adopt: `Add ${who} to the roster`, forget: `Forget ${who}` } as Record<string, string>)[p.action];
+    return ({ provision: `Set up a dashboard for ${who}`, update: `Update ${who}'s dashboard`, profile: `Change ${who}'s profile to ${this.profileName(p.profile || null)}`, role: p.role ? `Change ${who}'s role to ${this.roleLabel(p.role)}` : `Let ${who} choose their role`, start: `Start ${who}'s dashboard`, stop: `Stop ${who}'s dashboard`, remove: `Remove ${who}'s dashboard`, adopt: `Add ${who} to the roster`, forget: `Forget ${who}` } as Record<string, string>)[p.action];
   }
 
   addByEmail(email: string): void {
     const e = email.trim().toLowerCase();
     if (!e) return;
-    const row = this.view()?.rows.find((r) => r.email === e) || { email: e, name: e, active: null, state: 'not-set-up' as const, slug: null, profile: null, needsUpdate: false, provisionedAt: null, provisionedBy: null };
+    const row = this.view()?.rows.find((r) => r.email === e) || { email: e, name: e, active: null, state: 'not-set-up' as const, slug: null, profile: null, needsUpdate: false, role: null, provisionedAt: null, provisionedBy: null };
     this.ask(row, 'provision');
   }
 
-  ask(row: PersonRow, action: PeopleActionName, profile?: string): void {
+  ask(row: PersonRow, action: PeopleActionName, profile?: string, role?: string): void {
     if (action === 'profile' && profile === row.profile) return;
-    this.pending.set({ row, action, profile: profile || row.profile || this.view()?.defaultProfile || undefined, keepVolume: true, preview: null, error: null, busy: false, confirmText: '' });
+    if (action === 'role' && role === (row.role || '')) return;
+    this.pending.set({ row, action, profile: profile || row.profile || this.view()?.defaultProfile || undefined, role: role ?? row.role ?? '', keepVolume: true, preview: null, error: null, busy: false, confirmText: '' });
     void this.previewIt();
   }
   setPending(patch: Partial<Pending>): void {
@@ -242,7 +267,7 @@ export class PeopleComponent implements OnInit {
     if (!p) return;
     const next = { ...p, ...patch };
     this.pending.set(next);
-    if ('profile' in patch || 'keepVolume' in patch) void this.previewIt();
+    if ('profile' in patch || 'role' in patch || 'keepVolume' in patch) void this.previewIt();
   }
   cancel(): void { this.previewSeq++; this.pending.set(null); }
 
@@ -254,7 +279,8 @@ export class PeopleComponent implements OnInit {
   });
 
   private body(p: Pending, dryRun: boolean) {
-    return { action: p.action, email: p.row.email, profile: p.profile, keepVolume: p.keepVolume, dryRun };
+    const role = p.action === 'provision' || p.action === 'role' ? { role: p.role ?? '' } : {};
+    return { action: p.action, email: p.row.email, profile: p.profile, ...role, keepVolume: p.keepVolume, dryRun };
   }
 
   /** Bumped by each preview, cancel and confirm: only the latest preview's answer is shown. */
