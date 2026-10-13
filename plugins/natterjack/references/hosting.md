@@ -133,7 +133,7 @@ It puts three things side by side, one row per person:
 - **Where they run:** each person's StatefulSet (Kubernetes) or Web App (App Service), the same ones the router finds, so the page shows whether it's running or stopped.
 
 What it shows and offers:
-- **Not set up:** in the directory, no dashboard. **Set up…** picks a profile and applies the template.
+- **Not set up:** in the directory, no dashboard. **Set up…** picks a profile and applies the template. To set up someone the list doesn't show (the directory isn't readable yet, or misses them), type their email in the box at the top; it has to be in the company's domain.
 - **Running / Stopped:** **Start**, **Stop**, change the **Profile** (re-applies and restarts it), **Remove** (keeps their volume or file share unless you tick "also delete").
 - **Needs update:** the template, their profile or the image changed since it was applied. **Update** re-applies it.
 - **Left:** their account is suspended or gone, or they've left the OU. **Remove** them.

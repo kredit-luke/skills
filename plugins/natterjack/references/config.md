@@ -331,7 +331,7 @@ On Azure App Service instead (one Web App per person, deployed from `templates/h
 
 | Key | Notes |
 |---|---|
-| `directory.type` | `google` (Google Workspace), `entra` (Microsoft Entra ID) or `manual` (type emails in on the page). |
+| `directory.type` | `google` (Google Workspace), `entra` (Microsoft Entra ID) or `manual` (no directory). With any type you can also type an email in on the page, e.g. while nobody can read the directory yet. |
 | `directory.domain` | The company's email domain. Everyone in it is listed; an engineer picks who gets a dashboard. Only addresses in it can be set up. |
 | `directory.orgUnit` | Google only: list one OU (and the OUs under it), e.g. `/Product`. |
 | `directory.department` / `directory.adminUnit` | Entra only: list one department (by name), or the members of one administrative unit (its id). |

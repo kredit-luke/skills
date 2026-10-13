@@ -77,12 +77,11 @@ interface Pending { row: PersonRow; action: PeopleActionName; profile?: string; 
           }
         </div>
         <input type="search" placeholder="Search people" [value]="query()" (input)="query.set($any($event.target).value)" />
-        @if (view()!.directory.type === 'manual') {
-          <form class="add" (submit)="$event.preventDefault(); addByEmail(addInput.value); addInput.value = ''">
-            <input #addInput type="email" placeholder="name@company.com" required />
-            <button class="btn sm" type="submit">Set up…</button>
-          </form>
-        }
+        <!-- Every directory type: the directory may be unreadable yet (no admin role), or miss someone. -->
+        <form class="add" (submit)="$event.preventDefault(); addByEmail(addInput.value); addInput.value = ''">
+          <input #addInput type="email" placeholder="name@company.com" required />
+          <button class="btn sm" type="submit">Set up…</button>
+        </form>
       </div>
 
       <div class="panel">
