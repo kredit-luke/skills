@@ -100,8 +100,8 @@ interface Pending { row: PersonRow; action: PeopleActionName; profile?: string; 
                   @if (r.state === 'not-set-up' || r.state === 'unmanaged' || r.state === 'missing') {
                     <span class="muted">{{ profileName(r.profile) || '—' }}</span>
                   } @else {
-                    <select [value]="r.profile || ''" (change)="ask(r, 'profile', $any($event.target).value); $any($event.target).value = r.profile || ''">
-                      @for (p of view()!.profiles; track p.id) { <option [value]="p.id">{{ p.name }}</option> }
+                    <select (change)="ask(r, 'profile', $any($event.target).value); $any($event.target).value = r.profile || ''">
+                      @for (p of view()!.profiles; track p.id) { <option [value]="p.id" [selected]="p.id === r.profile">{{ p.name }}</option> }
                     </select>
                   }
                 </td>
@@ -110,10 +110,10 @@ interface Pending { row: PersonRow; action: PeopleActionName; profile?: string; 
                     @if (r.state === 'not-set-up' || r.state === 'unmanaged' || r.state === 'missing') {
                       <span class="muted">{{ r.role ? roleLabel(r.role) : '—' }}</span>
                     } @else {
-                      <select [value]="r.role || ''" (change)="ask(r, 'role', undefined, $any($event.target).value); $any($event.target).value = r.role || ''">
-                        <option value="">They choose</option>
-                        @if (r.role && !knownRole(r.role)) { <option [value]="r.role">{{ r.role }} (removed)</option> }
-                        @for (ro of view()!.roles; track ro.id) { <option [value]="ro.id">{{ ro.label }}</option> }
+                      <select (change)="ask(r, 'role', undefined, $any($event.target).value); $any($event.target).value = r.role || ''">
+                        <option value="" [selected]="!r.role">They choose</option>
+                        @if (r.role && !knownRole(r.role)) { <option [value]="r.role" selected>{{ r.role }} (removed)</option> }
+                        @for (ro of view()!.roles; track ro.id) { <option [value]="ro.id" [selected]="ro.id === r.role">{{ ro.label }}</option> }
                       </select>
                     }
                   </td>
@@ -150,15 +150,15 @@ interface Pending { row: PersonRow; action: PeopleActionName; profile?: string; 
         <div class="dbody">
           @if (pd.action === 'provision') {
             <label>Profile
-              <select [value]="pd.profile" (change)="setPending({ profile: $any($event.target).value })">
-                @for (p of view()!.profiles; track p.id) { <option [value]="p.id">{{ p.name }}@if (p.areas.length) { ({{ p.areas.join(', ') }}) }</option> }
+              <select (change)="setPending({ profile: $any($event.target).value })">
+                @for (p of view()!.profiles; track p.id) { <option [value]="p.id" [selected]="p.id === pd.profile">{{ p.name }}@if (p.areas.length) { ({{ p.areas.join(', ') }}) }</option> }
               </select>
             </label>
             @if (view()!.roles.length) {
               <label>Role
-                <select [value]="pd.role || ''" (change)="setPending({ role: $any($event.target).value })">
-                  <option value="">Let them choose</option>
-                  @for (ro of view()!.roles; track ro.id) { <option [value]="ro.id">{{ ro.label }}</option> }
+                <select (change)="setPending({ role: $any($event.target).value })">
+                  <option value="" [selected]="!pd.role">Let them choose</option>
+                  @for (ro of view()!.roles; track ro.id) { <option [value]="ro.id" [selected]="ro.id === pd.role">{{ ro.label }}</option> }
                 </select>
               </label>
               <p class="muted">An assigned role is fixed: they see it in Settings but can't change it.</p>
