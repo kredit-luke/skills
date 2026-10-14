@@ -64,10 +64,13 @@ export class GithubLogin {
   private out = "";
   private expiry: NodeJS.Timeout | null = null;
   private state: GithubLoginStatus = { state: "idle" };
+  /** Bumped by every start and cancel: a finish that outlived its sign-in checks it and stops. */
+  private gen = 0;
 
   /** Start a sign-in (dropping any unfinished one) and return the code to enter on GitHub. */
   async start(email?: string | null): Promise<GithubLoginStatus> {
     this.cancel();
+    const gen = this.gen;
     // `workflow` too: without it GitHub refuses a push that touches .github/workflows.
     const args = ["auth", "login", "--hostname", GITHUB_HOST, "--git-protocol", "https", "--web", "--skip-ssh-key", "--insecure-storage", "--scopes", "workflow"];
     const child = spawnGh(args, { env: ghEnv(), stdio: ["pipe", "pipe", "pipe"], windowsHide: true });
@@ -79,7 +82,7 @@ export class GithubLogin {
     // A gh that asks for Enter before polling (it shouldn't without a terminal) gets one.
     child.stdin?.end("\n");
     child.on("error", (e) => { if (this.child === child) this.fail(`Couldn't run the GitHub CLI: ${e.message}`); });
-    child.on("close", (code) => { if (this.child === child) this.finished(code, email); });
+    child.on("close", (code) => { if (this.child === child) this.finished(code, email, gen); });
     this.expiry = setTimeout(() => { this.cancel(); this.state = { state: "failed", message: "The code expired. Start again." }; }, PENDING_MS);
     this.state = { state: "starting" };
 
@@ -103,6 +106,7 @@ export class GithubLogin {
 
   cancel() {
     const child = this.child;
+    this.gen++;
     this.clear();
     this.state = { state: "idle" };
     if (child && child.exitCode === null) child.kill();
@@ -116,22 +120,32 @@ export class GithubLogin {
     return r.ok ? { ok: true, message: "Signed out of GitHub." } : { ok: false, message: `Couldn't sign out${said ? `: ${said.slice(0, 300)}` : "."}` };
   }
 
-  private async finished(code: number | null, email?: string | null) {
+  private async finished(code: number | null, email: string | null | undefined, gen: number) {
     this.clear();
     if (code !== 0) return this.fail(this.lastLine() ? `Sign-in failed: ${this.lastLine()}` : "Sign-in failed. Start again.");
     this.state = { state: "finishing" };
+    // A cancel or a new start while this awaits makes it stale: it must not touch git's config or the state.
+    const stale = () => gen !== this.gen;
+    const said = (r: { out: string; err: string }) => (r.err || r.out).trim().slice(0, 300);
+
     const setup = await gh(["auth", "setup-git", "--hostname", GITHUB_HOST]);
-    if (!setup.ok) return this.fail(`Signed in, but git couldn't be set up to use it: ${(setup.err || setup.out).trim().slice(0, 300)}`);
-    let login: string | null = null;
+    if (stale()) return;
+    if (!setup.ok) return this.fail(`Signed in, but git couldn't be set up to use it: ${said(setup)}`);
+
     const me = await gh(["api", "user"]);
-    try {
-      const user = JSON.parse(me.out);
-      login = user.login;
-      const who = commitIdentity(user, email);
-      await exec("git", ["config", "--global", "user.name", who.name]);
-      await exec("git", ["config", "--global", "user.email", who.email]);
-    } catch {}
-    this.state = { state: "done", login, message: login ? `Signed in to GitHub as @${login}.` : "Signed in to GitHub." };
+    if (stale()) return;
+    let user: { login: string; id: number; name?: string | null } | null = null;
+    try { user = JSON.parse(me.out); } catch {}
+    if (!me.ok || !user || typeof user.login !== "string" || typeof user.id !== "number") {
+      return this.fail(`Signed in, but GitHub didn't say who you are, so the commit name and email aren't set${me.ok ? "" : `: ${said(me)}`}. Sign out and in again.`);
+    }
+    const who = commitIdentity(user, email);
+    for (const [key, value] of [["user.name", who.name], ["user.email", who.email]]) {
+      const r = await exec("git", ["config", "--global", key, value]);
+      if (stale()) return;
+      if (!r.ok) return this.fail(`Signed in as @${user.login}, but git's ${key} couldn't be set: ${said(r)}`);
+    }
+    this.state = { state: "done", login: user.login, message: `Signed in to GitHub as @${user.login}.` };
   }
 
   private fail(message: string) {

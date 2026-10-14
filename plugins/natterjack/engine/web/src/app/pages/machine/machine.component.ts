@@ -206,7 +206,11 @@ export class MachineComponent implements OnInit, OnDestroy {
       const r = await this.api.post<GithubLoginStatus>('/api/github/login', { action: 'start' });
       this.ghCode.set(r.code || null);
       if (r.url) this.ghUrl.set(r.url);
-      if (r.code) { await copyText(r.code); this.toast.show('Code copied'); this.startGithubPoll(); }
+      if (r.code) {
+        if (await copyText(r.code)) this.toast.show('Code copied');
+        else this.toast.error("Couldn't copy the code: copy it from the page.");
+        this.startGithubPoll();
+      }
     } catch (e) { this.toast.error((e as Error).message); }
     finally { this.ghBusy.set(false); }
   }
@@ -217,7 +221,7 @@ export class MachineComponent implements OnInit, OnDestroy {
       let r: GithubLoginStatus;
       try { r = await this.api.post<GithubLoginStatus>('/api/github/login', { action: 'status' }); } catch { return; }
       if (r.state === 'done') { this.endGithub(); this.toast.show(r.message || 'Signed in to GitHub.'); await this.recheck(); }
-      else if (r.state === 'failed') { this.endGithub(); this.toast.error(r.message || 'GitHub sign-in failed.'); }
+      else if (r.state === 'failed') { this.endGithub(); this.toast.error(r.message || 'GitHub sign-in failed.'); await this.recheck(); }
       else if (r.state === 'idle') this.endGithub();
     }, 2000);
   }
