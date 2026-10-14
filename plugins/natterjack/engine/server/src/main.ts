@@ -80,6 +80,7 @@ import { Explore, MAX_SAVE_BYTES, rawType, resolveSafe } from "./explore.ts";
 import { forgetAtlassianKeys } from "./atlassian.ts";
 import { HOSTED_HIDDEN_PAGES, NOT_HOSTED, checkHostedRequest, hostedConfig } from "./hosted.ts";
 import { ClaudeLogin } from "./claude-login.ts";
+import { GithubLogin } from "./github-login.ts";
 import { Models } from "./models/index.ts";
 import { isRoutedId, routeOf } from "./models/routes.ts";
 
@@ -408,6 +409,7 @@ const trackers = new Trackers(LEDGER_DIR);
 const meetings = new Meetings();
 const machine = new Machine(MAIN_WORKSPACE_PATH, { hosted: !!HOSTED });
 const claudeLogin = new ClaudeLogin();
+const githubLogin = new GithubLogin();
 const docSites = new DocSites(MAIN_WORKSPACE_PATH);
 const docsProviders = new DocsProviders(() => ({ ledgerDir: LEDGER_DIR, issues: workspaceConfig().issues }));
 const snapshotSources = new SnapshotSources(() => ({ ledgerDir: LEDGER_DIR, issues: workspaceConfig().issues }));
@@ -1367,6 +1369,14 @@ async function handleApi(req: http.IncomingMessage, res: http.ServerResponse, ur
     if (body.action === "cancel") { claudeLogin.cancel(); return sendJson(res, { ok: true }); }
     return sendError(res, 400, "Unknown action");
   }
+  if (p === "/api/github/login") {
+    // { action: "start" } → the code to enter on GitHub's device page; "status" is polled until done or failed.
+    if (body.action === "start") return sendJson(res, await githubLogin.start(user));
+    if (body.action === "status") return sendJson(res, githubLogin.status());
+    if (body.action === "cancel") { githubLogin.cancel(); return sendJson(res, { ok: true }); }
+    if (body.action === "logout") return sendJson(res, await githubLogin.logout());
+    return sendError(res, 400, "Unknown action");
+  }
   if (p === "/api/restart") {
     // The restart stops this server, ending any turn in flight (it shows as interrupted; replying carries on).
     restartSelf({ script: path.join(DASHBOARD_DIR, "bin", "dashboard.mjs"), ledgerDir: LEDGER_DIR, env: { ...process.env, WORKSPACE_ROOT } });
@@ -1775,6 +1785,7 @@ for (const sig of ["SIGINT", "SIGTERM"] as const) {
   process.on(sig, () => {
     for (const id of runs.live.keys()) runs.cancel(id);
     claudeLogin.cancel();
+    githubLogin.cancel();
     mcpLogin.cancelAll();
     setTimeout(() => process.exit(0), 300);
   });

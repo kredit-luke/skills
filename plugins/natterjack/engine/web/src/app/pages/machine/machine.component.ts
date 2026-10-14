@@ -1,5 +1,5 @@
-import { ChangeDetectionStrategy, Component, HostListener, OnInit, computed, inject, signal } from '@angular/core';
-import type { MachineCheck } from '../../../../../shared/api';
+import { ChangeDetectionStrategy, Component, HostListener, OnDestroy, OnInit, computed, inject, signal } from '@angular/core';
+import type { GithubLoginStatus, MachineCheck } from '../../../../../shared/api';
 import { ApiService } from '../../core/api.service';
 import { CommandsService } from '../../core/commands.service';
 import { DataService } from '../../core/data.service';
@@ -61,7 +61,26 @@ const ICON: Record<string, string> = { ok: '✓', warn: '!', missing: '✕', inf
                       }
                     </div>
                   }
-                } @else if (c.status !== 'ok') {
+                }
+                @if (hosted() && c.signIn === 'github') {
+                  <!-- Hosted GitHub sign-in: GitHub's device flow, so there's nothing to paste back (github-login.ts). -->
+                  <div class="fx signin">
+                    @if (c.status === 'ok' && c.account) {
+                      <button class="btn ghost sm" [disabled]="ghBusy()" (click)="githubSignOut()">Sign out of GitHub</button>
+                    } @else if (c.install) {
+                      @if (!ghCode()) {
+                        <button class="btn primary sm" [disabled]="ghBusy()" (click)="githubSignIn()">{{ ghBusy() ? 'Starting…' : c.install.label }}</button>
+                      } @else {
+                        <ol>
+                          <li>Copy this code: <code class="code" title="Click to copy" (click)="copy(ghCode()!)">{{ ghCode() }}</code></li>
+                          <li><a [href]="ghUrl()" target="_blank" rel="noopener">Open GitHub's device page ↗</a>, enter the code and authorize.</li>
+                        </ol>
+                        <span class="row"><span class="ty">Waiting for GitHub…</span> <button class="btn ghost sm" (click)="cancelGithub()">Cancel</button></span>
+                      }
+                    }
+                  </div>
+                }
+                @if (!hosted() && c.status !== 'ok') {
                   <div class="fx">
                     @if (c.fix) { <code title="Click to copy" (click)="copy(c.fix)">{{ c.fix }}</code> }
                     @if (c.install) { <button class="btn primary sm" [disabled]="installing() === c.id" (click)="install(c)" title="Opens a terminal running this command, so you can see and approve any prompts">{{ c.install.label }}</button> }
@@ -76,7 +95,7 @@ const ICON: Record<string, string> = { ok: '✓', warn: '!', missing: '✕', inf
     }
   `,
 })
-export class MachineComponent implements OnInit {
+export class MachineComponent implements OnInit, OnDestroy {
   readonly data = inject(DataService);
   readonly api = inject(ApiService);
   private readonly toast = inject(ToastService);
@@ -87,10 +106,15 @@ export class MachineComponent implements OnInit {
   /** Hosted Claude sign-in: the URL to open once started, and whether a step is in flight. */
   readonly signInUrl = signal<string | null>(null);
   readonly signingIn = signal(false);
+  /** Hosted GitHub sign-in: the device code and page once started, polled until GitHub says yes. */
+  readonly ghCode = signal<string | null>(null);
+  readonly ghUrl = signal('https://github.com/login/device');
+  readonly ghBusy = signal(false);
+  private ghPoll: ReturnType<typeof setInterval> | null = null;
 
   readonly sub = computed(() => {
     const m = this.data.machine();
-    const what = this.hosted() ? 'What your hosted dashboard has set up, including your Claude sign-in.' : "Everything this computer needs to run the workspace's apps.";
+    const what = this.hosted() ? 'What your hosted dashboard has set up, including your Claude and GitHub sign-ins.' : "Everything this computer needs to run the workspace's apps.";
     if (!m) return what;
     const gpus = (m.gpus || []).map((g) => g.name + (g.vramGb && !g.unified ? ` ${g.vramGb} GB` : '')).join(', ');
     const disk = m.disk ? ` · ${m.disk.freeGb} GB free of ${m.disk.totalGb} GB` : '';
@@ -118,6 +142,7 @@ export class MachineComponent implements OnInit {
   });
 
   ngOnInit(): void { this.data.loadMachine(false); }
+  ngOnDestroy(): void { this.stopGithubPoll(); }
 
   icon(s: string): string { return ICON[s] || '–'; }
   appNames(c: MachineCheck): string { return c.apps.map((k) => this.names()[k] || k).join(', '); }
@@ -172,6 +197,46 @@ export class MachineComponent implements OnInit {
   cancelSignIn(): void {
     this.signInUrl.set(null);
     this.api.post('/api/claude/login', { action: 'cancel' }).catch(() => {});
+  }
+
+  /** Hosted: start `gh auth login` on the server and show GitHub's one-time code. */
+  async githubSignIn(): Promise<void> {
+    this.ghBusy.set(true);
+    try {
+      const r = await this.api.post<GithubLoginStatus>('/api/github/login', { action: 'start' });
+      this.ghCode.set(r.code || null);
+      if (r.url) this.ghUrl.set(r.url);
+      if (r.code) { await copyText(r.code); this.toast.show('Code copied'); this.startGithubPoll(); }
+    } catch (e) { this.toast.error((e as Error).message); }
+    finally { this.ghBusy.set(false); }
+  }
+
+  private startGithubPoll(): void {
+    this.stopGithubPoll();
+    this.ghPoll = setInterval(async () => {
+      let r: GithubLoginStatus;
+      try { r = await this.api.post<GithubLoginStatus>('/api/github/login', { action: 'status' }); } catch { return; }
+      if (r.state === 'done') { this.endGithub(); this.toast.show(r.message || 'Signed in to GitHub.'); await this.recheck(); }
+      else if (r.state === 'failed') { this.endGithub(); this.toast.error(r.message || 'GitHub sign-in failed.'); }
+      else if (r.state === 'idle') this.endGithub();
+    }, 2000);
+  }
+  private stopGithubPoll(): void { if (this.ghPoll) clearInterval(this.ghPoll); this.ghPoll = null; }
+  private endGithub(): void { this.stopGithubPoll(); this.ghCode.set(null); }
+
+  cancelGithub(): void {
+    this.endGithub();
+    this.api.post('/api/github/login', { action: 'cancel' }).catch(() => {});
+  }
+
+  async githubSignOut(): Promise<void> {
+    this.ghBusy.set(true);
+    try {
+      const r = await this.api.post<{ ok: boolean; message: string }>('/api/github/login', { action: 'logout' });
+      if (r.ok) this.toast.show(r.message); else this.toast.error(r.message);
+      await this.recheck();
+    } catch (e) { this.toast.error((e as Error).message); }
+    finally { this.ghBusy.set(false); }
   }
 
   /** Coming back from an install terminal: re-check without making you click. */

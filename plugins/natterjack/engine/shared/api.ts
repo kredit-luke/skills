@@ -805,6 +805,16 @@ export interface MachineCheck {
   id: string; kind: string; group: string; label: string; status: 'ok' | 'warn' | 'missing' | 'info';
   version?: string; required?: string; detail?: string; fix?: string; apps: string[];
   install?: { label: string; cmd: string; cwd?: string } | null; action?: 'setup';
+  /** Hosted: this check's sign-in happens in the page (github-login.ts); `account` is who's signed in. */
+  signIn?: 'github'; account?: string;
+}
+/**
+ * POST /api/github/login { action: "start" | "status" | "cancel" | "logout" }. start → the code to
+ * enter at `url` (GitHub's device page); status → how it's going, polled until done or failed.
+ */
+export interface GithubLoginStatus {
+  state: 'idle' | 'starting' | 'pending' | 'finishing' | 'done' | 'failed';
+  code?: string; url?: string; login?: string | null; message?: string;
 }
 /** GET /api/machine[?force=1] ;  POST /api/machine/install { id } → { opened, command } */
 export interface MachineGpu { name: string; vramGb: number | null; unified?: boolean; vendor?: 'nvidia' | 'apple'; driver?: string }

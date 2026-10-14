@@ -11,9 +11,18 @@ FROM node:24-bookworm-slim
 
 # Upgrade first: the base image lags Debian security releases, so without it a rebuild
 # keeps the packages the base shipped with.
+#
+# The GitHub CLI comes from GitHub's own apt repository (Debian's lags well behind): people
+# sign in to it from the Machine page, so their runs push and open pull requests as them.
 RUN apt-get update \
  && apt-get dist-upgrade -y --no-install-recommends \
  && apt-get install -y --no-install-recommends git ca-certificates curl tini procps \
+ && install -d -m 755 /etc/apt/keyrings \
+ && curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg -o /etc/apt/keyrings/githubcli-archive-keyring.gpg \
+ && chmod go+r /etc/apt/keyrings/githubcli-archive-keyring.gpg \
+ && echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" > /etc/apt/sources.list.d/github-cli.list \
+ && apt-get update \
+ && apt-get install -y --no-install-recommends gh \
  && rm -rf /var/lib/apt/lists/* \
  && mkdir -p /data && chown node:node /data
 
@@ -39,10 +48,13 @@ COPY engine/server/src /opt/natterjack/engine/server/src
 COPY --chown=node templates/hosted/entrypoint.sh /usr/local/bin/dashboard-entrypoint
 
 # Everything personal lives on the volume: the workspace (its .claude/ledger holds runs
-# and tracker keys) and Claude's config (sign-in, transcripts, memory).
+# and tracker keys), Claude's config (sign-in, transcripts, memory), the GitHub CLI's
+# sign-in, and git's global config (its credential helper, and the commit name and email).
 ENV DASHBOARD_HOSTED=1 \
     WORKSPACE_ROOT=/data/workspace \
     CLAUDE_CONFIG_DIR=/data/claude \
+    GH_CONFIG_DIR=/data/gh \
+    GIT_CONFIG_GLOBAL=/data/gitconfig \
     DASHBOARD_CLAUDE_BIN=/home/node/.local/bin/claude \
     DISABLE_AUTOUPDATER=1 \
     DASHBOARD_PORT=3333

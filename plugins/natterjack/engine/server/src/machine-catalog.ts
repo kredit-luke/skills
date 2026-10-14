@@ -38,6 +38,8 @@ export interface CatalogEntry {
   group?: string;
   probe?: { cmd: OsStr; args: string[]; stream?: "out" | "err" | "both" };
   auth?: { cmd: string; args: string[]; signIn: Install; detail?: string };
+  /** Hosted: sign in from the page instead of a terminal (github-login.ts). */
+  hostedSignIn?: "github";
   install?: Install;
   fix?: OsStr;
   detail?: { ok?: string; missing?: string };
@@ -76,6 +78,8 @@ export const CATALOG: Record<string, CatalogEntry> = {
     detail: { missing: "Used for cloning, PRs and the Needs-you inbox.", ok: "Signed in." },
     install: { win: "winget install --id GitHub.cli -e", mac: "brew install gh", linux: "sudo apt-get install -y gh" },
     auth: { cmd: "gh", args: ["auth", "status"], detail: "Installed but not signed in.", signIn: { label: "Sign in", win: "gh auth login; gh auth setup-git", mac: "gh auth login && gh auth setup-git", linux: "gh auth login && gh auth setup-git" } },
+
+    hostedSignIn: "github",
   },
   glab: {
     kind: "command", label: "GitLab CLI", probe: cmd("glab", ["--version"]),

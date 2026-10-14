@@ -80,6 +80,21 @@ To refuse personal accounts, put managed settings in the image (commented lines 
 
 The tracker key for the dashboard's own Issues page is pasted on its Connect card, as locally, or injected per person (`JIRA_EMAIL` + `JIRA_API_TOKEN` for Jira, for example).
 
+## Signing in to GitHub
+
+To let a person's runs commit, push branches and open pull requests as themselves, list `{ "use": "gh" }` in machine.json. On a hosted dashboard, its check gets a **Sign in to GitHub** button. The button runs `gh auth login --web` in the container, which uses GitHub's device flow:
+1. The page shows a one-time code, already copied.
+2. The person enters it on github.com/login/device and authorizes.
+
+The page polls until GitHub answers, so there's nothing to paste back. Nothing calls back into the container, so it works behind the router and the proxy.
+
+When the sign-in finishes, `gh auth setup-git` makes git use the token for https remotes. The commit name becomes the person's GitHub name, and the commit email the proxy's (their work email), so GitHub attributes the commits to them. The token and git's global config live on the volume (`GH_CONFIG_DIR=/data/gh`, `GIT_CONFIG_GLOBAL=/data/gitconfig`), so they survive restarts. **Sign out of GitHub** deletes the token.
+
+- **No OAuth app of your own.** The device flow uses the GitHub CLI's. If your organization restricts third-party OAuth apps, an owner approves "GitHub CLI" once, which most teams have already done for local use.
+- **Scopes:** `repo`, `read:org`, `gist` (gh's defaults) and `workflow`, without which GitHub refuses pushes that touch `.github/workflows`. What a person can push to is still decided by their own GitHub permissions.
+- **`GIT_TOKEN` stays the workspace's read token.** `entrypoint.sh` fetches the workspace with `git -c credential.helper=`, so a person's sign-in never affects boot. In runs, git asks the credential helper (the person's token) before `GIT_ASKPASS` (`GIT_TOKEN`), so a signed-in person pushes as themselves, and someone who isn't signed in can still read.
+- **Egress:** the container needs HTTPS to `github.com`, `api.github.com` and `*.githubusercontent.com`. Pushes use https, not ssh.
+
 ## One address for everyone (the router)
 
 `router/` is a small Node service with no packages. It runs behind the login proxy at the shared address:
