@@ -9,7 +9,10 @@
 # environment at run time.
 FROM node:24-bookworm-slim
 
+# Upgrade first: the base image lags Debian security releases, so without it a rebuild
+# keeps the packages the base shipped with.
 RUN apt-get update \
+ && apt-get upgrade -y --no-install-recommends \
  && apt-get install -y --no-install-recommends git ca-certificates curl tini procps \
  && rm -rf /var/lib/apt/lists/* \
  && mkdir -p /data && chown node:node /data

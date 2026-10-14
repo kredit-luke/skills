@@ -3,6 +3,11 @@
 #
 #   docker build -f plugins/natterjack/router/Dockerfile -t <registry>/natterjack-router:1 plugins/natterjack
 FROM node:24-bookworm-slim
+# The base image lags Debian security releases, so without this a rebuild keeps the
+# packages the base shipped with.
+RUN apt-get update \
+ && apt-get upgrade -y --no-install-recommends \
+ && rm -rf /var/lib/apt/lists/*
 WORKDIR /app
 COPY engine/server/src/hosted.ts engine/server/src/hosted.ts
 COPY router/package.json router/package.json

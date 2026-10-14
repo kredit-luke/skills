@@ -54,6 +54,8 @@ What changes for the person:
 docker build -f plugins/natterjack/templates/hosted/Dockerfile -t <registry>/natterjack-dashboard:1 plugins/natterjack
 ```
 
+Rebuild this image and the router's (`router/Dockerfile`) to pick up OS security fixes. Both upgrade Debian's packages at build time, because the `node:24-bookworm-slim` base often doesn't have them yet. Build with `--pull --no-cache`, or Docker reuses the cached upgrade layer and the rebuild changes nothing, and give each build a new tag so the pods actually move to it.
+
 On start, `entrypoint.sh` puts the workspace in `/data/workspace` or updates it. Then it runs `node <engine>/bin/dashboard.mjs run` (`<engine>` is the engine folder: `natterjack/` by default, `dashboard/` in older workspaces; `.claude/dashboard/engine.json` `dir` says which), which is the server in the foreground. The workspace comes from one of two places.
 
 **From a published snapshot** (recommended). This needs no git and no code-host account, in the container or for the person. Set `SNAPSHOT_CONFIG` to `repos.json`'s `snapshot` block as JSON, and the source's credentials in the environment (`SNAPSHOT_AZURE_SAS`, `SNAPSHOT_S3_*`, `SNAPSHOT_HTTP_TOKEN`, ...).
