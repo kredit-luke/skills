@@ -89,6 +89,34 @@ if (a[0] === "auth" && a[1] === "login") {
 } else process.exit(0);
 `;
 
+// A stand-in for the GitHub CLI: `auth login --web` prints a device code and "polls" until the
+// test approves (a gh-approved file) or denies (gh-denied); the rest answer as a signed-in gh does.
+const GH_TOKEN_FILE = path.join(TMP, "gh-token");
+const GIT_GLOBAL = path.join(TMP, "gitconfig");
+const FAKE_GH = `
+import fs from "node:fs";
+const a = process.argv.slice(2).join(" ");
+const dir = ${JSON.stringify(TMP)};
+const at = (f) => fs.existsSync(dir + "/" + f);
+if (a.startsWith("auth login")) {
+  if (!a.includes("--web") || !a.includes("--hostname github.com")) { console.error("unexpected: " + a); process.exit(2); }
+  process.stderr.write("! First copy your one-time code: AB12-CD34\\nOpen this URL to continue in your web browser: https://github.com/login/device\\n");
+  // GitHub's first poll comes a moment later, so the code is always read before an answer.
+  setTimeout(() => setInterval(() => {
+    if (at("gh-denied")) { console.error("error: access_denied"); process.exit(1); }
+    if (at("gh-approved")) { fs.writeFileSync(dir + "/gh-token", "1"); console.error("✓ Logged in as ana-gh"); process.exit(0); }
+  }, 50), 200);
+} else if (a.startsWith("auth setup-git")) {
+  fs.writeFileSync(dir + "/gh-setup-git", "1");
+  if (at("gh-slow-setup")) setTimeout(() => {}, 500);
+} else if (a === "api user") {
+  if (at("gh-bad-user")) { console.error("HTTP 502"); process.exit(1); }
+  console.log(JSON.stringify({ login: "ana-gh", id: 42, name: "Ana Example" }));
+}
+else if (a.startsWith("auth logout")) { fs.rmSync(dir + "/gh-token", { force: true }); }
+else process.exit(1);
+`;
+
 function request(method: string, p: string, headers: Record<string, string> = {}, body?: object): Promise<{ status: number; text: string }> {
   return new Promise((resolve, reject) => {
     const data = body ? JSON.stringify(body) : undefined;
@@ -110,6 +138,7 @@ before(async () => {
   fs.writeFileSync(path.join(ROOT, ".claude", "dashboard", "workspace.json"), JSON.stringify({ name: "Shop", codeHost: { kind: "none" } }));
   fs.mkdirSync(BIN);
   fs.writeFileSync(path.join(BIN, "fake-claude.mjs"), FAKE);
+  fs.writeFileSync(path.join(BIN, "fake-gh.mjs"), FAKE_GH);
   const bin = process.platform === "win32" ? path.join(BIN, "claude.cmd") : path.join(BIN, "claude");
   if (process.platform === "win32") fs.writeFileSync(bin, `@"${process.execPath}" "%~dp0fake-claude.mjs" %*\r\n`);
   else fs.writeFileSync(bin, `#!/bin/sh\nexec "${process.execPath}" "$(dirname "$0")/fake-claude.mjs" "$@"\n`, { mode: 0o755 });
@@ -118,6 +147,9 @@ before(async () => {
     ...process.env,
     WORKSPACE_ROOT: ROOT, DASHBOARD_LEDGER_DIR: path.join(ROOT, ".claude", "ledger"), DASHBOARD_PORT: "",
     DASHBOARD_CLAUDE_BIN: bin,
+    DASHBOARD_GH_BIN: path.join(BIN, "fake-gh.mjs"),
+    // The sign-in's `git config --global` lands here, never in the developer's own config.
+    GIT_CONFIG_GLOBAL: GIT_GLOBAL,
     ...ENV, DASHBOARD_PUBLIC_URL: `https://${PUBLIC_HOST}`, DASHBOARD_OWNER: "ana@example.com",
     // Loopback in the test, so no OS firewall prompt; a container uses the 0.0.0.0 default.
     DASHBOARD_BIND: "127.0.0.1",
@@ -177,4 +209,68 @@ test("hosted server: Claude sign-in from the page", async () => {
   const good = JSON.parse((await post("/api/claude/login", { action: "code", code: "good-code#state" })).text);
   assert.deepEqual(good, { ok: true, message: "Signed in to Claude." });
   assert.ok(fs.existsSync(path.join(TMP, "signed-in")), "the CLI got the code and finished");
+});
+
+test("hosted server: GitHub sign-in from the page (device flow)", async () => {
+  const status = async () => JSON.parse((await post("/api/github/login", { action: "status" })).text);
+  const until = async (state: string) => {
+    for (let i = 0; i < 100; i++) { const s = await status(); if (s.state === state) return s; await sleep(100); }
+    assert.fail(`never reached ${state}: ${JSON.stringify(await status())}`);
+  };
+
+  // Denied on GitHub: the page hears it failed.
+  const first = JSON.parse((await post("/api/github/login", { action: "start" })).text);
+  assert.deepEqual(first, { state: "pending", code: "AB12-CD34", url: "https://github.com/login/device" });
+  fs.writeFileSync(path.join(TMP, "gh-denied"), "1");
+  assert.match((await until("failed")).message, /access_denied/);
+  fs.rmSync(path.join(TMP, "gh-denied"));
+
+  // Cancelled: back to idle, and nothing signed in.
+  await post("/api/github/login", { action: "start" });
+  await post("/api/github/login", { action: "cancel" });
+  assert.equal((await status()).state, "idle");
+
+  // Approved: git is set up and the commit identity is the GitHub name and the proxy's email.
+  await post("/api/github/login", { action: "start" });
+  assert.equal((await status()).state, "pending");
+  fs.writeFileSync(path.join(TMP, "gh-approved"), "1");
+  const done = await until("done");
+  assert.equal(done.login, "ana-gh");
+  assert.ok(fs.existsSync(GH_TOKEN_FILE));
+  assert.ok(fs.existsSync(path.join(TMP, "gh-setup-git")), "gh auth setup-git ran");
+  const cfg = fs.readFileSync(GIT_GLOBAL, "utf8");
+  assert.match(cfg, /name = Ana Example/);
+  assert.match(cfg, /email = ana@example\.com/);
+
+  assert.equal(JSON.parse((await post("/api/github/login", { action: "logout" })).text).ok, true);
+  assert.ok(!fs.existsSync(GH_TOKEN_FILE), "signing out deletes the token");
+  assert.equal((await post("/api/github/login", { action: "nope" })).status, 400);
+});
+
+test("hosted server: GitHub sign-in reports a missing identity, and a cancelled finish changes nothing", async () => {
+  const status = async () => JSON.parse((await post("/api/github/login", { action: "status" })).text);
+  const until = async (state: string) => {
+    for (let i = 0; i < 100; i++) { const s = await status(); if (s.state === state) return s; await sleep(25); }
+    assert.fail(`never reached ${state}: ${JSON.stringify(await status())}`);
+  };
+  fs.writeFileSync(path.join(TMP, "gh-approved"), "1");
+
+  // GitHub doesn't say who signed in: failed, not a "done" with no commit identity.
+  fs.writeFileSync(path.join(TMP, "gh-bad-user"), "1");
+  await post("/api/github/login", { action: "start" });
+  assert.match((await until("failed")).message, /didn't say who you are/);
+  fs.rmSync(path.join(TMP, "gh-bad-user"));
+
+  // Cancelled while setup-git is still running: the old finish must not write an identity or say done.
+  fs.rmSync(GIT_GLOBAL, { force: true });
+  fs.writeFileSync(path.join(TMP, "gh-slow-setup"), "1");
+  await post("/api/github/login", { action: "start" });
+  await until("finishing");
+  await post("/api/github/login", { action: "cancel" });
+  // Long enough for the stale finish to have run api user and both git config writes.
+  await sleep(2500);
+  assert.equal((await status()).state, "idle");
+  assert.ok(!fs.existsSync(GIT_GLOBAL), "no commit identity from a cancelled sign-in");
+  fs.rmSync(path.join(TMP, "gh-slow-setup"));
+  fs.rmSync(path.join(TMP, "gh-approved"));
 });

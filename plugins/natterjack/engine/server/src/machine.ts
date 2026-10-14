@@ -30,6 +30,7 @@ import { claudeAuth, connectorState } from "./claude.ts";
 import { mcpHealth } from "./connections.ts";
 import { agentStatuses } from "./agents/index.ts";
 import { NOT_HOSTED } from "./hosted.ts";
+import { statusAccount } from "./github-login.ts";
 import { hardware } from "./hardware.ts";
 
 const IS_WIN = process.platform === "win32";
@@ -442,15 +443,21 @@ class Machine {
         const tooOld = ok && req && ver ? (String(req).includes(".") ? cmpVer(ver, req) < 0 : (parseVer(ver) || [0])[0] < Number(major)) : false;
         const auth = ok && !tooOld && s.auth ? await p.probe(s.auth.cmd, s.auth.args) : null;
         const signedOut = !!auth && !auth.ok;
+        // Hosted, a sign-in the page can do itself (github-login.ts): no terminal command to show.
+        const inPage = this.hosted && s.hostedSignIn === "github" && !!auth;
+        const account = inPage && auth.ok ? statusAccount(`${auth.out}
+${auth.err}`) : null;
         return {
           ...base, label, version: ver, required: req ? `≥ ${req}` : undefined,
           status: !ok || tooOld ? absent : signedOut ? "warn" : "ok",
           detail: !ok ? detail.missing || (optional ? "Optional." : "")
             : tooOld ? `Older than ${req}.`
-            : signedOut ? s.auth.detail || "Installed but not signed in."
+            : signedOut ? (inPage ? "Not signed in: sign in so your runs can push branches and open pull requests as you." : s.auth.detail || "Installed but not signed in.")
+            : account ? `Signed in as @${account}: your runs push and open pull requests as you.`
             : detail.ok || "",
-          install: !ok || tooOld ? installFor(s.install, vars) : signedOut ? installFor(s.auth.signIn, vars, "Sign in") : undefined,
+          install: !ok || tooOld ? installFor(s.install, vars) : signedOut ? installFor(inPage ? { ...s.auth.signIn, label: "Sign in to GitHub" } : s.auth.signIn, vars, "Sign in") : undefined,
           fix: fixOf(),
+          ...(inPage ? { signIn: "github" as const, ...(account ? { account } : {}) } : {}),
         };
       }
 

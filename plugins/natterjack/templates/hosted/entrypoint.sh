@@ -12,10 +12,16 @@
 #   GIT_TOKEN       optional: a read token for it (GitHub, GitLab, Azure DevOps, Bitbucket...)
 #   GIT_USERNAME    optional: the user name sent with GIT_TOKEN (default x-access-token)
 #
+# The workspace is always fetched with GIT_TOKEN, never with the person's own GitHub sign-in
+# (the Machine page's, which git reaches through its credential helper): `-c credential.helper=`
+# empties the helper list for those commands. In runs the helper comes first and GIT_TOKEN is
+# only the fallback, so a signed-in person pushes as themselves.
+#
 # plus the DASHBOARD_* settings in references/hosting.md.
 set -eu
 
 mkdir -p "$CLAUDE_CONFIG_DIR"
+if [ -n "${GH_CONFIG_DIR:-}" ]; then mkdir -p "$GH_CONFIG_DIR"; fi
 
 # The engine's folder in the workspace: .claude/dashboard/engine.json "dir" (dashboard in older workspaces).
 engine_dir() {
@@ -49,9 +55,9 @@ else
       exit 1
     fi
     echo "Cloning the workspace into $WORKSPACE_ROOT..."
-    git clone --quiet "$WORKSPACE_REPO" "$WORKSPACE_ROOT"
+    git -c credential.helper= clone --quiet "$WORKSPACE_REPO" "$WORKSPACE_ROOT"
   else
-    git -C "$WORKSPACE_ROOT" pull --ff-only --quiet || echo "Couldn't update the workspace; starting with what's there." >&2
+    git -c credential.helper= -C "$WORKSPACE_ROOT" pull --ff-only --quiet || echo "Couldn't update the workspace; starting with what's there." >&2
   fi
 fi
 
