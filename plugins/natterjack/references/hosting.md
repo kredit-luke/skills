@@ -51,10 +51,10 @@ What changes for the person:
 `templates/hosted/Dockerfile` is Node 24 plus git, the Claude CLI and the engine's server code, with everything personal on a volume at `/data`. Build it from `plugins/natterjack` once per workspace, and run one container per person:
 
 ```sh
-docker build -f plugins/natterjack/templates/hosted/Dockerfile -t <registry>/natterjack-dashboard:1 plugins/natterjack
+docker build -f plugins/natterjack/templates/hosted/Dockerfile --pull --no-cache -t <registry>/natterjack-dashboard:<tag> plugins/natterjack
 ```
 
-Rebuild this image and the router's (`router/Dockerfile`) to pick up OS security fixes. Both upgrade Debian's packages at build time, because the `node:24-bookworm-slim` base often doesn't have them yet. Build with `--pull --no-cache`, or Docker reuses the cached upgrade layer and the rebuild changes nothing, and give each build a new tag so the pods actually move to it.
+Rebuild this image and the router's (`router/Dockerfile`) to pick up OS security fixes. Both upgrade Debian's packages at build time, because the `node:24-bookworm-slim` base often doesn't have them yet. Without `--pull --no-cache` Docker reuses the cached upgrade layer and the rebuild changes nothing. Give each build a new `<tag>` (for example `2`, `3`, ...) so the pods actually move to it.
 
 On start, `entrypoint.sh` puts the workspace in `/data/workspace` or updates it. Then it runs `node <engine>/bin/dashboard.mjs run` (`<engine>` is the engine folder: `natterjack/` by default, `dashboard/` in older workspaces; `.claude/dashboard/engine.json` `dir` says which), which is the server in the foreground. The workspace comes from one of two places.
 
@@ -124,7 +124,7 @@ Backends:
 Build it from `plugins/natterjack`, so it gets the engine's shared request checks:
 
 ```sh
-docker build -f plugins/natterjack/router/Dockerfile -t <registry>/natterjack-router:1 plugins/natterjack
+docker build -f plugins/natterjack/router/Dockerfile --pull --no-cache -t <registry>/natterjack-router:<tag> plugins/natterjack
 ```
 
 ## Managing people from your dashboard

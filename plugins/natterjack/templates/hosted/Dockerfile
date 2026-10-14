@@ -2,7 +2,7 @@
 # run one container per person, each with its own volume at /data. Build from
 # plugins/natterjack, so the engine's snapshot install (the boot without git) comes along:
 #
-#   docker build -f plugins/natterjack/templates/hosted/Dockerfile -t <registry>/natterjack-dashboard:1 plugins/natterjack
+#   docker build -f plugins/natterjack/templates/hosted/Dockerfile --pull --no-cache -t <registry>/natterjack-dashboard:<tag> plugins/natterjack
 #
 # Cloud-neutral: any container platform with a persistent volume works (Kubernetes on
 # GKE/EKS/AKS, a VM with Docker, ...). Nothing here holds a secret; they come from the
@@ -12,7 +12,7 @@ FROM node:24-bookworm-slim
 # Upgrade first: the base image lags Debian security releases, so without it a rebuild
 # keeps the packages the base shipped with.
 RUN apt-get update \
- && apt-get upgrade -y --no-install-recommends \
+ && apt-get dist-upgrade -y --no-install-recommends \
  && apt-get install -y --no-install-recommends git ca-certificates curl tini procps \
  && rm -rf /var/lib/apt/lists/* \
  && mkdir -p /data && chown node:node /data
