@@ -65,9 +65,7 @@ const ICON: Record<string, string> = { ok: '✓', warn: '!', missing: '✕', inf
                 @if (hosted() && c.signIn === 'github') {
                   <!-- Hosted GitHub sign-in: GitHub's device flow, so there's nothing to paste back (github-login.ts). -->
                   <div class="fx signin">
-                    @if (c.status === 'ok' && c.account) {
-                      <button class="btn ghost sm" [disabled]="ghBusy()" (click)="githubSignOut()">Sign out of GitHub</button>
-                    } @else if (c.install) {
+                    @if (c.install) {
                       @if (!ghCode()) {
                         <button class="btn primary sm" [disabled]="ghBusy()" (click)="githubSignIn()">{{ ghBusy() ? 'Starting…' : c.install.label }}</button>
                       } @else {
@@ -77,6 +75,10 @@ const ICON: Record<string, string> = { ok: '✓', warn: '!', missing: '✕', inf
                         </ol>
                         <span class="row"><span class="ty">Waiting for GitHub…</span> <button class="btn ghost sm" (click)="cancelGithub()">Cancel</button></span>
                       }
+                    }
+                    <!-- Signed in, even when the check warns (commits not signed yet): sign-out stays available. -->
+                    @if (c.account && !ghCode()) {
+                      <button class="btn ghost sm" [disabled]="ghBusy()" (click)="githubSignOut()">Sign out of GitHub</button>
                     }
                   </div>
                 }

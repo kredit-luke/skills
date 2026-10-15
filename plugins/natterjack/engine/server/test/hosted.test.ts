@@ -93,13 +93,15 @@ if (a[0] === "auth" && a[1] === "login") {
 // test approves (a gh-approved file) or denies (gh-denied); the rest answer as a signed-in gh does.
 const GH_TOKEN_FILE = path.join(TMP, "gh-token");
 const GIT_GLOBAL = path.join(TMP, "gitconfig");
+const GH_DIR = path.join(TMP, "gh");
+const SIGNING_KEY = path.join(GH_DIR, "signing_ed25519");
 const FAKE_GH = `
 import fs from "node:fs";
 const a = process.argv.slice(2).join(" ");
 const dir = ${JSON.stringify(TMP)};
 const at = (f) => fs.existsSync(dir + "/" + f);
 if (a.startsWith("auth login")) {
-  if (!a.includes("--web") || !a.includes("--hostname github.com")) { console.error("unexpected: " + a); process.exit(2); }
+  if (!a.includes("--web") || !a.includes("--hostname github.com") || !a.includes("admin:ssh_signing_key")) { console.error("unexpected: " + a); process.exit(2); }
   process.stderr.write("! First copy your one-time code: AB12-CD34\\nOpen this URL to continue in your web browser: https://github.com/login/device\\n");
   // GitHub's first poll comes a moment later, so the code is always read before an answer.
   setTimeout(() => setInterval(() => {
@@ -113,8 +115,30 @@ if (a.startsWith("auth login")) {
   if (at("gh-bad-user")) { console.error("HTTP 502"); process.exit(1); }
   console.log(JSON.stringify({ login: "ana-gh", id: 42, name: "Ana Example" }));
 }
+else if (a.startsWith("ssh-key add")) {
+  // gh-slow-keyadd: the upload takes a while, so a sign-out can arrive while it's in flight.
+  fs.writeFileSync(dir + "/gh-keyadd-started", "1");
+  const done = () => { fs.writeFileSync(dir + "/gh-ssh-key-add", a); fs.appendFileSync(dir + "/gh-events", "add\\n"); };
+  if (at("gh-slow-keyadd")) setTimeout(done, 600); else done();
+}
+else if (a === "api --paginate --slurp user/ssh_signing_keys") {
+  const pub = fs.readFileSync(dir + "/gh/signing_ed25519.pub", "utf8").trim().split(" ").slice(0, 2).join(" ");
+  // Two pages, ours on the second.
+  console.log(JSON.stringify([[{ id: 6, key: "ssh-ed25519 AAAAsomeoneelse" }], [{ id: 7, key: pub }]]));
+}
+else if (a.startsWith("api -X DELETE")) { fs.appendFileSync(dir + "/gh-key-deleted", a + "\\n"); fs.appendFileSync(dir + "/gh-events", "delete\\n"); }
 else if (a.startsWith("auth logout")) { fs.rmSync(dir + "/gh-token", { force: true }); }
 else process.exit(1);
+`;
+
+// A stand-in for ssh-keygen: writes the key pair -f names, with -C as the public key's comment.
+const FAKE_KEYGEN = `
+import fs from "node:fs";
+const a = process.argv.slice(2);
+const f = a[a.indexOf("-f") + 1], c = a[a.indexOf("-C") + 1];
+fs.writeFileSync(f, "PRIVATE KEY");
+fs.writeFileSync(f + ".pub", "ssh-ed25519 AAAAdashboardkey " + c + "\\n");
+fs.appendFileSync(${JSON.stringify(path.join(TMP, "keygen-runs"))}, "1");
 `;
 
 function request(method: string, p: string, headers: Record<string, string> = {}, body?: object): Promise<{ status: number; text: string }> {
@@ -139,6 +163,7 @@ before(async () => {
   fs.mkdirSync(BIN);
   fs.writeFileSync(path.join(BIN, "fake-claude.mjs"), FAKE);
   fs.writeFileSync(path.join(BIN, "fake-gh.mjs"), FAKE_GH);
+  fs.writeFileSync(path.join(BIN, "fake-keygen.mjs"), FAKE_KEYGEN);
   const bin = process.platform === "win32" ? path.join(BIN, "claude.cmd") : path.join(BIN, "claude");
   if (process.platform === "win32") fs.writeFileSync(bin, `@"${process.execPath}" "%~dp0fake-claude.mjs" %*\r\n`);
   else fs.writeFileSync(bin, `#!/bin/sh\nexec "${process.execPath}" "$(dirname "$0")/fake-claude.mjs" "$@"\n`, { mode: 0o755 });
@@ -148,6 +173,8 @@ before(async () => {
     WORKSPACE_ROOT: ROOT, DASHBOARD_LEDGER_DIR: path.join(ROOT, ".claude", "ledger"), DASHBOARD_PORT: "",
     DASHBOARD_CLAUDE_BIN: bin,
     DASHBOARD_GH_BIN: path.join(BIN, "fake-gh.mjs"),
+    DASHBOARD_SSH_KEYGEN_BIN: path.join(BIN, "fake-keygen.mjs"),
+    GH_CONFIG_DIR: GH_DIR,
     // The sign-in's `git config --global` lands here, never in the developer's own config.
     GIT_CONFIG_GLOBAL: GIT_GLOBAL,
     ...ENV, DASHBOARD_PUBLIC_URL: `https://${PUBLIC_HOST}`, DASHBOARD_OWNER: "ana@example.com",
@@ -241,9 +268,27 @@ test("hosted server: GitHub sign-in from the page (device flow)", async () => {
   const cfg = fs.readFileSync(GIT_GLOBAL, "utf8");
   assert.match(cfg, /name = Ana Example/);
   assert.match(cfg, /email = ana@example\.com/);
+  // Hosted, commits are signed: a key made beside gh's config, added to the account as a signing key.
+  assert.match(cfg, /format = ssh/);
+  assert.match(cfg, /gpgsign = true/);
+  assert.ok(cfg.includes("signingkey = " + SIGNING_KEY.replaceAll("\\", "\\\\")) || cfg.includes("signingkey = " + SIGNING_KEY), cfg);
+  assert.match(fs.readFileSync(SIGNING_KEY + ".pub", "utf8"), /Natterjack dashboard \(dash\.example\.com\)/);
+  const added = fs.readFileSync(path.join(TMP, "gh-ssh-key-add"), "utf8");
+  assert.match(added, /--type signing/);
+  assert.ok(added.includes(SIGNING_KEY + ".pub"), added);
 
+  // Signing in again (after a restart, say) reuses the key rather than making another.
+  fs.rmSync(path.join(TMP, "gh-approved"));
+  await post("/api/github/login", { action: "start" });
+  fs.writeFileSync(path.join(TMP, "gh-approved"), "1");
+  await until("done");
+  assert.equal(fs.readFileSync(path.join(TMP, "keygen-runs"), "utf8"), "1", "one key, made once");
+
+  // Signing out takes this dashboard's key (only) off the account and stops signing.
   assert.equal(JSON.parse((await post("/api/github/login", { action: "logout" })).text).ok, true);
   assert.ok(!fs.existsSync(GH_TOKEN_FILE), "signing out deletes the token");
+  assert.deepEqual(fs.readFileSync(path.join(TMP, "gh-key-deleted"), "utf8").trim().split("\n"), ["api -X DELETE user/ssh_signing_keys/7"], "only this dashboard's key");
+  assert.doesNotMatch(fs.readFileSync(GIT_GLOBAL, "utf8"), /gpgsign/);
   assert.equal((await post("/api/github/login", { action: "nope" })).status, 400);
 });
 
@@ -272,5 +317,20 @@ test("hosted server: GitHub sign-in reports a missing identity, and a cancelled 
   assert.equal((await status()).state, "idle");
   assert.ok(!fs.existsSync(GIT_GLOBAL), "no commit identity from a cancelled sign-in");
   fs.rmSync(path.join(TMP, "gh-slow-setup"));
+
+  // Signing out while the key upload is still in flight: the sign-out waits for it, then removes
+  // the key, and the stale finish never turns signing back on.
+  fs.rmSync(path.join(TMP, "gh-events"), { force: true });
+  fs.writeFileSync(path.join(TMP, "gh-slow-keyadd"), "1");
+  fs.rmSync(path.join(TMP, "gh-keyadd-started"), { force: true });
+  await post("/api/github/login", { action: "start" });
+  for (let i = 0; i < 200 && !fs.existsSync(path.join(TMP, "gh-keyadd-started")); i++) await sleep(25);
+  assert.ok(fs.existsSync(path.join(TMP, "gh-keyadd-started")), "gh ssh-key add is running");
+  assert.equal(JSON.parse((await post("/api/github/login", { action: "logout" })).text).ok, true);
+  assert.deepEqual(fs.readFileSync(path.join(TMP, "gh-events"), "utf8").trim().split("\n"), ["add", "delete"], "the upload finished before the cleanup ran");
+  await sleep(500);
+  assert.doesNotMatch(fs.readFileSync(GIT_GLOBAL, "utf8"), /gpgsign/, "signing stays off after sign-out");
+  assert.equal((await status()).state, "idle");
+  fs.rmSync(path.join(TMP, "gh-slow-keyadd"));
   fs.rmSync(path.join(TMP, "gh-approved"));
 });
