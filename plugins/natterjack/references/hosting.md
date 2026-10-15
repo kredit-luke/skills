@@ -90,8 +90,20 @@ The page polls until GitHub answers, so there's nothing to paste back. Nothing c
 
 When the sign-in finishes, `gh auth setup-git` makes git use the token for https remotes. The commit name becomes the person's GitHub name, and the commit email the proxy's (their work email), so GitHub attributes the commits to them. The token and git's global config live on the volume (`GH_CONFIG_DIR=/data/gh`, `GIT_CONFIG_GLOBAL=/data/gitconfig`), so they survive restarts. **Sign out of GitHub** deletes the token.
 
+Commits are **signed**, so GitHub shows them as Verified, like ones made on a laptop that has a signing key:
+- The first sign-in makes an ed25519 key beside gh's config (`/data/gh/signing_ed25519`), and later sign-ins reuse it.
+- It adds the key to the person's GitHub account as a signing key, titled "Natterjack dashboard (\<address\>)".
+- It sets git to sign with it (`gpg.format ssh`, `user.signingkey`, `commit.gpgsign`, `tag.gpgsign`).
+- Signing out removes that key from their account and turns signing off. A commit signed with a key GitHub no longer knows would show as Unverified, which is worse than unsigned.
+- People who signed in before signing existed sign in again once, to grant the extra scope.
+
+Only hosted dashboards do this; a local dashboard leaves the machine's own signing setup alone.
+
 - **No OAuth app of your own.** The device flow uses the GitHub CLI's. If your organization restricts third-party OAuth apps, an owner approves "GitHub CLI" once, which most teams have already done for local use.
-- **Scopes:** `repo`, `read:org`, `gist` (gh's defaults) and `workflow`, without which GitHub refuses pushes that touch `.github/workflows`. What a person can push to is still decided by their own GitHub permissions.
+- **Scopes:**
+  - `repo`, `read:org` and `gist`: gh's defaults.
+  - `workflow`: without it, GitHub refuses pushes that touch `.github/workflows`.
+  - `admin:ssh_signing_key`: to add the signing key and remove it again. What a person can push to is still decided by their own GitHub permissions.
 - **`GIT_TOKEN` stays the workspace's read token.** `entrypoint.sh` fetches the workspace with `git -c credential.helper=`, so a person's sign-in never affects boot. In runs, git asks the credential helper (the person's token) before `GIT_ASKPASS` (`GIT_TOKEN`), so a signed-in person pushes as themselves, and someone who isn't signed in can still read.
 - **Egress:** the container needs HTTPS to `github.com`, `api.github.com` and `*.githubusercontent.com`. Pushes use https, not ssh.
 

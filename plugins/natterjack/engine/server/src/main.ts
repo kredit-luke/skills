@@ -409,7 +409,7 @@ const trackers = new Trackers(LEDGER_DIR);
 const meetings = new Meetings();
 const machine = new Machine(MAIN_WORKSPACE_PATH, { hosted: !!HOSTED });
 const claudeLogin = new ClaudeLogin();
-const githubLogin = new GithubLogin();
+const githubLogin = new GithubLogin({ signing: !!HOSTED });
 const docSites = new DocSites(MAIN_WORKSPACE_PATH);
 const docsProviders = new DocsProviders(() => ({ ledgerDir: LEDGER_DIR, issues: workspaceConfig().issues }));
 const snapshotSources = new SnapshotSources(() => ({ ledgerDir: LEDGER_DIR, issues: workspaceConfig().issues }));

@@ -12,9 +12,18 @@
  * commit identity is set: the person's GitHub name, and the dashboard owner's email (the
  * proxy's) or else their GitHub noreply address. All of it lands in gh's config and git's
  * global config, which the hosted image keeps on the volume (GH_CONFIG_DIR, GIT_CONFIG_GLOBAL).
+ *
+ * Hosted, commits are signed too, so GitHub shows them as Verified like ones made on a laptop
+ * with a signing key: the sign-in asks for `admin:ssh_signing_key`, an ed25519 key is made
+ * beside gh's config (once; restarts reuse it), added to the person's account as a signing key,
+ * and git signs with it (gpg.format ssh). Signing out removes the key from their account. A
+ * local dashboard never touches the machine's own signing setup.
  */
 
 import { execFile, spawn, type ChildProcess, type SpawnOptions } from "node:child_process";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
 import type { GithubLoginStatus } from "../../shared/api.ts";
 
 export const GITHUB_HOST = "github.com";
@@ -24,12 +33,13 @@ const PENDING_MS = 15 * 60_000;
 const CODE_RE = /one-time code:\s*([A-Z0-9]{4}-[A-Z0-9]{4})/i;
 const DEVICE_URL_RE = /https:\/\/\S+\/login\/device\b/;
 
-/** Pinned for an image or a test (a `.mjs` runs with this Node), else gh from PATH. */
-function ghCommand(args: string[]): [string, string[]] {
-  const pinned = (process.env.DASHBOARD_GH_BIN || "").trim();
+/** Pinned for an image or a test (a `.mjs` runs with this Node), else the command from PATH. */
+function pinnedCommand(envVar: string, name: string, args: string[]): [string, string[]] {
+  const pinned = (process.env[envVar] || "").trim();
   if (/\.m?js$/i.test(pinned)) return [process.execPath, [pinned, ...args]];
-  return [pinned || "gh", args];
+  return [pinned || name, args];
 }
+const ghCommand = (args: string[]) => pinnedCommand("DASHBOARD_GH_BIN", "gh", args);
 
 export function spawnGh(args: string[], opts: SpawnOptions): ChildProcess {
   const [file, argv] = ghCommand(args);
@@ -47,6 +57,22 @@ function exec(file: string, args: string[], timeout = 20_000): Promise<{ ok: boo
   });
 }
 const gh = (args: string[]) => exec(...ghCommand(args));
+const said = (r: { out: string; err: string }) => (r.err || r.out).trim().slice(0, 300);
+
+/** The commit-signing key: beside gh's own config, so it's on the volume with the token. */
+export function signingKeyPath(env: NodeJS.ProcessEnv = process.env): string {
+  return path.join(env.GH_CONFIG_DIR || path.join(os.homedir(), ".config", "gh"), "signing_ed25519");
+}
+
+/** The key's title on GitHub, so the person can tell which dashboard it belongs to. */
+export function signingKeyTitle(env: NodeJS.ProcessEnv = process.env): string {
+  let host = "";
+  try { host = new URL(env.DASHBOARD_PUBLIC_URL || "").host; } catch {}
+  return `Natterjack dashboard (${host || os.hostname()})`;
+}
+
+/** The type and key fields of an OpenSSH public key line, which is how GitHub lists it (no comment). */
+export const keyBody = (line: string) => line.trim().split(/\s+/).slice(0, 2).join(" ");
 
 /** The signed-in account in `gh auth status` output ("Logged in to github.com account ana (…)"). */
 export function statusAccount(text: string): string | null {
@@ -60,6 +86,8 @@ export function commitIdentity(user: { login: string; id: number; name?: string 
 }
 
 export class GithubLogin {
+  /** Sign commits with a key of the dashboard's own (hosted only). */
+  private readonly signing: boolean;
   private child: ChildProcess | null = null;
   private out = "";
   private expiry: NodeJS.Timeout | null = null;
@@ -67,12 +95,18 @@ export class GithubLogin {
   /** Bumped by every start and cancel: a finish that outlived its sign-in checks it and stops. */
   private gen = 0;
 
+  constructor(opts: { signing?: boolean } = {}) {
+    this.signing = !!opts.signing;
+  }
+
   /** Start a sign-in (dropping any unfinished one) and return the code to enter on GitHub. */
   async start(email?: string | null): Promise<GithubLoginStatus> {
     this.cancel();
     const gen = this.gen;
-    // `workflow` too: without it GitHub refuses a push that touches .github/workflows.
-    const args = ["auth", "login", "--hostname", GITHUB_HOST, "--git-protocol", "https", "--web", "--skip-ssh-key", "--insecure-storage", "--scopes", "workflow"];
+    // `workflow` too: without it GitHub refuses a push that touches .github/workflows. Signing
+    // needs `admin:ssh_signing_key` to add the key (and remove it on sign-out).
+    const scopes = ["workflow", ...(this.signing ? ["admin:ssh_signing_key"] : [])].join(",");
+    const args = ["auth", "login", "--hostname", GITHUB_HOST, "--git-protocol", "https", "--web", "--skip-ssh-key", "--insecure-storage", "--scopes", scopes];
     const child = spawnGh(args, { env: ghEnv(), stdio: ["pipe", "pipe", "pipe"], windowsHide: true });
     this.child = child;
     this.out = "";
@@ -115,6 +149,9 @@ export class GithubLogin {
   /** Sign out of github.com (the token is deleted; git falls back to whatever else it has). */
   async logout(): Promise<{ ok: boolean; message: string }> {
     this.cancel();
+    // While the token still works: take the signing key off their account, and stop signing
+    // (a commit signed with a key GitHub doesn't know shows as Unverified, worse than unsigned).
+    if (this.signing) await this.removeSigningKey();
     const r = await gh(["auth", "logout", "--hostname", GITHUB_HOST]);
     const said = (r.err || r.out).trim().split(/\r?\n/).pop() || "";
     return r.ok ? { ok: true, message: "Signed out of GitHub." } : { ok: false, message: `Couldn't sign out${said ? `: ${said.slice(0, 300)}` : "."}` };
@@ -126,7 +163,6 @@ export class GithubLogin {
     this.state = { state: "finishing" };
     // A cancel or a new start while this awaits makes it stale: it must not touch git's config or the state.
     const stale = () => gen !== this.gen;
-    const said = (r: { out: string; err: string }) => (r.err || r.out).trim().slice(0, 300);
 
     const setup = await gh(["auth", "setup-git", "--hostname", GITHUB_HOST]);
     if (stale()) return;
@@ -145,7 +181,49 @@ export class GithubLogin {
       if (stale()) return;
       if (!r.ok) return this.fail(`Signed in as @${user.login}, but git's ${key} couldn't be set: ${said(r)}`);
     }
+    if (this.signing) {
+      const why = await this.setupSigning(stale);
+      if (why === "stale") return;
+      if (why) return this.fail(`Signed in as @${user.login}, but commits won't be signed: ${why}. Sign out and in again.`);
+    }
     this.state = { state: "done", login: user.login, message: `Signed in to GitHub as @${user.login}.` };
+  }
+
+  /** Make the signing key (once), add it to the person's account and sign with it. null = done, else why not. */
+  private async setupSigning(stale: () => boolean): Promise<string | null> {
+    const key = signingKeyPath(), title = signingKeyTitle();
+    if (!fs.existsSync(key) || !fs.existsSync(key + ".pub")) {
+      fs.mkdirSync(path.dirname(key), { recursive: true });
+      fs.rmSync(key, { force: true });
+      fs.rmSync(key + ".pub", { force: true });
+      const r = await exec(...pinnedCommand("DASHBOARD_SSH_KEYGEN_BIN", "ssh-keygen", ["-q", "-t", "ed25519", "-N", "", "-C", title, "-f", key]));
+      if (stale()) return "stale";
+      if (!r.ok || !fs.existsSync(key + ".pub")) return `the key couldn't be made${said(r) ? ` (${said(r)})` : ""}`;
+    }
+    // Already on the account (a sign-in after a restart): gh says so, which is fine.
+    const add = await gh(["ssh-key", "add", key + ".pub", "--type", "signing", "--title", title]);
+    if (stale()) return "stale";
+    if (!add.ok && !/already/i.test(add.err + add.out)) return `GitHub didn't take the signing key (${said(add)})`;
+    for (const [k, v] of [["gpg.format", "ssh"], ["user.signingkey", key], ["commit.gpgsign", "true"], ["tag.gpgsign", "true"]]) {
+      const r = await exec("git", ["config", "--global", k, v]);
+      if (stale()) return "stale";
+      if (!r.ok) return `git's ${k} couldn't be set (${said(r)})`;
+    }
+    return null;
+  }
+
+  /** Take this dashboard's signing key off the account, and stop signing. Best effort: sign-out goes on regardless. */
+  private async removeSigningKey() {
+    await exec("git", ["config", "--global", "--unset", "commit.gpgsign"]);
+    await exec("git", ["config", "--global", "--unset", "tag.gpgsign"]);
+    let mine = "";
+    try { mine = keyBody(fs.readFileSync(signingKeyPath() + ".pub", "utf8")); } catch { return; }
+    const list = await gh(["api", "user/ssh_signing_keys"]);
+    let keys: { id: number; key: string }[] = [];
+    try { keys = JSON.parse(list.out); } catch {}
+    for (const k of Array.isArray(keys) ? keys : []) {
+      if (k && typeof k.key === "string" && keyBody(k.key) === mine) await gh(["api", "-X", "DELETE", `user/ssh_signing_keys/${k.id}`]);
+    }
   }
 
   private fail(message: string) {

@@ -445,17 +445,22 @@ class Machine {
         const signedOut = !!auth && !auth.ok;
         // Hosted, a sign-in the page can do itself (github-login.ts): no terminal command to show.
         const inPage = this.hosted && s.hostedSignIn === "github" && !!auth;
-        const account = inPage && auth.ok ? statusAccount(`${auth.out}
-${auth.err}`) : null;
+        const account = inPage && auth.ok ? statusAccount(`${auth.out}\n${auth.err}`) : null;
+        // Signed in before commit signing existed (or its setup failed): a new sign-in sets it up.
+        const unsigned = !!account && (await p.probe("git", ["config", "--global", "--get", "commit.gpgsign"])).out.trim() !== "true";
         return {
           ...base, label, version: ver, required: req ? `≥ ${req}` : undefined,
-          status: !ok || tooOld ? absent : signedOut ? "warn" : "ok",
+          status: !ok || tooOld ? absent : signedOut || unsigned ? "warn" : "ok",
           detail: !ok ? detail.missing || (optional ? "Optional." : "")
             : tooOld ? `Older than ${req}.`
             : signedOut ? (inPage ? "Not signed in: sign in so your runs can push branches and open pull requests as you." : s.auth.detail || "Installed but not signed in.")
-            : account ? `Signed in as @${account}: your runs push and open pull requests as you.`
+            : unsigned ? `Signed in as @${account}, but your commits aren't signed: sign in again so GitHub shows them as Verified.`
+            : account ? `Signed in as @${account}: your runs push, open pull requests and sign commits as you.`
             : detail.ok || "",
-          install: !ok || tooOld ? installFor(s.install, vars) : signedOut ? installFor(inPage ? { ...s.auth.signIn, label: "Sign in to GitHub" } : s.auth.signIn, vars, "Sign in") : undefined,
+          install: !ok || tooOld ? installFor(s.install, vars)
+            : signedOut ? installFor(inPage ? { ...s.auth.signIn, label: "Sign in to GitHub" } : s.auth.signIn, vars, "Sign in")
+            : unsigned ? installFor({ ...s.auth.signIn, label: "Sign in again" }, vars, "Sign in again")
+            : undefined,
           fix: fixOf(),
           ...(inPage ? { signIn: "github" as const, ...(account ? { account } : {}) } : {}),
         };

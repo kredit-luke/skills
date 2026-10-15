@@ -14,9 +14,10 @@ FROM node:24-bookworm-slim
 #
 # The GitHub CLI comes from GitHub's own apt repository (Debian's lags well behind): people
 # sign in to it from the Machine page, so their runs push and open pull requests as them.
+# openssh-client is for ssh-keygen: git signs their commits with an SSH key (github-login.ts).
 RUN apt-get update \
  && apt-get dist-upgrade -y --no-install-recommends \
- && apt-get install -y --no-install-recommends git ca-certificates curl tini procps \
+ && apt-get install -y --no-install-recommends git openssh-client ca-certificates curl tini procps \
  && install -d -m 755 /etc/apt/keyrings \
  && curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg -o /etc/apt/keyrings/githubcli-archive-keyring.gpg \
  && chmod go+r /etc/apt/keyrings/githubcli-archive-keyring.gpg \
