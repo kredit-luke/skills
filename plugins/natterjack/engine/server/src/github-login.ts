@@ -94,6 +94,12 @@ export class GithubLogin {
   private state: GithubLoginStatus = { state: "idle" };
   /** Bumped by every start and cancel: a finish that outlived its sign-in checks it and stops. */
   private gen = 0;
+  /**
+   * The finish or sign-out in flight. A cancel only stops a finish at its next step, so a new
+   * sign-in and a sign-out wait for it: a sign-out's cleanup can't run beside a key upload or a
+   * git config write, and can't undo the setup of a sign-in that started after it.
+   */
+  private busy: Promise<void> = Promise.resolve();
 
   constructor(opts: { signing?: boolean } = {}) {
     this.signing = !!opts.signing;
@@ -102,6 +108,8 @@ export class GithubLogin {
   /** Start a sign-in (dropping any unfinished one) and return the code to enter on GitHub. */
   async start(email?: string | null): Promise<GithubLoginStatus> {
     this.cancel();
+    await this.busy;
+    this.cancel(); // another start may have begun while this one waited: only the newest runs
     const gen = this.gen;
     // `workflow` too: without it GitHub refuses a push that touches .github/workflows. Signing
     // needs `admin:ssh_signing_key` to add the key (and remove it on sign-out).
@@ -116,7 +124,12 @@ export class GithubLogin {
     // A gh that asks for Enter before polling (it shouldn't without a terminal) gets one.
     child.stdin?.end("\n");
     child.on("error", (e) => { if (this.child === child) this.fail(`Couldn't run the GitHub CLI: ${e.message}`); });
-    child.on("close", (code) => { if (this.child === child) this.finished(code, email, gen); });
+    child.on("close", (code) => {
+      if (this.child !== child) return;
+      this.busy = this.finished(code, email, gen).catch((e) => {
+        if (gen === this.gen) this.fail(`Sign-in failed: ${(e && e.message) || e}`);
+      });
+    });
     this.expiry = setTimeout(() => { this.cancel(); this.state = { state: "failed", message: "The code expired. Start again." }; }, PENDING_MS);
     this.state = { state: "starting" };
 
@@ -149,12 +162,17 @@ export class GithubLogin {
   /** Sign out of github.com (the token is deleted; git falls back to whatever else it has). */
   async logout(): Promise<{ ok: boolean; message: string }> {
     this.cancel();
-    // While the token still works: take the signing key off their account, and stop signing
-    // (a commit signed with a key GitHub doesn't know shows as Unverified, worse than unsigned).
-    if (this.signing) await this.removeSigningKey();
-    const r = await gh(["auth", "logout", "--hostname", GITHUB_HOST]);
-    const said = (r.err || r.out).trim().split(/\r?\n/).pop() || "";
-    return r.ok ? { ok: true, message: "Signed out of GitHub." } : { ok: false, message: `Couldn't sign out${said ? `: ${said.slice(0, 300)}` : "."}` };
+    await this.busy;
+    const run = (async () => {
+      // While the token still works: take the signing key off their account, and stop signing
+      // (a commit signed with a key GitHub doesn't know shows as Unverified, worse than unsigned).
+      if (this.signing) await this.removeSigningKey().catch(() => {});
+      return gh(["auth", "logout", "--hostname", GITHUB_HOST]);
+    })();
+    this.busy = run.then(() => {}, () => {});
+    const r = await run;
+    const last = (r.err || r.out).trim().split(/\r?\n/).pop() || "";
+    return r.ok ? { ok: true, message: "Signed out of GitHub." } : { ok: false, message: `Couldn't sign out${last ? `: ${last.slice(0, 300)}` : "."}` };
   }
 
   private async finished(code: number | null, email: string | null | undefined, gen: number) {
@@ -193,9 +211,13 @@ export class GithubLogin {
   private async setupSigning(stale: () => boolean): Promise<string | null> {
     const key = signingKeyPath(), title = signingKeyTitle();
     if (!fs.existsSync(key) || !fs.existsSync(key + ".pub")) {
-      fs.mkdirSync(path.dirname(key), { recursive: true });
-      fs.rmSync(key, { force: true });
-      fs.rmSync(key + ".pub", { force: true });
+      try {
+        fs.mkdirSync(path.dirname(key), { recursive: true });
+        fs.rmSync(key, { force: true });
+        fs.rmSync(key + ".pub", { force: true });
+      } catch (e: any) {
+        return `the key's folder ${path.dirname(key)} can't be written (${e.code || e.message})`;
+      }
       const r = await exec(...pinnedCommand("DASHBOARD_SSH_KEYGEN_BIN", "ssh-keygen", ["-q", "-t", "ed25519", "-N", "", "-C", title, "-f", key]));
       if (stale()) return "stale";
       if (!r.ok || !fs.existsSync(key + ".pub")) return `the key couldn't be made${said(r) ? ` (${said(r)})` : ""}`;
@@ -218,10 +240,12 @@ export class GithubLogin {
     await exec("git", ["config", "--global", "--unset", "tag.gpgsign"]);
     let mine = "";
     try { mine = keyBody(fs.readFileSync(signingKeyPath() + ".pub", "utf8")); } catch { return; }
-    const list = await gh(["api", "user/ssh_signing_keys"]);
-    let keys: { id: number; key: string }[] = [];
-    try { keys = JSON.parse(list.out); } catch {}
-    for (const k of Array.isArray(keys) ? keys : []) {
+    // Every page (gh api doesn't paginate by itself): --slurp makes it one array of pages.
+    const list = await gh(["api", "--paginate", "--slurp", "user/ssh_signing_keys"]);
+    let pages: unknown = [];
+    try { pages = JSON.parse(list.out); } catch {}
+    const keys = (Array.isArray(pages) ? pages : []).flat() as { id: number; key: string }[];
+    for (const k of keys) {
       if (k && typeof k.key === "string" && keyBody(k.key) === mine) await gh(["api", "-X", "DELETE", `user/ssh_signing_keys/${k.id}`]);
     }
   }

@@ -115,12 +115,18 @@ if (a.startsWith("auth login")) {
   if (at("gh-bad-user")) { console.error("HTTP 502"); process.exit(1); }
   console.log(JSON.stringify({ login: "ana-gh", id: 42, name: "Ana Example" }));
 }
-else if (a.startsWith("ssh-key add")) { fs.writeFileSync(dir + "/gh-ssh-key-add", a); }
-else if (a === "api user/ssh_signing_keys") {
-  const pub = fs.readFileSync(dir + "/gh/signing_ed25519.pub", "utf8").trim().split(" ").slice(0, 2).join(" ");
-  console.log(JSON.stringify([{ id: 6, key: "ssh-ed25519 AAAAsomeoneelse" }, { id: 7, key: pub }]));
+else if (a.startsWith("ssh-key add")) {
+  // gh-slow-keyadd: the upload takes a while, so a sign-out can arrive while it's in flight.
+  fs.writeFileSync(dir + "/gh-keyadd-started", "1");
+  const done = () => { fs.writeFileSync(dir + "/gh-ssh-key-add", a); fs.appendFileSync(dir + "/gh-events", "add\\n"); };
+  if (at("gh-slow-keyadd")) setTimeout(done, 600); else done();
 }
-else if (a.startsWith("api -X DELETE")) { fs.appendFileSync(dir + "/gh-key-deleted", a + "\\n"); }
+else if (a === "api --paginate --slurp user/ssh_signing_keys") {
+  const pub = fs.readFileSync(dir + "/gh/signing_ed25519.pub", "utf8").trim().split(" ").slice(0, 2).join(" ");
+  // Two pages, ours on the second.
+  console.log(JSON.stringify([[{ id: 6, key: "ssh-ed25519 AAAAsomeoneelse" }], [{ id: 7, key: pub }]]));
+}
+else if (a.startsWith("api -X DELETE")) { fs.appendFileSync(dir + "/gh-key-deleted", a + "\\n"); fs.appendFileSync(dir + "/gh-events", "delete\\n"); }
 else if (a.startsWith("auth logout")) { fs.rmSync(dir + "/gh-token", { force: true }); }
 else process.exit(1);
 `;
@@ -311,5 +317,20 @@ test("hosted server: GitHub sign-in reports a missing identity, and a cancelled 
   assert.equal((await status()).state, "idle");
   assert.ok(!fs.existsSync(GIT_GLOBAL), "no commit identity from a cancelled sign-in");
   fs.rmSync(path.join(TMP, "gh-slow-setup"));
+
+  // Signing out while the key upload is still in flight: the sign-out waits for it, then removes
+  // the key, and the stale finish never turns signing back on.
+  fs.rmSync(path.join(TMP, "gh-events"), { force: true });
+  fs.writeFileSync(path.join(TMP, "gh-slow-keyadd"), "1");
+  fs.rmSync(path.join(TMP, "gh-keyadd-started"), { force: true });
+  await post("/api/github/login", { action: "start" });
+  for (let i = 0; i < 200 && !fs.existsSync(path.join(TMP, "gh-keyadd-started")); i++) await sleep(25);
+  assert.ok(fs.existsSync(path.join(TMP, "gh-keyadd-started")), "gh ssh-key add is running");
+  assert.equal(JSON.parse((await post("/api/github/login", { action: "logout" })).text).ok, true);
+  assert.deepEqual(fs.readFileSync(path.join(TMP, "gh-events"), "utf8").trim().split("\n"), ["add", "delete"], "the upload finished before the cleanup ran");
+  await sleep(500);
+  assert.doesNotMatch(fs.readFileSync(GIT_GLOBAL, "utf8"), /gpgsign/, "signing stays off after sign-out");
+  assert.equal((await status()).state, "idle");
+  fs.rmSync(path.join(TMP, "gh-slow-keyadd"));
   fs.rmSync(path.join(TMP, "gh-approved"));
 });
