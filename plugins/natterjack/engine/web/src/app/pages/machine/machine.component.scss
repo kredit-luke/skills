@@ -1,5 +1,7 @@
 /* Groups stack full width and their rows flow into columns, so a short group never leaves a hole beside a long one. */
 .check-groups { display: grid; gap: 16px; }
+.hidden-note { margin-bottom: 16px; }
+.hidden-note code { font-family: var(--mono); }
 .check-groups > .panel { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(460px, 100%), 1fr)); }
 .check-groups > .panel > :not(.check) { grid-column: 1 / -1; }
 .n.bad { background: var(--red-bg) !important; color: var(--risk) !important; }

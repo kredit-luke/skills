@@ -24,6 +24,19 @@ const ICON: Record<string, string> = { ok: '✓', warn: '!', missing: '✕', inf
     @if (!m) { <div class="empty">Checking…</div> }
     @else {
       @if (m.error) { <div class="warn-note">{{ m.error }}</div> }
+      @if (m.hidden; as h) {
+        <div class="info-note hidden-note">
+          {{ h.count }} {{ h.count === 1 ? 'check' : 'checks' }} for running the apps {{ h.count === 1 ? 'is' : 'are' }} hidden ({{ h.groups.join(', ') }}):
+          <!-- Only a matching condition overrides the hiding (machine.ts resolvedSpecs); its other when conditions still apply. -->
+          @if (h.reason === 'hosted') {
+            this hosted dashboard doesn't run the apps, so it doesn't need their tools.
+            To show one here anyway, give it <code>"when": {{ '{' }} "hosted": true {{ '}' }}</code> in <code>.claude/dashboard/machine.json</code>, or an <code>access</code> or <code>profile</code> that matches yours.
+          } @else {
+            your access is read-only, so you don't run the apps.
+            To show one anyway, give it <code>"when": {{ '{' }} "access": ["full", "read"] {{ '}' }}</code> in <code>.claude/dashboard/machine.json</code>.
+          }
+        </div>
+      }
       @if (!m.configured) {
         <div class="panel"><div class="empty md tight" style="padding:2rem">
           <p>No checks are set up. List what this workspace needs in <code>.claude/dashboard/machine.json</code> (for example <code>{{ '{' }} "use": "node" {{ '}' }}</code>, <code>{{ '{' }} "use": "docker" {{ '}' }}</code>, <code>{{ '{' }} "use": "go" {{ '}' }}</code>), then reload. The catalog of tools it knows is in <code>{{ api.engineDir() }}/server/src/machine-catalog.ts</code>; ask Claude to derive the list from your repos.</p>

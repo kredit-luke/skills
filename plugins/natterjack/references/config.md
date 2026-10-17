@@ -66,7 +66,7 @@ Machine checks can follow it:
 - `when: { access: "full" }` (or `"read"`; `profile` works too), or `when: { role }`;
 - `when: { hosted: true | false }`.
 
-Checks for running the apps are left out for read-only access and on hosted dashboards, unless their `when` asks for them. Those are checks that name `apps`, plus .NET, Docker, ports and npm globals.
+Checks for running the apps are left out for read-only access and on hosted dashboards, unless their `when` asks for them. Those are checks that name `apps`, plus .NET, Docker, ports and npm globals. The Machine page notes how many it left out, their groups and why.
 
 A role sets:
 

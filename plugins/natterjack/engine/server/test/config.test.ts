@@ -144,9 +144,15 @@ test("machine.json: hosted dashboards and read-only access skip the checks for r
   setAccess(ledger, ROOT, "developer");
   assert.deepEqual(ids(), ["git", "gh", "docker", "dotnet", "deps", "local-only", "readers-too"], "full access on a laptop: everything that isn't hosted-only");
   assert.deepEqual(ids({ hosted: true }), ["git", "gh", "hosted-only", "readers-too"], "hosted: nothing to run, so no stack checks");
+  // The Machine page says what it left out and why; a when that doesn't match isn't "hidden".
+  assert.equal(resolvedSpecs(ROOT).hidden, null);
+  assert.deepEqual(({ ...resolvedSpecs(ROOT, { hosted: true }).hidden, groups: undefined }), { reason: "hosted", count: 3, groups: undefined });
 
   setAccess(ledger, ROOT, "reader");
   assert.deepEqual(ids(), ["git", "local-only", "readers-too"], "read-only: no GitHub sign-in and nothing to run");
+  assert.equal(resolvedSpecs(ROOT).hidden?.reason, "read");
+  assert.equal(resolvedSpecs(ROOT).hidden?.count, 3);
+  assert.ok(resolvedSpecs(ROOT, { hosted: true }).hidden?.groups.length, "names the groups");
   // Leave no choice behind for the tests after this one.
   fs.rmSync(path.join(ledger, "profile.json"), { force: true });
   fs.rmSync(path.join(ROOT, ".claude", "settings.local.json"), { force: true });

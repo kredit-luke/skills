@@ -250,6 +250,8 @@ export function resolvedSpecs(root: string, opts: { hosted?: boolean } = {}) {
   const me = readProfile(LEDGER_DIR);
   const accessOf = (a: string) => (a === "read" ? "reader" : a === "full" ? "developer" : a);
   const out: any[] = [];
+  const hiddenGroups: string[] = [];
+  let hiddenCount = 0;
   for (const raw of list) {
     if (!raw || typeof raw !== "object") continue;
     const base = raw.use ? CATALOG[raw.use] : null;
@@ -269,10 +271,17 @@ export function resolvedSpecs(root: string, opts: { hosted?: boolean } = {}) {
     if (when.hosted === true && !opts.hosted) continue;
     if (when.hosted === false && opts.hosted) continue;
     const forRunning = (Array.isArray(spec.apps) && spec.apps.length > 0) || RUN_KINDS.has(spec.kind);
-    if (forRunning && (opts.hosted || me.profile === "reader") && when.hosted !== true && !when.profile && !when.access) continue;
+    if (forRunning && (opts.hosted || me.profile === "reader") && when.hosted !== true && !when.profile && !when.access) {
+      hiddenCount++;
+      const group = spec.group || "Everyone";
+      if (!hiddenGroups.includes(group)) hiddenGroups.push(group);
+      continue;
+    }
     out.push(spec);
   }
-  return { specs: out, error, configured: !!data };
+  // Hosted wins as the reason: a hosted dashboard has nothing to run whatever the access.
+  const hidden = hiddenCount ? { reason: opts.hosted ? "hosted" : "read", count: hiddenCount, groups: hiddenGroups } : null;
+  return { specs: out, error, configured: !!data, hidden };
 }
 
 class Machine {
@@ -336,7 +345,7 @@ class Machine {
   async _check() {
     const hw = hardware(this.root, true);
     await refreshPath();
-    const { specs, error, configured } = resolvedSpecs(this.root, { hosted: this.hosted });
+    const { specs, error, configured, hidden } = resolvedSpecs(this.root, { hosted: this.hosted });
 
     // Each distinct probe runs once, all in parallel.
     const probes = new Map<string, Promise<any>>();
@@ -398,6 +407,7 @@ class Machine {
       warnings: checks.filter((c) => c.status === "warn").length,
       configured,
       error,
+      hidden,
       checkedAt: Date.now(),
     };
   }

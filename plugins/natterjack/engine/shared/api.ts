@@ -832,6 +832,15 @@ export interface MachineReport {
   /** machine.json exists (otherwise there are no checks to show). */
   configured: boolean;
   error: string | null;
+  /** Checks for running the apps left out here (a hosted dashboard, or read-only access). Older servers don't send it. */
+  hidden?: MachineHidden | null;
+}
+
+export interface MachineHidden {
+  reason: 'hosted' | 'read';
+  count: number;
+  /** Their groups, in machine.json order. */
+  groups: string[];
 }
 
 // ---------------------------------------------------------------- models
