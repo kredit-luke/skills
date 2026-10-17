@@ -22,6 +22,12 @@
  * The source is SNAPSHOT_CONFIG (repos.json's `snapshot` block as JSON: before the
  * first install there's no repos.json to read it from), else the folder's repos.json;
  * its credentials come from the environment, else the folder's ledger.
+ *
+ *   node <engine>/bin/snapshot.mjs pull-repos [--into <dir>]
+ *
+ * pull-repos: bring every repos.json repo to its latest default branch with git (repo-pull.ts):
+ * clone the missing ones and snapshot copies, fast-forward clean clones. What the hosted image
+ * runs on boot when GIT_TOKEN is set. Exits 1 if any repo failed (the rest are still done).
  */
 
 import fs from "node:fs";
@@ -32,6 +38,7 @@ import { readRepos, type SnapshotConfig } from "./repos.ts";
 import { buildSnapshot, cloneForPublish, installWorkspace, publishSnapshot } from "./snapshot.ts";
 import { installerRoles } from "./installer.ts";
 import { createSource } from "./snapshot-sources/index.ts";
+import { pullRepos } from "./repo-pull.ts";
 
 const argv = process.argv.slice(2);
 const flag = (name: string) => argv.includes(`--${name}`);
@@ -55,11 +62,19 @@ async function install() {
   log(`Workspace ${r.workspace} at ${r.sha.slice(0, 10)}.`);
 }
 
+async function pull() {
+  const results = await pullRepos(path.resolve(opt("into") || WORKSPACE_ROOT), log);
+  const count = (a: string) => results.filter((r) => r.action === a).length;
+  log(`Repos: ${count("cloned")} cloned, ${count("updated")} updated, ${count("current")} already current, ${count("skipped")} left alone, ${count("failed")} failed.`);
+  if (count("failed")) process.exitCode = 1;
+}
+
 async function main() {
   const cmd = argv[0];
   if (cmd === "install") return install();
+  if (cmd === "pull-repos") return pull();
   if (cmd !== "publish") {
-    console.error("Usage: node <engine>/bin/snapshot.mjs publish [--clone] [--out <dir>] [--dry] [--no-fetch] [--no-workspace]\n       node <engine>/bin/snapshot.mjs install [--into <dir>] [--repos]");
+    console.error("Usage: node <engine>/bin/snapshot.mjs publish [--clone] [--out <dir>] [--dry] [--no-fetch] [--no-workspace]\n       node <engine>/bin/snapshot.mjs install [--into <dir>] [--repos]\n       node <engine>/bin/snapshot.mjs pull-repos [--into <dir>]");
     process.exit(2);
   }
   const root = WORKSPACE_ROOT;

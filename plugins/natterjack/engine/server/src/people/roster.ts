@@ -21,6 +21,8 @@ export interface RosterPerson {
   profile: string;
   /** The workspace.json role assigned to them; absent: they pick their own. */
   role?: string;
+  /** Their access, assigned over the role's default (DASHBOARD_ACCESS); absent: the role's. */
+  access?: "full" | "read";
   provisionedAt: string;
   provisionedBy: string;
   updatedAt?: string;
@@ -123,10 +125,11 @@ export function describe(before: RosterDoc | null, after: RosterDoc): string[] {
   const now = after.people;
   const out: string[] = [];
   for (const [email, p] of Object.entries(now)) {
-    if (!was[email]) out.push(`Added ${email} (${p.profile}${p.role ? `, role ${p.role}` : ""})`);
+    if (!was[email]) out.push(`Added ${email} (${p.profile}${p.role ? `, role ${p.role}` : ""}${p.access ? `, ${p.access} access` : ""})`);
     else {
       if (was[email].profile !== p.profile) out.push(`Changed ${email}'s profile to ${p.profile}`);
       if ((was[email].role || null) !== (p.role || null)) out.push(p.role ? `Changed ${email}'s role to ${p.role}` : `Let ${email} pick their own role`);
+      if ((was[email].access || null) !== (p.access || null)) out.push(p.access ? `Gave ${email} ${p.access} access` : `${email}'s access follows their role`);
     }
   }
   for (const email of Object.keys(was)) if (!now[email]) out.push(`Removed ${email}`);

@@ -19,7 +19,7 @@ const { lockedRole, readProfile, reapplyProfile, refuseRoleChange, setRole, ROLE
 type Role = import("../src/config.ts").RoleConfig;
 
 const role = (id: string, profile: "developer" | "reader", hiddenSkills: string[] = [], outputStyle: string | null = null): Role =>
-  ({ id, label: id, description: "", profile, outputStyle, hiddenPages: [], hiddenSkills });
+  ({ id, label: id, description: "", profile, outputStyle, hiddenPages: [], hiddenSkills, ownHiddenPages: [], ownHiddenSkills: hiddenSkills });
 let bump = 10;
 const writeWorkspace = (data: unknown) => {
   fs.writeFileSync(path.join(CFG, "workspace.json"), JSON.stringify(data));
@@ -221,4 +221,89 @@ test("DASHBOARD_ROLE: an assigned role is applied at startup over what they pick
   assert.equal(refuseRoleChange("finance", { role: "finance" }), null);
   assert.equal(refuseRoleChange(null, { role: "eng" }), null);
   assert.equal(ROLE_LOCKED, "Your role is set by whoever manages your hosted dashboard.");
+});
+
+test("access is separate from the role: its own setting over the role's default, kept across role changes, lockable", async () => {
+  const { setAccess, lockedAccess, refuseAccessChange, accessInfo, parseAccess, ACCESS_LOCKED } = await import("../src/profile.ts");
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "dash-access-"));
+  const ledger = path.join(root, ".claude", "ledger");
+  const reader = { hiddenPages: ["apps", "workspaces"], hiddenSkills: ["run", "worktree"] };
+  // Operations reads by default and has its own hidden skill; engineering builds.
+  const ops = { ...role("operations", "reader", ["release"], "Business"), hiddenSkills: ["run", "worktree", "release"], ownHiddenSkills: ["release"] };
+  const eng = role("engineering", "developer");
+  const roles = [eng, ops];
+
+  setRole(ledger, root, { role: "operations" }, roles, reader);
+  let p = readProfile(ledger, roles, reader);
+  assert.deepEqual([p.profile, p.access, p.hiddenPages, p.hiddenSkills], ["reader", null, ["apps", "workspaces"], ["run", "worktree", "release"]], "the role's default access");
+
+  // A technical ops person: Operations, with full access.
+  setAccess(ledger, root, "developer", roles, reader);
+  p = readProfile(ledger, roles, reader);
+  assert.deepEqual([p.current.id, p.profile, p.access, p.hiddenPages, p.hiddenSkills], ["operations", "developer", "developer", [], ["release"]], "the reader restrictions go; the role's own stay");
+  assert.deepEqual(JSON.parse(fs.readFileSync(path.join(root, ".claude", "settings.local.json"), "utf-8")).skillOverrides, { release: "off" }, "the reader skills are on again; the role's own stays off");
+  assert.equal(p.outputStyle, "Business", "still answered as Operations");
+  assert.deepEqual(accessInfo(p, null), { access: "full", accessOwn: "full", roleAccess: "read", accessLocked: false });
+
+  // Changing role keeps their own access; "default" hands it back to the role.
+  setRole(ledger, root, { role: "engineering" }, roles, reader);
+  setRole(ledger, root, { role: "operations" }, roles, reader);
+  assert.equal(readProfile(ledger, roles, reader).profile, "developer");
+  setAccess(ledger, root, parseAccess("default")!, roles, reader);
+  assert.equal(readProfile(ledger, roles, reader).profile, "reader");
+
+  // Engineering with read-only access: the reader restrictions, still Engineering.
+  setRole(ledger, root, { role: "engineering" }, roles, reader);
+  setAccess(ledger, root, "reader", roles, reader);
+  p = readProfile(ledger, roles, reader);
+  assert.deepEqual([p.current.id, p.profile, p.hiddenSkills], ["engineering", "reader", ["run", "worktree"]]);
+
+  // DASHBOARD_ACCESS: full or read, applied at start over what they had, and they can't change it.
+  assert.equal(lockedAccess({ DASHBOARD_ACCESS: "full" }), "developer");
+  assert.equal(lockedAccess({ DASHBOARD_ACCESS: "read" }), "reader");
+  assert.equal(lockedAccess({}), null);
+  const warnings: string[] = [];
+  assert.equal(lockedAccess({ DASHBOARD_ACCESS: "admin" }, (m) => warnings.push(m)), null);
+  assert.match(warnings[0], /isn't full or read/);
+  reapplyProfile(ledger, root, roles, null, "developer");
+  assert.equal(readProfile(ledger, roles, reader).profile, "developer");
+  assert.equal(refuseAccessChange("developer", "reader"), ACCESS_LOCKED);
+  assert.equal(refuseAccessChange("developer", "developer"), null);
+  assert.equal(refuseAccessChange(null, "reader"), null);
+
+  // Hosted with only an access assigned, before any role is picked: still asked for the role.
+  const fresh = path.join(root, "fresh-ledger");
+  reapplyProfile(fresh, root, roles, null, "developer");
+  p = readProfile(fresh, roles, reader);
+  assert.deepEqual([p.roleChosen, p.profile], [false, "developer"]);
+});
+
+test("an assigned access goes with its assignment; an access they chose themselves stays", async () => {
+  const { setAccess } = await import("../src/profile.ts");
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "dash-assigned-"));
+  const ledger = path.join(root, ".claude", "ledger");
+  const reader = { hiddenPages: ["apps"], hiddenSkills: [] };
+  const roles = [role("engineering", "developer"), role("operations", "reader")];
+  setRole(ledger, root, { role: "operations" }, roles, reader);
+
+  // Assigned full on the People page, then the assignment is removed ("Role's"): back to the role's read.
+  reapplyProfile(ledger, root, roles, null, "developer");
+  assert.deepEqual([readProfile(ledger, roles, reader).profile, readProfile(ledger, roles, reader).accessAssigned], ["developer", true]);
+  reapplyProfile(ledger, root, roles, null, null);
+  assert.deepEqual([readProfile(ledger, roles, reader).profile, readProfile(ledger, roles, reader).access], ["reader", null]);
+
+  // The reverse: assigned read on a full-access role, then removed: full again.
+  setRole(ledger, root, { role: "engineering" }, roles, reader);
+  reapplyProfile(ledger, root, roles, null, "reader");
+  assert.equal(readProfile(ledger, roles, reader).profile, "reader");
+  reapplyProfile(ledger, root, roles, null, null);
+  assert.equal(readProfile(ledger, roles, reader).profile, "developer");
+
+  // Their own choice (locally, no assignment) survives every restart, and a role change.
+  setAccess(ledger, root, "reader", roles, reader);
+  reapplyProfile(ledger, root, roles, null, null);
+  setRole(ledger, root, { role: "operations" }, roles, reader);
+  reapplyProfile(ledger, root, roles, null, null);
+  const p = readProfile(ledger, roles, reader);
+  assert.deepEqual([p.current.id, p.profile, p.access, p.accessAssigned], ["operations", "reader", "reader", false]);
 });

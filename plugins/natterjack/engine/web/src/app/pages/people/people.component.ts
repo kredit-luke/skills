@@ -1,5 +1,6 @@
 import { ChangeDetectionStrategy, Component, OnInit, computed, inject, signal } from '@angular/core';
-import type { PeopleActionName, PeopleActionResponse, PeopleResponse, PeopleRoster, PersonRow, PersonState } from '../../../../../shared/api';
+import { RouterLink } from '@angular/router';
+import type { Access, PeopleActionName, PeopleActionResponse, PeopleResponse, PeopleRole, PeopleRolesRequest, PeopleRoster, PersonRow, PersonState } from '../../../../../shared/api';
 import { ApiService } from '../../core/api.service';
 import { LaunchService } from '../../core/launch.service';
 import { ToastService } from '../../core/toast.service';
@@ -17,8 +18,10 @@ const TAG: Record<PersonState, string> = {
 };
 type Filter = 'set-up' | 'not-set-up' | 'attention' | 'all';
 
-/** `role`: a workspace role id, or '' for "they pick their own". */
-interface Pending { row: PersonRow; action: PeopleActionName; profile?: string; role?: string; keepVolume?: boolean; preview: PeopleActionResponse | null; error: string | null; busy: boolean; confirmText: string }
+/** `role`: a workspace role id, or '' for "they pick their own". `access`: 'full', 'read', or '' for the role's. */
+interface Pending { row: PersonRow; action: PeopleActionName; profile?: string; role?: string; access?: string; keepVolume?: boolean; preview: PeopleActionResponse | null; error: string | null; busy: boolean; confirmText: string }
+/** The role being added (no id) or edited in the Roles dialog. */
+interface RoleDraft { id: string | null; label: string; description: string; access: Access; outputStyle: string; busy: boolean; error: string | null }
 
 /**
  * Who in the company has a hosted dashboard (references/hosting.md): the directory (the
@@ -29,7 +32,7 @@ interface Pending { row: PersonRow; action: PeopleActionName; profile?: string; 
  */
 @Component({
   selector: 'dash-people',
-  imports: [PageHeaderComponent],
+  imports: [PageHeaderComponent, RouterLink],
   changeDetection: ChangeDetectionStrategy.OnPush,
   styleUrl: './people.component.scss',
   template: `
@@ -57,6 +60,10 @@ interface Pending { row: PersonRow; action: PeopleActionName; profile?: string; 
     } @else {
       @for (e of view()!.errors; track e.source) {
         <div class="warn-note err"><b>{{ sourceLabel(e.source) }}:</b> {{ e.message }}
+          @if (e.source === 'directory' && view()!.directory.type === 'google') {
+            <!-- The Machine page takes the OAuth client file and runs this sign-in (people/google-login.ts). -->
+            <div class="fix"><a class="btn primary sm" routerLink="/machine">Sign in on the Machine page</a> <span class="muted">(Google Workspace directory, under People page)</span></div>
+          }
           @if (e.fix) { <div class="fix">Fix: <code>{{ e.fix }}</code> <button class="btn ghost sm" (click)="copy(e.fix)">Copy</button></div> }
         </div>
       }
@@ -70,7 +77,23 @@ interface Pending { row: PersonRow; action: PeopleActionName; profile?: string; 
           <button class="btn sm primary" [disabled]="committing()" (click)="commit()">{{ committing() ? 'Committing…' : 'Commit' }}</button>
         </div>
       }
+      @if (view()!.rolesFile?.uncommitted) {
+        <div class="panel commit">
+          <div class="ct">
+            <b>{{ view()!.rolesFile!.file }} has role changes that aren't committed.</b> Hosted dashboards get them once you commit, push and publish the snapshot; other engineers once you push.
+            <ul>@for (c of view()!.rolesFile!.changes; track c) { <li>{{ c }}</li> }</ul>
+          </div>
+          <button class="btn sm primary" [disabled]="committing()" (click)="commitRoles()">{{ committing() ? 'Committing…' : 'Commit' }}</button>
+        </div>
+      }
 
+      <!-- Tabs, so a long roster doesn't push the roles out of sight. -->
+      <div class="page-tabs" role="tablist">
+        <button type="button" role="tab" [class.on]="tab() === 'people'" [attr.aria-selected]="tab() === 'people'" (click)="tab.set('people')">People <span class="n">{{ counts()['set-up'] }}</span></button>
+        <button type="button" role="tab" [class.on]="tab() === 'roles'" [attr.aria-selected]="tab() === 'roles'" (click)="tab.set('roles')">Roles <span class="n">{{ view()!.roles.length }}</span></button>
+      </div>
+
+      @if (tab() === 'people') {
       <div class="bar">
         <div class="seg">
           @for (f of filters; track f.id) {
@@ -87,7 +110,7 @@ interface Pending { row: PersonRow; action: PeopleActionName; profile?: string; 
 
       <div class="panel">
         <table class="people">
-          <thead><tr><th>Person</th><th>Dashboard</th><th title="hosting.json profiles: memory, CPU, runs at once and areas">Profile</th>@if (hasRoles()) { <th title="workspace.json roles: what their dashboard shows them; they can't change it">Role</th> }<th>Set up</th><th></th></tr></thead>
+          <thead><tr><th>Person</th><th>Dashboard</th><th title="hosting.json profiles: memory, CPU, runs at once and areas">Profile</th>@if (hasRoles()) { <th title="workspace.json roles: who they are and how Claude answers them; they can't change it">Role</th> }<th title="What they can do with the code: full stack (GitHub sign-in, Implement, Publish) or read-only; by default their role's">Access</th><th>Set up</th><th></th></tr></thead>
           <tbody>
             @for (r of shown(); track r.email) {
               <tr [class.dim]="r.state === 'not-set-up'">
@@ -119,6 +142,17 @@ interface Pending { row: PersonRow; action: PeopleActionName; profile?: string; 
                     }
                   </td>
                 }
+                <td>
+                  @if (r.state === 'not-set-up' || r.state === 'unmanaged' || r.state === 'missing') {
+                    <span class="muted">{{ r.access ? accessLabel(r.access) : '—' }}</span>
+                  } @else {
+                    <select (change)="ask(r, 'access', undefined, undefined, $any($event.target).value); $any($event.target).value = r.access || ''">
+                      <option value="" [selected]="!r.access">Role's ({{ accessLabel(roleAccess(r.role)) }})</option>
+                      <option value="full" [selected]="r.access === 'full'">Full stack</option>
+                      <option value="read" [selected]="r.access === 'read'">Read-only</option>
+                    </select>
+                  }
+                </td>
                 <td class="muted">@if (r.provisionedAt) { {{ rel(r.provisionedAt) }} by {{ r.provisionedBy }} }</td>
                 <td class="acts">
                   @switch (r.state) {
@@ -135,13 +169,75 @@ interface Pending { row: PersonRow; action: PeopleActionName; profile?: string; 
                 </td>
               </tr>
             } @empty {
-              <tr><td [attr.colspan]="hasRoles() ? 6 : 5" class="empty">{{ query() ? 'Nobody matches.' : filter() === 'set-up' ? 'Nobody has a hosted dashboard yet. Find someone under "Not set up".' : 'Nobody here.' }}</td></tr>
+              <tr><td [attr.colspan]="hasRoles() ? 7 : 6" class="empty">{{ query() ? 'Nobody matches.' : filter() === 'set-up' ? 'Nobody has a hosted dashboard yet. Find someone under "Not set up".' : 'Nobody here.' }}</td></tr>
             }
           </tbody>
         </table>
         @if (more() > 0) { <div class="more">and {{ more() }} more: search to find someone.</div> }
       </div>
+      }
 
+      @if (tab() === 'roles') {
+      <!-- The team's roles (workspace.json): who someone is and how Claude answers them; access is only their default. -->
+      <div class="panel roles">
+        <div class="panel-h">
+          <h2>Roles <span class="n">{{ view()!.roles.length }}</span></h2>
+          <button class="btn sm" (click)="editRole(null)">Add role</button>
+        </div>
+        <p class="muted rh">A role sets how Claude answers someone (its output style) and the access they get unless you give them their own on the People tab.</p>
+        @if (view()!.roles.length) {
+          <table class="people">
+            <thead><tr><th>Role</th><th>Access by default</th><th>Claude answers</th><th>People</th><th></th></tr></thead>
+            <tbody>
+              @for (ro of view()!.roles; track ro.id) {
+                <tr>
+                  <td><div class="nm">{{ ro.label }}</div>@if (ro.description) { <div class="em">{{ ro.description }}</div> }</td>
+                  <td>{{ accessLabel(ro.access) }}</td>
+                  <td>{{ ro.outputStyle || "Claude's default" }}</td>
+                  <td class="muted">{{ ro.people || '—' }}</td>
+                  <td class="acts">
+                    <button class="btn sm ghost" (click)="editRole(ro)">Edit</button>
+                    <button class="btn sm ghost danger" [disabled]="ro.people > 0" [title]="ro.people ? 'Give them another role first' : 'Remove this role'" (click)="removeRole(ro)">Remove</button>
+                  </td>
+                </tr>
+              }
+            </tbody>
+          </table>
+        } @else {
+          <div class="empty">No roles yet: everyone gets the built-in Developer and Reader. Add the roles your team has.</div>
+        }
+      </div>
+      }
+
+    }
+
+    @if (roleDraft(); as rd) {
+      <div class="scrim" (click)="roleDraft.set(null)"></div>
+      <div class="dialog panel" role="dialog" aria-modal="true" aria-labelledby="role-dialog-title">
+        <div class="panel-h"><h2 id="role-dialog-title">{{ rd.id ? 'Edit the ' + rd.label + ' role' : 'Add a role' }}</h2></div>
+        <div class="dbody">
+          <label>Name <input type="text" [value]="rd.label" (input)="patchRole({ label: $any($event.target).value })" placeholder="Operations" /></label>
+          <label>Description <input type="text" [value]="rd.description" (input)="patchRole({ description: $any($event.target).value })" placeholder="Runs the business day to day" /></label>
+          <label>Access by default
+            <select (change)="patchRole({ access: $any($event.target).value })">
+              <option value="full" [selected]="rd.access === 'full'">Full stack: GitHub sign-in, Implement, Publish, apps</option>
+              <option value="read" [selected]="rd.access === 'read'">Read-only: ask, explain and search the code</option>
+            </select>
+          </label>
+          <label>Claude answers in
+            <select (change)="patchRole({ outputStyle: $any($event.target).value })">
+              <option value="" [selected]="!rd.outputStyle">Claude's default (technical)</option>
+              @for (s of view()!.styles; track s) { <option [value]="s" [selected]="s === rd.outputStyle">{{ s }}</option> }
+            </select>
+          </label>
+          <p class="muted">Team styles are files in <code>.claude/output-styles/</code>. People can still be given their own access above. Nothing is committed until you click Commit.</p>
+          @if (rd.error) { <div class="warn-note err">{{ rd.error }}</div> }
+        </div>
+        <div class="dfoot">
+          <button class="btn ghost sm" (click)="roleDraft.set(null)">Cancel</button>
+          <button class="btn sm primary" [disabled]="rd.busy || !rd.label.trim()" (click)="saveRole()">{{ rd.busy ? 'Saving…' : rd.id ? 'Save' : 'Add' }}</button>
+        </div>
+      </div>
     }
 
     @if (pending(); as pd) {
@@ -164,6 +260,13 @@ interface Pending { row: PersonRow; action: PeopleActionName; profile?: string; 
               </label>
               <p class="muted">An assigned role is fixed: they see it in Settings but can't change it.</p>
             }
+            <label>Access
+              <select (change)="setPending({ access: $any($event.target).value })">
+                <option value="" [selected]="!pd.access">Their role's ({{ accessLabel(roleAccess(pd.role || null)) }})</option>
+                <option value="full" [selected]="pd.access === 'full'">Full stack: GitHub sign-in, Implement, Publish</option>
+                <option value="read" [selected]="pd.access === 'read'">Read-only: ask, explain and search the code</option>
+              </select>
+            </label>
           }
           @if (pd.action === 'remove') {
             <label class="check"><input type="checkbox" [checked]="!pd.keepVolume" (change)="setPending({ keepVolume: !$any($event.target).checked })" />
@@ -172,7 +275,7 @@ interface Pending { row: PersonRow; action: PeopleActionName; profile?: string; 
               <label>Type <b>{{ pd.row.email }}</b> to confirm <input type="text" [value]="pd.confirmText" (input)="setPending({ confirmText: $any($event.target).value })" /></label>
             }
           }
-          @if (pd.action === 'profile' || pd.action === 'role' || pd.action === 'update') { <p class="muted">This restarts their dashboard. A run in progress is interrupted (they can reply to it to carry on).</p> }
+          @if (pd.action === 'profile' || pd.action === 'role' || pd.action === 'access' || pd.action === 'update') { <p class="muted">This restarts their dashboard. A run in progress is interrupted (they can reply to it to carry on).</p> }
           @if (pd.error) { <div class="warn-note err">{{ pd.error }}</div> }
           @if (pd.preview) { <div class="pv-h">Preview (nothing has changed yet):</div><pre class="pv">{{ pd.preview.output || 'OK' }}</pre> }
           @else if (pd.busy) { <div class="muted">Checking the change with {{ view()!.cluster }}…</div> }
@@ -197,6 +300,7 @@ export class PeopleComponent implements OnInit {
   readonly query = signal('');
   readonly pending = signal<Pending | null>(null);
   readonly committing = signal(false);
+  readonly tab = signal<'people' | 'roles'>('people');
   readonly filters: { id: Filter; label: string }[] = [
     { id: 'set-up', label: 'Have a dashboard' },
     { id: 'attention', label: 'Needs attention' },
@@ -247,24 +351,29 @@ export class PeopleComponent implements OnInit {
   knownProfile(id: string | null) { return !!id && !!this.view()?.profiles.some((p) => p.id === id); }
   knownRole(id: string | null) { return !!id && !!this.view()?.roles.some((r) => r.id === id); }
   roleLabel(id: string) { return this.view()?.roles.find((r) => r.id === id)?.label || id; }
+  accessLabel(a: Access | null) { return a === 'read' ? 'Read-only' : 'Full stack'; }
+  /** The access a role gives by default; someone who picks their own role gets their pick's, shown as full. */
+  roleAccess(id: string | null): Access { return (id && this.view()?.roles.find((r) => r.id === id)?.access) || 'full'; }
   sourceLabel(s: string) { return ({ directory: 'Directory', roster: 'Roster', cluster: 'Dashboards', template: 'Template' } as Record<string, string>)[s] || s; }
-  confirmLabel(a: PeopleActionName) { return ({ provision: 'Set up', update: 'Update', profile: 'Change profile', role: 'Change role', start: 'Start', stop: 'Stop', remove: 'Remove', adopt: 'Adopt', forget: 'Forget' } as Record<string, string>)[a]; }
+  confirmLabel(a: PeopleActionName) { return ({ provision: 'Set up', update: 'Update', profile: 'Change profile', role: 'Change role', access: 'Change access', start: 'Start', stop: 'Stop', remove: 'Remove', adopt: 'Adopt', forget: 'Forget' } as Record<string, string>)[a]; }
   title(p: Pending) {
     const who = p.row.name;
-    return ({ provision: `Set up a dashboard for ${who}`, update: `Update ${who}'s dashboard`, profile: `Change ${who}'s profile to ${this.profileName(p.profile || null)}`, role: p.role ? `Change ${who}'s role to ${this.roleLabel(p.role)}` : `Let ${who} choose their role`, start: `Start ${who}'s dashboard`, stop: `Stop ${who}'s dashboard`, remove: `Remove ${who}'s dashboard`, adopt: `Add ${who} to the roster`, forget: `Forget ${who}` } as Record<string, string>)[p.action];
+    const access = p.access ? `Give ${who} ${p.access === 'full' ? 'full-stack' : 'read-only'} access` : `Let ${who}'s access follow their role`;
+    return ({ provision: `Set up a dashboard for ${who}`, update: `Update ${who}'s dashboard`, profile: `Change ${who}'s profile to ${this.profileName(p.profile || null)}`, role: p.role ? `Change ${who}'s role to ${this.roleLabel(p.role)}` : `Let ${who} choose their role`, access, start: `Start ${who}'s dashboard`, stop: `Stop ${who}'s dashboard`, remove: `Remove ${who}'s dashboard`, adopt: `Add ${who} to the roster`, forget: `Forget ${who}` } as Record<string, string>)[p.action];
   }
 
   addByEmail(email: string): void {
     const e = email.trim().toLowerCase();
     if (!e) return;
-    const row = this.view()?.rows.find((r) => r.email === e) || { email: e, name: e, active: null, state: 'not-set-up' as const, slug: null, profile: null, needsUpdate: false, role: null, provisionedAt: null, provisionedBy: null };
+    const row = this.view()?.rows.find((r) => r.email === e) || { email: e, name: e, active: null, state: 'not-set-up' as const, slug: null, profile: null, needsUpdate: false, role: null, access: null, provisionedAt: null, provisionedBy: null };
     this.ask(row, 'provision');
   }
 
-  ask(row: PersonRow, action: PeopleActionName, profile?: string, role?: string): void {
+  ask(row: PersonRow, action: PeopleActionName, profile?: string, role?: string, access?: string): void {
     if (action === 'profile' && profile === row.profile) return;
     if (action === 'role' && role === (row.role || '')) return;
-    this.pending.set({ row, action, profile: profile || row.profile || this.view()?.defaultProfile || undefined, role: role ?? row.role ?? '', keepVolume: true, preview: null, error: null, busy: false, confirmText: '' });
+    if (action === 'access' && access === (row.access || '')) return;
+    this.pending.set({ row, action, profile: profile || row.profile || this.view()?.defaultProfile || undefined, role: role ?? row.role ?? '', access: access ?? row.access ?? '', keepVolume: true, preview: null, error: null, busy: false, confirmText: '' });
     void this.previewIt();
   }
   setPending(patch: Partial<Pending>): void {
@@ -272,7 +381,7 @@ export class PeopleComponent implements OnInit {
     if (!p) return;
     const next = { ...p, ...patch };
     this.pending.set(next);
-    if ('profile' in patch || 'role' in patch || 'keepVolume' in patch) void this.previewIt();
+    if ('profile' in patch || 'role' in patch || 'access' in patch || 'keepVolume' in patch) void this.previewIt();
   }
   cancel(): void { this.previewSeq++; this.pending.set(null); }
 
@@ -285,7 +394,8 @@ export class PeopleComponent implements OnInit {
 
   private body(p: Pending, dryRun: boolean) {
     const role = p.action === 'provision' || p.action === 'role' ? { role: p.role ?? '' } : {};
-    return { action: p.action, email: p.row.email, profile: p.profile, ...role, keepVolume: p.keepVolume, dryRun };
+    const access = p.action === 'provision' || p.action === 'access' ? { access: p.access ?? '' } : {};
+    return { action: p.action, email: p.row.email, profile: p.profile, ...role, ...access, keepVolume: p.keepVolume, dryRun };
   }
 
   /** Bumped by each preview, cancel and confirm: only the latest preview's answer is shown. */
@@ -333,6 +443,47 @@ export class PeopleComponent implements OnInit {
       this.toast.show(`Committed ${roster.file}. Push when you're ready.`);
     } catch (e) { this.toast.error((e as Error).message); }
     finally { this.committing.set(false); }
+  }
+
+  /** Commit workspace.json (the roles) on its own; pushing is the engineer's. */
+  async commitRoles(): Promise<void> {
+    this.committing.set(true);
+    try {
+      const rolesFile = await this.api.post<PeopleRoster>('/api/people/commit', { file: 'roles' });
+      const v = this.view();
+      if (v) this.view.set({ ...v, rolesFile });
+      this.toast.show(`Committed ${rolesFile.file}. Push, then publish the snapshot, when you're ready.`);
+    } catch (e) { this.toast.error((e as Error).message); }
+    finally { this.committing.set(false); }
+  }
+
+  readonly roleDraft = signal<RoleDraft | null>(null);
+
+  editRole(ro: PeopleRole | null): void {
+    this.roleDraft.set(ro
+      ? { id: ro.id, label: ro.label, description: ro.description, access: ro.access, outputStyle: ro.outputStyle || '', busy: false, error: null }
+      : { id: null, label: '', description: '', access: 'read', outputStyle: '', busy: false, error: null });
+  }
+  patchRole(patch: Partial<RoleDraft>): void { const d = this.roleDraft(); if (d) this.roleDraft.set({ ...d, ...patch, error: null }); }
+
+  async saveRole(): Promise<void> {
+    const d = this.roleDraft();
+    if (!d || !d.label.trim()) return;
+    this.roleDraft.set({ ...d, busy: true });
+    const req: PeopleRolesRequest = { action: 'save', ...(d.id ? { id: d.id } : {}), role: { label: d.label.trim(), description: d.description.trim(), access: d.access, outputStyle: d.outputStyle || null } };
+    try {
+      await this.api.post('/api/people/roles', req);
+      this.roleDraft.set(null);
+      await this.load(false);
+    } catch (e) { this.roleDraft.set({ ...d, busy: false, error: (e as Error).message }); }
+  }
+
+  async removeRole(ro: PeopleRole): Promise<void> {
+    if (!window.confirm(`Remove the ${ro.label} role? People who picked it themselves get the first role on their access instead.`)) return;
+    try {
+      await this.api.post('/api/people/roles', { action: 'remove', id: ro.id } satisfies PeopleRolesRequest);
+      await this.load(false);
+    } catch (e) { this.toast.error((e as Error).message); }
   }
 
   setup(): void {

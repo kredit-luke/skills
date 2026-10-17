@@ -160,6 +160,8 @@ const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 before(async () => {
   fs.mkdirSync(path.join(ROOT, ".claude", "dashboard"), { recursive: true });
   fs.writeFileSync(path.join(ROOT, ".claude", "dashboard", "workspace.json"), JSON.stringify({ name: "Shop", codeHost: { kind: "none" } }));
+  // The GitHub CLI check is what offers the in-page GitHub sign-in.
+  fs.writeFileSync(path.join(ROOT, ".claude", "dashboard", "machine.json"), JSON.stringify({ checks: [{ use: "gh" }] }));
   fs.mkdirSync(BIN);
   fs.writeFileSync(path.join(BIN, "fake-claude.mjs"), FAKE);
   fs.writeFileSync(path.join(BIN, "fake-gh.mjs"), FAKE_GH);
@@ -333,4 +335,18 @@ test("hosted server: GitHub sign-in reports a missing identity, and a cancelled 
   assert.equal((await status()).state, "idle");
   fs.rmSync(path.join(TMP, "gh-slow-keyadd"));
   fs.rmSync(path.join(TMP, "gh-approved"));
+});
+
+test("hosted server: a role whose checks leave out the GitHub CLI can't start a GitHub sign-in", async () => {
+  const machine = path.join(ROOT, ".claude", "dashboard", "machine.json");
+  const was = fs.readFileSync(machine, "utf8");
+  // Only engineers get the GitHub CLI check; this dashboard's person has no such role.
+  fs.writeFileSync(machine, JSON.stringify({ checks: [{ use: "gh", when: { role: "engineering" } }] }));
+  try {
+    const r = await post("/api/github/login", { action: "start" });
+    assert.equal(r.status, 403);
+    assert.match(JSON.parse(r.text).error, /role doesn't sign in to GitHub/);
+  } finally {
+    fs.writeFileSync(machine, was);
+  }
 });

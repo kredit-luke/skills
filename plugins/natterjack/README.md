@@ -76,7 +76,8 @@ Existing workspaces keep their engine in `dashboard/` and their `/dashboard` ski
 | Skill | What it does |
 |---|---|
 | `/natterjack:create` | Discover the workspace, interview you, install the dashboard and write its config, brand it, start it. |
-| `/natterjack:doctor` | Check config, build, port, engine version, tracker connection and machine; fix what's wrong. |
+| `/natterjack:doctor` | Check config, build, port, engine version, tracker connection and machine (and hosted dashboards, with `hosting.json`); fix what's wrong. |
+| `/natterjack:host` | Set up hosted dashboards for people without a dev machine, or finish setting them up: platform, images, snapshot, repo token, router and login proxy, roles, People page, first person. Re-run it as a checklist. |
 | `/natterjack:upgrade` | Merge the latest dashboard engine into your copy, keeping your changes. |
 | `/natterjack:add-adapter` | Support another issue tracker (Azure Boards, Shortcut, GitLab…) or code host. |
 | `/natterjack:contribute` | Send your engine improvements back as a PR. |

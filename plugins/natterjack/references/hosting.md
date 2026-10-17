@@ -36,6 +36,7 @@ Hosted mode is set by the container's environment, never by `workspace.json`:
 | `DASHBOARD_CLAUDE_BIN` | `claude` on PATH | The exact CLI to run. The image sets it. |
 | `DASHBOARD_MAX_CONCURRENT_RUNS` | `deck.json` `limits` | 1–10. Caps this person's runs at once, over `deck.json` and their own settings. The People page sets it from their profile. |
 | `DASHBOARD_ROLE` | none | A `workspace.json` role id. That role is theirs from the first start: they're never asked, and Settings shows it without a way to change it. The People page sets it when you assign a role. An id that isn't one of the team's roles is logged and ignored. |
+| `DASHBOARD_ACCESS` | none | `full` or `read`: what they can do with the code, over their role's default (config.md, "Roles"). Locked like the role. The People page sets it when you give someone their own access. |
 
 The dashboard refuses to start when `DASHBOARD_HOSTED` is on and the URL or secret is missing. `GET /healthz` answers `ok` without any of the checks, for liveness probes.
 
@@ -48,13 +49,29 @@ What changes for the person:
 
 ## The image
 
-`templates/hosted/Dockerfile` is Node 24 plus git, the Claude CLI and the engine's server code, with everything personal on a volume at `/data`. Build it from `plugins/natterjack` once per workspace, and run one container per person:
+`templates/hosted/Dockerfile` is Node 24 plus git, the Claude CLI and the engine's server code, with everything personal on a volume at `/data`. Build it from `plugins/natterjack` once per workspace, and run one container per person. The workspace's engine has a script that builds it, and the router's, from the plugin release the engine is:
+
+```sh
+node <engine>/bin/hosted-images.mjs --all --dry-run              # what it would run
+node <engine>/bin/hosted-images.mjs --all --push --update-hosting
+```
+
+- **Where they go:** `--registry <server>`. On App Service it defaults to hosting.json's `registry` (`<name>.azurecr.io`, signed in to with `az acr login`); other registries need `docker login` first.
+- **The tag:** `--tag`, default `<engine version>-<yyyymmddhhmm>`, so each build is new and the containers actually move to it.
+- **`--update-hosting`** (App Service) points hosting.json's `image` at the new dashboard image, so the People page shows who needs an update. On Kubernetes, change the image in your copy of the template.
+- **The router** isn't moved for you: point its Web App or Deployment at the new tag.
+- **One fixed command** (`node <engine>/bin/hosted-images.mjs`) is easy to allow for Claude in `.claude/settings.local.json`, so a run can rebuild the images when you ask.
+
+By hand it's one `docker build` per image (`router/Dockerfile` for the router):
 
 ```sh
 docker build -f plugins/natterjack/templates/hosted/Dockerfile --pull --no-cache -t <registry>/natterjack-dashboard:<tag> plugins/natterjack
 ```
 
-Rebuild this image and the router's (`router/Dockerfile`) to pick up OS security fixes. Both upgrade Debian's packages at build time, because the `node:24-bookworm-slim` base often doesn't have them yet. Without `--pull --no-cache` Docker reuses the cached upgrade layer and the rebuild changes nothing. Give each build a new `<tag>` (for example `2`, `3`, ...) so the pods actually move to it.
+**When to rebuild.** Most engine upgrades don't need it: hosted dashboards run the engine from the published snapshot. Rebuild when:
+- **A release changes the images.** `upgrade` says so (its `hostedImages`).
+- **You want a newer Claude CLI.** Auto-update is off in the image, so everyone runs the version it was built with.
+- **For OS security fixes**, every month or so. Both images upgrade Debian's packages at build time, because the `node:24-bookworm-slim` base often doesn't have them yet. Without `--pull --no-cache` Docker reuses the cached upgrade layer and the rebuild changes nothing (the script always passes both).
 
 On start, `entrypoint.sh` puts the workspace in `/data/workspace` or updates it. Then it runs `node <engine>/bin/dashboard.mjs run` (`<engine>` is the engine folder: `natterjack/` by default, `dashboard/` in older workspaces; `.claude/dashboard/engine.json` `dir` says which), which is the server in the foreground. The workspace comes from one of two places.
 
@@ -65,6 +82,13 @@ On start, `entrypoint.sh` puts the workspace in `/data/workspace` or updates it.
 - **To publish**, run publish from CI or from the Repos page on an engineer's machine, with a key that can write.
 
 **From git:** `WORKSPACE_REPO` is cloned the first time and pulled afterwards. Add `GIT_TOKEN` if the repo is private; it goes through `GIT_ASKPASS`, so it's never written to disk. The first start runs `npm ci` and `ng build` on the volume, which takes a minute or two and about 1.6 GB of memory. Later starts skip the build. The person's app repos come from the Repos page: clones with a token the container can use, or read-only snapshots.
+
+**The latest repos on every start.** In either mode, set `GIT_TOKEN` to a read token for the repos in `repos.json`. On GitHub, use a fine-grained token owned by the organization, with Contents: Read on those repos. Every start then brings each repo to its latest default branch with git (`snapshot.mjs pull-repos`). It runs in the background, so the dashboard is up at once: the first start's clones take a few minutes, and the Repos page shows each repo as it lands.
+- **A snapshot copy, or a missing repo**, becomes a clone. Blobs are fetched as they're needed, so it's quick.
+- **A clone on its default branch with nothing uncommitted** is fast-forwarded.
+- **A clone with uncommitted work, on another branch, or with commits that aren't on origin** is left alone, and the start log says why.
+
+A failure is logged and never stops the start. With a snapshot, this keeps the prebuilt UI and the fast boot, and the repos no longer wait for someone to publish. The snapshot install never replaces a clone. On App Service, put the token in the Key Vault and name it in the template's `gitTokenSecret`.
 
 ## Signing in to Claude
 
@@ -107,6 +131,11 @@ Only hosted dashboards do this; a local dashboard leaves the machine's own signi
 - **`GIT_TOKEN` stays the workspace's read token.** `entrypoint.sh` fetches the workspace with `git -c credential.helper=`, so a person's sign-in never affects boot. In runs, git asks the credential helper (the person's token) before `GIT_ASKPASS` (`GIT_TOKEN`), so a signed-in person pushes as themselves, and someone who isn't signed in can still read.
 - **Egress:** the container needs HTTPS to `github.com`, `api.github.com` and `*.githubusercontent.com`. Pushes use https, not ssh.
 
+**Only some roles.** To offer the sign-in to some roles and not others, give the check a `when`, e.g. `{ "use": "gh", "when": { "role": ["engineering"] } }`, and assign roles from the People page.
+- **Roles left out** don't get the check, and the server refuses to start a GitHub sign-in for them.
+- **What they can still do:** their runs use only `GIT_TOKEN`, so they can read the code but can't push or open pull requests.
+- **Who else matters:** keep that token read-only, since everyone's container has it.
+
 ## One address for everyone (the router)
 
 `router/` is a small Node service with no packages. It runs behind the login proxy at the shared address:
@@ -145,10 +174,11 @@ Backends:
   - Set `ROUTER_AZ_SUBSCRIPTION` and `ROUTER_AZ_RESOURCE_GROUP`. The router runs as a Web App itself, with its system-assigned managed identity turned on; give that identity **Reader** and **Website Contributor** on the resource group, nothing else.
   - It reaches each dashboard at `https://<app>.azurewebsites.net` with that as the Host (App Service routes by Host); the template lists it in the dashboard's `DASHBOARD_ALLOWED_HOSTS`.
   - Starting and stopping is `start` / `stop` on the Web App, which keeps its file share.
+  - Azure says Running as soon as it starts the container, minutes before a first start has installed the workspace. So the router also asks the dashboard's `/healthz`, and shows the starting page until it answers. Without that, a request would be held by App Service until the login proxy gave up (a Cloudflare 524).
 - **`static`.** `ROUTER_STATIC_FILE` names a JSON file of `{ "<email>": "<dashboard URL>" }`, re-read when it changes. Use it for containers someone else keeps running: a VM with Docker, ECS services. The router never starts or stops them.
 - **Another platform.** Implement `Backend` in `router/src/backends.ts` (find a person's URL, and optionally start/stop/list running ones) and add it to `makeBackend()`.
 
-Build it from `plugins/natterjack`, so it gets the engine's shared request checks:
+Build it from `plugins/natterjack`, so it gets the engine's shared request checks: `node <engine>/bin/hosted-images.mjs --router --push` ("The image" above), or by hand:
 
 ```sh
 docker build -f plugins/natterjack/router/Dockerfile --pull --no-cache -t <registry>/natterjack-router:<tag> plugins/natterjack
@@ -177,6 +207,13 @@ Every change is checked first: the page shows the platform's own preview (`kubec
 
 **Roles** (`workspace.json` `roles`, [config.md](config.md#workspacejson-who-this-workspace-is)) can be assigned on the page too. The default, **Let them choose**, leaves it to the person as on a local dashboard. An assigned role is stored in `people.json` and passed as `DASHBOARD_ROLE`, and the person can't change it; on App Service it's the template's `role` parameter, so a copy of `app-service-person.bicep` from before roles needs that parameter added.
 
+**Access** is set apart from the role, in its own column.
+- **The choices:** the role's default, **Full stack** (GitHub sign-in, push and pull requests, Implement, Publish), or **Read-only** (their runs only have the read token).
+- **How it arrives:** stored in `people.json` and passed as `DASHBOARD_ACCESS`, through the template's `access` parameter on App Service.
+- **Who can push:** limit the GitHub check to full access with `{ "use": "gh", "when": { "access": "full" } }`, and the server refuses a GitHub sign-in to everyone else.
+
+The **Roles** section under the table edits the team's roles: name, description, default access, and the output style Claude answers in (the team's `.claude/output-styles/*.md`, or Claude Code's own). Like the roster, it shows what isn't committed in `workspace.json` and commits it on its own. A role someone in the roster has can't be removed until they're given another.
+
 ### Setting it up
 
 1. Copy the template into the workspace (e.g. `hosting/`), fill in your settings, and commit it:
@@ -190,11 +227,18 @@ Every change is checked first: the page shows the platform's own preview (`kubec
      2. **Google Auth Platform → Branding/Audience:** set the audience to **Internal** (only your Workspace's accounts; no Google review). Under **Data access**, add the `admin.directory.user.readonly` scope.
      3. **Clients → Create client → Desktop app**, and download its JSON. Share it with the engineers who manage people (it identifies the app, it isn't a password; keep it out of the repo all the same).
 
-     Then each of those engineers, who needs a Workspace admin role that can read users (a custom role with Users > Read is enough), signs in once:
-     ```sh
-     gcloud auth application-default login --client-id-file=<the client JSON> --scopes="https://www.googleapis.com/auth/admin.directory.user.readonly,https://www.googleapis.com/auth/cloud-platform"
-     ```
-     Set `directory.project` in hosting.json to that project, so the Admin SDK calls are billed to it. In PowerShell, run it through cmd with the whole line in single quotes, `cmd /c 'gcloud auth application-default login ...'`: PowerShell drops the inner quotes and gcloud then splits the scopes at the comma ("cloud-platform scope is required but not requested").
+     Set `directory.project` in hosting.json to that project, so the Admin SDK calls are billed to it.
+
+     Then each of those engineers signs in once. They need a Workspace admin role that can read users (a custom role with Users > Read is enough).
+     - **From the Machine page** (easiest): a Google directory in hosting.json adds a **Google Workspace directory** check under "People page".
+       1. **Choose client file…** takes the client JSON. The page checks it's a Desktop app client and keeps it in `.claude/ledger/` (never committed, never in a snapshot).
+       2. **Sign in** opens a terminal running the command below, then the browser.
+       3. The check turns green once Google confirms the sign-in can read the directory, whichever way it was made.
+     - **By hand:**
+       ```sh
+       gcloud auth application-default login --client-id-file=<the client JSON> --scopes="https://www.googleapis.com/auth/admin.directory.user.readonly,https://www.googleapis.com/auth/cloud-platform"
+       ```
+       In PowerShell, run it through cmd with the whole line in single quotes, `cmd /c 'gcloud auth application-default login ...'`. PowerShell drops the inner quotes, and gcloud then splits the scopes at the comma ("cloud-platform scope is required but not requested").
 
 ## Running it
 

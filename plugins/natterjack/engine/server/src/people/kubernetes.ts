@@ -16,7 +16,7 @@ import crypto from "node:crypto";
 import fs from "node:fs";
 import type { HostingConfig, KubernetesPlatform } from "./config.ts";
 import type { Dashboard, Person, Platform, Rendered } from "./platform.ts";
-import { cliError, notInstalled, parseJson, parseJsonStream, type Runner } from "./cli.ts";
+import { cliError, notInstalled, parseJson, parseJsonStream, runReading, type Runner } from "./cli.ts";
 
 export const SELECTOR = "app=natterjack-dashboard";
 const PERSON = "__natterjack_person__";
@@ -43,8 +43,10 @@ export class Kubernetes implements Platform {
     return [...(this.p.context ? ["--context", this.p.context] : []), "--namespace", this.p.namespace, ...rest];
   }
 
-  private async kubectl(what: string, rest: string[], input?: string): Promise<string> {
-    const r = await this.run("kubectl", this.args(rest), { input, timeout: 120_000 });
+  /** `reading`: it changes nothing, so a dropped connection is tried once more (runReading). */
+  private async kubectl(what: string, rest: string[], input?: string, reading = false): Promise<string> {
+    const opts = { input, timeout: 120_000 };
+    const r = reading ? await runReading(this.run, "kubectl", this.args(rest), opts) : await this.run("kubectl", this.args(rest), opts);
     if (notInstalled(r)) throw Object.assign(new Error("kubectl isn't installed."), { status: 502, fix: "install kubectl, then get credentials for the cluster (e.g. gcloud container clusters get-credentials)" });
     if (!r.ok) throw cliError(what, r, /Unauthorized|credentials|token|expired|refresh/i.test(r.stderr) ? "sign in to the cluster again (gcloud auth login / az login / aws sso login)" : undefined);
     return r.stdout;
@@ -52,7 +54,7 @@ export class Kubernetes implements Platform {
 
   /** Every person's dashboard in the namespace, by email. */
   async list(): Promise<Map<string, ClusterDashboard>> {
-    const out = await this.kubectl("Listing dashboards", ["get", "statefulsets", "-l", SELECTOR, "-o", "json"]);
+    const out = await this.kubectl("Listing dashboards", ["get", "statefulsets", "-l", SELECTOR, "-o", "json"], undefined, true);
     const byEmail = new Map<string, ClusterDashboard>();
     for (const s of parseJson(out, "kubectl get statefulsets").items || []) {
       const notes = s.metadata?.annotations || {};
@@ -106,9 +108,10 @@ export class Kubernetes implements Platform {
       c.resources ||= {};
       c.resources.limits = { ...(c.resources.limits || {}), ...(p.profile.memory ? { memory: p.profile.memory } : {}), ...(p.profile.cpu ? { cpu: p.profile.cpu } : {}) };
     }
-    c.env = (c.env || []).filter((e: any) => e.name !== "DASHBOARD_MAX_CONCURRENT_RUNS" && e.name !== "DASHBOARD_ROLE");
+    c.env = (c.env || []).filter((e: any) => !["DASHBOARD_MAX_CONCURRENT_RUNS", "DASHBOARD_ROLE", "DASHBOARD_ACCESS"].includes(e.name));
     if (p.profile.maxConcurrentRuns) c.env.push({ name: "DASHBOARD_MAX_CONCURRENT_RUNS", value: String(p.profile.maxConcurrentRuns) });
     if (p.role) c.env.push({ name: "DASHBOARD_ROLE", value: p.role });
+    if (p.access) c.env.push({ name: "DASHBOARD_ACCESS", value: p.access });
     const secrets = p.profile.areas.map((a) => this.cfg.areas[a]?.secret).filter(Boolean);
     const areaSecrets = new Set(Object.values(this.cfg.areas).map((a) => a.secret));
     c.envFrom = [...(c.envFrom || []).filter((e: any) => !areaSecrets.has(e.secretRef?.name)), ...secrets.map((name) => ({ secretRef: { name } }))];
@@ -125,7 +128,7 @@ export class Kubernetes implements Platform {
   /** kubectl apply; dryRun asks the cluster to check it without changing anything. */
   async apply(r: Rendered, dryRun: boolean): Promise<string> {
     const list = JSON.stringify({ apiVersion: "v1", kind: "List", items: r.objects });
-    return this.kubectl(dryRun ? "Checking the change" : "Applying", ["apply", ...(dryRun ? ["--dry-run=server"] : []), "-f", "-"], list);
+    return this.kubectl(dryRun ? "Checking the change" : "Applying", ["apply", ...(dryRun ? ["--dry-run=server"] : []), "-f", "-"], list, dryRun);
   }
 
   private scale(d: Dashboard, replicas: number): Promise<string> {

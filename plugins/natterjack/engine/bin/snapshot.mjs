@@ -9,6 +9,10 @@
  *
  *   node <engine>/bin/snapshot.mjs install [--into <dir>] [--repos]
  *
+ * and to bring the repos to their latest default branch with git (the hosted boot, with GIT_TOKEN):
+ *
+ *   node <engine>/bin/snapshot.mjs pull-repos [--into <dir>]
+ *
  * <engine> is the workspace's engine folder (natterjack/, or dashboard/ in older
  * workspaces). Runs server/src/snapshot-cli.ts on this Node (it needs the engine's
  * Node floor, like the server). Usually from CI; see references/config.md "Snapshots".

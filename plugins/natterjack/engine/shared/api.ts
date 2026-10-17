@@ -807,7 +807,11 @@ export interface MachineCheck {
   install?: { label: string; cmd: string; cwd?: string } | null; action?: 'setup';
   /** Hosted: this check's sign-in happens in the page (github-login.ts); `account` is who's signed in. */
   signIn?: 'github'; account?: string;
+  /** Local: the page offers a file picker for this check ("google-client": the People page's Google OAuth client). */
+  upload?: 'google-client';
 }
+/** POST /api/machine/google-client { content } → the client it saved (people/google-login.ts). */
+export interface GoogleClientSaved { ok: true; clientId: string; projectId: string | null }
 /**
  * POST /api/github/login { action: "start" | "status" | "cancel" | "logout" }. start → the code to
  * enter at `url` (GitHub's device page); status → how it's going, polled until done or failed.
@@ -1001,7 +1005,18 @@ export interface ProfileInfo {
   /** False when their own outputStyle in .claude/settings.local.json is kept instead of the role's. */
   styleApplied: boolean;
   roles: RoleInfo[];
+  /**
+   * What they can do with the code, separate from the role: full (everything) or read (ask and read;
+   * no Implement, Publish or GitHub sign-in). `accessOwn` is their own setting (null = the role's
+   * default, `roleAccess`); `accessLocked`: assigned on the People page (DASHBOARD_ACCESS).
+   * POST /api/profile { access: "full" | "read" | "default" } changes it.
+   */
+  access: Access;
+  accessOwn: Access | null;
+  roleAccess: Access;
+  accessLocked: boolean;
 }
+export type Access = 'full' | 'read';
 
 // ---------------------------------------------------------------- explore
 
@@ -1034,8 +1049,12 @@ export interface PersonRow {
   state: PersonState; slug: string | null; profile: string | null; needsUpdate: boolean;
   /** The workspace role assigned to them (DASHBOARD_ROLE); null: they pick their own. */
   role: string | null;
+  /** Their access over their role's default (DASHBOARD_ACCESS); null: the role's. */
+  access: Access | null;
   provisionedAt: string | null; provisionedBy: string | null;
 }
+/** One of the team's roles on the People page; `access` is the default it gives, `people` how many in the roster have it. */
+export interface PeopleRole { id: string; label: string; description: string; access: Access; outputStyle: string | null; people: number }
 /** people.json and its git state (GET /api/people .roster; POST /api/people/commit returns it). */
 export interface PeopleRoster { file: string; uncommitted: boolean; changes: string[] }
 /** GET /api/people: hosting.json's directory + the roster (.claude/dashboard/people.json) + the cluster. */
@@ -1053,11 +1072,17 @@ export interface PeopleResponse {
   profiles: { id: string; name: string; areas: string[] }[];
   defaultProfile: string | null;
   /** workspace.json roles one can be assigned; empty when the team has none. */
-  roles: { id: string; label: string }[];
+  roles: PeopleRole[];
+  /** Output styles a role can use: the team's (.claude/output-styles) and Claude Code's own. */
+  styles: string[];
+  /** workspace.json (the roles) and what isn't committed in it; POST /api/people/commit { file: "roles" } commits it. */
+  rolesFile: PeopleRoster | null;
   rows: PersonRow[];
 }
-export type PeopleActionName = 'provision' | 'update' | 'profile' | 'role' | 'start' | 'stop' | 'remove' | 'adopt' | 'forget';
+export type PeopleActionName = 'provision' | 'update' | 'profile' | 'role' | 'access' | 'start' | 'stop' | 'remove' | 'adopt' | 'forget';
 /** POST /api/people/action */
-/** `role`: a workspace role id, or "" for "they pick their own" (provision, role). */
-export interface PeopleActionRequest { action: PeopleActionName; email: string; profile?: string; role?: string; keepVolume?: boolean; dryRun?: boolean }
+/** `role`: a workspace role id, or "" for "they pick their own" (provision, role). `access`: "full", "read", or "" to follow the role (provision, access). */
+export interface PeopleActionRequest { action: PeopleActionName; email: string; profile?: string; role?: string; access?: Access | ''; keepVolume?: boolean; dryRun?: boolean }
+/** POST /api/people/roles: add a role (no id), change one, or remove one. */
+export interface PeopleRolesRequest { action: 'save' | 'remove'; id?: string; role?: { label: string; description?: string; access?: Access; outputStyle?: string | null } }
 export interface PeopleActionResponse { ok: true; dryRun: boolean; output: string; objects?: unknown[] }

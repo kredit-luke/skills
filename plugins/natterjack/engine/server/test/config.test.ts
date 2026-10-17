@@ -124,6 +124,34 @@ test("machine.json: catalog entries merge with overrides; when.exists filters", 
   assert.equal(requiredVersion({ file: "missing", regex: "x(\\d)", default: "10" }, ROOT), "10");
 });
 
+test("machine.json: hosted dashboards and read-only access skip the checks for running the apps; when.access and when.hosted choose", async () => {
+  const { setAccess } = await import("../src/profile.ts");
+  const ledger = path.join(ROOT, ".claude", "ledger");
+  write("machine.json", {
+    checks: [
+      { use: "git" },
+      { use: "gh", when: { access: "full" } },
+      { use: "docker", apps: ["api"] },
+      { id: "dotnet", kind: "dotnet-sdk", label: ".NET SDK" },
+      { id: "deps", kind: "path", label: "web deps", path: "web/node_modules", apps: ["web"] },
+      { id: "hosted-only", kind: "env-var", label: "X", name: "X", when: { hosted: true } },
+      { id: "local-only", kind: "env-var", label: "Y", name: "Y", when: { hosted: false } },
+      { id: "readers-too", kind: "path", label: "docs build", path: "docs/out", apps: ["docs"], when: { access: ["full", "read"] } },
+    ],
+  });
+  const ids = (o?: { hosted?: boolean }) => resolvedSpecs(ROOT, o).specs.map((s) => s.id);
+
+  setAccess(ledger, ROOT, "developer");
+  assert.deepEqual(ids(), ["git", "gh", "docker", "dotnet", "deps", "local-only", "readers-too"], "full access on a laptop: everything that isn't hosted-only");
+  assert.deepEqual(ids({ hosted: true }), ["git", "gh", "hosted-only", "readers-too"], "hosted: nothing to run, so no stack checks");
+
+  setAccess(ledger, ROOT, "reader");
+  assert.deepEqual(ids(), ["git", "local-only", "readers-too"], "read-only: no GitHub sign-in and nothing to run");
+  // Leave no choice behind for the tests after this one.
+  fs.rmSync(path.join(ledger, "profile.json"), { force: true });
+  fs.rmSync(path.join(ROOT, ".claude", "settings.local.json"), { force: true });
+});
+
 test("links: add team + personal, move between them, edit in place, delete", () => {
   const teamFile = path.join(CFG, "links.json");
   write("links.json", { $comment: "keep me", categories: [{ title: "Apps", tiles: [{ title: "Admin", url: "https://admin.example" }] }] });

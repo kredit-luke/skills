@@ -92,8 +92,12 @@ export interface WorkspaceConfig {
 }
 
 /**
- * One role in workspace.json `roles` ({ "<id>": { label, profile, ... } }). Its hidden
- * pages and skills are its profile's (`profiles.reader` for readers) plus its own.
+ * One role in workspace.json `roles` ({ "<id>": { label, profile, ... } }). A role is who
+ * someone is and how Claude answers them (outputStyle); `profile` is the access it gives
+ * by default (developer = full stack, reader = read-only), which a person's own access
+ * setting can override (profile.ts). Its hidden pages and skills are its profile's
+ * (`profiles.reader` for readers) plus its own; `own*` are the role's own, which go with
+ * the role whatever access the person has.
  */
 export interface RoleConfig {
   id: string;
@@ -104,6 +108,8 @@ export interface RoleConfig {
   outputStyle: string | null;
   hiddenPages: string[];
   hiddenSkills: string[];
+  ownHiddenPages: string[];
+  ownHiddenSkills: string[];
 }
 
 /** Pages a reader has no use for (they start and stop apps, and worktrees). */
@@ -129,14 +135,18 @@ function roleList(raw: unknown, reader: { hiddenPages: string[]; hiddenSkills: s
     if (!ROLE_ID.test(id) || !r || typeof r !== "object") continue;
     const profile = r.profile === "reader" ? "reader" : "developer";
     const base = profile === "reader" ? reader : { hiddenPages: [], hiddenSkills: [] };
+    const ownHiddenPages = strList(r.hiddenPages, []).map(pageId);
+    const ownHiddenSkills = strList(r.hiddenSkills, []);
     out.push({
       id,
       label: str(r.label, id),
       description: str(r.description, ""),
       profile,
       outputStyle: strOrNull(r.outputStyle),
-      hiddenPages: union(base.hiddenPages, strList(r.hiddenPages, []).map(pageId)),
-      hiddenSkills: union(base.hiddenSkills, strList(r.hiddenSkills, [])),
+      hiddenPages: union(base.hiddenPages, ownHiddenPages),
+      hiddenSkills: union(base.hiddenSkills, ownHiddenSkills),
+      ownHiddenPages,
+      ownHiddenSkills,
     });
   }
   return out.length || src === DEFAULT_ROLES ? out : roleList(DEFAULT_ROLES, reader);

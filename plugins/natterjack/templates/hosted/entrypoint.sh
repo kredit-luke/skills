@@ -12,6 +12,11 @@
 #   GIT_TOKEN       optional: a read token for it (GitHub, GitLab, Azure DevOps, Bitbucket...)
 #   GIT_USERNAME    optional: the user name sent with GIT_TOKEN (default x-access-token)
 #
+# Either way, with GIT_TOKEN set every start also brings each repos.json repo to its latest
+# default branch with git (`snapshot.mjs pull-repos`, in the background once the dashboard
+# is starting): snapshot copies become clones, clean clones are fast-forwarded, and one with
+# local work is left alone. The token needs read access to those repos too.
+#
 # The workspace is always fetched with GIT_TOKEN, never with the person's own GitHub sign-in
 # (the Machine page's, which git reaches through its credential helper): `-c credential.helper=`
 # empties the helper list for those commands. In runs the helper comes first and GIT_TOKEN is
@@ -28,6 +33,14 @@ engine_dir() {
   node -e 'let d = "dashboard"; try { const v = JSON.parse(require("fs").readFileSync(process.argv[1], "utf8")).dir; const p = typeof v === "string" ? v.split("/") : []; if (p.length && p[0] !== ".claude" && p.every((s) => /^[\w.-]+$/.test(s) && s !== "." && s !== "..")) d = v } catch {} console.log(d)' "$WORKSPACE_ROOT/.claude/dashboard/engine.json"
 }
 
+if [ -n "${GIT_TOKEN:-}" ]; then
+  # Hand the token to git through askpass, so it's never written into a URL or config file.
+  askpass=$(mktemp)
+  printf '#!/bin/sh\ncase "$1" in Username*) echo "${GIT_USERNAME:-x-access-token}" ;; *) echo "$GIT_TOKEN" ;; esac\n' > "$askpass"
+  chmod 700 "$askpass"
+  export GIT_ASKPASS="$askpass" GIT_TERMINAL_PROMPT=0
+fi
+
 if [ -n "${SNAPSHOT_CONFIG:-}" ]; then
   if ! node --disable-warning=ExperimentalWarning /opt/natterjack/engine/bin/snapshot.mjs install --into "$WORKSPACE_ROOT" --repos; then
     # Start what's there only if it's a whole install, i.e. its stamp names a commit: one
@@ -41,14 +54,6 @@ if [ -n "${SNAPSHOT_CONFIG:-}" ]; then
     echo "Couldn't update the workspace from its snapshot; starting with what's there." >&2
   fi
 else
-  if [ -n "${GIT_TOKEN:-}" ]; then
-    # Hand the token to git through askpass, so it's never written into a URL or config file.
-    askpass=$(mktemp)
-    printf '#!/bin/sh\ncase "$1" in Username*) echo "${GIT_USERNAME:-x-access-token}" ;; *) echo "$GIT_TOKEN" ;; esac\n' > "$askpass"
-    chmod 700 "$askpass"
-    export GIT_ASKPASS="$askpass" GIT_TERMINAL_PROMPT=0
-  fi
-
   if [ ! -d "$WORKSPACE_ROOT/.git" ]; then
     if [ -z "${WORKSPACE_REPO:-}" ]; then
       echo "Set SNAPSHOT_CONFIG (a published snapshot) or WORKSPACE_REPO (the workspace's git URL), or put a clone at $WORKSPACE_ROOT." >&2
@@ -59,6 +64,14 @@ else
   else
     git -c credential.helper= -C "$WORKSPACE_ROOT" pull --ff-only --quiet || echo "Couldn't update the workspace; starting with what's there." >&2
   fi
+fi
+
+if [ -n "${GIT_TOKEN:-}" ]; then
+  # In the background, so the dashboard is up at once (the first start clones every repo, which
+  # takes minutes); the Repos page shows each repo as it lands. It outlives the exec below: tini
+  # (PID 1) takes it over.
+  ( node --disable-warning=ExperimentalWarning /opt/natterjack/engine/bin/snapshot.mjs pull-repos --into "$WORKSPACE_ROOT" \
+      || echo "Couldn't bring every repo up to date (above)." >&2 ) &
 fi
 
 cd "$WORKSPACE_ROOT"

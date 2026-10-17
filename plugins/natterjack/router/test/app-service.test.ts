@@ -68,7 +68,7 @@ test("App Service backend: finds each person's Web App by tag, routes by its hos
   });
   try {
     const cfg = routerConfig({ ...SECRETS, ROUTER_BACKEND: "azure-app-service", ROUTER_AZ_SUBSCRIPTION: "sub-1", ROUTER_AZ_RESOURCE_GROUP: "dashboard-rg", ROUTER_AZ_ARM: arm.url, IDENTITY_ENDPOINT: id.url, IDENTITY_HEADER: "id-secret" });
-    const b = new AppServiceBackend(cfg.azure);
+    const b = new AppServiceBackend(cfg.azure, async () => true);
     assert.deepEqual(await b.find("luke@example.com"), { url: "https://dash-luke.azurewebsites.net", host: "dash-luke.azurewebsites.net", ready: false, canStart: true });
     assert.deepEqual(await b.find("ana@example.com"), { url: "https://dash-ana.azurewebsites.net", host: "dash-ana.azurewebsites.net", ready: true, canStart: true });
     assert.equal(await b.find("bo@example.com"), null);
@@ -86,7 +86,7 @@ test("App Service backend: finds each person's Web App by tag, routes by its hos
 test("backendHeaders: an App Service target gets its own Host (it routes by Host); others keep the public one; identity headers are the router's", async () => {
   const cfg = routerConfig({ ...SECRETS, ROUTER_BACKEND: "azure-app-service", ROUTER_AZ_SUBSCRIPTION: "sub-1", ROUTER_AZ_RESOURCE_GROUP: "dashboard-rg", ROUTER_AZ_TOKEN: "arm-token", ROUTER_AZ_ARM: "http://unused" });
   const inbound = { host: "natterjack.example.com", accept: "text/html", connection: "keep-alive", "x-forwarded-email": "eve@example.com", "x-dashboard-proxy-secret": "forged" };
-  const b = new AppServiceBackend(cfg.azure);
+  const b = new AppServiceBackend(cfg.azure, async () => true);
   (b as any).sites = async () => new Map([["ana@example.com", { name: "dash-ana", host: "dash-ana.azurewebsites.net", running: true }]]);
   const target = (await b.find("ana@example.com"))!;
 
@@ -98,4 +98,26 @@ test("backendHeaders: an App Service target gets its own Host (it routes by Host
   assert.equal(h["x-dashboard-proxy-secret"], cfg.backendSecret);
 
   assert.equal(backendHeaders(cfg, inbound, "ana@example.com").host, "natterjack.example.com", "no target host: the public one passes through");
+});
+
+test("App Service backend: Running isn't ready until the dashboard answers /healthz; a good answer is trusted for a while", async () => {
+  const cfg = routerConfig({ ...SECRETS, ROUTER_BACKEND: "azure-app-service", ROUTER_AZ_SUBSCRIPTION: "sub-1", ROUTER_AZ_RESOURCE_GROUP: "dashboard-rg", ROUTER_AZ_TOKEN: "arm-token", ROUTER_AZ_ARM: "http://unused" });
+  let answering = false;
+  const probes: string[] = [];
+  const b = new AppServiceBackend(cfg.azure, async (host) => { probes.push(host); return answering; });
+  (b as any).sites = async () => new Map([["ana@example.com", { name: "dash-ana", host: "dash-ana.azurewebsites.net", running: true }]]);
+
+  // Azure says Running, but the container is still installing the workspace: the starting page, not a held request.
+  assert.equal((await b.find("ana@example.com"))!.ready, false);
+  assert.equal((await b.find("ana@example.com"))!.ready, false, "asked again while it isn't answering");
+  answering = true;
+  assert.equal((await b.find("ana@example.com"))!.ready, true);
+  answering = false; // a blip right after: the answer from a moment ago still stands
+  assert.equal((await b.find("ana@example.com"))!.ready, true);
+  assert.deepEqual(probes, ["dash-ana.azurewebsites.net", "dash-ana.azurewebsites.net", "dash-ana.azurewebsites.net"], "no probe while a good answer is fresh");
+
+  // A stopped app isn't probed at all.
+  (b as any).sites = async () => new Map([["ana@example.com", { name: "dash-ana", host: "dash-ana.azurewebsites.net", running: false }]]);
+  assert.equal((await b.find("ana@example.com"))!.ready, false);
+  assert.equal(probes.length, 3);
 });

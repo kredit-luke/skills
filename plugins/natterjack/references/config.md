@@ -55,15 +55,30 @@ Running it on company infrastructure for people without a dev machine (hosted mo
 
 ### Roles
 
-Each person's role is theirs alone (kept in `.claude/ledger/profile.json`, changed in Settings → Role). A role sets:
+Each person's role is theirs alone (kept in `.claude/ledger/profile.json`, changed in Settings → Role). A role is **who someone is and how Claude answers them**. What they can do with the code is their **access**, which the role only sets by default:
 
-- **`profile`**: `developer` (default: everything) or `reader` (no Implement, no Publish now, plus `profiles.reader`'s hidden pages and skills). Machine checks can say `when: { profile }` or `when: { role }`.
+- **Full stack** (the `developer` profile): everything.
+- **Read-only** (the `reader` profile): no Implement, no Publish now, plus `profiles.reader`'s hidden pages and skills.
+
+A person's own access (Settings → Access, or the People page for hosted dashboards) overrides their role's. A technical ops person can be Operations with full-stack access.
+
+Machine checks can follow it:
+- `when: { access: "full" }` (or `"read"`; `profile` works too), or `when: { role }`;
+- `when: { hosted: true | false }`.
+
+Checks for running the apps are left out for read-only access and on hosted dashboards, unless their `when` asks for them. Those are checks that name `apps`, plus .NET, Docker, ports and npm globals.
+
+A role sets:
+
+- **`profile`**: the access it gives by default: `developer` (the default) or `reader`.
 - **`hiddenPages`** / **`hiddenSkills`**: on top of the profile's. Hidden skills are set to `"off"` in that person's `.claude/settings.local.json` `skillOverrides`, which takes them out of Claude's `/` menu and refuses them by name.
 - **`outputStyle`**: how Claude answers them, e.g. plain language with the app and file a thing lives in instead of method names and line numbers. The name of a [Claude Code output style](https://code.claude.com/docs/en/output-styles): a team one in `.claude/output-styles/<name>.md` (give it `keep-coding-instructions: true`, or Claude drops its software-engineering instructions), or a built-in one. It's written to `outputStyle` in their `settings.local.json`, so it applies in the terminal, the desktop app and the dashboard's runs; it doesn't reach subagents, whose answers the main conversation passes on.
 
 Changing role takes back only what the dashboard set there: a skill override or output style the person set themselves is kept. When `workspace.json` changes, everyone's settings follow at the next dashboard start.
 
-On hosted dashboards an engineer can assign the role from the People page instead. It reaches the dashboard as `DASHBOARD_ROLE`: that role is applied at startup, the person isn't asked, and Settings shows it read-only ([hosting.md](hosting.md#managing-people-from-your-dashboard)).
+On hosted dashboards an engineer can assign the role, and separately the access, from the People page instead.
+- **How it arrives:** as `DASHBOARD_ROLE` and `DASHBOARD_ACCESS` (`full` or `read`), applied at startup. The person isn't asked, and Settings shows both read-only ([hosting.md](hosting.md#managing-people-from-your-dashboard)).
+- **Editing the roles themselves:** the People page's **Roles** section adds, edits and removes them: name, description, default access and output style. It writes `workspace.json` and offers a Commit for it, like the roster.
 
 ```json
 "profiles": { "reader": { "hiddenSkills": ["run", "stop", "worktree", "pr"] } },

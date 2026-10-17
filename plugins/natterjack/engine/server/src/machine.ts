@@ -6,7 +6,10 @@
  * declared (an .nvmrc, a csproj, go.mod, ...), so the page stays right as they change.
  *
  * Each result: { id, group, label, status: ok|warn|missing|info, version,
- * required, detail, fix, install?, action?, apps: [appKey] }
+ * required, detail, fix, install?, action?, upload?, apps: [appKey] }
+ * (upload: the page offers a file picker; "google-client" is the People page's
+ * Google OAuth client, people/google-login.ts. A hosting.json with a Google
+ * directory adds that check by itself, on local dashboards.)
  *   ok       satisfied
  *   warn     works, but something is off (old default Node rescued by nvm, …)
  *   missing  a required piece is absent; the listed apps won't start
@@ -32,6 +35,7 @@ import { agentStatuses } from "./agents/index.ts";
 import { NOT_HOSTED } from "./hosted.ts";
 import { statusAccount } from "./github-login.ts";
 import { hardware } from "./hardware.ts";
+import { googleDirectoryCheck } from "./people/google-login.ts";
 
 const IS_WIN = process.platform === "win32";
 const IS_MAC = process.platform === "darwin";
@@ -231,10 +235,20 @@ export function requiredVersion(spec: any, root: string): string | null {
   return v;
 }
 
-/** machine.json checks merged over their catalog entries, with `when` conditions applied. */
-export function resolvedSpecs(root: string) {
+/** Checks that are only about running the apps: a hosted container or a read-only person has nothing to run. */
+const RUN_KINDS = new Set(["dotnet-sdk", "dotnet-dev-cert", "dotnet-user-secrets", "docker", "docker-container", "port", "npm-global"]);
+
+/**
+ * machine.json checks merged over their catalog entries, with `when` conditions applied:
+ * exists, os, profile / access (full | read), role, hosted (true | false). A check for
+ * running the apps (it names apps, or is one of RUN_KINDS) is left out on a hosted dashboard
+ * and for read-only access, unless its `when` asks for it (hosted, profile or access).
+ */
+export function resolvedSpecs(root: string, opts: { hosted?: boolean } = {}) {
   const { data, error } = readConfigFile("machine.json");
   const list = data && Array.isArray(data.checks) ? data.checks : [];
+  const me = readProfile(LEDGER_DIR);
+  const accessOf = (a: string) => (a === "read" ? "reader" : a === "full" ? "developer" : a);
   const out: any[] = [];
   for (const raw of list) {
     if (!raw || typeof raw !== "object") continue;
@@ -246,13 +260,16 @@ export function resolvedSpecs(root: string) {
     if (!spec.id) continue;
     if (raw.when && raw.when.exists && !fs.existsSync(path.join(root, raw.when.exists))) continue;
     if (raw.when && raw.when.os && ![].concat(raw.when.os).includes(OS_KEY)) continue;
-    // "developer" / "reader": e.g. build tools only for people who build (profile.ts).
-    if (raw.when && (raw.when.profile || raw.when.role)) {
-      const me = readProfile(LEDGER_DIR);
-      if (raw.when.profile && ![].concat(raw.when.profile).includes(me.profile)) continue;
-      // A role id from workspace.json roles: a check only one role needs.
-      if (raw.when.role && ![].concat(raw.when.role).includes(me.current.id)) continue;
-    }
+    const when = raw.when || {};
+    // "developer" / "reader" (or access "full" / "read"): e.g. build tools only for people who build (profile.ts).
+    if (when.profile && ![].concat(when.profile).includes(me.profile)) continue;
+    if (when.access && ![].concat(when.access).map(accessOf).includes(me.profile)) continue;
+    // A role id from workspace.json roles: a check only one role needs.
+    if (when.role && ![].concat(when.role).includes(me.current.id)) continue;
+    if (when.hosted === true && !opts.hosted) continue;
+    if (when.hosted === false && opts.hosted) continue;
+    const forRunning = (Array.isArray(spec.apps) && spec.apps.length > 0) || RUN_KINDS.has(spec.kind);
+    if (forRunning && (opts.hosted || me.profile === "reader") && when.hosted !== true && !when.profile && !when.access) continue;
     out.push(spec);
   }
   return { specs: out, error, configured: !!data };
@@ -276,12 +293,12 @@ class Machine {
   }
 
   /**
-   * machine.json and apps.json mtimes, plus the viewer's profile and role: an edit to either file,
-   * or a role change (which `when` filters on), re-runs the checks on the next request.
+   * machine.json, apps.json and hosting.json mtimes, plus the viewer's profile and role: an edit to
+   * any of them, or a role change (which `when` filters on), re-runs the checks on the next request.
    */
   _configSig() {
     const me = readProfile(LEDGER_DIR);
-    return ["machine.json", "apps.json"].map((f): number | string => {
+    return ["machine.json", "apps.json", "hosting.json"].map((f): number | string => {
       try { return fs.statSync(path.join(this.root, ".claude", "dashboard", f)).mtimeMs; } catch { return 0; }
     }).concat([me.profile, me.current.id]).join(":");
   }
@@ -319,7 +336,7 @@ class Machine {
   async _check() {
     const hw = hardware(this.root, true);
     await refreshPath();
-    const { specs, error, configured } = resolvedSpecs(this.root);
+    const { specs, error, configured } = resolvedSpecs(this.root, { hosted: this.hosted });
 
     // Each distinct probe runs once, all in parallel.
     const probes = new Map<string, Promise<any>>();
@@ -353,6 +370,12 @@ class Machine {
       checks.push({ apps: [], ...c, detail: c.detail || "", fix: fixText });
     }
     checks.push(...(await agentChecks(checks)));
+    // The People page's directory sign-in (people/google-login.ts): engineers' own machines only.
+    const hosting = this.hosted ? null : readConfigFile("hosting.json").data;
+    if (hosting?.directory?.type === "google") {
+      checks.push(await googleDirectoryCheck({ probe: p.probe, ledgerDir: LEDGER_DIR, osKey: OS_KEY, project: typeof hosting.directory.project === "string" ? hosting.directory.project : null })
+        .catch((e) => ({ id: "google-directory", kind: "google-directory", group: "People page", label: "Google Workspace directory", apps: [], status: "warn", detail: `Check failed: ${e.message}`, fix: "" })));
+    }
     // Install buttons only where there's something to do.
     for (const c of checks) if (c.status === "ok") delete c.install;
 

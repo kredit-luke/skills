@@ -35,11 +35,6 @@ interface NumberRow { key: LimitKey; label: string; help: string; min: number; m
               @if (currentRole(); as r) {
                 <div class="h">
                   @if (r.description) { {{ r.description }} }
-                  @if (r.profile === 'reader') {
-                    No Implement@if (r.hiddenPages.length) {, no {{ r.hiddenPages.join(', ') }} pages}@if (r.hiddenSkills.length) {, and {{ r.hiddenSkills.length }} skills turned off in Claude ({{ r.hiddenSkills.join(', ') }})}.
-                  } @else if (r.hiddenSkills.length) {
-                    {{ r.hiddenSkills.length }} skills turned off in Claude ({{ r.hiddenSkills.join(', ') }}).
-                  }
                   @if (r.outputStyle) {
                     @if (p.styleApplied) { Claude answers in the <b>{{ r.outputStyle }}</b> style. }
                     @else { This role's <b>{{ r.outputStyle }}</b> style isn't used: you set <code>outputStyle</code> yourself in <code>.claude/settings.local.json</code>. }
@@ -58,6 +53,29 @@ interface NumberRow { key: LimitKey; label: string; help: string; min: number; m
                   @for (r of p.roles; track r.id) {
                     <option [value]="r.id" [selected]="(p.roleChosen || !p.configured) && r.id === p.role">{{ r.label }}</option>
                   }
+                </select>
+              }
+            </div>
+          </div>
+          <div class="row">
+            <div class="lbl">
+              <div class="t">Access</div>
+              <div class="h">
+                @if (p.access === 'full') { Full stack: Implement, Publish, the Apps and Workspaces pages, and the GitHub sign-in where it's offered. }
+                @else { Read-only: ask about, explain and search the code. No Implement, Publish or GitHub sign-in. }
+                @if (p.accessLocked) { Set by whoever manages your hosted dashboard. }
+                @else if (!p.accessOwn) { Your role's default. }
+                @else if (p.accessOwn !== p.roleAccess) { Your own setting; your role's default is {{ p.roleAccess === 'full' ? 'full stack' : 'read-only' }}. }
+              </div>
+            </div>
+            <div class="ctl">
+              <!-- Assigned on the People page (DASHBOARD_ACCESS): shown, not changeable. -->
+              @if (p.accessLocked) { <b>{{ p.access === 'full' ? 'Full stack' : 'Read-only' }}</b> }
+              @else {
+                <select [disabled]="profileSaving()" (change)="saveAccess($any($event.target).value)">
+                  <option value="default" [selected]="!p.accessOwn">Follow my role ({{ p.roleAccess === 'full' ? 'full stack' : 'read-only' }})</option>
+                  <option value="full" [selected]="p.accessOwn === 'full'">Full stack</option>
+                  <option value="read" [selected]="p.accessOwn === 'read'">Read-only</option>
                 </select>
               }
             </div>
@@ -199,6 +217,19 @@ export class SettingsComponent implements OnInit {
     try {
       await this.api.post<ProfileInfo>('/api/profile', { role });
       // The nav and every page read the profile at load.
+      location.reload();
+    } catch (e) {
+      this.toast.error((e as Error).message);
+      this.profileSaving.set(false);
+      this.loadProfile();
+    }
+  }
+
+  async saveAccess(access: string): Promise<void> {
+    this.profileSaving.set(true);
+    try {
+      await this.api.post<ProfileInfo>('/api/profile', { access });
+      // Pages, skills and the Machine checks follow it: load them again.
       location.reload();
     } catch (e) {
       this.toast.error((e as Error).message);

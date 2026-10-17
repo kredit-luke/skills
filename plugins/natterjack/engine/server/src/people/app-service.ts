@@ -17,7 +17,7 @@ import os from "node:os";
 import path from "node:path";
 import type { AppServicePlatform, HostingConfig } from "./config.ts";
 import type { Dashboard, Person, Platform, Rendered } from "./platform.ts";
-import { cliError, notInstalled, parseJson, type Runner } from "./cli.ts";
+import { cliError, notInstalled, parseJson, runReading, type Runner } from "./cli.ts";
 
 export interface WebAppDashboard extends Dashboard { host: string | null; share: string | null; storageAccount: string | null }
 
@@ -55,15 +55,20 @@ export class AppService implements Platform {
     return ["--resource-group", this.p.resourceGroup, ...(this.p.subscription ? ["--subscription", this.p.subscription] : [])];
   }
 
-  private async az(what: string, args: string[], timeout = 120_000): Promise<string> {
-    const r = await this.run("az", [...args, "--only-show-errors"], { timeout });
+  /** A change: runs once. Reads go through azRead, which retries a dropped connection. */
+  private az(what: string, args: string[], timeout = 120_000): Promise<string> { return this.azCall(what, args, timeout, false); }
+  private azRead(what: string, args: string[], timeout = 120_000): Promise<string> { return this.azCall(what, args, timeout, true); }
+
+  private async azCall(what: string, args: string[], timeout: number, reading: boolean): Promise<string> {
+    const full = [...args, "--only-show-errors"];
+    const r = reading ? await runReading(this.run, "az", full, { timeout }) : await this.run("az", full, { timeout });
     if (notInstalled(r)) throw Object.assign(new Error("The Azure CLI (az) isn't installed."), { status: 502, fix: "install it, then run: az login" });
     if (!r.ok) throw cliError(what, r, /az login|AADSTS|expired|refresh token|Please run/i.test(r.stderr) ? "run: az login" : undefined);
     return r.stdout;
   }
 
   async list(): Promise<Map<string, Dashboard>> {
-    const out = await this.az("Listing Web Apps", ["webapp", "list", ...this.scope(), "--query", "[].{name:name, state:state, host:defaultHostName, tags:tags}", "-o", "json"]);
+    const out = await this.azRead("Listing Web Apps", ["webapp", "list", ...this.scope(), "--query", "[].{name:name, state:state, host:defaultHostName, tags:tags}", "-o", "json"]);
     const byEmail = new Map<string, Dashboard>();
     for (const s of parseJson(out, "az webapp list") || []) {
       const owner = ownerOf(s.tags || {});
@@ -110,8 +115,9 @@ export class AppService implements Platform {
       email: person.email,
       profile: person.profile.id,
       maxConcurrentRuns: person.profile.maxConcurrentRuns || 0,
-      // Only when assigned: a team's older copy of the template has no role parameter.
+      // Only when assigned: a team's older copy of the template has no role (or access) parameter.
       ...(person.role ? { role: person.role } : {}),
+      ...(person.access ? { access: person.access } : {}),
       areaSettings,
     };
     const hash = crypto.createHash("sha256").update(template).update(JSON.stringify(sortKeys(parameters))).digest("hex").slice(0, 12);
@@ -126,7 +132,7 @@ export class AppService implements Platform {
    * fails halfway, after it has already changed the Web App.
    */
   private async preflight(parameters: Record<string, unknown>): Promise<void> {
-    const out = await this.az("Checking the resource group", ["resource", "list", ...this.scope(), "--query", "[].{name:name, type:type}", "-o", "json"]);
+    const out = await this.azRead("Checking the resource group", ["resource", "list", ...this.scope(), "--query", "[].{name:name, type:type}", "-o", "json"]);
     const have = new Set((parseJson(out, "az resource list") || []).map((r: any) => `${String(r.type).toLowerCase()}/${String(r.name).toLowerCase()}`));
     const missing = REFERENCED
       .filter(([param]) => typeof parameters[param] === "string" && parameters[param])
@@ -149,7 +155,7 @@ export class AppService implements Platform {
     try {
       const common = [...this.scope(), "--name", `natterjack-${appName}`.slice(0, 64), "--template-file", this.p.template, "--parameters", `@${file}`];
       if (dryRun) {
-        const out = await this.az("Checking the change (what-if)", ["deployment", "group", "what-if", ...common, "--result-format", "FullResourcePayloads", "--no-prompt"], 300_000);
+        const out = await this.azRead("Checking the change (what-if)", ["deployment", "group", "what-if", ...common, "--result-format", "FullResourcePayloads", "--no-prompt"], 300_000);
         return out.replace(ANSI, "").trim();
       }
       const out = await this.az("Deploying", ["deployment", "group", "create", ...common, "--query", "properties.provisioningState", "-o", "tsv"], 600_000);

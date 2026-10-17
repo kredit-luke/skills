@@ -27,6 +27,50 @@ import path from "node:path";
 import { ENGINE_DIR, TAG_PREFIX, args, compareVersions, engineDirOf, engineVersion, fetchEngine, gitMergeFile, hashFile, isMain, latestRelease, listFiles, readJson, releaseCheck, writeJson } from "./lib.mjs";
 
 /**
+ * What the hosted images bake in (templates/hosted/Dockerfile, router/Dockerfile): the image
+ * files themselves and the router's shared request checks, plus everything the boot step runs
+ * from the image's own copy of the engine (bootFiles). The rest of the engine reaches hosted
+ * dashboards through the published snapshot.
+ */
+const IMAGE_PATHS = ["templates/hosted/", "router/", "engine/server/src/hosted.ts"];
+
+/**
+ * The engine files the image's boot step loads (entrypoint.sh runs /opt/natterjack's
+ * bin/snapshot.mjs install and pull-repos): snapshot.mjs, snapshot-cli.ts and every module it
+ * imports, followed through relative imports. Republishing the snapshot can't change these.
+ */
+export function bootFiles(pluginDir) {
+  const out = new Set(["engine/bin/snapshot.mjs"]);
+  const queue = ["engine/server/src/snapshot-cli.ts"];
+  const spec = /(?:from\s+|import\s*\(\s*|import\s+)["'](\.{1,2}\/[^"']+)["']/g;
+  while (queue.length) {
+    const rel = queue.pop();
+    if (out.has(rel)) continue;
+    out.add(rel);
+    let text = "";
+    try { text = fs.readFileSync(path.join(pluginDir, rel), "utf-8"); } catch { continue; }
+    for (const m of text.matchAll(spec)) {
+      const target = path.posix.normalize(path.posix.join(path.posix.dirname(rel), m[1]));
+      if (/\.(ts|mjs|js)$/.test(target) && !target.startsWith("..")) queue.push(target);
+    }
+  }
+  return out;
+}
+
+/**
+ * The files in the hosted images, and the per-person templates beside them in templates/hosted/,
+ * that differ between two plugin folders, sorted; null when the old one isn't a whole plugin
+ * (a --base engine folder), so there's nothing to compare.
+ */
+export function imageChanges(oldPlugin, newPlugin) {
+  if (!fs.existsSync(path.join(oldPlugin, "templates", "hosted"))) return null;
+  const boot = new Set([...bootFiles(oldPlugin), ...bootFiles(newPlugin)]);
+  const inImage = (rel) => IMAGE_PATHS.some((p) => rel.startsWith(p)) || boot.has(rel);
+  const files = new Set([...listFiles(oldPlugin), ...listFiles(newPlugin)].filter(inImage));
+  return [...files].filter((rel) => hashFile(path.join(oldPlugin, rel)) !== hashFile(path.join(newPlugin, rel))).sort();
+}
+
+/**
  * @param o.latest      newest release version; left out, it's looked up on the source repo
  *                      (tests pass it, or null to skip the check)
  * @param o.allowStale  go ahead even though a newer release than this plugin is out
@@ -89,6 +133,26 @@ export function upgrade(root, { base: baseArg, dry = false, latest, allowStale =
     ? ["Resolve the conflict markers in the files listed under conflicts (search for <<<<<<<), then build and restart."]
     : [];
   r.next.push(`cd ${dir} && npm ci && npm test`, `node ${dir}/bin/dashboard.mjs restart  (ends any run in progress in the dashboard)`);
+  // Teams with hosted dashboards (hosting.json): what this release changes there that the merge above doesn't reach.
+  const hosted = imageChanges(path.dirname(baseDir), path.dirname(ENGINE_DIR));
+  const hosting = readJson(path.join(root, ".claude", "dashboard", "hosting.json"));
+  if (hosted?.length) {
+    // The per-person templates aren't in an image: teams deploy their own copy (hosting.json platform.template).
+    r.hostedTemplates = hosted.filter((f) => /^templates\/hosted\/.*\.(bicep|ya?ml)$/.test(f));
+    r.hostedImages = hosted.filter((f) => !r.hostedTemplates.includes(f));
+    const list = (files) => files.slice(0, 4).join(", ") + (files.length > 4 ? `, and ${files.length - 4} more` : "");
+    const platform = hosting?.platform?.type;
+    if (hosting && r.hostedImages.length) {
+      const why = `This release changes the hosted images (${list(r.hostedImages)}): rebuild them`;
+      // hosted-images.mjs reads the registry from an App Service hosting.json; on Kubernetes the image is in the template.
+      r.next.push(platform === "kubernetes"
+        ? `${why} with node ${dir}/bin/hosted-images.mjs --all --registry <your registry> --dry-run, then again with --push; set the new dashboard image in ${hosting.platform?.template || "your copy of kubernetes-person.yaml"}, and move the router deployment to its new tag`
+        : `${why} with node ${dir}/bin/hosted-images.mjs --all --dry-run, then --all --push --update-hosting, and move the router to its new tag`);
+    }
+    // Only the platform's own: an App Service team deploys the .bicep, a Kubernetes one the .yaml files.
+    const theirs = r.hostedTemplates.filter((f) => (platform === "azure-app-service" ? f.endsWith(".bicep") : platform === "kubernetes" ? /\.ya?ml$/.test(f) : true));
+    if (hosting && theirs.length) r.next.push(`This release changes ${list(theirs)}: bring the same change into your copy${hosting.platform?.template ? `, ${hosting.platform.template}` : ""}, keeping your settings`);
+  }
   return r;
 }
 

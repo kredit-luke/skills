@@ -6,7 +6,7 @@
  */
 
 import type { DirectoryConfig } from "./config.ts";
-import { cliError, notInstalled, type Runner } from "./cli.ts";
+import { cliError, notInstalled, runReading, type Runner } from "./cli.ts";
 
 export interface DirectoryPerson { email: string; name: string; active: boolean }
 export type Fetcher = (url: string, init?: { headers?: Record<string, string> }) => Promise<{ ok: boolean; status: number; json(): Promise<any>; text(): Promise<string> }>;
@@ -15,6 +15,37 @@ export const GOOGLE_SCOPES = "https://www.googleapis.com/auth/admin.directory.us
 /** Google blocks the directory scope for gcloud's own OAuth client, so it signs in with the team's internal one (hosting.md). */
 export const GOOGLE_LOGIN = `gcloud auth application-default login --client-id-file=<your OAuth client JSON> --scopes="${GOOGLE_SCOPES}"`;
 const MAX_PAGES = 100;
+
+/**
+ * Directory tokens, kept per runner: gcloud takes seconds to start and fetches a new token
+ * each time, and its tokens (and az's) last an hour. Kept for less than that, and dropped
+ * when the directory refuses one (signed out, or signed in again with other scopes).
+ */
+const TOKEN_TTL = 45 * 60_000;
+const tokens = new WeakMap<Runner, Map<string, { token: string; at: number }>>();
+
+async function cachedToken(run: Runner, kind: string, get: () => Promise<string>): Promise<string> {
+  let mine = tokens.get(run);
+  if (!mine) tokens.set(run, (mine = new Map()));
+  const hit = mine.get(kind);
+  if (hit && Date.now() - hit.at < TOKEN_TTL) return hit.token;
+  const token = await get();
+  mine.set(kind, { token, at: Date.now() });
+  return token;
+}
+const forgetToken = (run: Runner, kind: string) => tokens.get(run)?.delete(kind);
+
+/** Run `list` with a kept token; if the directory says it's no good (401), once more with a new one. */
+async function withToken<T>(run: Runner, kind: string, get: () => Promise<string>, list: (token: string) => Promise<T>): Promise<T> {
+  const kept = tokens.get(run)?.has(kind);
+  try { return await list(await cachedToken(run, kind, get)); }
+  catch (e) {
+    if (!e?.staleToken) throw e;
+    forgetToken(run, kind);
+    if (kept) return list(await cachedToken(run, kind, get));
+    throw e;
+  }
+}
 
 export interface Directory { label: string; list(): Promise<DirectoryPerson[]> }
 
@@ -36,11 +67,16 @@ class GoogleDirectory implements Directory {
     this.label = `Google Workspace: ${cfg.domain}${cfg.orgUnit ? ` ${cfg.orgUnit}` : ""}`;
   }
 
-  async list(): Promise<DirectoryPerson[]> {
-    const r = await this.run("gcloud", ["auth", "application-default", "print-access-token"], { timeout: 30_000 });
+  list(): Promise<DirectoryPerson[]> { return withToken(this.run, "google", () => this.token(), (token) => this.listWith(token)); }
+
+  private async token(): Promise<string> {
+    const r = await runReading(this.run, "gcloud", ["auth", "application-default", "print-access-token"], { timeout: 30_000 });
     if (notInstalled(r)) throw fail("The Google Cloud CLI (gcloud) isn't installed.", "Install it from https://cloud.google.com/sdk/docs/install, then sign in");
     if (!r.ok) throw cliError("gcloud couldn't give a directory token", r, `run: ${GOOGLE_LOGIN}`);
-    const token = r.stdout.trim();
+    return r.stdout.trim();
+  }
+
+  private async listWith(token: string): Promise<DirectoryPerson[]> {
     const out: DirectoryPerson[] = [];
     let page = "";
     for (let i = 0; i < MAX_PAGES; i++) {
@@ -68,7 +104,7 @@ async function googleError(res: { status: number; text(): Promise<string> }) {
   let msg = text;
   try { msg = JSON.parse(text).error?.message || text; } catch {}
   if (res.status === 401 || /insufficient.*scope|ACCESS_TOKEN_SCOPE_INSUFFICIENT/i.test(text)) {
-    return fail("Your gcloud sign-in can't read the Workspace directory.", `run: ${GOOGLE_LOGIN}`);
+    return Object.assign(fail("Your gcloud sign-in can't read the Workspace directory.", `run: ${GOOGLE_LOGIN}`), { staleToken: true });
   }
   if (/SERVICE_DISABLED|has not been used in project|is disabled/i.test(text)) {
     return fail(`The Admin SDK API isn't enabled for your gcloud project: ${msg.slice(0, 200)}`, 'enable "Admin SDK API" in that project, or set "directory.project" in hosting.json to one where it is');
@@ -88,11 +124,16 @@ class EntraDirectory implements Directory {
     this.label = `Microsoft Entra ID: ${cfg.domain}${part}`;
   }
 
-  async list(): Promise<DirectoryPerson[]> {
-    const r = await this.run("az", ["account", "get-access-token", "--resource-type", "ms-graph", "--query", "accessToken", "-o", "tsv"], { timeout: 30_000 });
+  list(): Promise<DirectoryPerson[]> { return withToken(this.run, "graph", () => this.token(), (token) => this.listWith(token)); }
+
+  private async token(): Promise<string> {
+    const r = await runReading(this.run, "az", ["account", "get-access-token", "--resource-type", "ms-graph", "--query", "accessToken", "-o", "tsv"], { timeout: 30_000 });
     if (notInstalled(r)) throw fail("The Azure CLI (az) isn't installed.", "install it, then run: az login");
     if (!r.ok) throw cliError("az couldn't give a Microsoft Graph token", r, "run: az login");
-    const token = r.stdout.trim();
+    return r.stdout.trim();
+  }
+
+  private async listWith(token: string): Promise<DirectoryPerson[]> {
     const select = "$select=mail,userPrincipalName,displayName,accountEnabled,department&$top=999";
     let url: string | null = this.cfg.adminUnit
       ? `https://graph.microsoft.com/v1.0/directory/administrativeUnits/${encodeURIComponent(this.cfg.adminUnit)}/members/microsoft.graph.user?${select}`
@@ -104,7 +145,7 @@ class EntraDirectory implements Directory {
       const res = await this.fetcher(url, { headers: { Authorization: `Bearer ${token}` } });
       if (!res.ok) {
         const text = await res.text().catch(() => "");
-        if (res.status === 401) throw fail("Your az sign-in has expired.", "run: az login");
+        if (res.status === 401) throw Object.assign(fail("Your az sign-in has expired.", "run: az login"), { staleToken: true });
         if (res.status === 403) throw fail("Microsoft Graph refused to list users.", "your account needs to be able to read the directory (members can by default; guests can't)");
         throw fail(`Microsoft Graph answered ${res.status}: ${text.slice(0, 200)}`);
       }

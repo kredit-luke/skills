@@ -46,7 +46,7 @@ function page(res: http.ServerResponse, status: number, title: string, text: str
 /** Stopped or still starting: a page that reloads itself, or a 503 for the app's own API calls. */
 function starting(req: http.IncomingMessage, res: http.ServerResponse) {
   if (req.method === "GET" && /text\/html/.test(String(req.headers.accept || ""))) {
-    return page(res, 503, "Starting your dashboard…", "This takes a few seconds (a minute or two the very first time). The page reloads by itself.", true);
+    return page(res, 503, "Starting your dashboard…", "This usually takes a few seconds. The very first time it can take several minutes, while it sets up your workspace. Keep this page open: it reloads by itself and opens your dashboard when it's ready.", true);
   }
   res.writeHead(503, { "Content-Type": "application/json", "Retry-After": "5" });
   res.end(JSON.stringify({ error: "Your dashboard is starting. Try again in a moment." }));

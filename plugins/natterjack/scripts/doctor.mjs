@@ -4,7 +4,8 @@
  * actually stand on this machine: Node version, dashboard installed / built /
  * running on its port, engine version vs the plugin's, repos cloned, the code
  * host CLI signed in, and what the running dashboard itself reports (Machine
- * problems, issue tracker connection).
+ * problems, issue tracker connection). With hosting.json, also the hosted
+ * dashboards' pieces (hosted-check.mjs).
  *
  *   node doctor.mjs <workspace> [--json]
  *
@@ -18,6 +19,7 @@ import http from "node:http";
 import { execFileSync } from "node:child_process";
 import { TAG_PREFIX, args, compareVersions as cmp, engineDirOf, engineVersion, isMain, latestRelease, readJson, readRepos, releaseCheck } from "./lib.mjs";
 import { validate } from "./validate.mjs";
+import { hostedChecks } from "./hosted-check.mjs";
 
 const listening = (port) => new Promise((res) => { const s = new net.Socket(); s.setTimeout(800); s.once("connect", () => { s.destroy(); res(true); }); s.once("timeout", () => { s.destroy(); res(false); }); s.once("error", () => res(false)); s.connect(port, "127.0.0.1"); });
 const getJson = (port, p, timeout = 20000) => new Promise((res) => {
@@ -96,6 +98,13 @@ export async function doctor(root) {
   const here = (r) => fs.existsSync(path.join(root, r.relativePath, ".git")) || fs.existsSync(path.join(root, r.relativePath, ".snapshot.json"));
   const missingRepos = repos.filter((r) => !here(r));
   if (repos.length) add(missingRepos.length ? "warn" : "ok", "repos", missingRepos.length ? `not here: ${missingRepos.map((r) => r.relativePath).join(", ")}` : `${repos.length} here`, missingRepos.length ? "Open the dashboard's Repos page and click Clone missing (or remove them from repos.json)." : "");
+
+  // Hosted dashboards (hosting.json): what they install, the template, the cloud pieces, the router (hosted-check.mjs).
+  if (fs.existsSync(path.join(root, ".claude", "dashboard", "hosting.json"))) {
+    const ours = up && (await getJson(port, "/api/boot"))?.workspaceRoot;
+    const snapshot = ours && path.resolve(ours) === root ? await getJson(port, "/api/snapshot") : null;
+    checks.push(...(await hostedChecks(root, { snapshot })));
+  }
 
   const host = (ws.codeHost && ws.codeHost.kind) || "github";
   if (host === "github") {

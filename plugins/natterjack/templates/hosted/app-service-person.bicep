@@ -13,7 +13,8 @@
 //   - an App Service plan (Linux), a storage account for the file shares, a container
 //     registry with the dashboard image, and a Key Vault using Azure RBAC;
 //   - in the Key Vault: the router's backend secret (secret "dashboard-backend-secret"),
-//     the snapshot SAS if you use one ("snapshot-azure-sas"), and each area's key;
+//     the snapshot SAS if you use one ("snapshot-azure-sas"), a read token for the repos
+//     if dashboards should pull them on start (the secret gitTokenSecret names), and each area's key;
 //   - whoever deploys needs to create role assignments on the vault and registry (Owner,
 //     or Role Based Access Control Administrator), and list keys on the storage account.
 
@@ -32,6 +33,8 @@ param applied string = ''
 param maxConcurrentRuns int = 0
 @description('A workspace.json role id assigned to them (DASHBOARD_ROLE, which they can\'t change); empty lets them pick.')
 param role string = ''
+@description('full or read, assigned over their role\'s default (DASHBOARD_ACCESS, which they can\'t change); empty follows the role.')
+param access string = ''
 @description('Their areas: [{ name: "KNOWLEDGE_FINANCE_KEY", secretName: "natterjack-area-finance" }], each a Key Vault secret.')
 param areaSettings array = []
 
@@ -54,6 +57,8 @@ param identityHeader string = 'X-Forwarded-Email'
 param snapshotConfig string = ''
 @description('The workspace repo, when not using a snapshot.')
 param workspaceRepo string = ''
+@description('Key Vault secret holding a read token for the workspace repo and the repos in repos.json (GIT_TOKEN): with it, every start also pulls each repo to its latest default branch. Empty: no token.')
+param gitTokenSecret string = ''
 param location string = resourceGroup().location
 
 var kvRef = 'https://${keyVault}${environment().suffixes.keyvaultDns}/secrets'
@@ -70,14 +75,15 @@ var baseSettings = [
   { name: 'DASHBOARD_PROXY_SECRET', value: '@Microsoft.KeyVault(SecretUri=${kvRef}/dashboard-backend-secret)' }
 ]
 var runSettings = maxConcurrentRuns > 0 ? [{ name: 'DASHBOARD_MAX_CONCURRENT_RUNS', value: string(maxConcurrentRuns) }] : []
-var roleSettings = !empty(role) ? [{ name: 'DASHBOARD_ROLE', value: role }] : []
+var roleSettings = concat(!empty(role) ? [{ name: 'DASHBOARD_ROLE', value: role }] : [], !empty(access) ? [{ name: 'DASHBOARD_ACCESS', value: access }] : [])
 var workspaceSettings = !empty(snapshotConfig)
   ? [
       { name: 'SNAPSHOT_CONFIG', value: snapshotConfig }
       { name: 'SNAPSHOT_AZURE_SAS', value: '@Microsoft.KeyVault(SecretUri=${kvRef}/snapshot-azure-sas)' }
     ]
   : (!empty(workspaceRepo) ? [{ name: 'WORKSPACE_REPO', value: workspaceRepo }] : [])
-var areaAppSettings = [for a in areaSettings: { name: a.name, value: '@Microsoft.KeyVault(SecretUri=${kvRef}/${a.secretName})' }]
+var gitSettings = !empty(gitTokenSecret) ? [{ name: 'GIT_TOKEN', value: '@Microsoft.KeyVault(SecretUri=${kvRef}/${gitTokenSecret})' }] : []
+var areaAppSettings =[for a in areaSettings: { name: a.name, value: '@Microsoft.KeyVault(SecretUri=${kvRef}/${a.secretName})' }]
 
 resource servicePlan 'Microsoft.Web/serverfarms@2023-12-01' existing = { name: plan }
 resource storage 'Microsoft.Storage/storageAccounts@2023-05-01' existing = { name: storageAccount }
@@ -113,7 +119,7 @@ resource app 'Microsoft.Web/sites@2023-12-01' = {
       http20Enabled: true
       ftpsState: 'Disabled'
       minTlsVersion: '1.2'
-      appSettings: concat(baseSettings, runSettings, roleSettings, workspaceSettings, areaAppSettings)
+      appSettings: concat(baseSettings, runSettings, roleSettings, workspaceSettings, gitSettings, areaAppSettings)
       azureStorageAccounts: {
         data: {
           type: 'AzureFiles'

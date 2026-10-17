@@ -16,6 +16,7 @@ import { runCli, type Runner } from "./cli.ts";
 import { makeDirectory, type DirectoryPerson, type Fetcher } from "./directory.ts";
 import { makePlatform, type Dashboard, type Platform } from "./platform.ts";
 import { Roster, type RosterDoc, type RosterPerson, type RosterStatus } from "./roster.ts";
+import { Roles, type RoleEdit, type RoleRow, type RolesStatus } from "./roles.ts";
 
 export type PersonState = "not-set-up" | "running" | "starting" | "stopped" | "left" | "missing" | "unmanaged";
 
@@ -30,6 +31,8 @@ export interface PersonRow {
   needsUpdate: boolean;
   /** The workspace role assigned to them (DASHBOARD_ROLE); null: they pick their own. */
   role: string | null;
+  /** Their access, assigned over their role's default (DASHBOARD_ACCESS); null: the role's. */
+  access: "full" | "read" | null;
   provisionedAt: string | null;
   provisionedBy: string | null;
 }
@@ -45,22 +48,32 @@ export interface PeopleView {
   dataLabel: string | null;
   profiles: { id: string; name: string; areas: string[] }[];
   defaultProfile: string | null;
-  /** workspace.json roles one can be assigned; empty when the team has none. */
-  roles: { id: string; label: string }[];
+  /** workspace.json roles one can be assigned (empty when the team has none), with how many in the roster have each. */
+  roles: (RoleRow & { people: number })[];
+  /** Output styles a role can use: the team's (.claude/output-styles) and Claude Code's own. */
+  styles: string[];
+  /** workspace.json, where the roles live, and what isn't committed in it yet. */
+  rolesFile: RolesStatus | null;
   rows: PersonRow[];
 }
 
 export interface PeopleAction {
-  action: "provision" | "update" | "profile" | "role" | "start" | "stop" | "remove" | "adopt" | "forget";
+  action: "provision" | "update" | "profile" | "role" | "access" | "start" | "stop" | "remove" | "adopt" | "forget";
   email: string;
   profile?: string;
   /** A workspace role id, or "" for "they pick their own" (provision, role). */
   role?: string;
+  /** "full" or "read" over their role's default, or "" to follow the role (provision, access). */
+  access?: string;
   keepVolume?: boolean;
   dryRun?: boolean;
 }
 
+/** POST /api/people/roles: add (no id) or change a role, or remove one. */
+export interface RolesAction { action: "save" | "remove"; id?: string; role?: RoleEdit }
+
 const DIRECTORY_TTL = 5 * 60_000;
+const CLUSTER_TTL = 60_000;
 const errOf = (source: PeopleView["errors"][number]["source"], e: any) => ({ source, message: String(e?.message || e), fix: e?.fix || null });
 const httpError = (status: number, message: string) => Object.assign(new Error(message), { status });
 
@@ -72,6 +85,7 @@ export class People {
   private readonly roles: () => RoleConfig[];
   private dirCache: { key: string; at: number; people: DirectoryPerson[] } | null = null;
   private platformCache: { key: string; p: Platform } | null = null;
+  private clusterCache: { p: Platform; at: number; list: Map<string, Dashboard> } | null = null;
   private me: string | null = null;
 
   constructor(workspaceRoot: string, opts: { run?: Runner; fetcher?: Fetcher; configDir?: string; roles?: () => RoleConfig[] } = {}) {
@@ -95,6 +109,20 @@ export class People {
     return this.platformCache.p;
   }
 
+  /**
+   * Who has a dashboard. Listing it is a slow CLI call (az's start-up alone is seconds), so a
+   * page load and the previews after it share one listing for CLUSTER_TTL. `fresh` (Refresh, and
+   * every change for real) asks the platform again; a change clears it for the next load.
+   */
+  private async cluster(cfg: HostingConfig, fresh: boolean): Promise<Map<string, Dashboard>> {
+    const k = this.platform(cfg);
+    const c = this.clusterCache;
+    if (!fresh && c && c.p === k && Date.now() - c.at < CLUSTER_TTL) return c.list;
+    const list = await k.list();
+    this.clusterCache = { p: k, at: Date.now(), list };
+    return list;
+  }
+
   private async directory(cfg: HostingConfig, force: boolean): Promise<DirectoryPerson[]> {
     const key = JSON.stringify(cfg.directory);
     if (!force && this.dirCache && this.dirCache.key === key && Date.now() - this.dirCache.at < DIRECTORY_TTL) return this.dirCache.people;
@@ -113,12 +141,13 @@ export class People {
 
   async view(force = false): Promise<PeopleView> {
     const { cfg, problems, configured } = this.config();
-    const empty: PeopleView = { configured, problems, errors: [], directory: { label: "", type: "", count: null }, roster: null, cluster: null, dataLabel: null, profiles: [], defaultProfile: null, roles: [], rows: [] };
+    const empty: PeopleView = { configured, problems, errors: [], directory: { label: "", type: "", count: null }, roster: null, cluster: null, dataLabel: null, profiles: [], defaultProfile: null, roles: [], styles: [], rolesFile: null, rows: [] };
     if (!cfg) return empty;
     const k = this.platform(cfg);
     const roster = this.roster();
+    const rolesFile = this.rolesFile().status().catch(() => null);
     const dirLabel = makeDirectory(cfg.directory, this.run, this.fetcher).label;
-    const [dir, ros, clu] = await Promise.allSettled([this.directory(cfg, force), roster.status().then((status) => ({ doc: roster.load(), status })), k.list()]);
+    const [dir, ros, clu] = await Promise.allSettled([this.directory(cfg, force), roster.status().then((status) => ({ doc: roster.load(), status })), this.cluster(cfg, force)]);
     const errors: PeopleView["errors"] = [];
     if (dir.status === "rejected") errors.push(errOf("directory", dir.reason));
     if (ros.status === "rejected") errors.push(errOf("roster", ros.reason));
@@ -147,12 +176,12 @@ export class People {
       let needsUpdate = false;
       if (c && r && !templateError) {
         const profile = this.profile(cfg, r.profile);
-        try { needsUpdate = (await k.render({ email, slug: r.slug, profile, role: r.role || null }, c)).hash !== c.applied; }
+        try { needsUpdate = (await k.render({ email, slug: r.slug, profile, role: r.role || null, access: r.access || null }, c)).hash !== c.applied; }
         catch (e) { templateError = e; }
       }
       rows.push({
         email, name: d?.name || r?.name || email, active, state,
-        slug: r?.slug || c?.slug || null, profile: r?.profile || c?.profile || null, needsUpdate, role: r?.role || null,
+        slug: r?.slug || c?.slug || null, profile: r?.profile || c?.profile || null, needsUpdate, role: r?.role || null, access: r?.access || null,
         provisionedAt: r?.provisionedAt || null, provisionedBy: r?.provisionedBy || null,
       });
     }
@@ -164,10 +193,33 @@ export class People {
       roster: ros.status === "fulfilled" ? ros.value.status : null, cluster: k.where, dataLabel: k.dataLabel,
       profiles: cfg.profiles.map((p) => ({ id: p.id, name: p.name, areas: p.areas })),
       defaultProfile: cfg.defaultProfile,
-      roles: this.roles().map((r) => ({ id: r.id, label: r.label })),
+      roles: this.roles().map((r) => ({
+        id: r.id, label: r.label, description: r.description, access: r.profile === "reader" ? "read" : "full", outputStyle: r.outputStyle,
+        people: Object.values(doc?.people || {}).filter((p) => p.role === r.id).length,
+      })),
+      styles: this.rolesFile().styles(),
+      rolesFile: await rolesFile,
       rows,
     };
   }
+
+  private rolesFile(): Roles { return new Roles(this.root, this.configDir, this.run); }
+
+  /** Add, change or remove one of the team's roles (workspace.json). Committing is a separate step. */
+  editRoles(a: RolesAction): { ok: true; id: string | null } {
+    const roles = this.rolesFile();
+    if (a.action === "save") return { ok: true, id: roles.save(a.id ? String(a.id) : null, a.role || { label: "" }) };
+    if (a.action === "remove") {
+      const id = String(a.id || "");
+      const assigned = Object.entries(this.roster().load().people).filter(([, p]) => p.role === id).map(([email]) => email);
+      roles.remove(id, assigned);
+      return { ok: true, id: null };
+    }
+    throw httpError(400, `Unknown action ${(a as any).action}`);
+  }
+
+  /** Commit workspace.json on its own (the Roles section's Commit button). */
+  commitRoles(): Promise<RolesStatus> { return this.rolesFile().commit(); }
 
   private profile(cfg: HostingConfig, id: string | null | undefined): Profile {
     return cfg.profiles.find((p) => p.id === id) || cfg.profiles.find((p) => p.id === cfg.defaultProfile)!;
@@ -191,7 +243,9 @@ export class People {
     const dryRun = !!a.dryRun;
     const k = this.platform(cfg);
     const roster = this.roster();
-    const cluster = await k.list();
+    // A preview can use the page's listing; a change for real checks the platform first.
+    const cluster = await this.cluster(cfg, !dryRun);
+    if (!dryRun) this.clusterCache = null; // whatever happens next, the next load asks again
     const c = cluster.get(email) || null;
     const by = await this.who();
     const at = new Date().toISOString();
@@ -209,6 +263,12 @@ export class People {
       if (!roles.some((r) => r.id === want)) throw httpError(400, roles.length ? `There's no role "${want}" (this workspace has ${roles.map((r) => r.id).join(", ")}).` : "This workspace has no roles to assign (workspace.json roles).");
       return want;
     };
+    // undefined keeps `fallback`; "" means it follows their role.
+    const pickAccess = (v: string | undefined, fallback?: "full" | "read" | null): "full" | "read" | null => {
+      const want = v === undefined ? fallback || null : String(v || "").trim().toLowerCase() || null;
+      if (want && want !== "full" && want !== "read") throw httpError(400, 'access is "full", "read", or "" to follow their role.');
+      return want as "full" | "read" | null;
+    };
 
     switch (a.action) {
       case "provision": {
@@ -217,41 +277,46 @@ export class People {
         const doc = roster.load();
         const profile = pickProfile(a.profile, doc.people[email]?.profile);
         const role = pickRole(a.role, doc.people[email]?.role);
+        const access = pickAccess(a.access, doc.people[email]?.access);
         const slug = doc.people[email]?.slug || uniqueSlug(email, doc, cluster);
-        const rendered = await k.render({ email, slug, profile, role }, null);
+        const rendered = await k.render({ email, slug, profile, role, access }, null);
         const objects = rendered.objects;
         const output = await k.apply(rendered, dryRun);
         if (dryRun) return { ok: true, dryRun, output, objects };
         const name = await this.nameOf(cfg, email);
         roster.update((d) => {
           const was = d.people[email];
-          d.people[email] = { name, slug, profile: profile.id, ...(role ? { role } : {}), provisionedAt: was?.provisionedAt || at, provisionedBy: was?.provisionedBy || by, ...(was ? { updatedAt: at, updatedBy: by } : {}) };
+          d.people[email] = { name, slug, profile: profile.id, ...(role ? { role } : {}), ...(access ? { access } : {}), provisionedAt: was?.provisionedAt || at, provisionedBy: was?.provisionedBy || by, ...(was ? { updatedAt: at, updatedBy: by } : {}) };
           return true;
         });
         return { ok: true, dryRun, output };
       }
       case "update":
       case "profile":
-      case "role": {
+      case "role":
+      case "access": {
         const r = roster.load().people[email];
         if (!r) throw httpError(404, `${email} isn't in the roster. Adopt or provision them first.`);
         const profile = pickProfile(a.action === "profile" ? a.profile : r.profile);
-        // A role change re-applies like a profile change: their dashboard restarts with the new DASHBOARD_ROLE.
+        // A role or access change re-applies like a profile change: their dashboard restarts with the new setting.
         const role = a.action === "role" ? pickRole(a.role ?? "") : r.role || null;
+        const access = a.action === "access" ? pickAccess(a.access ?? "") : r.access || null;
         let output = "";
         let objects: unknown[] | undefined;
         if (c) {
-          const rendered = await k.render({ email, slug: r.slug, profile, role }, c);
+          const rendered = await k.render({ email, slug: r.slug, profile, role, access }, c);
           objects = rendered.objects;
           output = await k.apply(rendered, dryRun);
         } else if (a.action === "update") throw httpError(404, `${email} has no dashboard on the cluster. Provision it again.`);
-        const would = a.action === "role" ? (role ? `Would set ${email}'s role to ${role}.` : `Would let ${email} pick their own role.`) : `Would set ${email}'s profile to ${profile.name}.`;
+        const would = a.action === "role" ? (role ? `Would set ${email}'s role to ${role}.` : `Would let ${email} pick their own role.`)
+          : a.action === "access" ? (access ? `Would give ${email} ${access} access.` : `Would let ${email}'s access follow their role.`)
+          : `Would set ${email}'s profile to ${profile.name}.`;
         if (dryRun) return { ok: true, dryRun, output: output || would, objects };
-        if (r.profile !== profile.id || (r.role || null) !== role) {
+        if (r.profile !== profile.id || (r.role || null) !== role || (r.access || null) !== access) {
           roster.update((d) => {
             if (!d.people[email]) return false;
-            const { role: _was, ...rest } = d.people[email];
-            d.people[email] = { ...rest, profile: profile.id, ...(role ? { role } : {}), updatedAt: at, updatedBy: by };
+            const { role: _was, access: _had, ...rest } = d.people[email];
+            d.people[email] = { ...rest, profile: profile.id, ...(role ? { role } : {}), ...(access ? { access } : {}), updatedAt: at, updatedBy: by };
             return true;
           });
         }

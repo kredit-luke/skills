@@ -1,5 +1,5 @@
 import { ChangeDetectionStrategy, Component, HostListener, OnDestroy, OnInit, computed, inject, signal } from '@angular/core';
-import type { GithubLoginStatus, MachineCheck } from '../../../../../shared/api';
+import type { GithubLoginStatus, GoogleClientSaved, MachineCheck } from '../../../../../shared/api';
 import { ApiService } from '../../core/api.service';
 import { CommandsService } from '../../core/commands.service';
 import { DataService } from '../../core/data.service';
@@ -85,6 +85,12 @@ const ICON: Record<string, string> = { ok: '✓', warn: '!', missing: '✕', inf
                 @if (!hosted() && c.status !== 'ok') {
                   <div class="fx">
                     @if (c.fix) { <code title="Click to copy" (click)="copy(c.fix)">{{ c.fix }}</code> }
+                    @if (c.upload === 'google-client') {
+                      <!-- The People page's Google OAuth client: read in the browser, kept in the ledger, never committed. -->
+                      <input #clientFile type="file" accept=".json,application/json" hidden (change)="uploadGoogleClient(clientFile)">
+                      <button class="btn sm" [class.primary]="!c.install" [disabled]="uploading()" (click)="clientFile.click()"
+                        title="Your team's Desktop app OAuth client JSON. It stays on this computer, in .claude/ledger.">{{ uploading() ? 'Saving…' : c.install ? 'Replace client file' : 'Choose client file…' }}</button>
+                    }
                     @if (c.install) { <button class="btn primary sm" [disabled]="installing() === c.id" (click)="install(c)" title="Opens a terminal running this command, so you can see and approve any prompts">{{ c.install.label }}</button> }
                     @if (c.action === 'setup') { <button class="btn primary sm" (click)="setup()">Run setup</button> }
                   </div>
@@ -104,6 +110,7 @@ export class MachineComponent implements OnInit, OnDestroy {
   private readonly commands = inject(CommandsService);
   readonly busy = signal(false);
   readonly installing = signal<string | null>(null);
+  readonly uploading = signal(false);
   readonly hosted = this.api.hosted;
   /** Hosted Claude sign-in: the URL to open once started, and whether a step is in flight. */
   readonly signInUrl = signal<string | null>(null);
@@ -165,6 +172,21 @@ export class MachineComponent implements OnInit, OnDestroy {
       else { await copyText(r.command); this.toast.error('Couldn\'t open a terminal; copied the command instead.'); }
     } catch (e) { this.toast.error((e as Error).message); }
     finally { setTimeout(() => this.installing.set(null), 3000); }
+  }
+
+  /** The People page's Google OAuth client file: the server checks it's a Desktop app client and keeps it. */
+  async uploadGoogleClient(input: HTMLInputElement): Promise<void> {
+    const file = input.files?.[0];
+    input.value = ''; // choosing the same file again still fires (change)
+    if (!file) return;
+    if (file.size > 32 * 1024) { this.toast.error("That's too big to be an OAuth client file."); return; }
+    this.uploading.set(true);
+    try {
+      const r = await this.api.post<GoogleClientSaved>('/api/machine/google-client', { content: await file.text() });
+      this.toast.show(`Saved the client${r.projectId ? ` from ${r.projectId}` : ''}. Now click Sign in.`);
+      await this.recheck();
+    } catch (e) { this.toast.error((e as Error).message); }
+    finally { this.uploading.set(false); }
   }
 
   /** Hosted: start `claude auth login` on the server and show its sign-in URL. */

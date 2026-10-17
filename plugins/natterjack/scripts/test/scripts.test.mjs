@@ -6,10 +6,10 @@ import os from "node:os";
 import path from "node:path";
 import { execFileSync } from "node:child_process";
 import { brandCandidates, contrast, isHashedBuild, mapToContract, parseColor, themeCss, tokensOnly, withoutVendorVars } from "../extract-brand.mjs";
-import { compareVersions, engineVersion, fetchEngine, latestRelease, normalizeRepo, pluginVersion, readRepos, releaseCheck } from "../lib.mjs";
+import { ENGINE_DIR, compareVersions, engineVersion, fetchEngine, latestRelease, normalizeRepo, pluginVersion, readRepos, releaseCheck } from "../lib.mjs";
 import { listRepos } from "../discover.mjs";
 import { scaffold } from "../scaffold.mjs";
-import { upgrade } from "../upgrade.mjs";
+import { bootFiles, imageChanges, upgrade } from "../upgrade.mjs";
 import { validate } from "../validate.mjs";
 
 test("compareVersions orders x.y.z numerically, a leading v is fine", () => {
@@ -360,9 +360,16 @@ test("scaffold into a nested engineDir: engine, engine.json, .gitignore, skill n
   scaffold(named, { workspace: { name: "T" }, engineDir: "ops-console", skillName: "Console", skills: ["dashboard"] });
   assert.match(fs.readFileSync(path.join(named, ".claude", "skills", "console", "SKILL.md"), "utf-8"), /^name: console$/m);
 
-  // upgrade merges into tools/ops/ and keeps dir in engine.json.
-  const base = fs.mkdtempSync(path.join(os.tmpdir(), "aos-nested-base-"));
+  // upgrade merges into tools/ops/ and keeps dir in engine.json. The base is a whole old plugin,
+  // as fetchEngine clones it, whose image and per-person template differ from this one's.
+  const baseRoot = fs.mkdtempSync(path.join(os.tmpdir(), "aos-nested-base-"));
+  const base = path.join(baseRoot, "engine");
   copyTree(ENGINE_DIR, base);
+  for (const d of ["templates", "router"]) copyTree(path.join(ENGINE_DIR, "..", d), path.join(baseRoot, d));
+  fs.appendFileSync(path.join(baseRoot, "templates", "hosted", "Dockerfile"), "# old\n");
+  fs.appendFileSync(path.join(baseRoot, "templates", "hosted", "app-service-person.bicep"), "// old\n");
+  fs.appendFileSync(path.join(baseRoot, "templates", "hosted", "kubernetes-person.yaml"), "# old\n");
+  fs.writeFileSync(path.join(root, ".claude", "dashboard", "hosting.json"), JSON.stringify({ platform: { type: "azure-app-service", template: "hosting/app-service-person.bicep" } }));
   const rel = path.join("bin", "snapshot.mjs");
   fs.appendFileSync(path.join(base, rel), "// old\n");
   fs.appendFileSync(path.join(root, "tools", "ops", rel), "// old\n");
@@ -373,10 +380,35 @@ test("scaffold into a nested engineDir: engine, engine.json, .gitignore, skill n
   assert.deepEqual(up.updated, ["bin/snapshot.mjs"]);
   assert.equal(fs.readFileSync(path.join(root, "tools", "ops", rel), "utf-8"), fs.readFileSync(path.join(ENGINE_DIR, rel), "utf-8").replace(/\r\n/g, "\n"));
   assert.ok(up.next.includes("cd tools/ops && npm ci && npm test"));
+  assert.deepEqual(up.hostedImages, ["engine/bin/snapshot.mjs", "templates/hosted/Dockerfile"], "the boot-time snapshot install is in the image too");
+  assert.deepEqual(up.hostedTemplates, ["templates/hosted/app-service-person.bicep", "templates/hosted/kubernetes-person.yaml"]);
+  assert.ok(!up.next.some((n) => n.includes("kubernetes-person.yaml")), "an App Service team isn't told about the Kubernetes templates");
+  assert.ok(up.next.some((n) => n.includes("node tools/ops/bin/hosted-images.mjs --all --dry-run")), "a changed image: rebuild it");
+  assert.ok(up.next.some((n) => /changes templates\/hosted\/app-service-person\.bicep: bring the same change into your copy, hosting\/app-service-person\.bicep/.test(n)));
   const after = JSON.parse(fs.readFileSync(path.join(root, ".claude", "dashboard", "engine.json"), "utf-8"));
   assert.equal(after.dir, "tools/ops");
   assert.equal(after.version, ev());
   assert.ok(!fs.existsSync(path.join(root, "dashboard")));
+});
+
+test("imageChanges: only what the hosted images bake in, and nothing to say without a whole old plugin", () => {
+  const plugin = (files) => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "aos-images-"));
+    for (const [rel, text] of Object.entries(files)) { fs.mkdirSync(path.dirname(path.join(dir, rel)), { recursive: true }); fs.writeFileSync(path.join(dir, rel), text); }
+    return dir;
+  };
+  // The boot step's modules are found through snapshot-cli.ts's imports; main.ts isn't one.
+  const same = { "templates/hosted/Dockerfile": "FROM node\n", "router/Dockerfile": "FROM node\n", "engine/server/src/main.ts": "a", "engine/server/src/snapshot-cli.ts": 'import { s3 } from "./snapshot-sources/s3.ts";\n' };
+  const older = plugin({ ...same, "engine/server/src/hosted.ts": "old checks", "engine/server/src/snapshot-sources/s3.ts": "v1" });
+  const newer = plugin({ ...same, "engine/server/src/main.ts": "b", "engine/server/src/hosted.ts": "new checks", "engine/server/src/snapshot-sources/s3.ts": "v2", "templates/hosted/entrypoint.sh": "#!/bin/sh\n" });
+  assert.deepEqual(imageChanges(older, newer), ["engine/server/src/hosted.ts", "engine/server/src/snapshot-sources/s3.ts", "templates/hosted/entrypoint.sh"], "main.ts reaches hosted dashboards through the snapshot");
+  assert.deepEqual(imageChanges(newer, newer), []);
+  assert.equal(imageChanges(path.join(older, "engine"), newer), null, "a --base engine folder has no images to compare");
+
+  // The real boot step: every module the image runs at start, through the imports.
+  const boot = bootFiles(path.dirname(ENGINE_DIR));
+  for (const f of ["engine/bin/snapshot.mjs", "engine/server/src/snapshot-cli.ts", "engine/server/src/repo-pull.ts", "engine/server/src/repos.ts", "engine/server/src/config.ts", "engine/server/src/snapshot.ts"]) assert.ok(boot.has(f), f);
+  assert.ok(!boot.has("engine/server/src/main.ts"), "the dashboard itself comes from the snapshot");
 });
 
 test("scaffold refuses an engineDir it can't use; an older workspace keeps dashboard/", () => {

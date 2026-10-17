@@ -15,6 +15,11 @@ FROM node:24-bookworm-slim
 # The GitHub CLI comes from GitHub's own apt repository (Debian's lags well behind): people
 # sign in to it from the Machine page, so their runs push and open pull requests as them.
 # openssh-client is for ssh-keygen: git signs their commits with an SSH key (github-login.ts).
+#
+# safe.directory '*' (system-wide, so GIT_CONFIG_GLOBAL on the volume doesn't hide it): a mounted
+# /data (an Azure Files share, NFS) can belong to another user than the container's, and git
+# then refuses every command in the repos there ("dubious ownership"). The container is one
+# person's; there is no other user to guard against.
 RUN apt-get update \
  && apt-get dist-upgrade -y --no-install-recommends \
  && apt-get install -y --no-install-recommends git openssh-client ca-certificates curl tini procps \
@@ -25,6 +30,7 @@ RUN apt-get update \
  && apt-get update \
  && apt-get install -y --no-install-recommends gh \
  && rm -rf /var/lib/apt/lists/* \
+ && git config --system --add safe.directory '*' \
  && mkdir -p /data && chown node:node /data
 
 # The Claude CLI, installed for the image's own user. Update it by rebuilding the image

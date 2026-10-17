@@ -33,10 +33,40 @@ export function notInstalled(r: CliResult): boolean {
   return r.code === "ENOENT" || /is not recognized as an internal or external command|command not found/i.test(r.stderr);
 }
 
+/**
+ * A CLI's output without the warnings Python prints ahead of the real error: az on a 32-bit
+ * Python says "backend.py:8: UserWarning: You are using cryptography on a 32-bit Python..."
+ * on every call. Python's format is `<file>.py:<line>: <Category>Warning: <message>`,
+ * sometimes followed by the indented source line.
+ */
+export function withoutWarnings(text: string): string[] {
+  const out: string[] = [];
+  let skipSource = false;
+  for (const line of text.split(/\r?\n/)) {
+    if (/^\S.*\.py:\d+: [A-Za-z]*Warning: /.test(line)) { skipSource = true; continue; }
+    if (skipSource && /^\s+\S/.test(line)) { skipSource = false; continue; }
+    skipSource = false;
+    if (line.trim()) out.push(line);
+  }
+  return out;
+}
+
 /** A failed command as one readable error, naming the fix when we know it. */
 export function cliError(what: string, r: CliResult, fix?: string): Error {
-  const detail = (r.stderr || r.stdout).trim().split(/\r?\n/).filter(Boolean).slice(-3).join(" ").slice(0, 400);
+  const lines = withoutWarnings(r.stderr);
+  const detail = (lines.length ? lines : withoutWarnings(r.stdout)).slice(-3).join(" ").trim().slice(0, 400);
   return Object.assign(new Error(`${what}: ${detail || `exit ${r.code}`}${fix ? ` (${fix})` : ""}`), { status: 502, fix });
+}
+
+/** A failure the network caused (the connection dropped mid-call), not the command: worth one more try. */
+export function transientFailure(r: CliResult): boolean {
+  return !r.ok && /ConnectionResetError|Connection aborted|connection reset|ECONNRESET|RemoteDisconnected|Connection broken|unexpected EOF|EOF occurred in violation of protocol|TLS handshake timeout/i.test(`${r.stderr}\n${r.stdout}`);
+}
+
+/** Run a read-only command, trying once more if the network dropped the first attempt. Never for writes. */
+export async function runReading(run: Runner, name: string, args: string[], opts?: { input?: string; timeout?: number }): Promise<CliResult> {
+  const r = await run(name, args, opts);
+  return transientFailure(r) ? run(name, args, opts) : r;
 }
 
 export function parseJson(text: string, what: string): any {

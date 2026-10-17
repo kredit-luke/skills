@@ -208,6 +208,16 @@ export class KubernetesBackend implements Backend {
 
 interface Site { name: string; host: string; running: boolean }
 const ARM_API = "2023-12-01";
+/** How long a dashboard's /healthz may take before it counts as still starting. */
+const PROBE_TIMEOUT_MS = 4000;
+/** How long an answer is trusted before asking again (one probe per page load at most). */
+const HEALTHY_FOR_MS = 30_000;
+
+/** The dashboard's own /healthz (it needs no secret): true when it answers 200 in time. */
+export async function answersHealthz(host: string): Promise<boolean> {
+  try { return (await fetch(`https://${host}/healthz`, { signal: AbortSignal.timeout(PROBE_TIMEOUT_MS) })).ok; }
+  catch { return false; }
+}
 
 /**
  * One Web App per person in a resource group (templates/hosted/app-service-person.bicep),
@@ -215,14 +225,31 @@ const ARM_API = "2023-12-01";
  * <app>.azurewebsites.net address, with that as the Host (App Service routes by it), and
  * starts and stops it. Signs in with the router app's managed identity, which needs
  * Reader and Website Contributor on the resource group, nothing else.
+ *
+ * Ready means the Web App is Running *and* the dashboard answers its /healthz. Azure says
+ * Running as soon as it starts the container, minutes before a first start has installed
+ * the workspace; a request sent then is held by App Service until the login proxy in front
+ * gives up (Cloudflare: a 524 after 100 seconds). Until it answers, people get the
+ * self-reloading "Starting your dashboard…" page instead.
  */
 export class AppServiceBackend implements Backend {
   private cfg: RouterConfig["azure"];
   private token: { value: string; until: number } | null = null;
   private cache: { at: number; byEmail: Map<string, Site> } | null = null;
   private inflight: Promise<Map<string, Site>> | null = null;
+  private readonly probe: (host: string) => Promise<boolean>;
+  /** host → until when its last good /healthz is trusted. */
+  private healthy = new Map<string, number>();
 
-  constructor(cfg: RouterConfig["azure"]) { this.cfg = cfg; }
+  constructor(cfg: RouterConfig["azure"], probe: (host: string) => Promise<boolean> = answersHealthz) { this.cfg = cfg; this.probe = probe; }
+
+  private async answers(host: string): Promise<boolean> {
+    if ((this.healthy.get(host) || 0) > Date.now()) return true;
+    const ok = await this.probe(host);
+    if (ok) this.healthy.set(host, Date.now() + HEALTHY_FOR_MS);
+    else this.healthy.delete(host);
+    return ok;
+  }
 
   private async bearer(): Promise<string> {
     if (this.cfg.token) return this.cfg.token;
@@ -273,7 +300,8 @@ export class AppServiceBackend implements Backend {
 
   async find(email: string): Promise<Target | null> {
     const s = (await this.sites()).get(email);
-    return s ? { url: `https://${s.host}`, host: s.host, ready: s.running, canStart: true } : null;
+    if (!s) return null;
+    return { url: `https://${s.host}`, host: s.host, ready: s.running && (await this.answers(s.host)), canStart: true };
   }
 
   private async power(email: string, action: "start" | "stop") {
@@ -281,6 +309,7 @@ export class AppServiceBackend implements Backend {
     if (!s || s.running === (action === "start")) return;
     await this.arm("POST", `${this.group()}/${encodeURIComponent(s.name)}/${action}?api-version=${ARM_API}`);
     this.cache = null;
+    this.healthy.delete(s.host);
   }
 
   start(email: string) { return this.power(email, "start"); }
