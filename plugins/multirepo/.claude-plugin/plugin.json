@@ -1,0 +1,9 @@
+{
+  "name": "multirepo",
+  "version": "0.1.0",
+  "description": "Workflow skills for multi-repo workspaces: a local second-opinion review of your changes across every repo, and plans posted to your issue tracker. Reads Natterjack config when it's there, works without it.",
+  "author": {
+    "name": "Luke Hoezee"
+  },
+  "keywords": ["multi-repo", "workflow", "code-review", "copilot", "issue-tracker"]
+}

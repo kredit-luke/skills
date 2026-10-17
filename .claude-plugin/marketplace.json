@@ -9,6 +9,11 @@
       "name": "natterjack",
       "source": "./plugins/natterjack",
       "description": "Set up Natterjack for your team: a multi-repo Claude Code workspace with a local dashboard (runs, issues, apps, machine setup, docs, links) tailored to your stack, tools and brand."
+    },
+    {
+      "name": "multirepo",
+      "source": "./plugins/multirepo",
+      "description": "Workflow skills for multi-repo workspaces: a local second-opinion review of your changes across every repo, and plans posted to your issue tracker."
     }
   ]
 }
