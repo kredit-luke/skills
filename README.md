@@ -13,7 +13,7 @@ Plugins by Luke Hoezee, published as one marketplace for Claude Code, GitHub Cop
 | Plugin | What it does | Install |
 |---|---|---|
 | [**natterjack**](plugins/natterjack/) | Turns a team's repos into one Claude Code workspace with a local dashboard: runs with in-page questions, the issue board, apps, machine setup, docs and links, tailored to the team's stack and brand. Formerly `agentic-os`. | `/plugin install natterjack@lhoezee-skills` |
-| [**multirepo**](plugins/multirepo/) | Workflow skills for multi-repo workspaces: a local second-opinion review from the Copilot CLI across every repo's changes, and plans posted to Linear, Jira or GitHub Issues. Uses Natterjack config when present. | `/plugin install multirepo@lhoezee-skills` |
+| [**multirepo**](plugins/multirepo/) | Workflow skills for multi-repo workspaces: worktrees per ticket, safe pulls, commits and cross-linked PRs across every repo, a local Copilot second-opinion review, and plans posted to Linear, Jira or GitHub Issues. Uses Natterjack config when present. | `/plugin install multirepo@lhoezee-skills` |
 
 Each plugin's README covers its skills, setup and release process.
 

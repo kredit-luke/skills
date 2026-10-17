@@ -186,3 +186,16 @@ test("diff commands: committed range, working tree, or both", () => {
   assert.deepEqual(buildDiffCommands("origin/main", 0, true), ["git diff HEAD"]);
   assert.deepEqual(buildDiffCommands(null, 0, true), ["git diff HEAD"]);
 });
+
+test("review id in a worktree: the source workspace's ticketPattern when the worktree has no workspace.json", () => {
+  const source = tmp("mr-id-src-");
+  fs.mkdirSync(path.join(source, ".claude", "dashboard"), { recursive: true });
+  fs.writeFileSync(
+    path.join(source, ".claude", "dashboard", "workspace.json"),
+    JSON.stringify({ issues: { ticketPattern: "^[a-z]+/[a-z]+#\\d+$" } })
+  );
+  const wt = path.join(tmp("mr-id-wt-"), "scratch");
+  fs.mkdirSync(wt);
+  fs.writeFileSync(path.join(wt, ".worktree.json"), JSON.stringify({ name: "scratch", repos: [], sourceWorkspace: source }));
+  assert.equal(deriveReviewId(wt, [{ branch: "feature/acme/api#12" }]), "ACME/API#12");
+});

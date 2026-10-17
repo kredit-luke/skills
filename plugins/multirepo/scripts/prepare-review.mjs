@@ -32,6 +32,7 @@ import { execFileSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { readWorkspaceConfig } from "./lib.mjs";
 
 export function parseArgs(argv) {
   // base: null means "detect per repo".
@@ -274,9 +275,12 @@ export function inspectRepo(candidate, requestedBase) {
   };
 }
 
-/** The ticket pattern from Natterjack's workspace.json (unanchored), else a typical key. */
+/**
+ * The ticket pattern from Natterjack's workspace.json (unanchored), else a typical key.
+ * In a worktree without its own workspace.json, the source workspace's (readWorkspaceConfig).
+ */
 export function ticketRegex(root) {
-  const ws = readJson(path.join(root, ".claude", "dashboard", "workspace.json"));
+  const ws = readWorkspaceConfig(root);
   const pattern = ws?.issues?.ticketPattern;
   if (typeof pattern === "string" && pattern) {
     try {

@@ -17,19 +17,31 @@ They read a [Natterjack](../natterjack/) workspace's config when it's there (`re
 
 | Skill | What it does |
 |---|---|
-| `/multirepo:copilot-review` | A local, pre-push second opinion from the GitHub Copilot CLI (a different model) over every repo's changes as one review; optionally fixes the real findings and re-reviews, up to 3 rounds. Never commits. Needs `copilot`. |
-| `/multirepo:submit-plan <TICKET>` | Posts a plan from `~/.claude/plans/` to a Linear, Jira or GitHub Issues ticket as a tagged comment, and updates that comment on later submissions. |
+| `/multirepo:worktree <TICKET \| name>` | A parallel copy of the repos a ticket needs under `worktrees/<name>/`, each on the ticket branch (independent clones, or native `git worktree`s with `--native`), with workspace config, dependencies and port slots. `--list` shows what's merged (squash merges and merged PRs included), `--remove` guards unsaved work, `--purge` removes only what git and the tracker agree has shipped. |
+| `/multirepo:pull [all \| root \| <repo> \| <layer>]` | Fast-forwards repos to their default branch, but only the ones that are clean, on that branch and strictly behind; everything else is reported with the reason, never switched or stashed. |
+| `/multirepo:commit` | Conventional Commits in every repo the change touched, ticket from the branch, context from the tracker; shows unstaged and untracked work and asks; never skips hooks. `--auto` for unattended runs. |
+| `/multirepo:pr` | PRs for every repo on the ticket branch, in dependency order, cross-linked, ticket in the title; updates the ticket. Optionally requests Copilot and watches the PRs: fixes valid feedback, replies to and resolves threads, keeps branches current; merges only with `--auto-merge`. In a Natterjack dashboard run it hands the watch to the dashboard. |
+| `/multirepo:copilot-review` | A local, pre-push second opinion from the GitHub Copilot CLI (a different model) over every repo's changes as one review, new files included; optionally fixes the real findings and re-reviews, up to 3 rounds. Never commits. Needs `copilot`. |
+| `/multirepo:submit-plan [plan] [TICKET]` | Posts a plan from `~/.claude/plans/` to a Linear, Jira or GitHub Issues ticket as a tagged comment, and updates that comment on later submissions. |
 
 ## What it reads
 
 | File | Used for |
 |---|---|
-| `repos.json` | The repos (`relativePath`, `defaultBranch`). Without it, a single repo or the git repos one level down. |
-| `.worktree.json` | Inside a worktree folder: just the repos cloned into it. |
-| `.claude/dashboard/workspace.json` | `issues.ticketPattern` (ticket ids in branch names) and `issues.kind` (which tracker). |
+| `repos.json` | The repos: `name`, `relativePath`, `defaultBranch`, `dependencies` (PR and commit order), `layer` (pull targets), `remote`. Without it, a single repo or the git repos one level down. |
+| `.worktree.json` | Inside a worktree folder: its repos, branch and ticket (`ticketId`, `tracker`). |
+| `.claude/dashboard/workspace.json` | `issues.kind` (which tracker), `issues.ticketPattern` (ticket ids in branch names), `worktrees.dir` / `portsFile` / `ports` (worktree folder and port slots, shared with the dashboard). |
 
-Project conventions (the stack, which agent owns which code) come from the workspace's `CLAUDE.md` / `AGENTS.md`.
+Optional keys these skills add to `workspace.json`:
+
+| Key | Default | Meaning |
+|---|---|---|
+| `worktrees.copy` | `[]` | Extra files or folders (relative to the workspace) copied into every new worktree, e.g. `[".claude/references", "docs"]`. |
+| `issues.doneStates` | `["Done"]` | Tracker states `worktree --purge` treats as shipped (case-insensitive). |
+| `issues.reviewState` | `"In Review"` | The state `pr` moves a ticket to (Jira: the transition whose name contains it). |
+
+Project conventions (the stack, commit scopes, which agent owns which code, whether PRs may be auto-merged) come from the workspace's `CLAUDE.md` / `AGENTS.md`.
 
 ## Maintaining
 
-Tests: `node --test "plugins/multirepo/scripts/test/*.test.mjs"` (they make throwaway git repos). To release, bump the version in `.claude-plugin/plugin.json` and `.codex-plugin/plugin.json`, run `claude plugin validate .` from the repo root, commit, and tag the version-bump commit `multirepo-v<version>`.
+Tests: `node --test "plugins/multirepo/scripts/test/*.test.mjs"` (they make throwaway git repos and bare remotes). To release, bump the version in `.claude-plugin/plugin.json` and `.codex-plugin/plugin.json`, run `claude plugin validate .` from the repo root, commit, and tag the version-bump commit `multirepo-v<version>`.
