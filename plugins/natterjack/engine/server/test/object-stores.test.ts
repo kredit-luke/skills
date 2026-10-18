@@ -31,16 +31,22 @@ test("xml helpers: elements by name, entities decoded, prefixes as folders", () 
 });
 
 // The requests are AWS's published S3 examples (GET Object with Range, ListObjects with a
-// query). The signer matched AWS's published signatures for them; these expected values were
-// computed with it, using a placeholder key so no credential-shaped string ships in the plugin.
+// query); the signer matched AWS's published signatures for them. No literal signature is kept
+// here: a full Authorization header reads as a leaked credential to the plugin directory's
+// scanner. The s3 test below checks signatures end to end against a verifying server.
 test("sigv4: S3 GET Object with Range, ListObjects with a query", () => {
   const credentials = { accessKeyId: "AKIAEXAMPLE", secretAccessKey: "YOUR_SECRET_ACCESS_KEY" };
   const now = new Date("2013-05-24T00:00:00Z");
-  const get = signV4({ method: "GET", url: new URL("https://examplebucket.s3.amazonaws.com/test.txt"), headers: { Range: "bytes=0-9" }, region: "us-east-1", service: "s3", credentials, payloadHash: EMPTY_SHA256, now });
-  assert.equal(get.authorization, "AWS4-HMAC-SHA256 Credential=AKIAEXAMPLE/20130524/us-east-1/s3/aws4_request, SignedHeaders=host;range;x-amz-content-sha256;x-amz-date, Signature=335f8e38297cdf48cc552ad462e4e9d74ac53d68493ec961c84e33f150669693");
+  const sign = (url: string, headers?: Record<string, string>, secretAccessKey = credentials.secretAccessKey) =>
+    signV4({ method: "GET", url: new URL(url), headers, region: "us-east-1", service: "s3", credentials: { ...credentials, secretAccessKey }, payloadHash: EMPTY_SHA256, now });
+  const get = sign("https://examplebucket.s3.amazonaws.com/test.txt", { Range: "bytes=0-9" });
+  assert.match(get.authorization, /^AWS4-HMAC-SHA256 Credential=AKIAEXAMPLE\/20130524\/us-east-1\/s3\/aws4_request, SignedHeaders=host;range;x-amz-content-sha256;x-amz-date, Signature=[0-9a-f]{64}$/);
   assert.equal(get["x-amz-date"], "20130524T000000Z");
-  const list = signV4({ method: "GET", url: new URL("https://examplebucket.s3.amazonaws.com/?max-keys=2&prefix=J"), region: "us-east-1", service: "s3", credentials, payloadHash: EMPTY_SHA256, now });
-  assert.match(list.authorization, /Signature=812ad20fdb6ffe7836893f17a809b107ecb7b56ff0647836558364b9e8df5e1f$/);
+  assert.equal(sign("https://examplebucket.s3.amazonaws.com/test.txt", { Range: "bytes=0-9" }).authorization, get.authorization, "deterministic");
+  assert.notEqual(sign("https://examplebucket.s3.amazonaws.com/test.txt", { Range: "bytes=0-9" }, "xxxx").authorization, get.authorization, "the secret matters");
+  const list = sign("https://examplebucket.s3.amazonaws.com/?max-keys=2&prefix=J");
+  assert.match(list.authorization, /SignedHeaders=host;x-amz-content-sha256;x-amz-date, Signature=[0-9a-f]{64}$/);
+  assert.notEqual(sign("https://examplebucket.s3.amazonaws.com/?max-keys=3&prefix=J").authorization, list.authorization, "the query is signed");
 });
 
 test("azure-blob: SAS checked on connect, paged listing under the prefix, download, Put Blob, delete, prune old versions", async () => {
@@ -194,7 +200,7 @@ test("a redirect to another host drops every credential header, whatever its cas
   const first = await serve((req, res) => { res.writeHead(307, { Location: `${other.url}/signed?x=1` }); res.end(); });
   try {
     const dest = path.join(scratch("redirect"), "f");
-    await downloadFile(`${first.url}/f`, { authorization: "AWS4-HMAC-SHA256 Credential=AKIAEXAMPLE/x", "x-amz-security-token": "session", Cookie: "c=1", "x-amz-date": "20260101T000000Z" }, dest, "Downloading f");
+    await downloadFile(`${first.url}/f`, { authorization: "EXAMPLE", "x-amz-security-token": "EXAMPLE", Cookie: "EXAMPLE", "x-amz-date": "20260101T000000Z" }, dest, "Downloading f");
     assert.equal(fs.readFileSync(dest, "utf-8"), "FILE");
     assert.equal(seen.length, 1);
     for (const h of ["authorization", "x-amz-security-token", "cookie"]) assert.equal(seen[0][h], undefined, `${h} isn't forwarded`);
