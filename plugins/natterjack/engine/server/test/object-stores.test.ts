@@ -49,7 +49,7 @@ test("azure-blob: SAS checked on connect, paged listing under the prefix, downlo
   const blob = (name: string, size: number, extra = "") => `<Blob><Name>${name}</Name>${extra}<Properties><Last-Modified>Thu, 01 Jan 2026 00:00:00 GMT</Last-Modified><Content-Length>${size}</Content-Length></Properties></Blob>`;
   const srv = await serve(async (req, res) => {
     const u = new URL(req.url || "", "http://x");
-    if (u.searchParams.get("sig") !== "good") { res.writeHead(403); return res.end("<Error><Message>AuthenticationFailed</Message></Error>"); }
+    if (u.searchParams.get("sig") !== "EXAMPLE") { res.writeHead(403); return res.end("<Error><Message>AuthenticationFailed</Message></Error>"); }
     const xml = (s: string) => { res.writeHead(200, { "Content-Type": "application/xml" }); res.end(`<?xml version="1.0"?><EnumerationResults>${s}</EnumerationResults>`); };
     if (req.method === "GET" && u.pathname === "/acme/snapshots" && u.searchParams.get("comp") === "list") {
       assert.equal(u.searchParams.get("restype"), "container");
@@ -75,11 +75,11 @@ test("azure-blob: SAS checked on connect, paged listing under the prefix, downlo
     assert.equal(s.status().connected, false);
     assert.equal(s.connectHelp()!.needsKey, true);
     await assert.rejects(s.connect("not a sas"), /isn't a SAS token/);
-    await assert.rejects(s.connect("?sv=2023&sig=bad"), /refused \(HTTP 403\)/);
+    await assert.rejects(s.connect("?sv=2023&sig=xxxx"), /refused \(HTTP 403\)/);
     assert.equal(s.status().connected, false, "a refused key isn't kept");
-    await s.connect("https://acme.blob.core.windows.net/snapshots?sv=2023&sp=rl&sig=good");
+    await s.connect("https://acme.blob.core.windows.net/snapshots?sv=2023&sp=rl&sig=EXAMPLE");
     assert.deepEqual(s.status(), { connected: true, source: "file", viewer: null });
-    assert.equal(fs.readFileSync(path.join(ledger, "snapshot-azure-sas"), "utf-8"), "sv=2023&sp=rl&sig=good", "only the query is kept");
+    assert.equal(fs.readFileSync(path.join(ledger, "snapshot-azure-sas"), "utf-8"), "sv=2023&sp=rl&sig=EXAMPLE", "only the query is kept");
 
     const files = await s.list();
     assert.deepEqual(files.map((f) => [f.name, f.size, f.updatedAt]), [["api.tar.gz", 3, "2026-01-01T00:00:00.000Z"], ["snapshot-manifest.json", 2, "2026-01-01T00:00:00.000Z"]], "both pages, deeper names left out");
@@ -95,7 +95,7 @@ test("azure-blob: SAS checked on connect, paged listing under the prefix, downlo
     assert.equal(await s.prune!(["api.tar.gz"]), 1, "only the named file's old version");
     assert.deepEqual(deletes, ["/acme/snapshots/code/api.tar.gz", "/acme/snapshots/code/api.tar.gz@v1"]);
 
-    process.env.SNAPSHOT_AZURE_SAS = "?sv=2023&sig=good";
+    process.env.SNAPSHOT_AZURE_SAS = "?sv=2023&sig=EXAMPLE";
     assert.equal(s.status().source, "env", "the environment wins (hosted containers)");
     s.disconnect();
     assert.equal(s.status().connected, true, "disconnect only removes the pasted key");
@@ -122,7 +122,7 @@ test("s3: signed requests (path-style endpoint), paged ListObjectsV2, download, 
   const puts: { path: string; body: string; length: string | undefined }[] = [];
   const deletes: string[] = [];
   const srv = await serve(async (req, res) => {
-    if (!verify(req, "SECRET/key+1")) { res.writeHead(403); return res.end("<Error><Code>SignatureDoesNotMatch</Code></Error>"); }
+    if (!verify(req, "YOUR_SECRET_ACCESS_KEY")) { res.writeHead(403); return res.end("<Error><Code>SignatureDoesNotMatch</Code></Error>"); }
     const u = new URL(req.url || "", "http://x");
     const xml = (s: string) => { res.writeHead(200, { "Content-Type": "application/xml" }); res.end(`<?xml version="1.0"?><ListBucketResult>${s}</ListBucketResult>`); };
     if (u.pathname === "/moved/") { res.writeHead(301); return res.end("<Error><Code>PermanentRedirect</Code></Error>"); }
@@ -150,8 +150,8 @@ test("s3: signed requests (path-style endpoint), paged ListObjectsV2, download, 
     assert.equal(s.label, "S3 (127.0.0.1)");
     assert.equal(s.status().connected, false);
     await assert.rejects(s.connect("no-colon"), /ACCESS_KEY_ID:SECRET_ACCESS_KEY/);
-    await assert.rejects(s.connect("AKID:wrong"), /refused \(HTTP 403\)/);
-    await s.connect("AKID:SECRET/key+1");
+    await assert.rejects(s.connect("AKIAEXAMPLE:xxxx"), /refused \(HTTP 403\)/);
+    await s.connect("AKIAEXAMPLE:YOUR_SECRET_ACCESS_KEY");
     assert.deepEqual(s.status(), { connected: true, source: "file", viewer: null });
 
     const files = await s.list();
@@ -170,8 +170,8 @@ test("s3: signed requests (path-style endpoint), paged ListObjectsV2, download, 
     const moved = createSource({ source: "s3", bucket: "moved", region: "us-east-1", endpoint: srv.url }, ctx(ledger));
     await assert.rejects(moved.list(), /isn't in region "us-east-1"/);
 
-    process.env.AWS_ACCESS_KEY_ID = "AKID";
-    process.env.AWS_SECRET_ACCESS_KEY = "SECRET/key+1";
+    process.env.AWS_ACCESS_KEY_ID = "AKIAEXAMPLE";
+    process.env.AWS_SECRET_ACCESS_KEY = "YOUR_SECRET_ACCESS_KEY";
     assert.equal(s.status().source, "env", "the environment wins (CI, hosted containers)");
     assert.equal((await s.list()).length, 2);
   } finally {
@@ -194,7 +194,7 @@ test("a redirect to another host drops every credential header, whatever its cas
   const first = await serve((req, res) => { res.writeHead(307, { Location: `${other.url}/signed?x=1` }); res.end(); });
   try {
     const dest = path.join(scratch("redirect"), "f");
-    await downloadFile(`${first.url}/f`, { authorization: "AWS4-HMAC-SHA256 Credential=AKID/x", "x-amz-security-token": "session", Cookie: "c=1", "x-amz-date": "20260101T000000Z" }, dest, "Downloading f");
+    await downloadFile(`${first.url}/f`, { authorization: "AWS4-HMAC-SHA256 Credential=AKIAEXAMPLE/x", "x-amz-security-token": "session", Cookie: "c=1", "x-amz-date": "20260101T000000Z" }, dest, "Downloading f");
     assert.equal(fs.readFileSync(dest, "utf-8"), "FILE");
     assert.equal(seen.length, 1);
     for (const h of ["authorization", "x-amz-security-token", "cookie"]) assert.equal(seen[0][h], undefined, `${h} isn't forwarded`);

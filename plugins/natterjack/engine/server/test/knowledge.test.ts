@@ -153,7 +153,7 @@ for (const kind of ["s3", "azure-blob"] as const) {
     const store = createStore(cfg, { key: `t-${kind}`, name: "T" }, LEDGER);
     assert.equal(store.status().connected, false);
     await assert.rejects(store.list(), /Connect first/);
-    await store.connect(kind === "s3" ? "AKID:secret" : "?sv=1&sig=abc");
+    await store.connect(kind === "s3" ? "AKIAEXAMPLE:YOUR_SECRET_ACCESS_KEY" : "?sv=1&sig=EXAMPLE");
     assert.equal(store.status().connected, true);
     const list = await store.list();
     assert.deepEqual(list.map((o) => o.name).sort(), ["Finance/Refunds & returns.md", "top.md"]);
@@ -200,7 +200,7 @@ test("Knowledge: sync, notes with freshness, save with conflicts, rename, delete
   bucket.put("fin/.obsidian/workspace.json", Buffer.from("{}"));
   const kb = new Knowledge(ROOT, LEDGER);
   assert.equal(kb.storeStatus("fin").connected, false);
-  await kb.connect("fin", "AKID:secret");
+  await kb.connect("fin", "AKIAEXAMPLE:YOUR_SECRET_ACCESS_KEY");
   const st = kb.storeStatus("fin");
   assert.equal(st.connected, true);
   assert.equal(st.files, 3, "notes and images; dot folders skipped");
