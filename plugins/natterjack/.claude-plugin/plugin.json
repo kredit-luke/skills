@@ -1,7 +1,7 @@
 {
   "name": "natterjack",
   "displayName": "Natterjack",
-  "version": "0.16.6",
+  "version": "0.16.7",
   "description": "Set up Natterjack for your team: a multi-repo Claude Code workspace with a local dashboard (runs, issues, apps, machine setup, docs, links) tailored to your stack, tools and brand.",
   "author": {
     "name": "Luke Hoezee"
@@ -10,5 +10,6 @@
   "repository": "https://github.com/lhoezee/skills",
   "license": "MIT",
   "keywords": ["workspace", "dashboard", "multi-repo", "onboarding", "agents"],
-  "icon": "./assets/natterjack-mark.png"
+  "icon": "./assets/natterjack-mark.png",
+  "privacyPolicyUrl": "https://github.com/lhoezee/skills/blob/main/plugins/natterjack/README.md#privacy"
 }

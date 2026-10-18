@@ -113,6 +113,12 @@ The dashboard is a Node server on your machine (localhost by default). It has no
 
 Keys you paste are kept in `.claude/ledger/` in your workspace, which is never committed.
 
+## Privacy
+
+Natterjack runs entirely on your team's own machines and infrastructure. Its author runs no service for it: nothing is sent to the author, there is no telemetry, and no data is collected or retained outside your systems.
+
+It does read and store data your team sets up, which can include personal data such as names and emails: the People page roster (committed to your workspace repo), run history and transcripts (in `.claude/ledger/`), and notes synced from your own bucket. That data stays in your workspace, your repos and the storage you configure, and you can delete it at any time. The services it connects to (your issue tracker, code host, storage, agents) handle data under your own agreements with them.
+
 ## License
 
 MIT; see [LICENSE](LICENSE).
