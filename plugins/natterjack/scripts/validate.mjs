@@ -2,7 +2,8 @@
 /**
  * Check a workspace's dashboard config: each .claude/dashboard/*.json (and repos.json) against what
  * the engine understands, and against the workspace itself (folders exist, ports
- * don't clash, machine checks name real catalog entries, brand files are there).
+ * don't clash, machine checks name real catalog entries, brand files are there), and
+ * that the workspace is a git repo its team can share.
  *
  *   node validate.mjs <workspace> [--json]
  *
@@ -12,9 +13,11 @@
 
 import fs from "node:fs";
 import path from "node:path";
-import { args, engineDirOf, isMain, normalizeRepo, readJson, safeEngineDir } from "./lib.mjs";
+import { args, engineDirOf, gitOut, gitTopOf, isMain, normalizeRepo, readJson, safeEngineDir } from "./lib.mjs";
 
 const read = (f) => { try { return fs.readFileSync(f, "utf-8"); } catch { return null; } };
+/** Does the git repo around `root` ignore this workspace-relative path? (check-ignore exits 0 when it does.) */
+const gitIgnores = (root, rel) => gitOut(root, ["check-ignore", "-q", rel]) !== null;
 
 /** Keys of an object literal `NAME = { key: ..., "key-2": ... }` in a TS file (catalog ids, adapters). */
 function literalKeys(file, name) {
@@ -337,12 +340,14 @@ export function validate(root) {
 
   // ---- repos.json (workspace root; optional)
   const reposFile = path.join(root, "repos.json");
+  const clones = []; // repos.json repos cloned here, for the .gitignore check below
   if (fs.existsSync(reposFile)) {
     const manifest = readJson(reposFile);
     if (!manifest || !Array.isArray(manifest.repos)) err("repos.json", "needs a \"repos\" array");
     else {
       ok.push("repos.json");
       const paths = new Map(), names = new Set();
+      clones.push(...manifest.repos.map(normalizeRepo).filter((r) => r && r.relativePath !== "." && fs.existsSync(path.join(root, r.relativePath, ".git"))));
       manifest.repos.forEach((raw, i) => {
         const r = normalizeRepo(raw);
         const which = raw && raw.name ? `"${raw.name}"` : `entry ${i + 1}`;
@@ -370,6 +375,21 @@ export function validate(root) {
           if (snap.source === "azure-blob" && snap.account && !/^[a-z0-9]{3,24}$/.test(String(snap.account))) err("repos.json", "snapshot.account is the storage account's name: 3-24 lowercase letters and digits");
         }
       }
+    }
+  }
+
+  // ---- the workspace itself: shared through git, unless it was installed from a snapshot (no git by design)
+  // (A repo at the home folder, i.e. dotfiles, doesn't count: gitTopOf skips it.)
+  if (fs.existsSync(cfgDir) && !fs.existsSync(path.join(root, ".snapshot.json"))) {
+    const top = gitTopOf(root);
+    if (!top) warn("workspace", "the workspace folder isn't a git repo, so its dashboard, config, skills and CLAUDE.md can't be shared with the team. Run git init here and commit them (the product repos stay their own clones, gitignored and listed in repos.json)");
+    else if (gitIgnores(root, ".claude/dashboard/")) warn("workspace", `the git repo at ${top} ignores .claude/dashboard/, so the dashboard config isn't shared with the team. Make the workspace its own git repo (git init here), or stop ignoring it there`);
+    else {
+      // Clones inside the workspace repo must be ignored, or git add records them as embedded repos.
+      const wt = (ws && ws.worktrees && ws.worktrees.dir) || "worktrees";
+      const nested = [...clones.map((r) => r.relativePath), ...(fs.existsSync(path.join(root, wt)) ? [wt] : [])];
+      const unignored = nested.filter((p) => !gitIgnores(root, `${p}/`));
+      if (unignored.length) warn("workspace", `${unignored.map((p) => `${p}/`).join(", ")} ${unignored.length === 1 ? "isn't" : "aren't"} gitignored: the folders hold their own clones, so git add in the workspace repo would record them as embedded repos. Add ${unignored.map((p) => `/${p}/`).join(" ")} to .gitignore`);
     }
   }
 

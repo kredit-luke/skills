@@ -236,3 +236,29 @@ export function args(argv = process.argv.slice(2)) {
 // realpath both sides: a symlinked path (macOS /tmp -> /private/tmp) would otherwise never match.
 const real = (p) => { try { return fs.realpathSync(p); } catch { return path.resolve(p); } };
 export const isMain = (meta) => !!process.argv[1] && real(process.argv[1]) === real(fileURLToPath(meta.url));
+
+// ---- git and the workspace folder (discover's workspace verdict, validate's sharing checks)
+
+// git reports real paths: macOS's /var is /private/var, Windows expands 8.3 names (RUNNER~1). Compare
+// real paths, case-insensitively where the filesystem usually is.
+const realDir = (p) => { try { return fs.realpathSync.native(path.resolve(p)); } catch { return path.resolve(p); } };
+const foldCase = process.platform === "win32" || process.platform === "darwin";
+export function sameDir(a, b) {
+  if (!a || !b) return false;
+  const [x, y] = [realDir(a), realDir(b)];
+  return foldCase ? x.toLowerCase() === y.toLowerCase() : x === y;
+}
+
+/** Run git in a folder: trimmed stdout, or null when it fails (exit code ≠ 0, no git). */
+export function gitOut(cwd, gitArgs, maxBuffer = 1024 * 1024) {
+  try { return execFileSync("git", gitArgs, { cwd, encoding: "utf-8", stdio: ["ignore", "pipe", "ignore"], timeout: 15000, maxBuffer }).trim(); } catch { return null; }
+}
+
+/**
+ * The top of the git repo `dir` is in, or null. A repo at the home folder (dotfiles kept in ~/.git)
+ * doesn't count: it isn't where a workspace is shared from.
+ */
+export function gitTopOf(dir) {
+  const top = gitOut(dir, ["rev-parse", "--show-toplevel"]);
+  return top && !sameDir(top, os.homedir()) ? top : null;
+}

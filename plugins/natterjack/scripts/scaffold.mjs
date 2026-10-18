@@ -30,14 +30,14 @@
  *    refuses a folder that's already something else, or a repo)
  *  - writes each config file in the plan to .claude/dashboard/ (keeps existing files unless --force)
  *  - records the engine version and folder in .claude/dashboard/engine.json (upgrades merge from it)
- *  - adds the engine folder and the local state to .gitignore (allow-list style or not)
+ *  - adds the engine folder, the local state, the product repos' clones and worktrees to .gitignore (allow-list style or not)
  *  - never installs packages, starts anything, commits, or touches the team's repos
  * Prints a JSON summary of what it wrote and skipped.
  */
 
 import fs from "node:fs";
 import path from "node:path";
-import { DEFAULT_ENGINE_DIR, ENGINE_DIR, SOURCE_REPO, TAG_PREFIX, TEMPLATES_DIR, args, copyTree, engineDirOf, engineVersion, isMain, listFiles, normalizeRepo, readJson, readRepos, reposSchema, safeEngineDir, writeJson } from "./lib.mjs";
+import { DEFAULT_ENGINE_DIR, ENGINE_DIR, SOURCE_REPO, TAG_PREFIX, TEMPLATES_DIR, args, copyTree, engineDirOf, engineVersion, isMain, listFiles, normalizeRepo, readJson, readRepos, reposSchema, safeEngineDir, safeRelativePath, writeJson } from "./lib.mjs";
 
 const CONFIG_FILES = { workspace: "workspace.json", apps: "apps.json", machine: "machine.json", docs: "docs.json", infrastructure: "infrastructure.json", links: "links.json", connections: "connections.json", meetings: "meetings.json", deck: "deck.json" };
 
@@ -54,9 +54,15 @@ const comments = (dir) => ({
   deck: "Skill cards, routines, limits, default model and the Issues view. Schema: references/config.md.",
 });
 
-/** .gitignore lines for an engine in `dir`: what's never committed, and (allow-list style) what is. */
-export function gitignoreLines(dir) {
-  const deny = [".claude/ledger/", `${dir}/node_modules/`, `${dir}/dist/`, `${dir}/.angular/`];
+/**
+ * .gitignore lines for an engine in `dir`: what's never committed, and (allow-list style) what is.
+ * The product repos are their own clones inside the workspace, and so are worktrees (one set per
+ * machine): both ignored, so the workspace repo never records them as embedded repos (repos.json
+ * is how teammates get the repos).
+ */
+export function gitignoreLines(dir, repos = [], worktreesDir = "worktrees") {
+  const clones = [...repos.map((r) => r.relativePath), worktreesDir].filter((p) => p && p !== ".").map((p) => `/${p}/`);
+  const deny = [".claude/ledger/", `${dir}/node_modules/`, `${dir}/dist/`, `${dir}/.angular/`, ...new Set(clones)];
   // A nested folder (tools/ops) needs its parents let back in too, or git never looks inside.
   const parts = dir.split("/");
   const parents = parts.slice(0, -1).map((_, i) => `!${parts.slice(0, i + 1).join("/")}/`);
@@ -148,7 +154,8 @@ export function scaffold(root, plan, { force = false, dry = false, engineDir } =
   const current = fs.existsSync(gi) ? fs.readFileSync(gi, "utf-8") : "";
   const lines = current.split(/\r?\n/).map((l) => l.trim());
   const allowList = lines.includes("*");
-  const { deny, allow } = gitignoreLines(dir);
+  const wtDir = (plan.workspace && plan.workspace.worktrees && plan.workspace.worktrees.dir) || "worktrees";
+  const { deny, allow } = gitignoreLines(dir, repos, safeRelativePath(wtDir) || "worktrees");
   const want = [...(allowList ? allow : []), ...deny].filter((l) => !lines.includes(l));
   if (want.length) {
     if (!dry) fs.writeFileSync(gi, current.replace(/\s*$/, "") + (current ? "\n\n" : "") + "# Workspace dashboard (natterjack)\n" + want.join("\n") + "\n");

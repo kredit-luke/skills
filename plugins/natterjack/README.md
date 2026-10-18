@@ -55,7 +55,7 @@ codex plugin marketplace add lhoezee/skills
 codex plugin add natterjack@lhoezee-skills
 ```
 
-Then, in the folder that holds (or will hold) your team's repos, ask for the **create** skill (`/natterjack:create` in Claude Code; in Copilot or Codex, "use the natterjack create skill"). The skills name their scripts with `${CLAUDE_PLUGIN_ROOT}`, which only Claude Code fills in; each skill tells other agents to use its plugin folder instead. Copilot asks before running a script outside the current folder (the plugin's): approve it.
+Then, in the folder that holds (or will hold) your team's repos, ask for the **create** skill (`/natterjack:create` in Claude Code; in Copilot or Codex, "use the natterjack create skill"). Ideally that folder is a git repo of its own (say `agent-os`) with every repo that makes up your product cloned inside it, so the dashboard serves engineering, product and business alike. **create** checks the folder first, and helps you set one up if you started inside a single repo or in a general folder like `~/Development`. The skills name their scripts with `${CLAUDE_PLUGIN_ROOT}`, which only Claude Code fills in; each skill tells other agents to use its plugin folder instead. Copilot asks before running a script outside the current folder (the plugin's): approve it.
 
 Needs: Claude Code, GitHub Copilot CLI or OpenAI Codex CLI, plus Git and Node.js 24.15 or newer (the dashboard's Machine page helps with the rest). The dashboard runs any of the three (the Agent picker in Ask and Run).
 
@@ -85,13 +85,13 @@ Existing workspaces keep their engine in `dashboard/` and their `/dashboard` ski
 ## What ends up in your workspace
 
 ```
-your-workspace/
+your-workspace/            its own git repo: the dashboard, config and skills are shared from it
 ├── natterjack/              the engine (Node server + Angular UI); yours to change
 ├── .claude/dashboard/       your config: workspace, apps, machine, docs, reference, links, deck (.json) + brand/
 ├── .claude/skills/natterjack/ the /natterjack skill (start / stop / restart)
 ├── .claude/ledger/          local state: run history, keys you paste, personal links (never committed)
 ├── CLAUDE.md                gets a "Workspace dashboard" section
-└── repo-a/, repo-b/, …      your repos, side by side
+└── repo-a/, repo-b/, …      your repos, side by side (their own clones: gitignored, listed in repos.json)
 ```
 
 The engine's folder is yours to choose when you create it: `natterjack/` by default, or anything else if that name is taken (`tools/natterjack`, `ops-console`…). The workspace skill is named after its last part. The choice is recorded in `.claude/dashboard/engine.json` (`dir`), and `upgrade` and `doctor` follow it.

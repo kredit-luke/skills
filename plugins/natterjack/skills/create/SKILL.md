@@ -18,19 +18,37 @@ Everything bundled with this skill is under `${CLAUDE_PLUGIN_ROOT}`:
 
 The workspace is the folder the user names, or the current directory. Read `references/config.md` before writing any config file.
 
-## 1. Discover (read-only)
+## 1. Make sure this is the right folder (before anything else)
+
+Natterjack works best as the **OS for the whole company**: one place where engineers, product and business people all ask Claude about the whole product, with every repo that makes up the product side by side. The workspace is **its own git repo** (it shares the dashboard, config, skills and CLAUDE.md), with the product repos cloned inside it, gitignored and listed in `repos.json`. Settle the folder first, so nothing gets built in the wrong place.
 
 ```bash
 node "${CLAUDE_PLUGIN_ROOT}/scripts/discover.mjs" <workspace> --out <scratch>/inventory.json
 ```
 
-Read the JSON. It has repos (remote, stacks, run commands, ports, version pins, CI, deploy targets, README URLs), docker-compose services (databases), the code host, tracker hints (ticket keys seen in branches, mentions), docs candidates, design-system candidates, tools on this machine, and `suggestions` (draft `apps`, `machine` checks, a free dashboard port). It's a **guess**: every suggestion has a `why`.
+If `inventory.existing.dashboard` is true, this workspace already has one (in `inventory.existing.engineDir`): stop and offer `upgrade` or `doctor` instead.
+
+Otherwise read `inventory.workspace`: a `verdict`, the `reasons` for it (show them to the user in your own words), and for some verdicts a `suggestedPath` with `suggested` saying what it is: `here` (this folder, once it is a git repo), `parent` (the folder above, already holding this repo and its siblings; `suggestedIsRepo` says whether it is a git repo yet) or `new` (a folder to create). Act on it before going on:
+
+- **`single-repo`** (the folder is one repo, or holds just one): stop and ask (AskUserQuestion) whether this one repo is really the whole product, explaining the point above: Natterjack is most useful with every repo that makes up the product (apps, APIs, infrastructure, docs sites) so Claude, and everyone using it, sees the full picture. Options: **"I have other repos"** (recommended; they can list them in the notes) / **"This repo is the whole product"** (a monorepo: carry on here). For "other repos":
+  - `suggested: "here"` (a plain folder holding just this repo): this folder becomes the workspace. Clone the other repos beside the one that is here, then it is the `root-not-git` case below (or `ok` if it is a repo already).
+  - `suggested: "parent"`: offer the folder above as the workspace. If `suggestedIsRepo` is false, it is the `root-not-git` case below from there; if true, it is already a repo: just continue with it as `<workspace>` (no `git init`, and do not create a remote it may already have).
+  - `suggested: "new"`: help them create a new workspace repo **beside** this one, `agent-os` by default (`suggestedPath`; any name they like). It starts blank: `git init` it, and offer to create its remote (`gh repo create <owner>/agent-os --private`; ask first, it creates something on GitHub). Ask for every repo the product has (names or URLs; `gh repo list <org>` helps them pick) and clone them into it: fresh clones by default, never moving their existing clone (it may hold local branches). Then continue this skill with the new folder as `<workspace>`, starting from the discover command above.
+- **`root-not-git`** (the product's repos side by side, but the root isn't a git repo): good layout, not shared yet. Offer to `git init` the root now, and optionally create its remote (ask first). If they'd rather not yet, carry on, but say it in the hand-over: until the root is a repo, teammates can't get the dashboard.
+- **`catch-all`** (looks like a general folder: `~/Development`, several unrelated projects, folders holding their own sets of repos): don't build here. List the repos `inventory.repos` found and ask which make up *this* product (multiSelect, plus any to clone). Then set up a new folder for them (`suggestedPath`, `agent-os` inside this folder by default, or a name they pick), `git init` it, and clone the chosen repos in. Moving existing clones instead is fine only when the user asks and the repo has no uncommitted or unpushed work. Continue with the new folder as `<workspace>`. If they say every repo here belongs to the product (the folder only looked general), treat it as `root-not-git` instead.
+- **`inside-repo`** (the folder is inside another git repo): ask whether that repo is meant to hold the workspace (a monorepo with the workspace in a subfolder: carry on) or whether they want a separate workspace (`suggestedPath`, as for `single-repo`).
+- **`empty`** (no repos yet, like a freshly created `agent-os`): ask for every repo the product has, with URLs, and clone them in (or just record them in `repos.json` and let the Repos page clone them). `git init` it first if it isn't a repo.
+- **`ok`**: say so in one line and carry on.
+
+Run discover again after changing folders or cloning repos, and read the fresh inventory. When you moved to a new folder, tell the user to reopen Claude Code there once setup is done: its CLAUDE.md and skills only load in a session started in that folder.
+
+## 2. Discover the rest (read-only)
+
+The inventory has repos (remote, stacks, run commands, ports, version pins, CI, deploy targets, README URLs), docker-compose services (databases), the code host, tracker hints (ticket keys seen in branches, mentions), docs candidates, design-system candidates, tools on this machine, and `suggestions` (draft `apps`, `machine` checks, a free dashboard port). It's a **guess**: every suggestion has a `why`.
 
 Then look at what the script can't: skim each repo's README and CLAUDE.md, the root CLAUDE.md if any, and existing `.claude/skills/`. For a large workspace, fan out one Explore subagent per few repos ("what is this repo, how is it run locally, what does it need, which URLs does it deploy to") and merge their answers into your notes.
 
-If `inventory.existing.dashboard` is true, this workspace already has one (in `inventory.existing.engineDir`): stop and offer `upgrade` or `doctor` instead.
-
-## 2. Interview (only what discovery couldn't settle)
+## 3. Interview (only what discovery couldn't settle)
 
 Read `references/discovery.md` for how to turn the inventory into questions. Keep it to one or two rounds of AskUserQuestion (Copilot CLI: its ask_user tool; an agent without one: ask in chat; the dashboard's question block when you're running headless). Always confirm:
 1. **Repos**: which folders are part of the workspace (and any to clone: their URLs go in repos.json).
@@ -48,7 +66,7 @@ The **Knowledge** page (`docs.json`) is for the whole business, not just enginee
 
 The **Infrastructure** page is for infrastructure only (accounts, environments, public URLs, databases, egress IPs, firewall rules, DNS). Write its doc only from real sources (shape and rules in `references/config.md`, "infrastructure.json"), never pad it with app or product docs, and never put secrets in it. No infrastructure code and no cloud access: leave `infrastructure.json` out. The page then explains what goes there and asks someone with infrastructure access to have Claude fill it in, so say that in the summary.
 
-## 3. Write the plan, confirm, scaffold
+## 4. Write the plan, confirm, scaffold
 
 Build a plan file (shape in `references/config.md`, "plan.json"): the contents of `workspace.json`, `apps.json`, `machine.json`, `docs.json`, `infrastructure.json` (only with infrastructure info; see below), `links.json`, `connections.json` (only when the team relies on MCP servers: their tracker or docs connector, e.g. `claude.ai Linear`, `claude.ai Atlassian`; see config.md), `deck.json`, plus `repos`, `engineDir` (only when it isn't `natterjack`), `skills: ["dashboard"]`, `claudeMd: true`. Show the user a short summary (apps with ports, tracker, docs, checks, port, install folder) and get a yes. Then:
 
@@ -58,7 +76,7 @@ node "${CLAUDE_PLUGIN_ROOT}/scripts/scaffold.mjs" <workspace> --plan <scratch>/p
 
 It copies the engine to the install folder (`<engine>/` from here on; it refuses a folder that's already something else), writes the config files (never overwriting existing ones unless `--force`), records the engine version and folder in `.claude/dashboard/engine.json`, updates `.gitignore`, installs the workspace's dashboard skill (named after the folder, e.g. `natterjack`) and adds a section to CLAUDE.md.
 
-## 4. Brand
+## 5. Brand
 
 Read `references/branding.md`, then:
 
@@ -69,7 +87,7 @@ node "${CLAUDE_PLUGIN_ROOT}/scripts/extract-brand.mjs" <workspace> --apply <n> [
 
 `--apply` copies the tokens into `.claude/dashboard/brand/`, drafts `brand/theme.css` and prints a contrast report. **Open theme.css and check it**: every contrast line should pass; fix any that don't by choosing a different source variable or a darker/lighter value. No design system at all is fine: skip this, and the neutral theme applies (ask for a logo anyway).
 
-## 5. Validate, start, look
+## 6. Validate, start, look
 
 ```bash
 node "${CLAUDE_PLUGIN_ROOT}/scripts/validate.mjs" <workspace>
@@ -79,7 +97,7 @@ node "${CLAUDE_PLUGIN_ROOT}/scripts/doctor.mjs" <workspace>
 
 Fix every validate error. Then open the dashboard and look at it (a browser tool if you have one; otherwise ask the user): Home, Links, Apps, Machine, Issues, Docs, Infrastructure. Things that should be true: the logo and colors are theirs, Apps shows their apps with the right ports, Machine lists their toolchain (not Node-only, unless it is), Issues shows the connect card for their tracker (or their issues), Docs lists their sources. Fix config and reload; no restart is needed for config.
 
-## 6. Workflow skills (offer, don't assume)
+## 7. Workflow skills (offer, don't assume)
 
 The dashboard works on its own. Teams usually also want the workflow skills the dashboard's Implement / presets call: implement a ticket, commit, open PRs, worktrees, pull. Read `references/workflow-skills.md`, then ask with one `AskUserQuestion`:
 
@@ -89,9 +107,9 @@ The dashboard works on its own. Teams usually also want the workflow skills the 
 
 Either way, add a matching `implement` preset to `deck.json` (`"prompt": "/multirepo:implement {ticket}"`, or `"/implement {ticket}"` for their own skill, with the ticket arg's `pattern` = their ticket regex) so the Issues page's Implement button works.
 
-## 7. Hand over
+## 8. Hand over
 
-Tell the user, briefly: the URL, how to start it (the workspace skill, e.g. `/natterjack`, or `node <engine>/bin/dashboard.mjs start`), what to commit (`<engine>/`, `.claude/dashboard/`, `.claude/skills/`, CLAUDE.md, repos.json, .gitignore; never `.claude/ledger/`), what teammates do after pulling (install Claude Code and sign in: the Machine page checks both and has buttons for them; start the dashboard; the Repos page clones the repos they don't have yet; the Issues page walks them through their own tracker key), and anything left open (a tracker without an adapter, missing tools the Machine page shows). Offer to commit.
+Tell the user, briefly: the URL, how to start it (the workspace skill, e.g. `/natterjack`, or `node <engine>/bin/dashboard.mjs start`), what to commit to the workspace repo (`<engine>/`, `.claude/dashboard/`, `.claude/skills/`, CLAUDE.md, repos.json, .gitignore; never `.claude/ledger/`; the product repos' folders are gitignored, since teammates clone them from repos.json), what teammates do after pulling (install Claude Code and sign in: the Machine page checks both and has buttons for them; start the dashboard; the Repos page clones the repos they don't have yet; the Issues page walks them through their own tracker key), and anything left open (a tracker without an adapter, missing tools the Machine page shows, a root that still isn't a git repo). Offer to commit, and to push when the workspace repo has a remote.
 
 ## Adding what the engine doesn't have
 
