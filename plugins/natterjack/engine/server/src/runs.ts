@@ -129,7 +129,7 @@ Put any explanation the user needs before the block. The user's answer arrives a
 
 Background work does not survive here. This process exits the moment your turn ends, and everything it started in the background is killed with it; no task notification will re-invoke you after that.
 So, overriding any skill or instruction that says otherwise (for example a code-review skill, or "run_in_background: true"):
-- Never set run_in_background (on Bash or on the Agent tool), and never plan to "wait for a notification". Subagents are fine: call the Agent tool normally, in the foreground, and wait for its result.
+- Never run anything in the background, and never plan to "wait for a notification". On Bash, leave run_in_background unset. On the Agent tool, always pass run_in_background: false explicitly: Agent runs in the background by default, so leaving it out backgrounds the subagent. Subagents are fine this way: the call blocks and returns the subagent's report. Continuing an agent with SendMessage resumes it in the background, so to follow up with a finished agent, start a new foreground Agent call and give it the context instead.
 - Run long commands in the foreground and wait for them, with a Bash timeout of up to 600000 ms. If one needs longer than 10 minutes, tell the user it has to continue in a terminal.
 - A process that must keep running after your turn (e.g. dev servers) cannot be started as a background task: it dies when this process exits. ${keepRunningRule(appsCli)}
 - Never tell the user a background task is still running at the end of your turn; it will not be. Only a process you started detached (above) is still running, and only if you checked it came up.
