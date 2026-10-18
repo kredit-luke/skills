@@ -34,7 +34,7 @@ They read a [Natterjack](../natterjack/) workspace's config when it's there (`re
 |---|---|
 | `repos.json` | The repos: `name`, `relativePath`, `defaultBranch`, `dependencies` (PR and commit order), `layer` (pull targets), `remote`. Without it, a single repo or the git repos one level down. |
 | `.worktree.json` | Inside a worktree folder: its repos, branch and ticket (`ticketId`, `tracker`). |
-| `.claude/dashboard/workspace.json` | `issues.kind` (which tracker), `issues.ticketPattern` (ticket ids in branch names), `worktrees.dir` / `portsFile` / `ports` (worktree folder and port slots, shared with the dashboard). |
+| `.claude/dashboard/workspace.json` | `issues.kind` (which tracker), `issues.ticketPattern` (ticket ids in branch names; without one, `repo#12` when `issues.kind` is `github`, the id the dashboard uses, else `KEY-123`; GitHub ids keep their case, other trackers' keys are upper-cased), `issues.repos` (GitHub: maps folder-safe branch and worktree names like `feature/api-12` back to `api#12`, for the listed repos only; a worktree's `.worktree.json` `ticketId` wins over it), `worktrees.dir` / `portsFile` / `ports` (worktree folder and port slots, shared with the dashboard). |
 
 Optional keys these skills add to `workspace.json`:
 

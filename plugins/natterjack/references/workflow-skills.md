@@ -9,7 +9,7 @@ The same marketplace ships them as a plugin: `multirepo@lhoezee-skills` (`plugin
 | Config | Used for |
 |---|---|
 | `repos.json` `relativePath`, `defaultBranch`, `dependencies`, `layer` | Which repos, their base branch, implementation and PR order, pull targets. |
-| `workspace.json` `issues.kind`, `issues.ticketPattern` | The tracker, and ticket ids in branch names. |
+| `workspace.json` `issues.kind`, `issues.ticketPattern`, `issues.repos` | The tracker, and ticket ids in branch names. GitHub ids keep their case, and branches use the folder-safe form (`api#12` → `feature/api-12`), which `issues.repos` maps back. |
 | `workspace.json` `issues.progressState`, `reviewState`, `doneStates` | Ticket states for started / PRs open / safe-to-purge (defaults "In Progress", "In Review", ["Done"]). |
 | `workspace.json` `worktrees.dir`, `portsFile`, `ports`, `copy` | Worktree folder, port slots (allocated exactly like the dashboard: same file, lock and offsets), extra files copied in. |
 | `.worktree.json` | A worktree's ticket, branch and repos (the shape below). |

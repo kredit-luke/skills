@@ -5,7 +5,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { execFileSync } from "node:child_process";
-import { defaultBranch, dependencyOrder, findRoot, findTicket, isRepoTop, listRepos, parseArgs, readWorkspaceConfig, samePath, ticketRegex } from "../lib.mjs";
+import { defaultBranch, dependencyOrder, findRoot, findTicket, isRepoTop, listRepos, parseArgs, readWorkspaceConfig, samePath, sameTicket, ticketCase, ticketRegex } from "../lib.mjs";
 
 const git = (cwd, ...args) => execFileSync("git", ["-C", cwd, ...args], { encoding: "utf-8", stdio: "pipe" }).trim();
 const tmp = (prefix) => fs.mkdtempSync(path.join(os.tmpdir(), prefix));
@@ -39,6 +39,30 @@ test("ticket ids: workspace pattern, else KEY-123, case-insensitive, upper-cased
   assert.equal(findTicket(["main"]), null);
   const cfg = { issues: { ticketPattern: "^[\\w.-]+#\\d+$" } };
   assert.ok(ticketRegex(cfg).test("fix/acme#7"));
+});
+
+test("ticket ids for GitHub Issues: repo#12 like the dashboard, ids keep their case, folder-safe names map back", () => {
+  const gh = { issues: { kind: "github", repos: ["acme/api", "acme/Web.App", "other/acme-web"] } };
+  // No ticketPattern: the GitHub shape, not KEY-123 (which would read "api-12" as "API-12").
+  assert.equal(findTicket(["feature/Web.App#3"], gh), "Web.App#3");
+  // Always repo#12, the dashboard's id: an owner or branch prefix in front isn't part of it.
+  assert.equal(findTicket(["fix/acme/api#7"], gh), "api#7");
+  assert.equal(findTicket(["jdoe/api#12"], { issues: { kind: "github" } }), "api#12");
+  // worktreeName and branches turn "#" into "-": map back, for the listed repos only, by whole segment.
+  assert.equal(findTicket(["feature/api-12"], gh), "api#12");
+  assert.equal(findTicket(["worktrees/web.app-4"], gh), "Web.App#4");
+  assert.equal(findTicket(["feature/acme-web-3"], gh), "acme-web#3", "a repo whose name contains another's: the exact name");
+  assert.equal(findTicket(["feature/other-9"], gh), null, "an unknown repo isn't guessed");
+  assert.equal(findTicket(["feature/api-12"], { issues: { kind: "github" } }), null, "no repos listed: no guess");
+  // An explicit pattern still wins.
+  assert.equal(findTicket(["feature/api#12"], { issues: { kind: "github", ticketPattern: "^[\\w.-]+#\\d+$" } }), "api#12");
+  assert.equal(findTicket(["feature/api-12"], { issues: { kind: "github", repos: ["acme/api"], ticketPattern: "^[\\w.-]+#\\d+$" } }), "api#12");
+  // Case follows the tracker, not the shape of the id: other trackers' keys are upper-cased, "#" or not.
+  assert.equal(findTicket(["feature/eng-12"], { issues: { kind: "jira" } }), "ENG-12");
+  assert.equal(findTicket(["feature/ab#123"], { issues: { kind: "azure", ticketPattern: "AB#\\d+" } }), "AB#123");
+  assert.ok(sameTicket("Web.App#3", "web.app#3") && !sameTicket("api#1", "api#12"));
+  assert.equal(ticketCase("Web.App#3", gh), "Web.App#3");
+  assert.equal(ticketCase("eng-1", { issues: { kind: "linear" } }), "ENG-1");
 });
 
 test("listRepos: repos.json, .worktree.json (with source workspace info), single repo, subfolders", () => {

@@ -156,3 +156,18 @@ test("in a worktree, the ticket pattern comes from the source workspace's worksp
   assert.equal(s.ticket, "ACME#7");
   assert.equal(s.repos[0].eligible, true);
 });
+
+test("GitHub ids: the ticket is matched across repos however each branch spells its case", () => {
+  const ws = tmp("rs-ghcase-");
+  fs.mkdirSync(path.join(ws, ".claude", "dashboard"), { recursive: true });
+  fs.writeFileSync(path.join(ws, ".claude", "dashboard", "workspace.json"), JSON.stringify({ issues: { kind: "github", repos: ["acme/api", "acme/web"] } }));
+  fs.writeFileSync(path.join(ws, "repos.json"), JSON.stringify({ repos: ["api", "web"] }));
+  for (const [r, branch] of [["api", "feature/API#12"], ["web", "feature/api#12"]]) {
+    makeRepo(path.join(ws, r), { branch });
+    fs.writeFileSync(path.join(ws, r, "a.txt"), "dirty\n");
+  }
+  const s = collectStatus({ root: ws });
+  assert.equal(s.ticket, "API#12", "one ticket, not two");
+  assert.deepEqual(s.repos.map((r) => r.eligible), [true, true]);
+  assert.equal(collectStatus({ root: ws, ticket: "api#12" }).repos.every((r) => r.eligible), true, "an explicit id matches whatever its case");
+});

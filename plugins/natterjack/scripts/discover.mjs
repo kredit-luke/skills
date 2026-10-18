@@ -257,6 +257,9 @@ const FRAMEWORKS = {
   "@sveltejs/kit": { name: "SvelteKit", port: 5173, kind: "fullstack" },
   astro: { name: "Astro", port: 4321, kind: "frontend" },
   "@remix-run/react": { name: "Remix", port: 3000, kind: "fullstack" },
+  // Expo and bare React Native apps also depend on react; their dev server is Metro, on 8081.
+  expo: { name: "Expo", port: 8081, kind: "frontend" },
+  "react-native": { name: "React Native", port: 8081, kind: "frontend" },
   vue: { name: "Vue", port: 5173, kind: "frontend" },
   react: { name: "React", port: 5173, kind: "frontend" },
   svelte: { name: "Svelte", port: 5173, kind: "frontend" },
@@ -300,6 +303,7 @@ function portFlag(script, pm) {
   const sep = pm === "npm" ? " --" : "";
   if (/^(vite|astro|ng serve|ng s\b|svelte-kit dev|nuxt|nuxi)/.test(s)) return `${sep} --port {{port}}`;
   if (/^next (dev|start)/.test(s)) return `${sep} -p {{port}}`;
+  if (/^(expo start|react-native start)\b/.test(s)) return `${sep} --port {{port}}`;
   return "";
 }
 
@@ -466,6 +470,7 @@ function javaStack(dir) {
     run: boot ? { cmd: maven ? `${wrapper} spring-boot:run` : `${wrapper} bootRun`, why: "Spring Boot" } : null,
     port: boot ? 8080 : null,
     install: maven ? `${wrapper} -q dependency:resolve` : `${wrapper} dependencies`,
+    wrapper: wrapper.startsWith("./"),
   };
 }
 
@@ -555,43 +560,90 @@ const DB_IMAGES = [
   [/mssql|sqlserver/i, "sqlserver", 1433], [/seq/i, "seq", 5341],
 ];
 
-/** docker-compose services (a tiny YAML reader: enough for image/container_name/ports). */
+/**
+ * One compose port mapping, short syntax: [HOST_IP:][HOST_PORT:]CONTAINER_PORT[/PROTOCOL]. The host
+ * IP may be IPv6 in brackets, ports may be ranges (the first port is taken), and a port may be a
+ * variable: ${VAR:-default} and ${VAR-default} read as the default, and `hostVar` names a host
+ * port's variable so the team knows it can differ per machine. A mapping without a host port
+ * publishes on a random one: `host` is null.
+ */
+export function composePortOf(spec) {
+  const vars = [];
+  // Variables first (their defaults can hold ":"), as placeholders, then split on ":".
+  let s = String(spec).trim().replace(/\/(tcp|udp|sctp)$/i, "")
+    .replace(/\$\{(\w+)(?::?-([^}]*))?\}/g, (_, name, def) => { vars.push({ name, def: def ?? "" }); return `\0${vars.length - 1}\0`; });
+  if (s.startsWith("[")) s = s.slice(s.indexOf("]") + 1).replace(/^:/, "");
+  const parts = s.split(":");
+  const [hostRaw, containerRaw] = parts.length >= 3 ? [parts[parts.length - 2], parts[parts.length - 1]] : parts.length === 2 ? parts : [null, parts[0]];
+  const expand = (t) => (t == null ? null : t.replace(/\0(\d+)\0/g, (_, i) => vars[i].def));
+  const num = (t) => { const m = /^\s*(\d{1,5})/.exec(expand(t) || ""); return m ? Number(m[1]) : null; };
+  const container = num(containerRaw);
+  if (container == null) return null;
+  const hostVar = hostRaw && /\0(\d+)\0/.exec(hostRaw);
+  return { host: num(hostRaw), container, ...(hostVar ? { hostVar: vars[hostVar[1]].name } : {}) };
+}
+
+/** docker-compose services (a tiny YAML reader: enough for image, container_name, build and ports). */
 function composeServices(root) {
   const files = find(root, (n) => /^(docker-)?compose([.-][\w.-]+)?\.ya?ml$/i.test(n), 2);
   const out = [];
   for (const file of files) {
     const lines = (read(file) || "").split(/\r?\n/);
-    let inServices = false, svc = null, svcIndent = -1, inPorts = false;
-    const push = () => { if (svc) out.push(svc); };
+    let inServices = false, svc = null, svcIndent = -1;
+    let block = null, blockIndent = -1, longPort = null; // block: "ports" | "build", the list or map being read
+    const unquote = (v) => String(v).trim().replace(/^["']|["']$/g, "");
+    const endLongPort = () => {
+      const p = longPort && longPort.target != null ? composePortOf(`${longPort.published != null ? `${longPort.published}:` : ""}${longPort.target}`) : null;
+      if (p) svc.ports.push(p);
+      longPort = null;
+    };
+    const push = () => { if (svc) { endLongPort(); out.push(svc); } };
     for (const raw of lines) {
       if (/^\s*#/.test(raw) || !raw.trim()) continue;
       const indent = raw.length - raw.trimStart().length;
-      const line = raw.trim();
+      const line = raw.trim().replace(/\s+#.*$/, ""); // an inline comment isn't part of the value
       if (indent === 0) { inServices = line === "services:"; push(); svc = null; continue; }
       if (!inServices) continue;
       if (svcIndent === -1 || indent === svcIndent) {
         const m = /^([\w.-]+):\s*$/.exec(line);
-        if (m) { push(); svcIndent = indent; svc = { file: rel(root, file), service: m[1], image: null, container: null, ports: [] }; inPorts = false; continue; }
+        if (m) { push(); svcIndent = indent; svc = { file: rel(root, file), service: m[1], image: null, container: null, build: null, ports: [] }; block = null; continue; }
       }
       if (!svc) continue;
-      const kv = /^([\w_]+):\s*(.*)$/.exec(line);
-      if (kv && indent > svcIndent) {
-        inPorts = kv[1] === "ports";
-        if (kv[1] === "image") svc.image = kv[2].replace(/["']/g, "");
-        if (kv[1] === "container_name") svc.container = kv[2].replace(/["']/g, "");
+      if (block && (indent > blockIndent || (block === "ports" && indent === blockIndent && line.startsWith("-")))) {
+        if (block === "ports") {
+          // Short syntax ("8080:80", "127.0.0.1:${PORT:-5432}:5432") or long ("- target: 80" + "published: 8080").
+          const item = line.startsWith("-") ? line.slice(1).trim() : null;
+          if (item !== null) endLongPort();
+          const kv = /^(target|published|host_ip|protocol|mode|name|app_protocol):\s*(.*)$/.exec(item ?? line);
+          if (kv) { longPort = longPort || {}; longPort[kv[1]] = unquote(kv[2]); }
+          else if (item) { const p = composePortOf(unquote(item)); if (p) svc.ports.push(p); }
+        } else {
+          const kv = /^context:\s*(.+)$/.exec(line);
+          if (kv) svc.build = unquote(kv[1]);
+        }
         continue;
       }
-      if (inPorts && line.startsWith("-")) {
-        const m = /(\d{2,5})\s*:\s*(\d{2,5})/.exec(line) || /["']?(\d{2,5})["']?/.exec(line);
-        if (m) svc.ports.push({ host: Number(m[1]), container: Number(m[2] || m[1]) });
+      if (block === "ports") endLongPort();
+      block = null;
+      const kv = /^([\w_]+):\s*(.*)$/.exec(line);
+      if (kv && indent > svcIndent) {
+        if (kv[1] === "ports" || (kv[1] === "build" && !kv[2])) { block = kv[1]; blockIndent = indent; }
+        if (kv[1] === "build" && !kv[2]) svc.build = "."; // compose's default context, unless the map names one
+        if (kv[1] === "build" && kv[2]) svc.build = unquote(kv[2]);
+        if (kv[1] === "image") svc.image = kv[2].replace(/["']/g, "");
+        if (kv[1] === "container_name") svc.container = kv[2].replace(/["']/g, "");
       }
     }
     push();
   }
+  // A build context is relative to the compose file's folder: report it workspace-relative.
+  for (const s of out) if (s.build) s.build = rel(root, path.resolve(root, path.dirname(s.file), s.build));
   for (const s of out) {
     const hit = DB_IMAGES.find(([re]) => re.test(s.image || s.service));
     s.kind = hit ? hit[1] : "service";
-    s.hostPort = s.ports[0] ? s.ports[0].host : null;
+    const published = s.ports.find((p) => p.host != null);
+    s.hostPort = published ? published.host : null;
+    if (published && published.hostVar) s.hostPortVar = published.hostVar;
     if (!s.container) {
       // Compose's default name: <project>-<service>-1, project = the compose file's folder.
       const project = path.basename(path.dirname(path.join(root, s.file))).toLowerCase().replace(/[^a-z0-9_-]/g, "");
@@ -715,6 +767,7 @@ async function suggest(root, repos, compose, pins, codeHost) {
   const addUse = (use, extra = {}) => { if (!machine.some((m) => (m.id || m.use) === (extra.id || use))) machine.push({ use, ...extra }); };
   const apps = [];
   const usedPorts = new Set(compose.map((c) => c.hostPort).filter(Boolean));
+  const claimed = new Set(); // ports already given to an app
   const appIds = new Set();
   const idFor = (raw) => { const s = /^[A-Z0-9_-]+$/.test(raw) ? raw.toLowerCase() : raw; let id = s.replace(/[^A-Za-z0-9]+(.)?/g, (_, c) => (c ? c.toUpperCase() : "")).replace(/^[^A-Za-z]+/, "") || "app"; id = id[0].toLowerCase() + id.slice(1); let n = id, i = 2; while (appIds.has(n)) n = `${id}${i++}`; appIds.add(n); return n; };
 
@@ -734,7 +787,8 @@ async function suggest(root, repos, compose, pins, codeHost) {
         if (s.https) addUse("dotnet-dev-cert", { id: "devcert" });
         for (const p of s.userSecretsProjects || []) machine.push({ use: "dotnet-user-secrets", id: `secrets-${p.replace(/[^\w-]+/g, "-")}`, label: `${path.basename(p, ".csproj")} user secrets`, project: `${appDir}/${p}` });
       } else if (s.language === "java") {
-        addUse("java"); addUse(s.build === "maven" ? "maven" : "gradle");
+        // The repo's wrapper (gradlew / mvnw) fetches its own build tool: only Java itself is needed then.
+        addUse("java"); if (!s.wrapper) addUse(s.build === "maven" ? "maven" : "gradle");
       } else if (LANG_TO_CATALOG[s.language]) {
         // The toolchain version, read from the repo where it's pinned.
         const at = s.path === "." ? "" : `${s.path}/`;
@@ -749,8 +803,11 @@ async function suggest(root, repos, compose, pins, codeHost) {
       }
       if (s.run && s.kind !== "library") {
         let port = s.port;
-        while (port && usedPorts.has(port)) port += 1;
-        if (port) usedPorts.add(port);
+        // A compose service built from exactly this app's folder is this app in a container: its port is the app's
+        // (once: a second app wanting it still moves aside).
+        const own = new Set(compose.filter((c) => c.hostPort && c.build === s.path && !claimed.has(c.hostPort)).map((c) => c.hostPort));
+        while (port && usedPorts.has(port) && !own.has(port)) port += 1;
+        if (port) { usedPorts.add(port); claimed.add(port); }
         const name = s.path === "." ? path.basename(root) : s.path.split("/").pop();
         apps.push({
           id: idFor(name),
@@ -776,7 +833,7 @@ async function suggest(root, repos, compose, pins, codeHost) {
     for (const c of compose.filter((c) => c.kind !== "service")) {
       if (seenContainers.has(c.container || c.service)) continue;
       seenContainers.add(c.container || c.service);
-      machine.push({ use: "docker-container", id: c.container || c.service, name: c.container || c.service, port: c.hostPort || undefined, fix: `docker compose -f ${c.file} up -d ${c.service}`, label: `${c.kind[0].toUpperCase() + c.kind.slice(1)} (${c.image || c.service})`, group: "Services", why: `${c.file} service "${c.service}"${c.containerGuessed ? " (no container_name: this is compose's default name, unless the project is named otherwise)" : ""}` });
+      machine.push({ use: "docker-container", id: c.container || c.service, name: c.container || c.service, port: (!c.hostPortVar && c.hostPort) || undefined, fix: `docker compose -f ${c.file} up -d ${c.service}`, label: `${c.kind[0].toUpperCase() + c.kind.slice(1)} (${c.image || c.service})`, group: "Services", why: `${c.file} service "${c.service}"${c.containerGuessed ? " (no container_name: this is compose's default name, unless the project is named otherwise)" : ""}${c.hostPortVar ? `; its host port comes from ${c.hostPortVar} (default ${c.hostPort}), so it can differ per machine: checked by name only` : ""}` });
     }
   }
 

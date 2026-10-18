@@ -32,7 +32,7 @@ import { execFileSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { readWorkspaceConfig } from "./lib.mjs";
+import { findTicket, readWorkspaceConfig } from "./lib.mjs";
 
 export function parseArgs(argv) {
   // base: null means "detect per repo".
@@ -276,30 +276,13 @@ export function inspectRepo(candidate, requestedBase) {
 }
 
 /**
- * The ticket pattern from Natterjack's workspace.json (unanchored), else a typical key.
- * In a worktree without its own workspace.json, the source workspace's (readWorkspaceConfig).
+ * The review id: the ticket in a repo's branch, else in the folder name (the same reading as the other
+ * skills: findTicket, with workspace.json's pattern; in a worktree, the source workspace's), else a timestamp.
  */
-export function ticketRegex(root) {
-  const ws = readWorkspaceConfig(root);
-  const pattern = ws?.issues?.ticketPattern;
-  if (typeof pattern === "string" && pattern) {
-    try {
-      return new RegExp(`(${pattern.replace(/^\^/, "").replace(/\$$/, "")})`, "i");
-    } catch {
-      /* fall through */
-    }
-  }
-  return /([A-Z][A-Z0-9]+-\d+)/i; // ABC-123, ENG-196, PROJ-7833...
-}
-
 export function deriveReviewId(root, repos, now = new Date()) {
-  const re = ticketRegex(root);
-  for (const r of repos) {
-    const m = (r.branch || "").match(re);
-    if (m) return m[1].toUpperCase();
-  }
-  const m = path.basename(root).match(re);
-  if (m) return m[1].toUpperCase();
+  const config = readWorkspaceConfig(root);
+  const id = findTicket(repos.map((r) => r.branch || ""), config) || findTicket([path.basename(root)], config);
+  if (id) return id;
   return `adhoc-${now.toISOString().replace(/[:.]/g, "-").slice(0, 19)}`;
 }
 

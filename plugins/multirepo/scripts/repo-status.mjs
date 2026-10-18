@@ -29,6 +29,8 @@ import {
   defaultBranch,
   findRoot,
   findTicket,
+  sameTicket,
+  ticketCase,
   git,
   gitRun,
   isMain,
@@ -153,12 +155,14 @@ export function inspectRepo(repo, { config = {}, otherRepoPaths = [] } = {}) {
 
 /** The ticket being committed for: explicit, the worktree's, else the single one the changed branches share. */
 export function resolveTicket(root, repos, explicit = null, config = {}) {
-  if (explicit) return String(explicit).toUpperCase();
+  if (explicit) return ticketCase(explicit, config);
   const meta = readWorktreeMeta(root);
   const fromMeta = meta && (meta.ticketId || findTicket([meta.branch, meta.name, path.basename(root)], config));
-  if (fromMeta) return String(fromMeta).toUpperCase();
-  const tickets = [...new Set(repos.filter((r) => r.hasChanges && r.ticket && !r.onDefault).map((r) => r.ticket))];
-  return tickets.length === 1 ? tickets[0] : null;
+  if (fromMeta) return ticketCase(fromMeta, config);
+  // One ticket, however its branches spell it (trackers compare ids case-insensitively).
+  const tickets = repos.filter((r) => r.hasChanges && r.ticket && !r.onDefault).map((r) => r.ticket);
+  const distinct = tickets.filter((t, i) => tickets.findIndex((u) => sameTicket(u, t)) === i);
+  return distinct.length === 1 ? distinct[0] : null;
 }
 
 export function collectStatus({ root = process.cwd(), all = false, ticket = null } = {}) {
@@ -174,7 +178,7 @@ export function collectStatus({ root = process.cwd(), all = false, ticket = null
     return inspectRepo(r, { config, otherRepoPaths: nested });
   });
   const forTicket = resolveTicket(wsRoot, inspected, ticket, config);
-  for (const r of inspected) r.eligible = !!forTicket && !r.onDefault && !r.detached && r.ticket === forTicket;
+  for (const r of inspected) r.eligible = !!forTicket && !r.onDefault && !r.detached && sameTicket(r.ticket, forTicket);
   return {
     root: slash(wsRoot),
     ticket: forTicket,

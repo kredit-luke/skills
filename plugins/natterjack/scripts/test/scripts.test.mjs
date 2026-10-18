@@ -7,7 +7,7 @@ import path from "node:path";
 import { execFileSync } from "node:child_process";
 import { brandCandidates, contrast, isHashedBuild, mapToContract, parseColor, themeCss, tokensOnly, withoutVendorVars } from "../extract-brand.mjs";
 import { ENGINE_DIR, compareVersions, engineVersion, fetchEngine, latestRelease, normalizeRepo, pluginVersion, readRepos, releaseCheck } from "../lib.mjs";
-import { listRepos, workspaceShape } from "../discover.mjs";
+import { composePortOf, discover, listRepos, workspaceShape } from "../discover.mjs";
 import { gitignoreLines, scaffold } from "../scaffold.mjs";
 import { bootFiles, imageChanges, upgrade } from "../upgrade.mjs";
 import { validate } from "../validate.mjs";
@@ -629,4 +629,95 @@ test("scaffold gitignores the product repos' clones and the worktrees folder", (
   assert.match(gi, /^\/api\/$/m);
   assert.match(gi, /^\/trees\/$/m, "worktrees.dir is followed");
   assert.doesNotMatch(gi, /^\/worktrees\/$/m);
+});
+
+test("composePortOf: compose's short port syntax, IPs, variables, ranges, protocols", () => {
+  assert.deepEqual(composePortOf("8080:80"), { host: 8080, container: 80 });
+  assert.deepEqual(composePortOf("127.0.0.1:${DB_PORT:-5432}:5432"), { host: 5432, container: 5432, hostVar: "DB_PORT" });
+  assert.deepEqual(composePortOf("${WEB_PORT-3000}:3000"), { host: 3000, container: 3000, hostVar: "WEB_PORT" });
+  assert.deepEqual(composePortOf("${PORT}:80"), { host: null, container: 80, hostVar: "PORT" });
+  assert.deepEqual(composePortOf("[::1]:6379:6379"), { host: 6379, container: 6379 });
+  assert.deepEqual(composePortOf("8000-8010:8000-8010/tcp"), { host: 8000, container: 8000 });
+  assert.deepEqual(composePortOf("5432"), { host: null, container: 5432 }, "no host port: compose picks a random one");
+  assert.equal(composePortOf("not-a-port"), null);
+});
+
+test("discover: compose ports and build contexts, Expo, build wrappers", async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "aos-disc-"));
+  const w = (rel, text) => { fs.mkdirSync(path.dirname(path.join(root, rel)), { recursive: true }); fs.writeFileSync(path.join(root, rel), text); };
+  // A Rust API whose compose file runs Postgres (port from a variable) and the API itself (built from its folder).
+  w("api/Cargo.toml", '[package]\nname = "api"\n[dependencies]\nactix-web = "4"\n');
+  w("api/.env.example", "PORT=8080\n");
+  w("api/docker-compose.yml", [
+    "services:",
+    "  db:",
+    "    image: postgres:16",
+    "    ports:",
+    '      - "127.0.0.1:${DB_PORT:-5432}:5432"',
+    "  api:",
+    "    build:",
+    "      context: .",
+    "    ports:",
+    "      - target: 8080",
+    "        published: 8080",
+    "",
+  ].join("\n"));
+  // An Expo app (depends on react too) with a native android/ folder that has a Gradle wrapper.
+  w("mobile/package.json", JSON.stringify({ scripts: { start: "expo start" }, dependencies: { expo: "54", react: "19", "react-native": "0.81" } }));
+  w("mobile/android/build.gradle", "");
+  w("mobile/android/gradlew", "");
+  for (const d of ["api", "mobile"]) execFileSync("git", ["init", "-q", path.join(root, d)]);
+
+  const inv = await discover(root);
+  const db = inv.compose.find((c) => c.service === "db");
+  assert.deepEqual([db.hostPort, db.hostPortVar], [5432, "DB_PORT"]);
+  const api = inv.compose.find((c) => c.service === "api");
+  assert.deepEqual([api.build, api.hostPort], ["api", 8080]);
+  const apps = Object.fromEntries(inv.suggestions.apps.map((a) => [a.dir, a]));
+  assert.equal(apps.api.port, 8080, "a compose service built from the app's folder is the app: no clash");
+  assert.deepEqual([apps.mobile.type, apps.mobile.port], ["Expo", 8081]);
+  assert.equal(apps.mobile.launch.cmd, "npm run start -- --port {{port}}");
+  const uses = inv.suggestions.machine.map((m) => m.use);
+  assert.ok(uses.includes("java") && !uses.includes("gradle"), "the Gradle wrapper fetches Gradle: only Java is needed");
+  const pg = inv.suggestions.machine.find((m) => m.use === "docker-container");
+  assert.equal(pg.port, undefined, "a host port from a variable can differ per machine: checked by name");
+  assert.match(pg.why, /DB_PORT/);
+});
+
+test("discover: compose layouts (unindented lists, inline comments, build maps) and apps sharing a repo's container", async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "aos-disc2-"));
+  const w = (rel, text) => { fs.mkdirSync(path.dirname(path.join(root, rel)), { recursive: true }); fs.writeFileSync(path.join(root, rel), text); };
+  w("svc/Cargo.toml", '[package]\nname = "svc"\n[dependencies]\naxum = "0.7"\n');
+  w("svc/.env.example", "PORT=8080\n");
+  w("svc/compose.yaml", [
+    "services:",
+    "  cache:",
+    "    image: redis:7",
+    "    ports:",
+    "    - 6379:6379", // list items at the key's own indent: valid YAML
+    "  svc:",
+    "    build: . # the service itself",
+    "    ports:",
+    "    - 8080:8080",
+    "  worker:",
+    "    build:",
+    "      dockerfile: Worker.Dockerfile", // no context: compose builds the file's folder
+    "",
+  ].join("\n"));
+  // One repo, two Next.js apps (default 3000), and a compose file building the whole repo on 3000.
+  for (const a of ["site", "admin"]) w(`web/apps/${a}/package.json`, JSON.stringify({ scripts: { dev: "next dev" }, dependencies: { next: "15", react: "19" } }));
+  w("web/package.json", JSON.stringify({ private: true }));
+  w("web/docker-compose.yml", "services:\n  web:\n    build: .\n    ports:\n      - 3000:3000\n");
+  for (const d of ["svc", "web"]) execFileSync("git", ["init", "-q", path.join(root, d)]);
+
+  const inv = await discover(root);
+  const by = (svc) => inv.compose.find((c) => c.service === svc);
+  assert.equal(by("cache").hostPort, 6379, "an unindented ports list is read");
+  assert.equal(by("svc").build, "svc", "an inline comment isn't part of the build context");
+  assert.equal(by("worker").build, "svc", "a build map without context builds the compose file's folder");
+  const apps = inv.suggestions.apps;
+  assert.equal(apps.find((a) => a.dir === "svc").port, 8080);
+  const webPorts = apps.filter((a) => a.dir === "web").map((a) => a.port).sort();
+  assert.equal(new Set(webPorts).size, webPorts.length, "two apps never share a port");
+  assert.ok(!webPorts.includes(3000), "the repo-wide container's port isn't any one app's");
 });

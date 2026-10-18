@@ -213,7 +213,13 @@ export function defaultBranch(repoPath, configured = null) {
   return "main";
 }
 
-/** The ticket pattern (unanchored, case-insensitive) from workspace.json, else a typical KEY-123. */
+const isGithub = (config) => config?.issues?.kind === "github";
+
+/**
+ * The ticket pattern (unanchored, case-insensitive) from workspace.json, else the tracker's usual
+ * shape: GitHub Issues `repo#12` when `issues.kind` is "github" (the id a Natterjack dashboard
+ * uses), else KEY-123.
+ */
 export function ticketRegex(config = {}) {
   const pattern = config?.issues?.ticketPattern;
   if (typeof pattern === "string" && pattern) {
@@ -223,15 +229,55 @@ export function ticketRegex(config = {}) {
       /* fall through */
     }
   }
+  if (isGithub(config)) return /([\w.-]+#\d+)/;
   return /([A-Z][A-Z0-9]+-\d+)/i;
 }
 
-/** The first ticket id in any of the strings (branch names, folder names), upper-cased; or null. */
+/** A ticket id in its canonical case: GitHub ids as written (repo names keep their case), other trackers' keys upper-cased. */
+export function ticketCase(id, config = {}) {
+  const s = String(id ?? "").trim();
+  return isGithub(config) ? s : s.toUpperCase();
+}
+
+/** Two ticket ids name the same ticket (trackers treat them case-insensitively). */
+export const sameTicket = (a, b) => !!a && !!b && String(a).toLowerCase() === String(b).toLowerCase();
+
+/** The GitHub repo names workspace.json lists (`issues.repos` / `issues.repo`, as `owner/name` or `name`). */
+function githubRepoNames(config) {
+  return [].concat(config?.issues?.repos ?? config?.issues?.repo ?? [])
+    .filter((r) => typeof r === "string" && r.trim())
+    .map((r) => r.trim().split("/").pop());
+}
+
+/**
+ * A GitHub id from the folder-safe form worktree folders and branches use (`#` becomes "-":
+ * `api#12` → `api-12`), for the repos workspace.json lists; returned as written there (`api#12`).
+ * A whole path segment must be `<repo>-<n>`, so `feature/api-12` maps; a repo that isn't listed
+ * gives null rather than a guess. A worktree's .worktree.json ticketId always wins over this.
+ */
+function githubIdFromSafeName(s, config) {
+  const names = githubRepoNames(config);
+  if (!names.length) return null;
+  for (const seg of String(s ?? "").split("/").reverse()) {
+    const m = /^(.+)-(\d+)$/.exec(seg);
+    const name = m && names.find((n) => n.toLowerCase() === m[1].toLowerCase());
+    if (name) return `${name}#${m[2]}`;
+  }
+  return null;
+}
+
+/** The first ticket id in any of the strings (branch names, folder names), in its canonical case (ticketCase); or null. */
 export function findTicket(strings, config = {}) {
   const re = ticketRegex(config);
   for (const s of strings) {
     const m = String(s ?? "").match(re);
-    if (m) return m[1].toUpperCase();
+    if (m) return ticketCase(m[1], config);
+  }
+  if (isGithub(config)) {
+    for (const s of strings) {
+      const id = githubIdFromSafeName(s, config);
+      if (id) return id;
+    }
   }
   return null;
 }

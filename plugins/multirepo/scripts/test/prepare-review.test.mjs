@@ -199,3 +199,11 @@ test("review id in a worktree: the source workspace's ticketPattern when the wor
   fs.writeFileSync(path.join(wt, ".worktree.json"), JSON.stringify({ name: "scratch", repos: [], sourceWorkspace: source }));
   assert.equal(deriveReviewId(wt, [{ branch: "feature/acme/api#12" }]), "ACME/API#12");
 });
+
+test("review id on a GitHub workspace: the repo#12 id, not KEY-123", () => {
+  const root = tmp("mr-ghid-");
+  fs.mkdirSync(path.join(root, ".claude", "dashboard"), { recursive: true });
+  fs.writeFileSync(path.join(root, ".claude", "dashboard", "workspace.json"), JSON.stringify({ issues: { kind: "github", repos: ["acme/api"] } }));
+  assert.equal(deriveReviewId(root, [{ branch: "feature/api#12" }]), "api#12");
+  assert.equal(deriveReviewId(root, [{ branch: "feature/api-12" }]), "api#12", "the folder-safe branch form maps back");
+});
