@@ -98,6 +98,25 @@ The engine's folder is yours to choose when you create it: `natterjack/` by defa
 
 Start it any time with `node natterjack/bin/dashboard.mjs start --open` (default http://localhost:3333; set `dashboard.port` in `.claude/dashboard/workspace.json`, or `DASHBOARD_PORT` on one machine).
 
+## What it runs and connects to
+
+The dashboard is a Node server on your machine (localhost by default). It has no telemetry and sends nothing to the plugin's author. It only reaches services you configure or click, with your own credentials:
+
+- **Agents**: runs start the `claude`, `copilot` or `codex` CLI you have installed; they talk to their own providers as usual. The Usage page runs `claude -p /usage`. If you route a model through the Models page, requests go to the Anthropic API (or `ANTHROPIC_BASE_URL`), Ollama, or the endpoint you add.
+- **Issue tracker and code host**: Linear (`api.linear.app`), Jira (your `*.atlassian.net` site, `api.atlassian.com`) or GitHub Issues, and GitHub for the Needs-you inbox and sign-in, using the tokens or CLI logins you provide.
+- **Knowledge and docs**: your own S3, Google Cloud Storage or Azure Blob bucket for notes, Confluence for docs, and links to Notion, Google Drive or SharePoint (checked through the MCP connectors Claude already has).
+- **Hosted dashboards** (only if you set them up with `/natterjack:host`): your Kubernetes cluster or Azure (`management.azure.com`), Google or Microsoft directory sign-in (`googleapis.com`, `graph.microsoft.com`), and the snapshot store you choose (S3, Azure Blob, Confluence or an HTTP server).
+- **Meetings**: Roam, if configured.
+- **Machine page**: checks run local commands (`node --version`, `docker info`…); one-click installs run the installer you click (winget, Homebrew, the vendor's install script).
+- **Your apps**: Apps & Workspaces start and stop the commands in your `apps.json`.
+- **Plugin scripts**: `create` reads your repos locally; `upgrade` fetches release tags from this repository on GitHub.
+
+Keys you paste are kept in `.claude/ledger/` in your workspace, which is never committed.
+
+## License
+
+MIT; see [LICENSE](LICENSE).
+
 ## Maintaining
 
 This folder is the source of truth for the engine: `engine/`. Change it here (directly, or by a PR from a fork; `/natterjack:contribute` prepares one from a workspace's edits), and workspaces, including the ones it's developed from, pick releases up with `/natterjack:upgrade`. This repo runs the engine on itself as a dogfood dashboard; see the root `CLAUDE.md`.
