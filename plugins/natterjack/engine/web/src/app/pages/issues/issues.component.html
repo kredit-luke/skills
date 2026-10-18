@@ -79,7 +79,7 @@
                 @if (running(i)) {
                   <a class="btn sm" [routerLink]="['/runs', i.lastRun!.id]"><span class="spin"></span> Implementing… view run</a>
                 } @else {
-                  <button class="btn primary sm" (click)="implementAuto(i)" title="Runs /implement here. Its questions come to you as Needs your answer, unless you tick “decide on its own” in the dialog">Implement</button>
+                  <button class="btn primary sm" (click)="implementAuto(i)" title="Runs the Implement preset here. Its questions come to you as Needs your answer, unless you tick “decide on its own” in the dialog">Implement</button>
                   @if (!api.hosted()) {
                     <button class="btn sm" (click)="implementTerminal(i)" title="Opens an interactive claude session in a terminal so it can ask you questions">In terminal</button>
                   }
@@ -89,7 +89,7 @@
             </div>
             @if (i.canImplement) {
               @if (claudeQueued(i) && !running(i)) { <div class="note warn">Has the Claude label: the scheduled routine may also pick this up.</div> }
-              @if (i.hasWorktree) { <div class="note">A worktree for this ticket already exists; /implement will reuse it.</div> }
+              @if (i.hasWorktree) { <div class="note">A worktree for this ticket already exists; Implement will reuse it.</div> }
               @if (i.lastRun && !running(i)) { <div class="note">Last dashboard run: <a [routerLink]="['/runs', i.lastRun.id]">{{ i.lastRun.status }}</a> · {{ rel(i.lastRun.startedAt) }}</div> }
             }
           </div>

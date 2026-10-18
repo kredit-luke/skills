@@ -129,9 +129,21 @@ async function refreshPath() {
 
 // ------------------------------------------------------------- install terminal
 
-function psQuote(s) { return `'${String(s).replace(/'/g, "''")}'`; }
+// PowerShell ends a single-quoted string at ' and at the curly quotes U+2018-U+201B too;
+// a doubled one (each doubled with itself) is that character, literally.
+function psQuote(s) { return `'${String(s).replace(/['\u2018-\u201B]/g, "$&$&")}'`; }
 function shQuote(s) { return `'${String(s).replace(/'/g, `'\\''`)}'`; }
 function asQuote(s) { return `"${String(s).replace(/\\/g, "\\\\").replace(/"/g, '\\"')}"`; }
+/** One literal argument for a command openTerminal runs: PowerShell on Windows, sh elsewhere. */
+export function terminalArg(s: string, win = IS_WIN) { return win ? psQuote(s) : shQuote(s); }
+/**
+ * A prompt made safe to hand a native program (the `claude` CLI) from openTerminal's
+ * PowerShell: double quotes become single ones. Windows PowerShell 5.1 passes an argument to
+ * a native exe wrapped in "..." without escaping the " inside, so one would split it, and an
+ * npm .cmd shim then lets cmd.exe act on any & or | that ended up outside the quotes. We
+ * replace rather than refuse: a preset's quoting is prose to the model, ' reads the same.
+ */
+export function nativeArgSafe(s: string, win = IS_WIN) { return win ? String(s).replace(/"/g, "'") : String(s); }
 
 /**
  * Open a visible terminal running `cmd` in `cwd`. Returns { opened, command }.

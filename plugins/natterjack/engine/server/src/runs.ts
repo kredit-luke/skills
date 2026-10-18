@@ -216,6 +216,8 @@ export class RunManager {
   attachments: Attachments | null;
   /** The command for bin/dashboard.mjs when the dashboard can start this workspace's apps, else null (asked each turn). */
   appsCli: () => string | null;
+  /** The main workspace: where plugins enabled for it are found when a run is in a worktree (null: the run's folder). */
+  workspaceRoot: string | null;
   private _cont = new Map<string, any>();
   private _paths = new Map<string, string>();
   /** list() parses every run file; kept until a write, a file added or removed, or LIST_TTL_MS. */
@@ -223,7 +225,7 @@ export class RunManager {
   /** Events in each streamed run's file: the SSE id of its next live event. */
   private _counts = new Map<string, number>();
 
-  constructor(ledgerDir: string, { onFinish, onTurnStart, onChange, queueGate, attachments, appsCli }: { onFinish?: (meta: RunMeta) => void; onTurnStart?: (meta: RunMeta) => void; onChange?: (meta: RunMeta) => void; queueGate?: QueueGate; attachments?: Attachments; appsCli?: () => string | null } = {}) {
+  constructor(ledgerDir: string, { onFinish, onTurnStart, onChange, queueGate, attachments, appsCli, workspaceRoot }: { onFinish?: (meta: RunMeta) => void; onTurnStart?: (meta: RunMeta) => void; onChange?: (meta: RunMeta) => void; queueGate?: QueueGate; attachments?: Attachments; appsCli?: () => string | null; workspaceRoot?: string } = {}) {
     this.runsDir = path.join(ledgerDir, "runs");
     fs.mkdirSync(this.runsDir, { recursive: true });
     this.onFinish = onFinish || (() => {});
@@ -232,6 +234,7 @@ export class RunManager {
     this.queueGate = queueGate || (() => ({ blocker: null }));
     this.attachments = attachments || null;
     this.appsCli = appsCli || (() => null);
+    this.workspaceRoot = workspaceRoot || null;
     this._markOrphansInterrupted();
     // A queue held back by a limit (concurrent runs, usage) goes out once the limit clears.
     setInterval(() => {
@@ -678,8 +681,9 @@ export class RunManager {
     const addDirs = [...(filesDir && fs.existsSync(filesDir) ? [filesDir] : []), ...(meta.addDirs || []).filter((d) => fs.existsSync(d))];
     const turn: TurnInput = {
       first, sessionId: meta.sessionId, label: meta.label,
-      // Agents that don't load Claude Code's skills get a workspace skill's instructions for `/name args`.
-      prompt: (agent.id === "claude" ? (s: string) => s : (s: string) => expandSlash(s, meta.cwd))(first ? prompt : promptWithAttachments(prompt, files)),
+      // Agents that don't load Claude Code's skills get the skill's instructions for `/name args`
+      // (a workspace skill from the run's folder, `/plugin:name` from the main workspace's plugins).
+      prompt: (agent.id === "claude" ? (s: string) => s : (s: string) => expandSlash(s, meta.cwd, this.workspaceRoot || meta.cwd))(first ? prompt : promptWithAttachments(prompt, files)),
       model: meta.model, effort: meta.effort, planMode: !!meta.planMode, permissionMode: meta.permissionMode,
       budgetUsd: agent.capabilities.costUsd ? meta.budgetUsd : null,
       rules: [(agent.id === "claude" ? headlessRules : agentHeadlessRules)(this._appsCli()), isRoutedId(meta.model) ? LOCAL_MODEL_RULE : null, outputsDir ? outputsRule(outputsDir) : null, meta.extraPrompt || null].filter(Boolean).join("\n\n"),

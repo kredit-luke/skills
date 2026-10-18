@@ -359,7 +359,8 @@ export interface Preset {
 }
 export interface Routine { id: string; preset: string; at: string; days?: string[] | string; enabled: boolean; workspace?: string; args?: Record<string, string> }
 export interface RoutineView extends Routine { nextAt: string | null; last: { firedAt: string; ok: boolean; runId?: string; error?: string } | null }
-export interface SkillInfo { name: string; description: string; argumentHint: string }
+/** A workspace skill, or (with `plugin`) one from an enabled Claude Code plugin, named `<plugin>:<skill>`. */
+export interface SkillInfo { name: string; description: string; argumentHint: string; plugin?: string }
 /**
  * runBudget: pass each preset's budgetUsd as a per-run cap (--max-budget-usd); off by default,
  * since on a subscription the cap only stops working runs. keepAttachmentsDays: delete a done

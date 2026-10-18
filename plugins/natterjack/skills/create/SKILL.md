@@ -81,7 +81,13 @@ Fix every validate error. Then open the dashboard and look at it (a browser tool
 
 ## 6. Workflow skills (offer, don't assume)
 
-The dashboard works on its own. Teams usually also want the workflow skills the dashboard's Implement / presets call: `/implement <ticket>`, `/commit`, `/pr`, `/worktree`, `/pull`. Read `references/workflow-skills.md`, then ask which they want and write them for *their* tracker, ticket format, branch convention and code host. Add a matching `implement` preset to `deck.json` (with the ticket arg's `pattern` = their ticket regex) so the Issues page's Implement button works.
+The dashboard works on its own. Teams usually also want the workflow skills the dashboard's Implement / presets call: implement a ticket, commit, open PRs, worktrees, pull. Read `references/workflow-skills.md`, then ask with one `AskUserQuestion`:
+
+- **Install the `multirepo` plugin** (Recommended): the same marketplace ships ready-made, tested versions of all of them (`/multirepo:implement`, `commit`, `pr`, `worktree`, `pull`, plus `align`, `fetch-ticket`, `copilot-review`, `submit-plan`). They read the config you just wrote and take the team's conventions from CLAUDE.md. Enable it at project scope so it's committed for the whole team: `claude plugin install multirepo@lhoezee-skills --scope project`, and declare the marketplace in `.claude/settings.json` (`"extraKnownMarketplaces": { "lhoezee-skills": { "source": { "source": "github", "repo": "lhoezee/skills" } } }`), so a teammate's Claude Code offers to install it. Machines that never run Claude Code interactively (hosted dashboards, scheduled cloud sessions) may not install it on their own: check that a run there can call `/multirepo:implement` before relying on it, and install it in that environment if not. Then write the team's conventions into CLAUDE.md: ticket format, branch prefixes, which subagent or reviewer owns which repo, quality gates, commit scopes, ticket states, whether Claude may merge PRs. Set `workspace.json` `issues.progressState` / `reviewState` / `doneStates` if their states aren't "In Progress" / "In Review" / "Done", and `repos.json` `dependencies` (implementation and PR order) and `layer` (pull targets).
+- **Write their own** in `.claude/skills/`, for *their* tracker, ticket format, branch convention and code host, following the reference.
+- **Neither** for now.
+
+Either way, add a matching `implement` preset to `deck.json` (`"prompt": "/multirepo:implement {ticket}"`, or `"/implement {ticket}"` for their own skill, with the ticket arg's `pattern` = their ticket regex) so the Issues page's Implement button works.
 
 ## 7. Hand over
 
@@ -99,5 +105,5 @@ Tell the user, briefly: the URL, how to start it (the workspace skill, e.g. `/na
 - `references/discovery.md`: reading the inventory; what to ask; mapping stacks to apps and checks.
 - `references/branding.md`: the token contract, choosing a source, fixing contrast, logos.
 - `references/adapters.md`: the IssueTracker interface and how to add one.
-- `references/workflow-skills.md`: implement / commit / pr / worktree / pull, parameterized by tracker.
+- `references/workflow-skills.md`: implement / commit / pr / worktree / pull: the `multirepo` plugin that ships them, or what to write if the team writes its own.
 - `references/how-it-works.md`: the dashboard's architecture, run protocol, security, and pitfalls.

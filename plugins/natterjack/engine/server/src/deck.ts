@@ -17,7 +17,9 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import type { SkillInfo } from "../../shared/api.ts";
 import { skillFile } from "./config.ts";
+import { pluginSkillDirs } from "./plugin-skills.ts";
 
 const DAY_KEYS = ["sun", "mon", "tue", "wed", "thu", "fri", "sat"];
 // Subscription-first: new runs (manual and routine) pause when /usage says a
@@ -37,7 +39,7 @@ const PERSONAL_LIMITS: Record<string, { min?: number; max?: number; bool?: boole
 };
 // Issues tab: which tracker teams/projects and workflow states (by name) to show, states in
 // column order; empty = all. implementTeams: teams whose implement-state issues (workspace.json
-// issues.implementStates) get the /implement buttons (code work only); empty = every team.
+// issues.implementStates) get the Implement buttons (code work only); empty = every team.
 // Model and effort for every run that doesn't pick its own (the dialog, Explain, routines,
 // Implement from Issues). Presets follow it unless they set model/effort themselves.
 const DEFAULT_RUN = { model: "opus", effort: "medium" };
@@ -57,6 +59,19 @@ function readFrontmatter(file: string): Record<string, string> {
   } catch {
     return {};
   }
+}
+
+/** A skill folder as the skill list shows it, or null when it has no description or is agent-only. */
+function skillInfo(dir: string, plugin?: string): SkillInfo | null {
+  const fm = readFrontmatter(skillFile(dir));
+  if (!fm.description || fm["user-invocable"] === "false") return null;
+  const name = fm.name || path.basename(dir);
+  return {
+    name: plugin ? `${plugin}:${name}` : name,
+    description: fm.description,
+    argumentHint: fm["argument-hint"] || "",
+    ...(plugin ? { plugin } : {}),
+  };
 }
 
 class Deck {
@@ -168,23 +183,37 @@ class Deck {
     return prompt;
   }
 
-  /** Project skills from .claude/skills/<name>/SKILL.md. */
-  skills() {
+  /**
+   * What Implement types into an interactive session (the Issues page's terminal mode): the
+   * issues.implementPreset prompt with every option off (a person is there to answer, so no
+   * --auto), or `/implement <ticket>` when the deck has no such preset. Throws like renderPrompt.
+   */
+  implementPrompt(ticket: string) {
+    const preset = this.preset(this.config().issues.implementPreset);
+    if (!preset) return `/implement ${ticket}`;
+    const off = Object.fromEntries((preset.options || []).map((o) => [o.name, false]));
+    return this.renderPrompt(preset, { ticket }, off);
+  }
+
+  /**
+   * Project skills from .claude/skills/<name>/SKILL.md, then those of the Claude Code plugins
+   * enabled for the workspace as `<plugin>:<name>`. Agent-only skills (`user-invocable: false`)
+   * are left out: nobody types them.
+   */
+  skills(): SkillInfo[] {
     const dir = path.join(this.workspaceRoot, ".claude", "skills");
     let entries = [];
-    try { entries = fs.readdirSync(dir, { withFileTypes: true }); } catch { return []; }
-    return entries
+    try { entries = fs.readdirSync(dir, { withFileTypes: true }); } catch {}
+    const local = entries
       .filter((e) => e.isDirectory() && !e.name.startsWith("_"))
-      .map((e) => {
-        const fm = readFrontmatter(skillFile(path.join(dir, e.name)));
-        return {
-          name: fm.name || e.name,
-          description: fm.description || "",
-          argumentHint: fm["argument-hint"] || "",
-        };
-      })
-      .filter((s) => s.description)
+      .map((e) => skillInfo(path.join(dir, e.name)))
+      .filter(Boolean)
       .sort((a, b) => a.name.localeCompare(b.name));
+    const plugins = pluginSkillDirs(this.workspaceRoot)
+      .map((d) => skillInfo(d.dir, d.plugin))
+      .filter(Boolean)
+      .sort((a, b) => a.name.localeCompare(b.name));
+    return [...local, ...plugins];
   }
 
   /** Claude Desktop scheduled tasks (~/.claude/scheduled-tasks) — display only. */

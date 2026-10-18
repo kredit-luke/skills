@@ -37,11 +37,13 @@ Running it on company infrastructure for people without a dev machine (hosted mo
 | `worktrees.portsFile` | `~/.agentic-workspace-ports.json` | Per-user file of worktree ports: `{ worktrees: { <name>: { slot, workspace, ports: { <appId>: port } } } }`. Written by the team's worktree tooling, or by the dashboard when `worktrees.ports` is set. |
 | `worktrees.ports` | none | `{ "base": 24000, "slotSize": 100 }`: the dashboard gives each worktree a port slot on its first start, `base + slot × slotSize + slotOffset` per app, and records it in the ports file. Leave it out when the team's tooling allocates. |
 | `worktrees.screenshots` | `.claude/qa-artifacts/screenshots` | QA screenshots shown per workspace. |
+| `worktrees.copy` | `[]` | For the `multirepo` plugin's worktree skill: extra workspace-relative files or folders copied into every new worktree (the dashboard ignores it). |
 | `issues.kind` | `none` | `linear` \| `jira` \| `github` \| `none` (or any adapter you add). |
 | `issues.label` | per kind | Shown in the UI. |
 | `issues.implementStates` | Linear `Todo`, Jira `To Do`, GitHub `Open` | Issues in these states get the Implement button (with `deck.json` `issues.implementTeams`). |
 | `issues.ticketPattern` | `^[A-Z][A-Z0-9]*-\d+$` (GitHub: `^[\w.-]+#\d+$`) | Anchored regex for a ticket id. |
 | `issues.urlTemplate` | from the adapter | Issue URL with `{id}`, if the adapter can't build one. |
+| `issues.progressState` / `issues.reviewState` / `issues.doneStates` | `"In Progress"` / `"In Review"` / `["Done"]` | For the `multirepo` plugin's skills: the state a ticket moves to when work starts, when PRs open, and the states its worktree purge treats as shipped (the dashboard ignores them). |
 | (per person) | none | Each person can narrow their own board with "My filter" on the Issues page: JQL for Jira (ANDed in), search qualifiers for GitHub. Saved in their `.claude/ledger/settings.json`, never in the team config. Linear has no query language, so no field. |
 | Linear | `org` | The workspace slug in `linear.app/<org>/...`. Key: pasted on the Issues page (`lin_api_…`) or `LINEAR_API_KEY`. |
 | Jira | `site`, `projects` | `acme.atlassian.net`; project keys or names. Key: `email:api-token` pasted on the Issues page, or `JIRA_EMAIL` + `JIRA_API_TOKEN`. |
@@ -379,8 +381,8 @@ On Azure App Service instead (one Web App per person, deployed from `templates/h
     { "id": "brief", "label": "Morning brief", "icon": "sun", "description": "Open PRs, red CI, my issues. Read-only.",
       "prompt": "Give me a short morning brief: my open PRs and their checks (gh), failing CI on main, and my in-progress issues. End with the 3 things to do first. Don't change anything.",
       "permissionMode": "auto" },
-    { "id": "implement", "label": "Implement ticket", "icon": "bolt", "description": "Run /implement on a ticket.",
-      "prompt": "/implement {ticket}",
+    { "id": "implement", "label": "Implement ticket", "icon": "bolt", "description": "Implement a ticket end to end.",
+      "prompt": "/multirepo:implement {ticket}",
       "args": [{ "name": "ticket", "label": "Ticket", "placeholder": "ENG-123", "pattern": "^[A-Z][A-Z0-9]*-\\d+$" }],
       "options": [{ "name": "auto", "label": "Decide open questions on its own (--auto)", "append": " --auto", "default": false }],
       "permissionMode": "auto" }

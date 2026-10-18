@@ -1,6 +1,26 @@
 # Workflow skills
 
-The dashboard runs whatever skills the workspace has; these five are what teams usually want, and what the Issues page's **Implement** button and the Home skill cards call. Write them for the team (their tracker, ticket format, code host, branch convention, repos), in `.claude/skills/<name>/SKILL.md`, with any deterministic git work in a bundled Node script next to the SKILL.md (so it behaves the same on every OS). Keep each one's `description` specific about when to use it; that's what makes Claude pick it.
+The dashboard runs whatever skills the workspace has; these five are what teams usually want, and what the Issues page's **Implement** button and the Home skill cards call.
+
+## The `multirepo` plugin (ready-made)
+
+The same marketplace ships them as a plugin: `multirepo@lhoezee-skills` (`plugins/multirepo/` in lhoezee/skills). Skills: `implement`, `align`, `fetch-ticket`, `worktree`, `pull`, `commit`, `pr`, `copilot-review`, `submit-plan`, and `tdd` for subagents, invoked as `/multirepo:<skill>`. They work with Linear, Jira and GitHub Issues, and read this dashboard's config:
+
+| Config | Used for |
+|---|---|
+| `repos.json` `relativePath`, `defaultBranch`, `dependencies`, `layer` | Which repos, their base branch, implementation and PR order, pull targets. |
+| `workspace.json` `issues.kind`, `issues.ticketPattern` | The tracker, and ticket ids in branch names. |
+| `workspace.json` `issues.progressState`, `reviewState`, `doneStates` | Ticket states for started / PRs open / safe-to-purge (defaults "In Progress", "In Review", ["Done"]). |
+| `workspace.json` `worktrees.dir`, `portsFile`, `ports`, `copy` | Worktree folder, port slots (allocated exactly like the dashboard: same file, lock and offsets), extra files copied in. |
+| `.worktree.json` | A worktree's ticket, branch and repos (the shape below). |
+
+Team conventions (ticket format, branch prefixes, which subagent or reviewer owns which repo, quality gates, commit scopes, merge rules) go in the root CLAUDE.md, where the skills look for them. Enable it at project scope so the whole team and cloud sessions get it: `claude plugin install multirepo@lhoezee-skills --scope project`, plus `extraKnownMarketplaces` for `lhoezee-skills` in `.claude/settings.json`. The Implement preset's prompt is then `/multirepo:implement {ticket}`; the dashboard recognises a namespaced implement prompt for run-to-ticket matching and its terminal button, and lists plugin skills (as `/<plugin>:<skill>`) with the workspace's own.
+
+The rest of this page is the contract they follow, and what to write if the team prefers its own skills.
+
+## Writing your own
+
+Write them for the team (their tracker, ticket format, code host, branch convention, repos), in `.claude/skills/<name>/SKILL.md`, with any deterministic git work in a bundled Node script next to the SKILL.md (so it behaves the same on every OS). Keep each one's `description` specific about when to use it; that's what makes Claude pick it.
 
 Settle these with the team first and record them in the root CLAUDE.md:
 - **Ticket id** format and regex (same as `workspace.json` `issues.ticketPattern`).

@@ -23,7 +23,7 @@ import crypto from "node:crypto";
 import { execFile } from "node:child_process";
 import { restartSelf } from "./self-restart.ts";
 import type { Boot, LaunchRequest, ProfileInfo, PublishPlanResponse, RunEvent, RunMeta } from "../../shared/api.ts";
-import { runTicket } from "../../shared/run-ticket.ts";
+import { implementTicket, runTicket } from "../../shared/run-ticket.ts";
 import { runWorkspace } from "../../shared/run-workspace.ts";
 import { CLAUDE_SESSION_ENV } from "./claude.ts";
 import {
@@ -49,7 +49,7 @@ import { LiveHub } from "./live.ts";
 import { Trackers } from "./issues/index.ts";
 import { Meetings } from "./meetings/index.ts";
 import { readLinks, saveLink, deleteLink, readRepoReadme } from "./links.ts";
-import { Machine, openTerminal, resolvedSpecs } from "./machine.ts";
+import { Machine, nativeArgSafe, openTerminal, resolvedSpecs, terminalArg } from "./machine.ts";
 import { cloneStep, cloneTargets, readRepos, reposStatus } from "./repos.ts";
 import { buildSnapshot, carryOver, downloadStep, downloadTargets, dropManifestCache, fetchManifest, planSnapshot, publishSnapshot, snapshotStatus, writeManifest } from "./snapshot.ts";
 import type { PublishPlan } from "./snapshot.ts";
@@ -393,6 +393,7 @@ const runs = new RunManager(LEDGER_DIR, {
   attachments,
   // Runs start and stop apps through this dashboard (bin/dashboard.mjs apps), so they outlive the turn.
   appsCli: () => (HOSTED || !appsConfig().configured ? null : APPS_CLI),
+  workspaceRoot: MAIN_WORKSPACE_PATH,
 });
 const deck = new Deck(MAIN_WORKSPACE_PATH, path.join(LEDGER_DIR, "settings.json"));
 
@@ -871,9 +872,8 @@ async function getIssues(force: boolean) {
   const worktrees = new Set(listWorkspaces().map((w) => (w.ticketId || w.name || "").toUpperCase()));
   const lastRuns = new Map<string, any>();
   for (const r of runs.list()) {
-    // "Explain Linear issue X" is how older runs were worded.
-    const m = /^\/implement\s+(\S+)/.exec(r.prompt || "") || /^Explain (?:Linear )?issue (\S+?):/.exec(r.prompt || "");
-    if (m && !lastRuns.has(m[1])) lastRuns.set(m[1], { id: r.id, status: r.status, startedAt: r.startedAt });
+    const id = implementTicket(r.prompt);
+    if (id && !lastRuns.has(id)) lastRuns.set(id, { id: r.id, status: r.status, startedAt: r.startedAt });
   }
   // No states/teams configured: show whatever the tracker returned, in the order first seen.
   const seen = (key: string) => [...new Set(list.map((i) => i[key]).filter(Boolean))] as string[];
@@ -1478,12 +1478,15 @@ async function handleApi(req: http.IncomingMessage, res: http.ServerResponse, ur
     if (known && !known.canImplement) {
       const teams = deck.config().issues.implementTeams || [];
       return sendError(res, 400, teams.length && !teams.includes(known.team)
-        ? `${ticket} is a ${known.team} issue; /implement is only for ${teams.join(", ")}.`
-        : `${ticket} is ${known.state}; /implement is for ${trackers.config().implementStates.join(" / ")} issues.`);
+        ? `${ticket} is a ${known.team} issue; Implement is only for ${teams.join(", ")}.`
+        : `${ticket} is ${known.state}; Implement is for ${trackers.config().implementStates.join(" / ")} issues.`);
     }
     if (body.mode === "terminal") {
-      const r = await openTerminal(`claude "/implement ${ticket}"`, MAIN_WORKSPACE_PATH, `Claude · /implement ${ticket}`, "Session ended. You can close this window.");
-      return sendJson(res, { opened: r.opened, command: `claude "/implement ${ticket}"` });
+      let prompt: string;
+      try { prompt = deck.implementPrompt(ticket); } catch (e) { return sendError(res, 400, e.message); }
+      const command = `claude ${terminalArg(nativeArgSafe(prompt))}`;
+      const r = await openTerminal(command, MAIN_WORKSPACE_PATH, `Claude · Implement ${ticket}`, "Session ended. You can close this window.");
+      return sendJson(res, { opened: r.opened, command });
     }
     // Headless. Its open questions come back as "waiting" (Needs your answer) unless
     // options.auto is set, which appends --auto so it decides them and notes them on the ticket.

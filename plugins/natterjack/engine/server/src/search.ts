@@ -15,6 +15,7 @@ import path from "node:path";
 import { frontmatter } from "./memory.ts";
 import { docSources, notesDirOf } from "./docs.ts";
 import { skillFile } from "./config.ts";
+import { pluginSkillDirs } from "./plugin-skills.ts";
 
 const REBUILD_MS = 30000;
 const MAX_FILE_BYTES = 2 * 1024 * 1024;
@@ -201,18 +202,22 @@ class Search {
     };
   }
 
+  /** Workspace skills, then enabled plugins' (`plugin:name`); agent-only ones (user-invocable: false) aren't offered. */
   _skills() {
     const dir = path.join(this.root, ".claude", "skills");
-    return readdir(dir).filter((e) => e.isDirectory() && !e.name.startsWith("_")).map((e) => {
-      const file = skillFile(path.join(dir, e.name));
+    const local = readdir(dir).filter((e) => e.isDirectory() && !e.name.startsWith("_")).map((e) => ({ dir: path.join(dir, e.name), plugin: "" }));
+    return [...local, ...pluginSkillDirs(this.root)].map(({ dir: skillDir, plugin }) => {
+      const file = skillFile(skillDir);
       const text = read(file);
       if (text == null) return null;
       const { fm, body } = frontmatter(text);
-      const name = fm.name || e.name;
+      if (String(fm["user-invocable"]) === "false") return null;
+      const name = plugin ? `${plugin}:${fm.name || path.basename(skillDir)}` : fm.name || path.basename(skillDir);
       const desc = fm.description || "";
+      const where = plugin ? { rel: `${plugin}/skills/${path.basename(skillDir)}/${path.basename(file)}`, ref: file.split(path.sep).join("/") } : { rel: rel(this.root, file) };
       return {
         id: `skill:${name}`, source: "skill", title: `/${name}`, subtitle: desc,
-        rel: rel(this.root, file), file, format: "md", content: body,
+        ...where, file, format: "md", content: body,
         extra: { skill: name, argumentHint: fm["argument-hint"] || "" },
         boost: 1.2,
         chunks: [{ section: "", text: desc }, ...mdSections(body)],

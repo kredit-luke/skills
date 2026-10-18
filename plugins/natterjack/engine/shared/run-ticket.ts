@@ -5,15 +5,24 @@
  */
 export interface RunTicket { id: string; sure: boolean }
 
-// "Explain Linear issue X" is how older runs were worded.
-// Any tracker's id shape (ENG-12, api#42): these two prompts only ever carry a ticket id.
-const EXPLICIT = [/^\/implement\s+([^\s"']+)/, /^Explain (?:Linear )?issue (\S+?):/];
+// `/implement X`, or a plugin's `/multirepo:implement X`. "Explain Linear issue X" is how
+// older runs were worded. Any tracker's id shape (ENG-12, api#42): these two prompts only
+// ever carry a ticket id.
+const EXPLICIT = [/^\/(?:[\w.-]+:)?implement\s+([^\s"']+)/, /^Explain (?:Linear )?issue (\S+?):/];
 const LOOSE = /\b([A-Z][A-Z0-9]{1,5}-\d{1,6})\b/;
+
+/** The ticket an Implement or Explain prompt was started for, or null for any other prompt. */
+export function implementTicket(prompt?: string | null): string | null {
+  const text = String(prompt || '').trim();
+  for (const re of EXPLICIT) { const m = re.exec(text); if (m) return m[1]; }
+  return null;
+}
 
 export function runTicket(run: { label?: string | null; prompt?: string | null }, worktreeTicketId?: string | null): RunTicket | null {
   if (worktreeTicketId) return { id: worktreeTicketId.toUpperCase(), sure: true };
   const prompt = String(run.prompt || '').trim();
-  for (const re of EXPLICIT) { const m = re.exec(prompt); if (m) return { id: m[1], sure: true }; }
+  const id = implementTicket(prompt);
+  if (id) return { id, sure: true };
   const m = LOOSE.exec(String(run.label || '')) || LOOSE.exec(prompt);
   return m ? { id: m[1], sure: false } : null;
 }

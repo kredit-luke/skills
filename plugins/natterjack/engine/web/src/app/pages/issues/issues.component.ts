@@ -135,7 +135,7 @@ export class IssuesComponent implements OnInit, OnDestroy {
   async implementTerminal(i: Issue): Promise<void> {
     try {
       const r = await this.api.post<{ opened: boolean; command: string }>('/api/issues/implement', { ticket: i.id, mode: 'terminal' });
-      if (r.opened) this.toast.show('Opened /implement ' + i.id + ' in a terminal');
+      if (r.opened) this.toast.show('Opened ' + r.command + ' in a terminal');
       else if (await copyText(r.command)) this.toast.show('Copied: ' + r.command);
     } catch (e) { this.toast.error((e as Error).message); }
   }
