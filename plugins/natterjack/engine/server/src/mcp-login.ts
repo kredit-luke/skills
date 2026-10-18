@@ -3,25 +3,44 @@
  * locally and hosted (hosted.ts), where the person's browser isn't on the dashboard's machine.
  *
  * `claude mcp login <name> --no-browser` only signs in on a terminal (with plain pipes it
- * says "stdin isn't a terminal" and never finishes), so it runs under `script`, which gives
- * it a pseudo-terminal (util-linux on Linux, BSD on macOS; no packages to add). It prints
- * an authorization URL, listens on http://localhost:<port>/callback, and also prompts
- * "Or paste the redirect URL here:". The page shows the URL; the person signs in in their
- * own browser. Locally, the browser comes back to that callback and the CLI finishes.
- * Hosted, "localhost" in the browser is the person's own computer, so the last page
- * doesn't load: they paste its address into the page, and it's typed at the CLI's prompt
- * (only an address on the port and path the CLI's own URL named).
+ * says "stdin isn't a terminal" and never finishes), so it runs under a pseudo-terminal:
+ * `script` on Linux (util-linux; no packages to add), or, on macOS, a tiny bundled Python
+ * helper using `os.forkpty()` (see mac-pty-helper.py) instead of BSD `script`. BSD `script`
+ * needs the *invoking* process to already have a controlling terminal, and the dashboard
+ * server runs detached (so it survives its own terminal closing) - it has none, and
+ * `script -q /dev/null ...` fails there with "tcgetattr/ioctl: Operation not supported on
+ * socket". `forkpty()` doesn't have that requirement; Python ships with macOS, so this adds
+ * no dependency. It prints an authorization URL, listens on http://localhost:<port>/callback,
+ * and also prompts "Or paste the redirect URL here:". The page shows the URL; the person
+ * signs in in their own browser. Locally, the browser comes back to that callback and the
+ * CLI finishes. Hosted, "localhost" in the browser is the person's own computer, so the last
+ * page doesn't load: they paste its address into the page, and it's typed at the CLI's
+ * prompt (only an address on the port and path the CLI's own URL named).
  *
  * claude.ai connectors sign in on claude.ai instead: the CLI prints a claude.ai link and
  * exits, so there's nothing to paste; the page re-checks when they come back.
  *
- * Windows has no `script`: there, sign-in opens a terminal window (machine.ts openTerminal),
- * which is fine since a Windows dashboard is always local.
+ * Windows has no `script` (or `forkpty`): there, sign-in opens a terminal window
+ * (machine.ts openTerminal), which is fine since a Windows dashboard is always local.
  */
 
-import { spawn, type ChildProcess } from "node:child_process";
+import { spawn, spawnSync, type ChildProcess } from "node:child_process";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import type { McpLoginStart, McpLoginStatus } from "../../shared/api.ts";
 import { claudeEnv, claudeFile } from "./claude.ts";
+
+const MAC_PTY_HELPER = join(dirname(fileURLToPath(import.meta.url)), "mac-pty-helper.py");
+
+let macPtyAvailable: boolean | null = null;
+/** Whether `python3` (with its stdlib `pty` module, always present) can run the macOS helper. */
+function hasMacPtyHelper(): boolean {
+  if (macPtyAvailable === null) {
+    try { macPtyAvailable = spawnSync("python3", ["-c", "import pty"], { stdio: "ignore" }).status === 0; }
+    catch { macPtyAvailable = false; }
+  }
+  return macPtyAvailable;
+}
 
 const URL_WAIT_MS = 30_000;
 const FINISH_WAIT_MS = 30_000;
@@ -77,6 +96,12 @@ export function scriptArgs(platform: string, file: string, args: string[]): [str
   return ["script", ["-qfec", [file, ...args].map(shQuote).join(" "), "/dev/null"]];
 }
 
+/** `claude <args>` under a pseudo-terminal: the macOS forkpty() helper when it's available, `script` otherwise. */
+export function ptyCommand(platform: string, file: string, args: string[], helperAvailable: () => boolean = hasMacPtyHelper): [string, string[]] {
+  if (platform === "darwin" && helperAvailable()) return ["python3", [MAC_PTY_HELPER, file, ...args]];
+  return scriptArgs(platform, file, args);
+}
+
 /** Sign-in from the page needs `script`; Windows doesn't have it (its dashboard is always local: use a terminal). */
 export const PTY_SIGN_IN = process.platform !== "win32";
 
@@ -95,7 +120,7 @@ export class McpLogin {
 
   constructor(cwd: string, opts: { spawn?: Spawn } = {}) {
     this.spawn = opts.spawn || ((args) => {
-      const [cmd, argv] = scriptArgs(process.platform, claudeFile(), args);
+      const [cmd, argv] = ptyCommand(process.platform, claudeFile(), args);
       return spawn(cmd, argv, { cwd, env: { ...claudeEnv(), TERM: "dumb", COLUMNS: "1000" }, stdio: ["pipe", "pipe", "pipe"] });
     });
   }

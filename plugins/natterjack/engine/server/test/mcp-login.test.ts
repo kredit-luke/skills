@@ -5,7 +5,7 @@ import assert from "node:assert/strict";
 import { EventEmitter } from "node:events";
 import { PassThrough } from "node:stream";
 
-const { McpLogin, callbackTarget, findLoginUrl, scriptArgs, stripEscapes } = await import("../src/mcp-login.ts");
+const { McpLogin, callbackTarget, findLoginUrl, ptyCommand, scriptArgs, stripEscapes } = await import("../src/mcp-login.ts");
 
 const AUTH = "https://mcp.notion.com/authorize?response_type=code&client_id=abc&code_challenge=x&redirect_uri=http%3A%2F%2Flocalhost%3A3118%2Fcallback&state=s1&scope=default";
 // What the CLI prints on a pseudo-terminal (Claude Code 2.1): the URL wrapped in an OSC 8 hyperlink, \r\n line ends.
@@ -44,6 +44,17 @@ test("scriptArgs: the CLI under a pseudo-terminal, quoted for sh on Linux, as ar
   assert.deepEqual(scriptArgs("linux", "/usr/bin/claude", ["mcp", "login", "it's mine", "--no-browser"]),
     ["script", ["-qfec", "'/usr/bin/claude' 'mcp' 'login' 'it'\\''s mine' '--no-browser'", "/dev/null"]]);
   assert.deepEqual(scriptArgs("darwin", "claude", ["mcp", "login", "x"]), ["script", ["-q", "/dev/null", "claude", "mcp", "login", "x"]]);
+});
+
+test("ptyCommand: on macOS, the forkpty() helper when it's available, script when it isn't; script always on Linux", () => {
+  const [cmd, argv] = ptyCommand("darwin", "claude", ["mcp", "login", "x"], () => true);
+  assert.equal(cmd, "python3");
+  assert.match(argv[0], /mac-pty-helper\.py$/);
+  assert.deepEqual(argv.slice(1), ["claude", "mcp", "login", "x"]);
+  // No python3/pty on this machine: falls back to `script`, same as today.
+  assert.deepEqual(ptyCommand("darwin", "claude", ["x"], () => false), scriptArgs("darwin", "claude", ["x"]));
+  // Linux has no forkpty() helper: it keeps using `script`, unchanged, regardless of availability.
+  assert.deepEqual(ptyCommand("linux", "claude", ["mcp", "login", "x"], () => true), scriptArgs("linux", "claude", ["mcp", "login", "x"]));
 });
 
 /** A fake `claude mcp login` on a pseudo-terminal: prints `out`; what's typed lands in `typed` and runs `onType`. */
