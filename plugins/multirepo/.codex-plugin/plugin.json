@@ -1,7 +1,7 @@
 {
   "name": "multirepo",
-  "version": "0.2.0",
-  "description": "Workflow skills for multi-repo workspaces: worktrees per ticket, safe pulls, commits and cross-linked PRs across every repo, a local Copilot second-opinion review, and plans posted to your issue tracker. Reads Natterjack config when it's there, works without it.",
+  "version": "0.3.0",
+  "description": "Workflow skills for multi-repo workspaces: implement a ticket end to end with subagents, align on what it means first, worktrees per ticket, safe pulls, commits and cross-linked PRs across every repo, a local Copilot second-opinion review, and plans posted to your issue tracker. Reads Natterjack config when it's there, works without it.",
   "author": {
     "name": "Luke Hoezee"
   },

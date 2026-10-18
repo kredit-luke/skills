@@ -13,7 +13,7 @@
     {
       "name": "multirepo",
       "source": "./plugins/multirepo",
-      "description": "Workflow skills for multi-repo workspaces: worktrees per ticket, safe pulls, commits and cross-linked PRs across every repo, a local Copilot second-opinion review, and plans posted to your issue tracker."
+      "description": "Workflow skills for multi-repo workspaces: implement a ticket end to end with subagents, align on it first, worktrees per ticket, safe pulls, commits and cross-linked PRs across every repo, a local Copilot second-opinion review, and plans posted to your issue tracker."
     }
   ]
 }

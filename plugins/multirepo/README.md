@@ -17,6 +17,10 @@ They read a [Natterjack](../natterjack/) workspace's config when it's there (`re
 
 | Skill | What it does |
 |---|---|
+| `/multirepo:implement <TICKET> [--auto] [--here]` | A ticket end to end: finds or creates its worktree, checks the repos are fresh, settles open questions up front (or decides and records them under `--auto`), branches every affected repo, then runs Agent-tool subagents per repo in dependency order with a review of every changed repo, optional QA and Copilot review, and hands off to `commit` / `pr`. |
+| `/multirepo:align <TICKET>` | Before planning: a one-question-at-a-time interview that checks engineering reads the ticket the way its author meant (terms, problem, solution), and writes a short PRD-style alignment doc to `~/.claude/align/`, optionally posted to the ticket. |
+| `/multirepo:fetch-ticket <TICKET>` | Reads a Linear, Jira or GitHub Issues ticket, comments included, into one normalized shape (description as Markdown, acceptance criteria, links, subtasks, attached plan and alignment comments); handles oversized tool results saved to a file. |
+| `tdd` (used by subagents) | Red/green/refactor for the agents writing code: one failing test first, proven to fail, minimum code, full suite, then refactor. |
 | `/multirepo:worktree <TICKET \| name>` | A parallel copy of the repos a ticket needs under `worktrees/<name>/`, each on the ticket branch (independent clones, or native `git worktree`s with `--native`), with workspace config, dependencies and port slots. `--list` shows what's merged (squash merges and merged PRs included), `--remove` guards unsaved work, `--purge` removes only what git and the tracker agree has shipped. |
 | `/multirepo:pull [all \| root \| <repo> \| <layer>]` | Fast-forwards repos to their default branch, but only the ones that are clean, on that branch and strictly behind; everything else is reported with the reason, never switched or stashed. |
 | `/multirepo:commit` | Conventional Commits in every repo the change touched, ticket from the branch, context from the tracker; shows unstaged and untracked work and asks; never skips hooks. `--auto` for unattended runs. |
@@ -38,6 +42,7 @@ Optional keys these skills add to `workspace.json`:
 |---|---|---|
 | `worktrees.copy` | `[]` | Extra files or folders (relative to the workspace) copied into every new worktree, e.g. `[".claude/references", "docs"]`. |
 | `issues.doneStates` | `["Done"]` | Tracker states `worktree --purge` treats as shipped (case-insensitive). |
+| `issues.progressState` | `"In Progress"` | The state `implement` moves a ticket to when work starts (Jira: by transition name). |
 | `issues.reviewState` | `"In Review"` | The state `pr` moves a ticket to (Jira: the transition whose name contains it). |
 
 Project conventions (the stack, commit scopes, which agent owns which code, whether PRs may be auto-merged) come from the workspace's `CLAUDE.md` / `AGENTS.md`.
