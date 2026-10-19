@@ -14,10 +14,31 @@
 
 import { execFile } from "node:child_process";
 import type { IssuesConfig } from "../config.ts";
-import type { ConnectHelp, IssueFilter, IssueTracker, TrackerStatus } from "./index.ts";
+import type { ConnectHelp, IssueFilter, IssueTracker, LinkedIssues, TrackerStatus } from "./index.ts";
+import { LINKED_LIMIT, byMarker } from "./markers.ts";
 
 const CACHE_TTL_MS = 60 * 1000;
 const LIMIT = 200;
+
+/**
+ * GitHub search allows 256 characters of search terms (qualifiers like repo: don't count)
+ * and five AND/OR/NOT operators, so markers go in groups that fit both. A quote or backslash
+ * in a marker is dropped (markers are ids; this keeps one from ending its phrase early).
+ */
+export function markerQueries(markers: string[]): string[] {
+  const out: string[] = [];
+  let group: string[] = [];
+  const text = (g: string[]) => g.map((m) => `"${m}"`).join(" OR ");
+  for (const raw of markers) {
+    const m = String(raw).replace(/["\\]/g, "");
+    if (!m) continue;
+    if (`"${m}"`.length > 256) continue;
+    if (group.length && (group.length >= 6 || text([...group, m]).length > 256)) { out.push(text(group)); group = []; }
+    group.push(m);
+  }
+  if (group.length) out.push(text(group));
+  return out;
+}
 
 /** A personal search (GitHub qualifiers) as gh arguments; throws on one gh would misread. */
 export function searchArgs(query: string | undefined): string[] {
@@ -63,6 +84,9 @@ class GitHubTracker implements IssueTracker {
   cacheKey = "";
   viewer: string | null = null;
   authed: boolean | null = null;
+
+  /** Runs gh, parsing its JSON (a field so tests can stub it). */
+  gh: (args: string[]) => Promise<any> = gh;
 
   constructor(cfg: IssuesConfig) { this.cfg = cfg as any; }
 
@@ -141,6 +165,22 @@ class GitHubTracker implements IssueTracker {
     }
     await this.inflight;
     return this.cache;
+  }
+
+  /** Issues (open or closed, in the configured repos) whose body has one of the markers exactly. Rejects when gh fails. */
+  async linkedIssues(markers: string[]): Promise<LinkedIssues> {
+    const repos = this.repos;
+    if (!repos.length || !markers.length || this.authed === false) return new Map();
+    const repoArgs = repos.flatMap((r) => ["--repo", r]);
+    const lists = await Promise.all(markerQueries(markers).map((q) =>
+      this.gh(["search", "issues", q, "--match", "body", ...repoArgs, "--limit", String(LINKED_LIMIT), "--json", "number,title,url,body,state,repository"])));
+    const truncated = lists.some((l) => Array.isArray(l) && l.length >= LINKED_LIMIT);
+    const found = lists.flat().filter(Boolean).map((n: any) => {
+      const repo = String(n.repository?.nameWithOwner || n.repository?.name || "");
+      const short = repo.split("/").pop() || repo;
+      return { issue: { key: `${short}#${n.number}`, url: String(n.url || ""), title: String(n.title || ""), state: n.state === "closed" || n.state === "CLOSED" ? "Closed" : "Open" }, text: String(n.body || "") };
+    });
+    return byMarker(markers, found, truncated);
   }
 
   toIssue(repo: string, n: any) {

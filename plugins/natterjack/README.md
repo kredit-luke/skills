@@ -106,7 +106,7 @@ The dashboard is a Node server on your machine (localhost by default). It has no
 - **Issue tracker and code host**: Linear (`api.linear.app`), Jira (your `*.atlassian.net` site, `api.atlassian.com`) or GitHub Issues, and GitHub for the Needs-you inbox and sign-in, using the tokens or CLI logins you provide.
 - **Knowledge and docs**: your own S3, Google Cloud Storage or Azure Blob bucket for notes, Confluence for docs, and links to Notion, Google Drive or SharePoint (checked through the MCP connectors Claude already has).
 - **Hosted dashboards** (only if you set them up with `/natterjack:host`): your Kubernetes cluster or Azure (`management.azure.com`), Google or Microsoft directory sign-in (`googleapis.com`, `graph.microsoft.com`), and the snapshot store you choose (S3, Azure Blob, Confluence or an HTTP server).
-- **Meetings**: Roam, if configured.
+- **Meetings**: Roam (`api.ro.am`, and `ro.am` for sign-in), if configured. The Meetings page reads its API with each person's own sign-in or personal access token, and an agent run turns a meeting's action items into tickets once the person confirms.
 - **Machine page**: checks run local commands (`node --version`, `docker info`…); one-click installs run the installer you click (winget, Homebrew, the vendor's install script).
 - **Your apps**: Apps & Workspaces start and stop the commands in your `apps.json`.
 - **Plugin scripts**: `create` reads your repos locally; `upgrade` fetches release tags from this repository on GitHub.

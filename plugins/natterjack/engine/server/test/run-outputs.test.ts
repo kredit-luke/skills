@@ -85,6 +85,26 @@ test("each turn gets the outputs folder: in its rules, its add-dirs and DASHBOAR
   }
 });
 
+test("a spawn that throws (a command line over Windows' limit) fails the run instead of leaving it running", () => {
+  const claude = agentOf("claude");
+  const spawn = claude.spawn;
+  claude.spawn = () => { throw Object.assign(new Error("spawn ENAMETOOLONG"), { code: "ENAMETOOLONG" }); };
+  const ledger = path.join(TMP, "ledger-spawn");
+  const finished: string[] = [];
+  const runs = new RunManager(ledger, { attachments: new Attachments(ledger), onFinish: (m) => finished.push(m.status) });
+  try {
+    const run = runs.start({ prompt: "too long", cwd: TMP, agent: "claude" });
+    const saved = runs.get(run.id)!;
+    assert.equal(saved.status, "failed");
+    assert.match(saved.error || "", /Could not start Claude: spawn ENAMETOOLONG/);
+    assert.ok(saved.endedAt);
+    assert.equal(runs.live.has(run.id), false);
+    assert.deepEqual(finished, ["failed"]);
+  } finally {
+    claude.spawn = spawn;
+  }
+});
+
 test("outputs lists files by path inside the folder, newest first, without dotfiles, links or more than the cap", () => {
   const a = new Attachments(tmp());
   const dir = a.ensureOutputs(RUN);

@@ -15,6 +15,7 @@ interface IssueTracker {
   issues(filter: { teams: string[]; states: string[]; query?: string }, force?: boolean): Promise<{ connected: boolean; issues: Issue[]; fetchedAt?: number; error?: string | null }>;
   issue(id: string): Promise<IssueDetail>;
   issueUrl(id: string): string | null;
+  issueUrlTemplate?(): string | null;            // optional: the link with an {id} placeholder, for the page
   queryHelp(): { label: string; placeholder: string; help: string } | null;   // null = no query language
 }
 ```
@@ -43,8 +44,41 @@ Azure Boards (WIQL + work items API, PAT with Basic auth), Shortcut (REST, `Shor
 1. Auth that works with a personal token, and a "who am I" endpoint for `connect`.
 2. Query for the board: filter by team/project and state names; include state color if the API has one.
 3. One-issue endpoint with the description (convert to markdown).
-4. The id people use in branches and commits; its regex for `ticketPattern`.
+4. The id people use in branches and commits; its regex for `ticketPattern`. `issueUrl` also receives keys an Ask run reported — return null for anything that isn't one of your ids (Jira and Linear use `isIssueKey` in `issues/markers.ts`; GitHub matches `<repo>#<n>` against its configured repos). If a link is the id dropped into a fixed URL, also implement optional `issueUrlTemplate()`, returning that URL with an `{id}` placeholder: the page builds issue links from it (Jira and Linear do; GitHub doesn't, so the page has no template).
 5. Tests for the pure parts (query building, mapping, description conversion) in `server/test/issues.test.ts`; then connect for real on the Issues page, and try Explain.
+6. Optional: `linkedIssues(markers)`, so the Meetings page finds tickets made from a meeting (below).
+
+### Tickets made from a meeting (`linkedIssues`, optional)
+
+```ts
+linkedIssues?(markers: string[]): Promise<Map<string, LinkedIssue[]> & { truncated?: boolean }>;   // LinkedIssue: { key, url, title, state }
+```
+
+An Ask agent run puts a marker such as `roam-meeting-<id>` in each ticket's description. `linkedIssues` gets one list page's markers: run one text search for all of them (Jira JQL `text ~`, Linear `description contains`, `gh search issues --match body`), then keep only issues whose description holds a marker exactly, as a whole token (`hasMarker` in `issues/markers.ts`; a longer id that starts with it doesn't count). Return an empty map when the tracker isn't connected, **reject** when the search fails (the caller caches results, and a failure must not be cached as "no tickets"), and set `truncated` when a search hit its result cap. Without it, the page shows only the tickets this dashboard's runs reported.
+
+## Meeting tools (the Meetings page)
+
+`meetings.json` `source` picks the meeting tool (config: `references/config.md`, "meetings.json"). Adapters live in `<engine>/server/src/meetings/`: `roam.ts` (on `roam-api.ts` for the API and `roam-auth.ts` for OAuth sign-in with PKCE, a pasted personal access token, refresh and revoke). The interface (`meetings/index.ts`):
+
+```ts
+interface MeetingSource {
+  kind: string; label: string;
+  status(): { configured; connected; viewer?; via?: "oauth" | "token" | null; signIn?: boolean; signInProblem?; message };
+  connectHelp(): { title; steps: string[] /* markdown */; placeholder };   // how to make a personal access token
+  connect(token: string): Promise<status>;            // check it with the tool first, then save to the ledger (mode 600)
+  disconnect(): Promise<status & { note? }>;          // revoke where the tool allows, always forget; note = what's left to do by hand
+  signInStart(): Promise<{ url; callback; listening }>; // OAuth: listen on the loopback redirect locally, never when hosted
+  signInStatus(): { pending; done; ok; message };
+  signInFinish(pasted: string): Promise<signInStatus>; // the redirect address the person pasted back; check `state`
+  signInCancel(): void;
+  listMeetings(req: { cursor? }): Promise<{ meetings: Meeting[]; nextCursor: string | null }>;   // newest first
+  meeting(id: string): Promise<MeetingDetail>;        // summary, action items, participants
+  shareLink(id: string): Promise<string | null>;      // may create a link in the tool, so only on click
+  transcript(id: string, names: Map<string, string>): Promise<string | null>;   // plain text, speakers by name
+}
+```
+
+Unlike trackers, a meeting tool may sign in with OAuth: each team registers its own public (PKCE) app and puts its client ID in `meetings.json`, so no secret ships in the plugin. Keep the token on the server, in `<ledger>/<kind>-token.json`. When the tool answers with an error (or can't be reached), throw a `MeetingError` (`meetings/index.ts`): an `Error` with a numeric `status` (the tool's HTTP status, 0 when it wasn't reached) and a string `code`; `RoamError` is one. `meetingsErrorStatus` maps it for the page: `code` `not_connected` → 401 (shows the connect panel), `missing_scope` → 403, `ratelimited` → 429, else `status` 404 or 400 as-is, anything else (0 included) → 502; the `code` goes back with it. An error without a `code` is treated as bad input (its own `status`, else 400), so throw a plain `Error` only for that. The `id` the page sends is checked against `MEETING_ID_RE` first, and it becomes the ticket marker (`meetingMarker`). Register the adapter in `SOURCES` (`validate.mjs` reads its keys), and test it against a stubbed `fetcher` in `server/test/` (see `roam-api.test.ts`, `roam-meetings.test.ts`).
 
 ## Code hosts (the Needs-you inbox)
 

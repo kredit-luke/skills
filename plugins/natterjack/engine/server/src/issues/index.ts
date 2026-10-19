@@ -48,8 +48,26 @@ export interface IssueTracker {
   issue(id: string): Promise<any>;
   /** A browser URL for an issue id (when the API didn't give one). */
   issueUrl(id: string): string | null;
+  /**
+   * The issue link with an "{id}" placeholder, for the page to build links from (the boot payload's
+   * urlTemplate). Leave it out, or return null, when links can't be built by substituting an id.
+   */
+  issueUrlTemplate?(): string | null;
   queryHelp(): QueryHelp | null;
+  /**
+   * Issues whose description holds one of `markers` (exact, as a whole token), by marker: one text
+   * search, then the exact check. An empty map when it isn't connected; rejects when the search
+   * fails (so the caller doesn't cache a failure as "no tickets"). Sets `truncated` when a search
+   * hit its result cap (LINKED_LIMIT), so issues may be missing.
+   */
+  linkedIssues?(markers: string[]): Promise<LinkedIssues>;
 }
+
+/** An issue found by a marker in its description. key is the board's id for it. */
+export interface LinkedIssue { key: string; url: string; title: string; state: string }
+
+/** linkedIssues' answer: issues by marker, and whether a search hit its cap (some may be missing). */
+export type LinkedIssues = Map<string, LinkedIssue[]> & { truncated?: boolean };
 
 /** No tracker configured: the Issues page explains how to set one up. */
 class NoTracker implements IssueTracker {

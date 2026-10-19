@@ -174,6 +174,8 @@ textarea { font-family: var(--mono); font-size: 0.75rem; resize: vertical; width
 .empty { color: var(--text-faint); font-size: 0.78rem; padding: 0.9rem 0.6rem; text-align: center; }
 .muted { color: var(--text-muted); }
 .mono { font-family: var(--mono); }
+/* Visually hidden: read by screen readers, not shown (labels, status lines). */
+.vh { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; border: 0; }
 .hint { font-size: 0.68rem; color: var(--text-faint); padding: 0.4rem 0.6rem 0.6rem; }
 .hint code { font-family: var(--mono); color: var(--text-muted); }
 .warn-note { font-size: 0.72rem; color: var(--yellow); background: var(--yellow-bg); border-radius: 7px; padding: 0.45rem 0.6rem; }

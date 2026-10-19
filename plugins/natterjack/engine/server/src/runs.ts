@@ -36,6 +36,18 @@ const RESULT_TEXT_MAX = 4000;
 const REPLY_MAX = 20000;
 const LABEL_MAX = 120;
 const QUEUE_MAX = 10;
+/** A new run's title at most (a rename may go up to LABEL_MAX). */
+const LAUNCH_LABEL_MAX = 60;
+
+/**
+ * A new run's title: the label it was launched with, else the prompt's first line; on one
+ * line (it becomes an argument and a list entry) and at most LAUNCH_LABEL_MAX characters.
+ */
+export function runLabel(label: unknown, prompt: string): string {
+  const one = (s: string) => s.replace(/\s+/g, " ").trim();
+  const given = typeof label === "string" ? one(label) : "";
+  return (given || one(String(prompt).split("\n")[0])).slice(0, LAUNCH_LABEL_MAX);
+}
 /** How often a queue a limit held back is tried again. */
 const QUEUE_RETRY_MS = 30000;
 /** Backstop for run files edited outside this server (a file added or removed is caught by name). */
@@ -159,6 +171,8 @@ export interface StartSpec {
   planMode?: boolean;
   budgetUsd?: number | null;
   trigger?: string;
+  /** A meetings run's meeting id (checked by the caller). */
+  meetingId?: string;
   /** Staged attachment ids (checked by the caller); moved into the run's folder. */
   attachments?: string[];
   /** Docs sources this run should use (docs.json keys), and the note that tells Claude how (appended every turn). */
@@ -335,6 +349,7 @@ export class RunManager {
       planMode: !!spec.planMode,
       budgetUsd: spec.budgetUsd || null,
       trigger: spec.trigger || "manual",
+      ...(spec.meetingId ? { meetingId: spec.meetingId } : {}),
       docSources: spec.docSources && spec.docSources.length ? spec.docSources : undefined,
       extraPrompt: spec.extraPrompt || null,
       addDirs: spec.addDirs && spec.addDirs.length ? spec.addDirs : undefined,
@@ -451,6 +466,9 @@ export class RunManager {
     // Sent while a question is open (auto-send), say so: Claude shouldn't read it as the answer.
     const text = (meta.status === "waiting" ? QUEUED_OVER_QUESTION + "\n\n" : "") + queuedText(meta.queued);
     const sent = this.reply(id, text, opts); // throws, leaving the queue as it was, if the run can't take a reply
+    // The agent couldn't be started (the run failed on the spot): nothing went out, so the
+    // queue stays, held (not retried) until it's sent by hand.
+    if (!this.live.has(id)) return sent;
     sent.queued = [];
     sent.queueBlocked = null;
     this._save(sent);
@@ -692,12 +710,24 @@ export class RunManager {
     };
     const args = agent.turnArgs(turn);
 
-    const child = agent.spawn(args, {
-      cwd: meta.cwd,
-      env: outputsDir ? { ...process.env, DASHBOARD_OUTPUTS: outputsDir } : process.env,
-      stdio: ["ignore", "pipe", "pipe"], // prompt is an argument; an open stdin can make the CLI wait forever
-      windowsHide: true,
-    }, turn);
+    let child: ChildProcess;
+    try {
+      child = agent.spawn(args, {
+        cwd: meta.cwd,
+        env: outputsDir ? { ...process.env, DASHBOARD_OUTPUTS: outputsDir } : process.env,
+        stdio: ["ignore", "pipe", "pipe"], // prompt is an argument; an open stdin can make the CLI wait forever
+        windowsHide: true,
+      }, turn);
+    } catch (e) {
+      // Thrown, not emitted (e.g. ENAMETOOLONG: a command line over Windows' 32,767 characters):
+      // the turn never started, so it ends here as failed rather than staying "running".
+      meta.status = "failed";
+      meta.error = `Could not start ${agent.label}: ${(e && (e as Error).message) || e}`;
+      meta.endedAt = new Date().toISOString();
+      this._save(meta);
+      try { this.onFinish(meta); } catch {}
+      return;
+    }
     const parseState: ParseState = { sessionId: first ? null : meta.sessionId, model: meta.model };
     const live: LiveTurn = { child, stopping: null, meta };
     this.live.set(meta.id, live);

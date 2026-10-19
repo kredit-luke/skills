@@ -38,7 +38,7 @@ import type { Ws } from "./workspaces.ts";
 // start (apps, terminals). claude.ts strips them per spawn too; drop them here once.
 for (const key of CLAUDE_SESSION_ENV) delete process.env[key];
 
-import { RunManager, httpError } from "./runs.ts";
+import { RunManager, httpError, runLabel } from "./runs.ts";
 import { Deck, Scheduler } from "./deck.ts";
 import { Inbox } from "./inbox.ts";
 import { Watcher } from "./watches.ts";
@@ -47,7 +47,9 @@ import { UsageHistory } from "./usage-history.ts";
 import { AppLauncher, appsConfig } from "./apps.ts";
 import { LiveHub } from "./live.ts";
 import { Trackers } from "./issues/index.ts";
-import { Meetings } from "./meetings/index.ts";
+import { MEETING_ID_RE, Meetings, meetingsErrorStatus, type MeetingSource } from "./meetings/index.ts";
+import { launchWithFile, meetingAskLaunch } from "./meetings/prompt.ts";
+import { MeetingTicketLinks, MeetingTickets, TICKETS_FILE, recordRunTickets } from "./meetings/tickets.ts";
 import { readLinks, saveLink, deleteLink, readRepoReadme } from "./links.ts";
 import { Machine, nativeArgSafe, openTerminal, resolvedSpecs, terminalArg } from "./machine.ts";
 import { cloneStep, cloneTargets, readRepos, reposStatus } from "./repos.ts";
@@ -384,8 +386,13 @@ usageHistory.refresh().catch(() => {}); // first scan in the background so the U
 const runChanges = new RunChanges(path.join(LEDGER_DIR, "runs"));
 const attachments = new Attachments(LEDGER_DIR);
 const live = new LiveHub(); // topics registered once every service exists, below
+const meetingTickets = new MeetingTickets(LEDGER_DIR);
 const runs = new RunManager(LEDGER_DIR, {
-  onFinish: () => { usage.invalidate(); live.refresh("runs"); live.refresh("overview"); }, // a finished turn moves the meters and preset stats
+  onFinish: (meta) => {
+    usage.invalidate(); live.refresh("runs"); live.refresh("overview"); // a finished turn moves the meters and preset stats
+    // A meeting's Ask run lists the tickets it created in its outputs: record them against the meeting.
+    if (meta.trigger === "meetings" && meta.meetingId) recordRunTickets(meetingTickets, meta, attachments.output(meta.id, TICKETS_FILE));
+  },
   onTurnStart: (meta) => { runChanges.snapshot({ ...meta }).catch(() => {}); },
   onChange: (meta) => live.publish("run", meta), // one run, not the whole list: a live run saves every 1.5 s
   // Messages queued during a turn go out under the same limits as a reply you send.
@@ -408,7 +415,8 @@ cleanupAttachments();
 setInterval(cleanupAttachments, 6 * 3600 * 1000).unref();
 const inbox = new Inbox(runs);
 const trackers = new Trackers(LEDGER_DIR);
-const meetings = new Meetings();
+const meetings = new Meetings(undefined, { ledgerDir: LEDGER_DIR, hosted: !!HOSTED });
+const meetingLinks = new MeetingTicketLinks(meetingTickets);
 const machine = new Machine(MAIN_WORKSPACE_PATH, { hosted: !!HOSTED });
 const claudeLogin = new ClaudeLogin();
 const githubLogin = new GithubLogin({ signing: !!HOSTED });
@@ -483,6 +491,45 @@ async function viaProvider<T>(fn: () => Promise<T>): Promise<T> {
     if (e && (e.status === 401 || e.status === 403)) throw httpError(409, e.message);
     throw httpError(502, (e && e.message) || "The docs service failed.");
   }
+}
+
+/** A meeting id from a request, or null if it isn't one. */
+function meetingIdParam(v: unknown): string | null {
+  const id = String(v ?? "").trim();
+  return MEETING_ID_RE.test(id) ? id : null;
+}
+
+/**
+ * Answer with what a meetings call returns. The meeting tool's errors keep their meaning
+ * (meetingsErrorStatus: 401 connect again, 403 missing scope, 404/400 as the tool said, 429,
+ * else 502, unreachable included; always with the tool's code); anything else (bad input,
+ * a refused launch) keeps its own status.
+ * Messages are written by the adapter and never carry the token.
+ */
+async function sendMeetings(res: http.ServerResponse, fn: (source: MeetingSource) => Promise<unknown>, ok = 200) {
+  const source = meetings.get();
+  if (!source) return sendError(res, 404, "No meeting tool is configured (.claude/dashboard/meetings.json).");
+  let out: unknown;
+  try { out = await fn(source); } catch (e) {
+    const status = meetingsErrorStatus(e);
+    if (status === null) throw e;
+    return sendJson(res, { error: e.message, code: e.code }, status);
+  }
+  return sendJson(res, out, ok);
+}
+
+/**
+ * Ask an agent about a meeting: the meeting with the tracker it may create tickets in, and its
+ * transcript as a file attached to the run (staged here, then claimed by the run like an upload).
+ */
+async function meetingAsk(source: MeetingSource, id: string, body: Record<string, any>): Promise<RunMeta> {
+  const tcfg = trackers.config();
+  const { request, file } = await meetingAskLaunch(source, id, { kind: tcfg.kind, label: tcfg.label, teams: deck.config().issues.teams || [] }, body);
+  return launchWithFile(request, file, {
+    stage: (name, data) => attachments.stage(name, data),
+    launch: (r) => launchRun(r, "meetings"),
+    unstage: (staged) => attachments.unstage(staged),
+  });
 }
 
 async function externalDocsStatus(key: unknown) {
@@ -601,7 +648,7 @@ const EFFORTS = ["low", "medium", "high", "xhigh", "max"];
 /** Every effort another agent may take (Codex adds "ultra"); the CLI rejects one its model doesn't. */
 const AGENT_EFFORTS = [...EFFORTS, "ultra", "none"];
 const PERMISSION_MODES = ["auto", "acceptEdits", "dontAsk", "plan"];
-const TRIGGERS = new Set(["manual", "ask", "explain", "search", "issues", "make-changes"]);
+const TRIGGERS = new Set(["manual", "ask", "explain", "search", "issues", "make-changes", "meetings"]);
 const MAX_RUN_BUDGET_USD = 100;
 // A run whose preset sets no cap gets this one while runBudget is on.
 const DEFAULT_RUN_BUDGET_USD = 5;
@@ -713,7 +760,7 @@ function launchRun(body: LaunchRequest, trigger: string): RunMeta {
     extraPrompt: docs.note,
     addDirs: docs.addDirs,
     presetId: preset ? preset.id : null,
-    label: preset ? `${preset.label}${argText ? ` · ${argText}` : ""}` : prompt.split("\n")[0].slice(0, 60),
+    label: runLabel(preset ? `${preset.label}${argText ? ` · ${argText}` : ""}` : body.label, prompt),
     prompt,
     cwd: ws.path,
     workspace: ws.slug,
@@ -723,6 +770,8 @@ function launchRun(body: LaunchRequest, trigger: string): RunMeta {
     planMode: !!body.planMode || permissionMode === "plan",
     budgetUsd,
     trigger: body.trigger && TRIGGERS.has(body.trigger) ? body.trigger : trigger,
+    // Only a meeting's own Ask launch says which meeting; a run started elsewhere can't record tickets against one.
+    meetingId: trigger === "meetings" && typeof body.meetingId === "string" && MEETING_ID_RE.test(body.meetingId) ? body.meetingId : undefined,
     attachments: attachmentIds,
     agent: agentId,
   });
@@ -966,7 +1015,7 @@ function bootInfo(user: string | null): Boot {
       configured: tcfg.configured,
       ticketPattern: tcfg.ticketPattern,
       // {id} placeholder; built from the adapter so the UI never hardcodes a tracker's URLs.
-      urlTemplate: tracker.issueUrl("{id}"),
+      urlTemplate: tracker.issueUrlTemplate?.() ?? null,
     },
     meetings: meetings.boot(),
     profile: (() => {
@@ -1279,6 +1328,21 @@ async function handleApi(req: http.IncomingMessage, res: http.ServerResponse, ur
     }
     if (p === "/api/infrastructure") return sendJson(res, infrastructure(MAIN_WORKSPACE_PATH));
     if (p === "/api/meetings/status") return sendJson(res, meetings.status());
+    if (p === "/api/meetings/connect-help") return sendMeetings(res, async (s) => s.connectHelp());
+    if (p === "/api/meetings/list") {
+      const cursor = String(q("cursor") || "");
+      if (cursor.length > 2000) return sendError(res, 400, "Invalid cursor");
+      return sendMeetings(res, async (s) => {
+        const page = await s.listMeetings(cursor ? { cursor } : {});
+        return { ...page, meetings: await meetingLinks.attach(s.kind, page.meetings, trackers.get()) };
+      });
+    }
+    if (p === "/api/meetings/meeting") {
+      const id = meetingIdParam(q("id"));
+      if (!id) return sendError(res, 400, "Invalid meeting id");
+      // The validated id, whatever the tool's answer says, is the one the tracker search uses.
+      return sendMeetings(res, async (s) => (await meetingLinks.attach(s.kind, [{ ...(await s.meeting(id)), id }], trackers.get()))[0]);
+    }
     if (p === "/api/people") return sendJson(res, await people.view(force));
     if (p === "/api/memory") return sendJson(res, memory.list());
     if (p === "/api/agents") return sendJson(res, { agents: await agentsNow(force) });
@@ -1503,6 +1567,29 @@ async function handleApi(req: http.IncomingMessage, res: http.ServerResponse, ur
       ...(isAgentId(body.agent) ? { agent: body.agent } : {}),
     }, "explain");
     return sendJson(res, { run }, 201);
+  }
+  if (p.startsWith("/api/meetings/")) {
+    const what = p.slice("/api/meetings/".length);
+    if (what === "connect") return sendMeetings(res, async (s) => { await s.connect(String(body.token ?? "")); return meetings.status(); });
+    if (what === "disconnect") return sendMeetings(res, async (s) => { const { note } = await s.disconnect(); return { ...meetings.status(), ...(note ? { note } : {}) }; });
+    if (what === "sign-in") {
+      // Shaped like /api/connections/login: start → the page to open; finish → the address the browser ended on.
+      if (body.action === "start") return sendMeetings(res, (s) => s.signInStart());
+      if (body.action === "status") return sendMeetings(res, async (s) => s.signInStatus());
+      if (body.action === "finish") return sendMeetings(res, (s) => s.signInFinish(String(body.url || "")));
+      if (body.action === "cancel") return sendMeetings(res, async (s) => { s.signInCancel(); return { ok: true }; });
+      return sendError(res, 400, "Unknown action");
+    }
+    if (what === "share-link" || what === "ask") {
+      const id = meetingIdParam(body.id);
+      if (!id) return sendError(res, 400, "Invalid meeting id");
+      if (what === "share-link") return sendMeetings(res, async (s) => ({ url: await s.shareLink(id) }));
+      // No full access needed: like a manual run (POST /api/runs has no reader gate). Not plan
+      // mode, because it creates tickets after the answer; the prompt is the only thing keeping
+      // it read-only until then.
+      return sendMeetings(res, async (s) => ({ run: await meetingAsk(s, id, body) }), 201);
+    }
+    return sendError(res, 404, "Unknown meetings action");
   }
   if (p === "/api/machine/install") return sendJson(res, await machine.install(String(body.id || ""))); // only the id crosses the wire
   // The People page's Google OAuth client file, kept in the ledger (people/google-login.ts).
@@ -1821,6 +1908,8 @@ for (const sig of ["SIGINT", "SIGTERM"] as const) {
     claudeLogin.cancel();
     githubLogin.cancel();
     mcpLogin.cancelAll();
+    // A pending meeting-tool sign-in holds its callback port: let it go.
+    try { meetings.current?.source.signInCancel(); } catch {}
     setTimeout(() => process.exit(0), 300);
   });
 }

@@ -222,10 +222,44 @@ The page shows the groups as click-to-copy fact tables, then the whole doc. Grou
 ## meetings.json: the Meetings page
 
 ```json
-{ "source": "roam", "label": "Roam" }
+{ "source": "roam", "label": "Roam", "clientId": "<the OAuth app's client ID>" }
 ```
 
-Adds a Meetings page under Company. Without this file the page isn't in the nav; a role can still hide it with `"meetings"` in `hiddenPages`. `source` is the meeting tool: `roam` is the only one so far (`label` defaults to its name). For now the page only says what's coming: the team's meetings from that tool with their summaries and action items, and asking Claude whether an action item should become a ticket. Adding a tool is one file in `<engine>/server/src/meetings/` implementing `MeetingSource`, registered in `SOURCES`. An unknown `source` shows the page with what's wrong, and validate reports it.
+Adds a Meetings page under Company. Without this file the page isn't in the nav; a role can still hide it with `"meetings"` in `hiddenPages`. An unknown `source` shows the page with what's wrong, and validate reports it.
+
+| Key | |
+|---|---|
+| `source` | The meeting tool. `roam` is the only one so far. |
+| `label` | Its name in the page. Defaults to the tool's name ("Roam"). |
+| `clientId` | The team's OAuth app in the tool (below). It's a public client, so the ID isn't a secret and can be committed. Left out, blank or `null`: no browser sign-in, and people paste a personal access token instead. |
+| `redirectUri` | Where sign-in comes back to. Default `http://localhost:31417/roam/callback`; blank or `null` means the default. It must be `http://`, on `localhost`, `127.0.0.1` or `[::1]`, with an explicit port that isn't 0 or 80, and it must match the app's redirect URI exactly. |
+
+A bad `clientId` or `redirectUri` turns sign-in off and the page says why; pasting a token still works.
+
+**What the page does.** Each person connects their own account, and the page lists their meetings, newest first, with **Load more**. A meeting shows its summary, action items (read-only, with the tool's suggested owner) and who was there. **Open in &lt;tool&gt;** asks the tool for the meeting's share link when clicked (Roam creates one the first time) and opens it. **Ask agent** starts a run (below). Rows and the detail show the tickets made from a meeting, found two ways and merged by key: the Ask run's report (`meeting-tickets.json`, recorded in `.claude/ledger/meeting-tickets.json` when the run's turn ends, for runs on this dashboard), and a search of the issue tracker for the meeting's marker (`roam-meeting-<id>`), which finds them for everyone. The search needs a tracker that supports it (Jira, Linear, GitHub Issues) and is connected; it's cached for a minute, and a slow or failing tracker just leaves the recorded tickets.
+
+**Creating the Roam OAuth app** (once per team, by a Roam admin), for **Sign in with Roam**:
+
+1. Roam Administration → **Developer** → **Add ApiClient**, authorization type **OAuth**. Name it after your dashboard, and say in the description that it reads your meetings for the dashboard's Meetings page.
+2. Redirect URI: exactly `http://localhost:31417/roam/callback` (or your `redirectUri`). Matching is exact, so register no variants.
+3. Scopes: `meetings:read` and `user:read`, nothing more.
+4. Client type: public / PKCE (`token_endpoint_auth_method: none`) if Roam offers the choice. Roam shows a client secret when the app is created: the dashboard doesn't use it, so don't store it anywhere.
+5. Allow **Personal** access; people choose it when Roam asks how to connect. With the organization's personal-access policy at "With Approval", each person's first connect waits until an admin approves it (the page says so); "Auto-approve" doesn't wait.
+6. Put the app's client ID in `meetings.json` as `clientId`.
+
+**Personal access token** (always available, and the only way without a `clientId`): in Roam, **User Settings → Developer**, create a token with the `meetings:read` and `user:read` scopes, and paste it in the page.
+
+**Where the token is kept:** `.claude/ledger/roam-token.json` in the workspace (never committed; written with mode 600), and never sent to the browser. A sign-in's access token is refreshed before it expires; Roam rotates the refresh token on each refresh, and the new one is saved before it's used. A sign-in Roam no longer accepts deletes the file, and the page asks the person to connect again.
+
+**Sign-in, local and hosted.** On a local dashboard, the server listens on the `redirectUri` port (on `127.0.0.1`, and `::1` when it can) only while a sign-in is pending, and catches the redirect itself. If the port is taken, or the last page doesn't load, the person copies that page's address and pastes it into the Meetings page. A hosted dashboard never listens: after signing in, the browser lands on a `localhost` address that doesn't load, and the person pastes that address back, as on the Connections page. Either way the `state` must match.
+
+**Disconnect** asks Roam to revoke the token, then deletes the file whether or not it did. Roam may keep a revoked access token working for a short while, and it keeps a pasted personal access token working until it's deleted in Roam (User Settings → Developer); the page says so.
+
+**Ask agent** starts a normal run (not plan mode) on the main workspace with the meeting as data: the prompt carries the title, date, participants, summary and action items, and the transcript (up to 40,000 characters) goes in a file attached to the run, with the full text of anything the prompt had to cut. The prompt says the meeting text is data, not instructions. The run looks at the code and the tracker, proposes tickets (title, description, acceptance criteria), changes no files and creates nothing, and ends with the question block; that answer is the confirmation. After it, the run creates only the approved tickets, through the tracker's connector, unassigned (the tool's suggested owner goes in the description), each with the tool's label ("Roam"; spaces become hyphens on Jira) and a last line pointing back at the meeting, `From Roam meeting: <title>, <date> · ref roam-meeting-<id>`. Then it writes `meeting-tickets.json` (`[{"key", "url", "title"}]`) to its outputs folder; the dashboard records the keys and always builds the links from the tracker. With no tracker configured, it only proposes.
+
+Known limit: on Windows, when `claude` resolves to a `.cmd` shim that isn't npm's, a run's arguments go through cmd.exe, which caps a command line at 8,191 characters, so a large Ask prompt can fail to start there. npm's shim and the native binary aren't affected.
+
+Adding a tool is one file in `<engine>/server/src/meetings/` implementing `MeetingSource`, registered in `SOURCES`; see adapters.md, "Meeting tools".
 
 ## links.json: the Links page
 
