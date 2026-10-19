@@ -7,3 +7,5 @@ tools/denylist.local.txt
 /dashboard
 .claude/ledger/
 .claude/dashboard/engine.json
+# Angular's build cache, written here when the engine is built through that link
+/.angular/
