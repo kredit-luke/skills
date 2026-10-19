@@ -19,7 +19,8 @@ import { atlassianRequest, removeKeyFile } from "../atlassian.ts";
 import { readConfigFile, type IssuesConfig } from "../config.ts";
 
 const REFUSED = "Jira rejected the email/API token. A scoped token needs at least the read:jira-work and read:jira-user scopes.";
-import type { ConnectHelp, IssueFilter, IssueTracker, TrackerStatus } from "./index.ts";
+import type { ConnectHelp, IssueFilter, IssueTracker, LinkedIssue, LinkedIssues, TrackerStatus } from "./index.ts";
+import { LINKED_LIMIT, byMarker, chunks, isIssueKey } from "./markers.ts";
 
 const CACHE_TTL_MS = 60 * 1000;
 const LIMIT = 200;
@@ -37,6 +38,28 @@ export function jql(filter: IssueFilter, projects: string[]): string {
   const extra = cleanQuery(filter.query);
   if (extra) parts.push(`(${extra})`);
   return `${parts.join(" AND ")} ORDER BY updated DESC`;
+}
+
+/** Markers searched for in one JQL query, at most. */
+const MARKERS_PER_QUERY = 25;
+
+/** JQL for issues whose text has any of `markers` as a phrase, in the configured projects (open or done). */
+export function linkedJql(markers: string[], projects: string[]): string {
+  const q = (s: string) => `"${String(s).replace(/(["\\])/g, "\\$1")}"`;
+  // text ~ "\"a-b\"": a phrase, so the marker's hyphenated parts match in order.
+  const terms = markers.map((m) => `text ~ ${q(`"${m}"`)}`).join(" OR ");
+  return `${projects.length ? `project in (${projects.map(q).join(", ")}) AND ` : ""}(${terms}) ORDER BY updated DESC`;
+}
+
+/** Atlassian Document Format as plain text (every text node, blocks on their own lines). */
+export function adfText(node: any): string {
+  if (!node) return "";
+  if (typeof node === "string") return node;
+  if (node.type === "text") return String(node.text || "");
+  if (node.type === "hardBreak") return "\n";
+  if (node.type === "inlineCard") return String(node.attrs?.url || "");
+  const inner = (node.content || []).map(adfText).join(node.type === "doc" || /List$|listItem|blockquote|tableRow|table$/.test(node.type || "") ? "\n" : "");
+  return /^(paragraph|heading|codeBlock)$/.test(node.type || "") ? inner + "\n" : inner;
 }
 
 /** A personal JQL clause, trimmed; throws on one that would break the board query. */
@@ -212,7 +235,12 @@ class JiraTracker implements IssueTracker {
     return this.status();
   }
 
-  issueUrl(id: string) { return this.site ? `https://${this.site}/browse/${id}` : null; }
+  issueUrl(id: string) { return isIssueKey(id) ? this.link(id) : null; }
+
+  issueUrlTemplate() { return this.link("{id}"); }
+
+  /** The browse link for `id`, unchecked: issueUrl checks it's a key; the template passes the placeholder. */
+  private link(id: string) { return this.site ? `https://${this.site}/browse/${id}` : null; }
 
   queryHelp() {
     return { label: "JQL", placeholder: "assignee = currentUser() AND sprint in openSprints()", help: "Added to the board's query with AND, for you only. Leave out ORDER BY." };
@@ -246,6 +274,23 @@ class JiraTracker implements IssueTracker {
     }
     await this.inflight;
     return this.cache;
+  }
+
+  /** Issues (any status, in the configured projects) whose description has one of the markers exactly. Rejects when Jira fails. */
+  async linkedIssues(markers: string[]): Promise<LinkedIssues> {
+    const cred = this._cred();
+    if (!cred || !this.site || !markers.length) return new Map();
+    const found: { issue: LinkedIssue; text: string }[] = [];
+    let truncated = false;
+    for (const group of chunks(markers, MARKERS_PER_QUERY)) {
+      const res = await this._get(cred, "/rest/api/3/search/jql", { jql: linkedJql(group, this.projects), fields: ["summary", "status", "description"], maxResults: LINKED_LIMIT });
+      if ((res.issues || []).length >= LINKED_LIMIT || res.nextPageToken) truncated = true;
+      for (const n of res.issues || []) {
+        const f = n.fields || {};
+        found.push({ issue: { key: n.key, url: this.issueUrl(n.key) || "", title: f.summary || "", state: f.status ? f.status.name : "" }, text: adfText(f.description) });
+      }
+    }
+    return byMarker(markers, found, truncated);
   }
 
   toIssue(n: any) {

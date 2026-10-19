@@ -24,6 +24,15 @@ test("promptWithAttachments lists each file's path after the prompt", () => {
   assert.match(p, /- \/l\/x\.png \(image, 2 KB\)/);
 });
 
+test("unstage drops a staged upload (and nothing else for an id that isn't one)", () => {
+  const a = new Attachments(tmp());
+  const s = a.stage("meeting.txt", Buffer.from("notes"));
+  a.unstage("../_staged");
+  assert.deepEqual(a.check([s.id]), [s.id]);
+  a.unstage(s.id);
+  assert.throws(() => a.check([s.id]), /missing/);
+});
+
 test("stage → claim moves the file into the run's folder; file() only serves what's there", () => {
   const a = new Attachments(tmp());
   const s = a.stage("shot.png", Buffer.from("png"));

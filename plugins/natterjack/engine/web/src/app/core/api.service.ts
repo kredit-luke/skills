@@ -62,12 +62,15 @@ export class ApiService {
       this.connected.set(false);
       throw new Error('Dashboard server is not reachable.');
     }
+    const data = await res.json().catch(() => ({}));
     // Through the dev proxy a stopped server shows up as 502/504 rather than a network error.
-    const gateway = res.status === 502 || res.status === 503 || res.status === 504;
+    // The server's own 502s (a meeting tool that failed) come with an { error } body.
+    // Any GET that answers 502 with { error } (Docs, People too) now shows that message, and the header stays Live.
+    const gateway = (res.status === 502 || res.status === 503 || res.status === 504) && !(data as { error?: string })?.error;
     this.connected.set(!gateway);
     if (gateway) throw new Error('Dashboard server is not reachable.');
-    const data = await res.json().catch(() => ({}));
-    if (!res.ok) throw new Error((data && (data as { error?: string }).error) || res.statusText);
+    // .status (and .code, when the server sent one) let a caller tell e.g. a 401 or 404 from other failures.
+    if (!res.ok) throw Object.assign(new Error((data && (data as { error?: string }).error) || res.statusText), { status: res.status, code: (data as { code?: string })?.code });
     return data as T;
   }
 
@@ -85,8 +88,8 @@ export class ApiService {
       throw new Error('Dashboard server is not reachable.');
     }
     const data = await res.json().catch(() => ({}));
-    // .status lets a caller tell e.g. a 409 conflict from other failures.
-    if (!res.ok) throw Object.assign(new Error((data && (data as { error?: string }).error) || res.statusText), { status: res.status });
+    // .status (and .code, when the server sent one) let a caller tell e.g. a 409 conflict from other failures.
+    if (!res.ok) throw Object.assign(new Error((data && (data as { error?: string }).error) || res.statusText), { status: res.status, code: (data as { code?: string })?.code });
     return data as T;
   }
 

@@ -3,7 +3,8 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { RunManager, drainable, queuedText, normaliseMeta, QUEUED_OVER_QUESTION } from "../src/runs.ts";
+import { RunManager, drainable, queuedText, normaliseMeta, runLabel, QUEUED_OVER_QUESTION } from "../src/runs.ts";
+import { agentOf } from "../src/agents/index.ts";
 import type { RunMeta } from "../../shared/api.ts";
 
 // A fake claude: each turn writes its prompt to a log and ends with a result.
@@ -63,6 +64,14 @@ test("drainable: only a turn that simply ended sends the queue by itself", () =>
   assert.equal(drainable({ status: "failed", queued: q }), true);
   for (const status of ["running", "waiting", "cancelled", "interrupted", "handedOff"] as const) assert.equal(drainable({ status, queued: q }), false, status);
   assert.equal(drainable({ status: "succeeded", queued: [] }), false);
+});
+
+test("runLabel: a launch's label goes on one line and is capped; else the prompt's first line", () => {
+  assert.equal(runLabel("Meeting:\nIgnore this\r\n\tand that  ", "p"), "Meeting: Ignore this and that");
+  assert.equal(runLabel("x".repeat(100), "p").length, 60);
+  assert.equal(runLabel(" \n ", "First line\nsecond"), "First line");
+  assert.equal(runLabel(undefined, "  spaced   out \nsecond"), "spaced out");
+  assert.equal(runLabel({ evil: true }, "fallback"), "fallback");
 });
 
 test("queuedText keeps the typed order, one paragraph each", () => {
@@ -140,6 +149,34 @@ test("a question holds the queue until it's sent by hand", async () => {
   const done = await settled(runs, run.id, ["succeeded"]);
   assert.equal(done.turns, 2);
   assert.deepEqual(done.queued, []);
+});
+
+test("a queue sent to an agent that can't be started stays queued", async () => {
+  const dir = fs.mkdtempSync(path.join(TMP, "run-"));
+  const runs = manager(dir);
+  const run = runs.start({ prompt: "slow ask", cwd: dir });
+  runs.enqueue(run.id, "later");
+  await settled(runs, run.id, ["waiting"]);
+  const claude = agentOf("claude");
+  const spawn = claude.spawn;
+  // Held back by a limit before: sending it by hand and failing to start mustn't leave that blocker on.
+  const waiting = runs.get(run.id)!;
+  waiting.queueBlocked = "Already 3 runs in flight (limit 3).";
+  (runs as any)._save(waiting);
+  claude.spawn = () => { throw Object.assign(new Error("spawn ENAMETOOLONG"), { code: "ENAMETOOLONG" }); };
+  try {
+    const sent = runs.sendQueued(run.id);
+    assert.equal(sent.status, "failed");
+    assert.equal(sent.queueBlocked, null);
+    assert.equal(runs.live.has(run.id), false);
+    const saved = runs.get(run.id)!;
+    assert.deepEqual(saved.queued!.map((q) => q.text), ["later"], "nothing went out, so nothing leaves the queue");
+    assert.equal(saved.queueBlocked, null, "a failed spawn isn't a block, so nothing retries it on its own");
+    // What the 30-second retry picks: a blocker on a drainable queue. Not this one.
+    assert.equal(!!saved.queueBlocked && drainable(saved), false);
+  } finally {
+    claude.spawn = spawn;
+  }
 });
 
 test("a blocked queue says why and stays put; a queued message on a finished run goes straight out", async () => {

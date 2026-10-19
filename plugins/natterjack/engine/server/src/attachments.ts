@@ -197,6 +197,11 @@ export class Attachments {
     return { id, name: clean, size: data.length, kind: kindOf(clean) };
   }
 
+  /** Drop a staged upload that won't be sent (e.g. its run was refused). */
+  unstage(id: string) {
+    if (ID_RE.test(id)) fs.rmSync(path.join(this.staged, id), { recursive: true, force: true });
+  }
+
   /** Check staged ids exist (before a run is created). Throws with a user-facing message. */
   check(ids: unknown): string[] {
     if (ids == null) return [];

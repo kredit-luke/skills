@@ -124,6 +124,8 @@ export interface RunMeta {
   planMode: boolean;
   budgetUsd: number | null;
   trigger: string;             // "manual" | "routine:<id>" | "issues" | "ask" | ...
+  /** A meetings run's meeting id: when a turn ends, the tickets it wrote to meeting-tickets.json are recorded against it. */
+  meetingId?: string;
   /** docs.json sources the run was told to use ("Use <source>"). */
   docSources?: string[];
   /** Appended to the system prompt every turn (the docs sources' notes). */
@@ -296,6 +298,8 @@ export interface LaunchRequest {
   /** Preset option checkboxes by name; missing ones use the option's default. */
   options?: Record<string, boolean>;
   prompt?: string;             // required without a preset
+  /** The run's name in the list; omitted = the prompt's first line (a preset's label with one). */
+  label?: string;
   workspace?: string;          // slug, default preset's or "main"
   /** The agent CLI to run it with; omitted = the deck's default agent (Claude unless set). */
   agent?: AgentId;
@@ -305,6 +309,8 @@ export interface LaunchRequest {
   planMode?: boolean;          // start read-only (Ask/Explain); can be switched off later
   budgetUsd?: number;          // runaway cap, 0 < x <= 100; ignored unless limits.runBudget is on
   trigger?: string;            // "ask" | "explain" | ... (default "manual"); informational only
+  /** A meeting's Ask run: the meeting it's about (kept only with trigger "meetings"), so the tickets it reports are recorded against it. */
+  meetingId?: string;
   /** docs.json external sources (with a provider) this run should use: Claude is told to search them via their MCP connector. */
   docSources?: string[];
   /** With one docSource: the page the question is about. */
@@ -788,16 +794,61 @@ export interface MeetingsStatus {
   /** The engine has an adapter for `source`. */
   supported: boolean;
   connected: boolean;
-  /** The adapter is a placeholder: the page says what's coming instead of listing meetings. */
-  comingSoon: boolean;
+  /** Who the stored token reads as, when connected. */
+  viewer: string | null;
+  /** How the person connected: browser sign-in or a pasted personal access token. */
+  via: 'oauth' | 'token' | null;
+  /** Sign-in is offered (meetings.json has a valid OAuth clientId and redirectUri); pasting a token always is. */
+  signIn: boolean;
+  /** What's wrong with meetings.json's sign-in settings (clientId, redirectUri), or null. Pasting a token still works. */
+  signInProblem: string | null;
   message: string;
 }
-/** Which meetings to list; dates are ISO. */
-export interface MeetingFilter { since?: string; until?: string; query?: string }
-export interface Meeting { id: string; title: string; startedAt: string; endedAt: string | null; participants: string[]; url: string | null }
-export interface ActionItem { text: string; owner: string | null; due: string | null }
-/** One meeting with what the tool wrote up from it. summary is markdown. */
-export interface MeetingDetail extends Meeting { summary: string; actionItems: ActionItem[] }
+/** GET /api/meetings/list?cursor= : one page, newest first. cursor is the previous page's nextCursor. */
+export interface MeetingListRequest { cursor?: string }
+export interface MeetingPage { meetings: Meeting[]; nextCursor: string | null }
+/**
+ * A meeting as lists show it. summary (markdown) and actionItems are null when the tool
+ * didn't send them; host is null when the tool couldn't say who hosted.
+ */
+export interface Meeting {
+  id: string; title: string;
+  startedAt: string; endedAt: string | null;
+  participantCount: number;
+  host: { name: string; type: 'member' | 'guest' } | null;
+  summary: string | null;
+  actionItems: ActionItem[] | null;
+  /** Tickets made from this meeting, one per key: 'run' = an Ask run here reported it, 'tracker' = the tracker has it (its title and link win). */
+  tickets: MeetingTicket[];
+}
+/** A ticket made from a meeting: found by its back-reference marker in the tracker, or reported by an Ask run. */
+export interface MeetingTicket { key: string; url: string; title: string; source: 'run' | 'tracker' }
+/** suggestedOwner is the tool's guess at who should do it: shown, never used to assign. */
+export interface ActionItem { text: string; description: string | null; complete: boolean; suggestedOwner: string | null }
+/** GET /api/meetings/meeting?id= : one meeting with who was there. participantsOmitted: there were more than listed. */
+export interface MeetingDetail extends Meeting {
+  participants: { id: string; name: string; type: 'member' | 'guest' }[];
+  participantsOmitted: boolean;
+}
+/** How to make a personal access token for the tool: each step is markdown, placeholder is the token field's hint. */
+export interface MeetingConnectHelp { title: string; steps: string[]; placeholder: string }
+/**
+ * POST /api/meetings/sign-in { action: 'start' } → the page to open. listening: this dashboard
+ * catches the redirect to `callback` itself; otherwise the person pastes that address back.
+ */
+export interface MeetingSignInStart { url: string; callback: string; listening: boolean }
+/** POST /api/meetings/sign-in { action: 'status' | 'finish' | 'cancel' }. */
+export type MeetingSignInStatus = McpLoginStatus;
+/*
+ * GET  /api/meetings/connect-help → MeetingConnectHelp
+ * POST /api/meetings/connect { token } → MeetingsStatus  (a personal access token, checked with the tool first)
+ * POST /api/meetings/disconnect → MeetingsStatus & { note? }  (note: what's left to do in the tool by hand)
+ * POST /api/meetings/share-link { id } → { url: string | null }  (may create the link in the tool)
+ * POST /api/meetings/ask { id, agent?, model?, effort? } → 201 { run }  (proposes tickets, creates none until you answer)
+ * Errors ({ error, code } from the tool): 401 connect again, 403 the token lacks a scope, 404 no such
+ * meeting, 400 the tool refused the request, 429 the tool is limiting requests, 502 the tool failed
+ * or couldn't be reached. A 400 without a code is bad input caught here.
+ */
 
 // ---------------------------------------------------------------- machine
 

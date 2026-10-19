@@ -11,7 +11,8 @@ import fs from "node:fs";
 import path from "node:path";
 import https from "node:https";
 import type { IssuesConfig } from "../config.ts";
-import type { ConnectHelp, IssueTracker, TrackerStatus } from "./index.ts";
+import type { ConnectHelp, IssueTracker, LinkedIssue, LinkedIssues, TrackerStatus } from "./index.ts";
+import { LINKED_LIMIT, byMarker, chunks, isIssueKey } from "./markers.ts";
 
 const ENDPOINT = "https://api.linear.app/graphql";
 const CACHE_TTL_MS = 60 * 1000;
@@ -66,8 +67,22 @@ function gql(key: string, query: string, variables: object): Promise<any> {
   });
 }
 
+const LINKED_QUERY = `
+query DashboardLinkedIssues($filter: IssueFilter, $first: Int!) {
+  issues(first: $first, filter: $filter) {
+    nodes { identifier title url description state { name } }
+  }
+}`;
+
+/** The filter for issues whose description contains any of `markers` (Linear checks; the exact match is ours). */
+export function linkedFilter(markers: string[]) {
+  return { or: markers.map((m) => ({ description: { contains: m } })) };
+}
+
 class LinearTracker implements IssueTracker {
   kind = "linear";
+  /** Sends a GraphQL query with the key (a field so tests can stub it). */
+  gql: (key: string, query: string, variables: object) => Promise<any> = gql;
   org: string | null;
   urlTemplate: string | null;
   keyFile: any;
@@ -113,7 +128,12 @@ class LinearTracker implements IssueTracker {
   /** Linear's API has no text query language: no personal board query. */
   queryHelp() { return null; }
 
-  issueUrl(id: string) {
+  issueUrl(id: string) { return isIssueKey(id) ? this.link(id) : null; }
+
+  issueUrlTemplate() { return this.link("{id}"); }
+
+  /** The issue link for `id`, unchecked: issueUrl checks it's a key; the template passes the placeholder. */
+  private link(id: string) {
     if (this.urlTemplate) return this.urlTemplate.replace(/{id}/g, id);
     return this.org ? `https://linear.app/${this.org}/issue/${id}` : null;
   }
@@ -178,6 +198,23 @@ class LinearTracker implements IssueTracker {
     }
     await this.inflight;
     return this.cache;
+  }
+
+  /** Issues (any state) whose description has one of the markers exactly. Rejects when Linear fails. */
+  async linkedIssues(markers: string[]): Promise<LinkedIssues> {
+    const key = this._key();
+    if (!key || !markers.length) return new Map();
+    const found: { issue: LinkedIssue; text: string }[] = [];
+    let truncated = false;
+    for (const group of chunks(markers, 25)) {
+      const data = await this.gql(key, LINKED_QUERY, { filter: linkedFilter(group), first: LINKED_LIMIT });
+      const nodes = (data && data.issues && data.issues.nodes) || [];
+      if (nodes.length >= LINKED_LIMIT) truncated = true;
+      for (const n of nodes) {
+        found.push({ issue: { key: n.identifier, url: n.url || this.issueUrl(n.identifier) || "", title: n.title || "", state: n.state ? n.state.name : "" }, text: n.description || "" });
+      }
+    }
+    return byMarker(markers, found, truncated);
   }
 
   /** One issue with its description (markdown), for the detail panel and Explain. */

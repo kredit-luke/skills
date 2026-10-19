@@ -306,6 +306,47 @@ test("meetings.json: scaffold writes it; validate wants a source the engine has 
   assert.match(validate(ws).errors.join("\n"), /meetings\.json: "source" names the meeting tool/);
 });
 
+test("meetings.json: clientId and redirectUri follow the engine's rule (blank or null = left out)", () => {
+  const ws = fs.mkdtempSync(path.join(os.tmpdir(), "aos-meetings-signin-"));
+  const cfg = path.join(ws, ".claude", "dashboard");
+  scaffold(ws, { workspace: { name: "T" }, meetings: { source: "roam" } });
+  const check = (m) => {
+    fs.writeFileSync(path.join(cfg, "meetings.json"), JSON.stringify({ source: "roam", ...m }));
+    const v = validate(ws);
+    return { errors: v.errors.filter((e) => e.startsWith("meetings.json")).join("\n"), warnings: v.warnings.filter((e) => e.startsWith("meetings.json")).join("\n") };
+  };
+
+  // No clientId (left out, blank or null): fine, but only a pasted token works.
+  for (const m of [{}, { clientId: "" }, { clientId: "  " }, { clientId: null }]) {
+    const v = check(m);
+    assert.equal(v.errors, "", JSON.stringify(m));
+    assert.match(v.warnings, /no "clientId".*personal access token/, JSON.stringify(m));
+  }
+  const good = check({ clientId: "abc123", redirectUri: "http://127.0.0.1:31500/cb" });
+  assert.deepEqual(good, { errors: "", warnings: "" });
+  for (const redirectUri of ["", null, "http://localhost:31417/roam/callback", "http://[::1]:4000/x"]) {
+    assert.equal(check({ clientId: "abc", redirectUri }).errors, "", String(redirectUri));
+  }
+
+  // A non-string clientId is an error only, not also the "no clientId" warning.
+  for (const clientId of [42, true, { id: "abc" }]) {
+    const v = check({ clientId });
+    assert.match(v.errors, /"clientId" must be the OAuth app's client ID \(a string\)/, JSON.stringify(clientId));
+    assert.equal(v.warnings, "", JSON.stringify(clientId));
+  }
+  assert.match(check({ clientId: "abc", redirectUri: 31417 }).errors, /"redirectUri" must be a string/);
+  for (const [redirectUri, why] of [
+    ["https://localhost:31417/cb", /must start with http:\/\//],
+    ["http://example.com:31417/cb", /must be on localhost, 127\.0\.0\.1 or \[::1\]/],
+    ["http://localhost/cb", /needs an explicit port/],
+    ["http://localhost:80/cb", /can't use port 80/],
+    ["http://localhost:0/cb", /needs a real port, not 0/],
+    ["not a url", /isn't a URL/],
+  ]) {
+    assert.match(check({ clientId: "abc", redirectUri }).errors, why, redirectUri);
+  }
+});
+
 test("engineDirOf: engine.json dir, else dashboard/ (older workspaces)", async () => {
   const { engineDirOf, DEFAULT_ENGINE_DIR, LEGACY_ENGINE_DIR, reposSchema } = await import("../lib.mjs");
   assert.equal(DEFAULT_ENGINE_DIR, "natterjack");

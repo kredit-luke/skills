@@ -130,6 +130,7 @@ Only hosted dashboards do this; a local dashboard leaves the machine's own signi
   - `admin:ssh_signing_key`: to add the signing key and remove it again. What a person can push to is still decided by their own GitHub permissions.
 - **`GIT_TOKEN` stays the workspace's read token.** `entrypoint.sh` fetches the workspace with `git -c credential.helper=`, so a person's sign-in never affects boot. In runs, git asks the credential helper (the person's token) before `GIT_ASKPASS` (`GIT_TOKEN`), so a signed-in person pushes as themselves, and someone who isn't signed in can still read.
 - **Egress:** the container needs HTTPS to `github.com`, `api.github.com` and `*.githubusercontent.com`. Pushes use https, not ssh.
+- **Egress for the Meetings page:** with `meetings.json` `source` `roam`, the container also needs HTTPS to `api.ro.am` (the API) and `ro.am` (the sign-in's token exchange and refresh). The router needs neither: the person's browser goes to Roam's sign-in page, and they paste the address it ends on back into the Meetings page.
 
 **Only some roles.** To offer the sign-in to some roles and not others, give the check a `when`, e.g. `{ "use": "gh", "when": { "role": ["engineering"] } }`, and assign roles from the People page.
 - **Roles left out** don't get the check, and the server refuses to start a GitHub sign-in for them.
