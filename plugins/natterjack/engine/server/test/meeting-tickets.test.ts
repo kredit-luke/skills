@@ -281,6 +281,41 @@ test("MeetingTicketLinks: a detail reuses the newest page search that covered it
   assert.deepEqual(five.tickets.map((x) => x.key), ["ENG-4"]);
 });
 
+test("MeetingTicketLinks: another tracker configuration or connection never reuses a search, exact or covering; clear() drops them all", async () => {
+  const store = new MeetingTickets(tmp());
+  const answer = (label: string) => async (markers: string[]) => new Map(markers.map((m) => [m, [{ key: "ENG-1", url: `https://${label}.example/ENG-1`, title: label, state: "" }]]));
+  const links = new MeetingTicketLinks(store);
+  const page = [meeting("m1"), meeting("m2")];
+  const titleOf = async (t: IssueTracker, list: Meeting[]) => (await links.attach("roam", list, t))[0].tickets.map((x) => x.title);
+
+  // Changed settings (another site, projects or repos) make a new tracker instance of the same kind.
+  const oldSite = fakeTracker(answer("old"));
+  const newSite = fakeTracker(answer("new"));
+  assert.deepEqual(await titleOf(newSite.t, page), ["new"]);
+  await new Promise((r) => setTimeout(r, 5));
+  assert.deepEqual(await titleOf(oldSite.t, page), ["old"], "same page, other settings: searched again");
+  // The other settings' search is now the newest covering m2: the detail must still take its own scope's.
+  assert.deepEqual(await titleOf(newSite.t, [meeting("m2")]), ["new"], "a detail covered by both: its own settings' search");
+  assert.equal(oldSite.calls.length, 1);
+  assert.equal(newSite.calls.length, 1, "the covering search was reused, not repeated");
+
+  // The same instance reconnected as someone else: not the old account's results.
+  let viewer: string | null = "ada@acme.example";
+  const reconnect = fakeTracker(answer("ada"));
+  (reconnect.t as any).status = () => ({ connected: true, source: "file", viewer });
+  assert.deepEqual(await titleOf(reconnect.t, page), ["ada"]);
+  viewer = "bob@acme.example";
+  (reconnect.t as any).linkedIssues = (markers: string[]) => { reconnect.calls.push(markers); return answer("bob")(markers); };
+  assert.deepEqual(await titleOf(reconnect.t, page), ["bob"], "exact page");
+  assert.deepEqual(await titleOf(reconnect.t, [meeting("m1")]), ["bob"], "covering page");
+  assert.equal(reconnect.calls.length, 2);
+
+  // Connect or disconnect clears the cache: the next load searches again, whoever it is.
+  links.clear();
+  await titleOf(reconnect.t, page);
+  assert.equal(reconnect.calls.length, 3);
+});
+
 test("MeetingTicketLinks: a run's link is built by the tracker from the key, never taken as given", async () => {
   const ledgerDir = tmp();
   const store = new MeetingTickets(ledgerDir);
@@ -326,7 +361,7 @@ test("MeetingTicketLinks: no tracker, not connected, failing or slow: the record
   const store = new MeetingTickets(ledger);
   store.record("m1", "run-1", [{ key: "ENG-1", title: "Recorded" }]);
   const recordedOnly = [{ key: "ENG-1", url: "https://x.example/ENG-1", title: "Recorded", source: "run" }];
-  // A fresh one per case: the fake trackers share a kind, so they'd share the cache.
+  // A fresh one per case, so no case's search is reused by the next.
   const links = () => new MeetingTicketLinks(store, { timeoutMs: 50 });
 
   // No tracker to build the link: the ticket without one.

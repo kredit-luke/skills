@@ -467,8 +467,12 @@ export class RunManager {
     const text = (meta.status === "waiting" ? QUEUED_OVER_QUESTION + "\n\n" : "") + queuedText(meta.queued);
     const sent = this.reply(id, text, opts); // throws, leaving the queue as it was, if the run can't take a reply
     // The agent couldn't be started (the run failed on the spot): nothing went out, so the
-    // queue stays, held (not retried) until it's sent by hand.
-    if (!this.live.has(id)) return sent;
+    // queue stays, held (not retried) until it's sent by hand. A blocker from before (a run or
+    // usage limit) is cleared, or the 30-second retry would keep sending it.
+    if (!this.live.has(id)) {
+      if (sent.queueBlocked) { sent.queueBlocked = null; this._save(sent); }
+      return sent;
+    }
     sent.queued = [];
     sent.queueBlocked = null;
     this._save(sent);

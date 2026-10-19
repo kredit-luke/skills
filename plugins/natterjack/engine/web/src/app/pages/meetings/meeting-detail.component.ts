@@ -7,7 +7,7 @@ import { LaunchService } from '../../core/launch.service';
 import { MdPipe } from '../../core/md.pipe';
 import { ToastService } from '../../core/toast.service';
 import { TrustedHtmlPipe } from '../../core/trusted-html.pipe';
-import { actionCounts, dateLabel, isHttpsUrl, isNotConnected, moreParticipants, statusOf, timeLabel } from './meetings.util';
+import { actionCounts, dateLabel, detailLiveText, isHttpsUrl, isNotConnected, moreParticipants, statusOf, timeLabel } from './meetings.util';
 
 /** One meeting: its summary, action items (read-only), the tickets made from it and who was there, with Open in <tool> and Ask agent. */
 @Component({
@@ -40,7 +40,7 @@ import { actionCounts, dateLabel, isHttpsUrl, isNotConnected, moreParticipants, 
           @if (shareUrl(); as u) { <a class="share" [href]="u" target="_blank" rel="noopener">Your browser blocked the new window: open the meeting in {{ label() }} ↗</a> }
         </div>
 
-        @if (error()) { <div class="body"><div class="err-note">{{ error() }}</div> <button class="btn ghost sm" type="button" (click)="load(id())">Try again</button></div> }
+        @if (error()) { <div class="body"><div class="err-note">{{ error() }}</div> <button class="btn ghost sm" type="button" [disabled]="refreshing()" (click)="refresh()">{{ refreshing() ? 'Retrying…' : 'Try again' }}</button></div> }
 
         <section class="body">
           <h3>Summary</h3>
@@ -149,18 +149,25 @@ export class MeetingDetailComponent {
   readonly error = signal<string | null>(null);
   /** The tool says there's no such meeting (a stale ?m= link). */
   readonly missing = signal(false);
+  /** A Refresh or Try again is in flight (not a first load): what's shown stays, and the status line and Try again say so. */
+  readonly refreshing = signal(false);
   readonly opening = signal(false);
   readonly asking = signal(false);
   /** The share link, shown as a plain link when the browser blocked the window Open in <tool> opened. */
   readonly shareUrl = signal<string | null>(null);
   readonly isHttpsUrl = isHttpsUrl;
+  /** Bumped when another meeting is shown or the detail closes: an Open or Ask in flight is for the one before. */
   private seq = 0;
+  /** Bumped on every fetch of the meeting (a load or a refresh): only the latest one's answer is shown. */
+  private fetchSeq = 0;
   private readonly heading = viewChild.required<ElementRef<HTMLElement>>('heading');
 
   readonly counts = computed(() => actionCounts((this.detail() || this.listed())?.actionItems));
   readonly more = computed(() => { const d = this.detail(); return d ? moreParticipants(d) : null; });
   /** What a screen reader hears as the detail loads (the status line is always there; only its text changes). */
-  readonly liveText = computed(() => this.error() || (this.missing() ? `This meeting isn't in ${this.label()} any more, or you can't see it.` : this.detail() ? 'Meeting loaded' : 'Loading meeting…'));
+  readonly liveText = computed(() => detailLiveText({
+    refreshing: this.refreshing(), missing: this.missing(), error: this.error(), hasDetail: !!this.detail(), label: this.label(),
+  }));
 
   constructor() {
     effect(() => { const id = this.id(); untracked(() => this.load(id)); });
@@ -169,19 +176,43 @@ export class MeetingDetailComponent {
   }
 
   async load(id: string): Promise<void> {
-    const seq = ++this.seq;
+    this.seq++;
     this.detail.set(null);
     this.error.set(null);
     this.missing.set(false);
+    this.refreshing.set(false);
     this.shareUrl.set(null);
     // An Open or Ask still in flight belongs to the meeting before: its answer is dropped (see seq there).
     this.opening.set(false);
     this.asking.set(false);
+    await this.fetch(id);
+  }
+
+  /**
+   * The same meeting again (the page's Refresh, or Try again): its summary, action items and
+   * tickets may have changed. What's shown stays until the answer comes, and an Open or Ask in
+   * flight carries on: it's still this meeting. An error stays up (its button says Retrying…)
+   * until the answer replaces it.
+   */
+  async refresh(): Promise<void> {
+    this.refreshing.set(true);
+    await this.fetch(this.id());
+  }
+
+  private async fetch(id: string): Promise<void> {
+    const n = ++this.fetchSeq;
+    const seq = this.seq;
+    const current = () => n === this.fetchSeq && seq === this.seq;
     try {
       const d = await this.api.get<MeetingDetail>('/api/meetings/meeting?id=' + encodeURIComponent(id));
-      if (seq === this.seq) this.detail.set(d);
+      if (!current()) return;
+      this.refreshing.set(false);
+      this.detail.set(d);
+      this.error.set(null);
+      this.missing.set(false);
     } catch (e) {
-      if (seq !== this.seq) return;
+      if (!current()) return;
+      this.refreshing.set(false);
       // A 401 sets the error too: if the server still says connected, the page stays and this says why.
       if (isNotConnected(e)) { this.error.set((e as Error).message); this.notConnected.emit(); }
       else if (statusOf(e) === 404) this.missing.set(true);

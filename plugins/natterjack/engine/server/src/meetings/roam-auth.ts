@@ -140,7 +140,11 @@ export class RoamAuth {
   /** The last finished sign-in, until signInStatus() reports it. */
   private result: MeetingSignInStatus | null = null;
   private refreshing: Promise<RoamToken> | null = null;
-  /** Bumped on every save or delete, so a refresh that raced a disconnect doesn't write the token back. */
+  /**
+   * Bumped on every save or delete. The real check that a refresh didn't race a disconnect or a new sign-in is
+   * comparing its refresh token with the one in the file before writing; this is a belt-and-braces guard
+   * within this instance on top of that.
+   */
   private generation = 0;
 
   constructor(ledgerDir: string, cfg: RoamAuthConfig, opts: RoamAuthOptions) {
@@ -282,8 +286,11 @@ export class RoamAuth {
     };
     // Disconnected (or connected anew) while this was in flight: don't bring the old grant back.
     // A new connection is what to use now; with none, there's nothing to use.
-    if (this.generation !== gen) {
-      const stored = this.read();
+    // The generation only counts this instance's saves: another RoamAuth on the same ledger (the
+    // one a meetings.json edit swapped in, another dashboard) may have disconnected or connected
+    // anew. So save only if the file still holds the refresh token this request spent.
+    const stored = this.read();
+    if (this.generation !== gen || !stored || stored.refreshToken !== t.refreshToken) {
       if (stored) return stored;
       throw disconnected(`${this.cfg.label} isn't connected.`);
     }

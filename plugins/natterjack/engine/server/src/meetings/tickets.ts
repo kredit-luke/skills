@@ -13,7 +13,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import type { Meeting, MeetingTicket } from "../../../shared/api.ts";
-import type { IssueTracker, LinkedIssue } from "../issues/index.ts";
+import type { IssueTracker, LinkedIssue, TrackerStatus } from "../issues/index.ts";
 import { MEETING_ID_RE } from "./index.ts";
 
 /** What a meeting's Ask run writes to its outputs folder. */
@@ -171,19 +171,36 @@ export function mergeTickets(recorded: { key: string; url: string; title: string
 
 /**
  * Adds `tickets` to meetings: the ledger's, and the tracker's (one linkedIssues call for all of
- * them, cached per marker set, bounded by a timeout; the call carries on and fills the cache).
+ * them, cached per tracker and marker set, bounded by a timeout; the call carries on and fills the cache).
  */
 export class MeetingTicketLinks {
   store: MeetingTickets;
   timeoutMs: number;
   ttlMs: number;
-  /** Searches by tracker kind and marker set; `truncated` is null until the search settles. */
+  /** Searches by tracker scope (trackerScope) and marker set; `truncated` is null until the search settles. */
   private cache = new Map<string, { at: number; truncated: boolean | null; result: Promise<Map<string, LinkedIssue[]>> }>();
+  /** A number per tracker instance: Trackers makes a new one whenever its settings (sites, projects, repos) change. */
+  private instances = new WeakMap<IssueTracker, number>();
+  private nextInstance = 0;
 
   constructor(store: MeetingTickets, opts: { timeoutMs?: number; ttlMs?: number } = {}) {
     this.store = store;
     this.timeoutMs = opts.timeoutMs ?? TRACKER_TIMEOUT_MS;
     this.ttlMs = opts.ttlMs ?? CACHE_TTL_MS;
+  }
+
+  /** Forget every search (the tracker was connected or disconnected). */
+  clear() { this.cache.clear(); }
+
+  /**
+   * Which tracker settings and connection a search was made with: the instance (new settings make
+   * a new one) and who it's connected as, so another site, project, repo or account never reuses it.
+   * JSON, so it holds no newline (the cache key's separator).
+   */
+  private trackerScope(tracker: IssueTracker, status: TrackerStatus): string {
+    let n = this.instances.get(tracker);
+    if (n === undefined) { n = ++this.nextInstance; this.instances.set(tracker, n); }
+    return JSON.stringify([tracker.kind, n, status.source, status.viewer]);
   }
 
   /**
@@ -192,18 +209,21 @@ export class MeetingTicketLinks {
    */
   async linked(tracker: IssueTracker | null, markers: string[]): Promise<Map<string, LinkedIssue[]>> {
     if (!tracker || !tracker.linkedIssues || !markers.length) return new Map();
-    try { if (!tracker.status().connected) return new Map(); } catch { return new Map(); }
+    let status: TrackerStatus;
+    try { status = tracker.status(); } catch { return new Map(); }
+    if (!status.connected) return new Map();
+    const scope = this.trackerScope(tracker, status);
     const wanted = [...new Set(markers)].sort();
-    const key = `${tracker.kind}\n${wanted.join("\n")}`;
+    const key = `${scope}\n${wanted.join("\n")}`;
     const now = Date.now();
     for (const [k, v] of this.cache) if (now - v.at >= this.ttlMs) this.cache.delete(k);
     let hit = this.cache.get(key);
-    // A finished search that covered these markers too (a detail opened from the list): use the
-    // newest one, unless it hit its result cap (it may have missed some).
+    // A finished search by the same tracker and connection that covered these markers too (a
+    // detail opened from the list): use the newest one, unless it hit its result cap (it may have missed some).
     if (!hit) {
       for (const [k, v] of this.cache) {
-        const [kind, ...had] = k.split("\n");
-        if (kind === tracker.kind && v.truncated === false && wanted.every((m) => had.includes(m)) && (!hit || v.at > hit.at)) hit = v;
+        const [by, ...had] = k.split("\n");
+        if (by === scope && v.truncated === false && wanted.every((m) => had.includes(m)) && (!hit || v.at > hit.at)) hit = v;
       }
     }
     if (!hit) {

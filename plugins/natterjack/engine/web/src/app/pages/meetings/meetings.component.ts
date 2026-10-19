@@ -24,7 +24,7 @@ interface Row { m: Meeting; date: string; time: string; actions: { open: number;
   template: `
     <dash-page-header eyebrow="Company" title="Meetings" [sub]="sub()">
       @if (status()?.connected) {
-        <button class="btn ghost sm" type="button" (click)="reload()" [disabled]="loading()">{{ loading() ? 'Refreshing…' : 'Refresh' }}</button>
+        <button class="btn ghost sm" type="button" (click)="refresh()" [disabled]="refreshing()">{{ refreshing() ? 'Refreshing…' : 'Refresh' }}</button>
       }
     </dash-page-header>
 
@@ -161,10 +161,14 @@ export class MeetingsComponent implements OnInit {
   readonly moreErr = signal<string | null>(null);
   /** Bumped on every reload, so a page that arrives late for an older list is dropped. */
   private gen = 0;
+  /** The check onNotConnected started, while it's in flight. */
+  private notConnectedCheck: Promise<void> | null = null;
 
   readonly label = computed(() => this.status()?.label || this.api.boot()?.meetings?.label || 'your meeting tool');
   readonly sub = computed(() => this.api.copy('meetingsSub', `Your meetings from ${this.label()}: summaries and action items. Ask an agent which action items should become tickets.`));
   readonly selectedId = computed(() => this.query()?.get('m') || null);
+  /** The list, or the open meeting, is loading again: the page's Refresh button waits for both. */
+  readonly refreshing = computed(() => this.loading() || !!this.detailView()?.refreshing());
   readonly selected = computed(() => this.meetings().find((m) => m.id === this.selectedId()) || null);
   readonly rows = computed<Row[]>(() => {
     const now = new Date();
@@ -205,8 +209,16 @@ export class MeetingsComponent implements OnInit {
     else this.loadStatus();
   }
 
-  /** The token stopped working (401 from any call): ask the server where things stand, which shows the connect panel. */
-  async onNotConnected(): Promise<void> {
+  /**
+   * The token stopped working (401 from any call): ask the server where things stand, which shows
+   * the connect panel. A Refresh can get a 401 from the list and the detail at once: the second
+   * joins the check already in flight.
+   */
+  onNotConnected(): Promise<void> {
+    return this.notConnectedCheck ??= this.checkConnection().finally(() => { this.notConnectedCheck = null; });
+  }
+
+  private async checkConnection(): Promise<void> {
     this.clearList();
     await this.loadStatus();
     // Still connected as far as the server knows: say so rather than retrying in a loop.
@@ -225,6 +237,15 @@ export class MeetingsComponent implements OnInit {
     this.loadingMore.set(false);
     this.listErr.set(null);
     this.moreErr.set(null);
+  }
+
+  /**
+   * Refresh: the first page again, and the open meeting (the detail loads only when its id
+   * changes, so its summary, action items and tickets would stay as they were).
+   */
+  refresh(): void {
+    this.reload();
+    this.detailView()?.refresh();
   }
 
   /** The first page again. */

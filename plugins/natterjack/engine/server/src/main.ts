@@ -1451,9 +1451,14 @@ async function handleApi(req: http.IncomingMessage, res: http.ServerResponse, ur
       return sendError(res, 403, "Your role doesn't sign in to GitHub here.");
     }
     if (body.action === "start") return sendJson(res, await githubLogin.start(user));
-    if (body.action === "status") return sendJson(res, githubLogin.status());
+    // The GitHub tracker uses the gh CLI's login: a new or dropped one finds a meeting's tickets differently.
+    if (body.action === "status") {
+      const s = githubLogin.status();
+      if (s.state === "done") meetingLinks.clear();
+      return sendJson(res, s);
+    }
     if (body.action === "cancel") { githubLogin.cancel(); return sendJson(res, { ok: true }); }
-    if (body.action === "logout") return sendJson(res, await githubLogin.logout());
+    if (body.action === "logout") { try { return sendJson(res, await githubLogin.logout()); } finally { meetingLinks.clear(); } }
     return sendError(res, 400, "Unknown action");
   }
   if (p === "/api/restart") {
@@ -1524,12 +1529,17 @@ async function handleApi(req: http.IncomingMessage, res: http.ServerResponse, ur
     if (meta && runs.live.has(meta.id)) await new Promise((r) => setTimeout(r, 1500));
     return sendJson(res, { ...(await openTerminalForRun(meta)), run: runs.get(meta.id) });
   }
-  if (p === "/api/issues/connect" || p === "/api/linear/connect") return sendJson(res, await trackers.get().connect(body.key));
-  if (p === "/api/issues/disconnect" || p === "/api/linear/disconnect") return sendJson(res, trackers.get().disconnect());
+  // A meeting's tracker tickets were found with the old connection: search again with the new one.
+  if (p === "/api/issues/connect" || p === "/api/linear/connect") {
+    try { return sendJson(res, await trackers.get().connect(body.key)); } finally { meetingLinks.clear(); }
+  }
+  if (p === "/api/issues/disconnect" || p === "/api/linear/disconnect") {
+    try { return sendJson(res, trackers.get().disconnect()); } finally { meetingLinks.clear(); }
+  }
   if (p === "/api/atlassian/disconnect") {
     // Issues and Docs fall back to each other's Atlassian key, so forgetting one forgets both.
     const out = forgetAtlassianKeys(LEDGER_DIR);
-    if (workspaceConfig().issues.kind === "jira") trackers.get().disconnect();
+    if (workspaceConfig().issues.kind === "jira") { trackers.get().disconnect(); meetingLinks.clear(); }
     for (const src of docSources().sources) { const dp = docsProviders.get(src); if (dp && dp.kind === "confluence") dp.disconnect(); }
     return sendJson(res, out);
   }
@@ -1637,7 +1647,9 @@ async function handleApi(req: http.IncomingMessage, res: http.ServerResponse, ur
   if (p === "/api/snapshot/connect" || p === "/api/snapshot/disconnect") {
     const source = snapshotSource();
     if (!source) return sendError(res, 400, "repos.json has no snapshot source.");
-    const status = p.endsWith("/connect") ? await source.connect(body.key) : source.disconnect();
+    // A Confluence snapshot shares the Docs key, which Jira falls back to on the same site.
+    let status;
+    try { status = p.endsWith("/connect") ? await source.connect(body.key) : source.disconnect(); } finally { meetingLinks.clear(); }
     dropManifestCache();
     return sendJson(res, status);
   }
@@ -1738,7 +1750,8 @@ async function handleApi(req: http.IncomingMessage, res: http.ServerResponse, ur
   if (p === "/api/docs/preview") return sendJson(res, { url: await docSites.preview(String(body.site || "")) });
   if (p === "/api/docs/external/connect") {
     const { provider } = externalDocs(body.site);
-    try { await provider.connect(String(body.key || "")); } catch (e) { return sendError(res, 400, e.message); }
+    // Jira falls back to the same site's Confluence key (issues/jira.ts _credWithSource).
+    try { await provider.connect(String(body.key || "")); } catch (e) { return sendError(res, 400, e.message); } finally { meetingLinks.clear(); }
     return sendJson(res, await externalDocsStatus(body.site));
   }
   if (p.startsWith("/api/knowledge/")) {
@@ -1757,7 +1770,7 @@ async function handleApi(req: http.IncomingMessage, res: http.ServerResponse, ur
     return sendError(res, 404, "Unknown knowledge action");
   }
   if (p === "/api/docs/external/disconnect") {
-    externalDocs(body.site).provider.disconnect();
+    try { externalDocs(body.site).provider.disconnect(); } finally { meetingLinks.clear(); }
     return sendJson(res, await externalDocsStatus(body.site));
   }
   if (p === "/api/people/action") return sendJson(res, await people.act(body));

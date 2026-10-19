@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { ActionItem, Meeting, MeetingTicket } from '../../../../../shared/api';
-import { actionCounts, dateLabel, isHttpsUrl, isNotConnected, mergePages, moreParticipants, statusOf, summaryPreview, ticketSummary, timeLabel } from './meetings.util';
+import { actionCounts, dateLabel, detailLiveText, isHttpsUrl, isNotConnected, mergePages, moreParticipants, statusOf, summaryPreview, ticketSummary, timeLabel } from './meetings.util';
 
 const meeting = (id: string, over: Partial<Meeting> = {}): Meeting => ({
   id, title: 'M ' + id, startedAt: '2026-10-19T10:00:00Z', endedAt: null, participantCount: 2,
@@ -151,5 +151,26 @@ describe('ticketSummary', () => {
     const s = ticketSummary([t('ENG-1'), t('ENG-2')], 0)!;
     expect(s.shown.map((x) => x.key)).toEqual(['ENG-1']);
     expect(s.more).toBe(1);
+  });
+});
+
+describe('detailLiveText', () => {
+  const base = { refreshing: false, missing: false, error: null as string | null, hasDetail: false, label: 'Tool' };
+  it('says Loading on a first load and Meeting loaded once it is there', () => {
+    expect(detailLiveText(base)).toBe('Loading meeting…');
+    expect(detailLiveText({ ...base, hasDetail: true })).toBe('Meeting loaded');
+  });
+  it('says Refreshing while a refresh of a shown meeting is in flight, even over an error', () => {
+    expect(detailLiveText({ ...base, hasDetail: true, refreshing: true })).toBe('Refreshing meeting…');
+    expect(detailLiveText({ ...base, hasDetail: true, refreshing: true, error: 'boom' })).toBe('Refreshing meeting…');
+  });
+  it('says Loading while retrying with nothing shown yet', () => {
+    expect(detailLiveText({ ...base, refreshing: true, error: 'boom' })).toBe('Loading meeting…');
+  });
+  it('says the error once the retry fails', () => {
+    expect(detailLiveText({ ...base, hasDetail: true, error: 'boom' })).toBe('boom');
+  });
+  it('puts the missing panel ahead of an error, as the page does', () => {
+    expect(detailLiveText({ ...base, missing: true, error: 'boom' })).toBe("This meeting isn't in Tool any more, or you can't see it.");
   });
 });

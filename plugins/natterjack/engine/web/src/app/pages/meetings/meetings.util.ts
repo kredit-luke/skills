@@ -114,3 +114,15 @@ export function ticketSummary(tickets: MeetingTicket[] | null | undefined, max =
     moreText: more ? `${more} more ${more === 1 ? 'ticket' : 'tickets'}: ${rest.map((t) => t.key).join(', ')}` : '',
   };
 }
+
+/**
+ * What the meeting detail's status line says. A refresh in flight says so (Loading when there's
+ * nothing shown yet); otherwise it matches what's on screen: the "isn't there any more" panel
+ * wins over an error, because the panel is what shows.
+ */
+export function detailLiveText(s: { refreshing: boolean; missing: boolean; error: string | null; hasDetail: boolean; label: string }): string {
+  if (s.refreshing) return s.hasDetail ? 'Refreshing meeting…' : 'Loading meeting…';
+  if (s.missing) return `This meeting isn't in ${s.label} any more, or you can't see it.`;
+  if (s.error) return s.error;
+  return s.hasDetail ? 'Meeting loaded' : 'Loading meeting…';
+}

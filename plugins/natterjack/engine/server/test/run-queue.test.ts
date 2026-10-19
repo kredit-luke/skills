@@ -159,14 +159,21 @@ test("a queue sent to an agent that can't be started stays queued", async () => 
   await settled(runs, run.id, ["waiting"]);
   const claude = agentOf("claude");
   const spawn = claude.spawn;
+  // Held back by a limit before: sending it by hand and failing to start mustn't leave that blocker on.
+  const waiting = runs.get(run.id)!;
+  waiting.queueBlocked = "Already 3 runs in flight (limit 3).";
+  (runs as any)._save(waiting);
   claude.spawn = () => { throw Object.assign(new Error("spawn ENAMETOOLONG"), { code: "ENAMETOOLONG" }); };
   try {
     const sent = runs.sendQueued(run.id);
     assert.equal(sent.status, "failed");
+    assert.equal(sent.queueBlocked, null);
     assert.equal(runs.live.has(run.id), false);
     const saved = runs.get(run.id)!;
     assert.deepEqual(saved.queued!.map((q) => q.text), ["later"], "nothing went out, so nothing leaves the queue");
     assert.equal(saved.queueBlocked, null, "a failed spawn isn't a block, so nothing retries it on its own");
+    // What the 30-second retry picks: a blocker on a drainable queue. Not this one.
+    assert.equal(!!saved.queueBlocked && drainable(saved), false);
   } finally {
     claude.spawn = spawn;
   }

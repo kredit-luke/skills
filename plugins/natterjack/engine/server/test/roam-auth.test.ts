@@ -655,6 +655,41 @@ test("refresh losing to a new connect: the new token is used, not 'connect again
   assert.equal(readToken(dir).via, "token");
 });
 
+test("refresh racing another RoamAuth on the same ledger (meetings.json edited): its connect or disconnect stands", async () => {
+  // Another instance connects a personal access token while this one's refresh is in flight.
+  {
+    const dir = ledger();
+    const g = gate();
+    const { calls, fetcher } = gatedRoam(g);
+    writeToken(dir, {});
+    const old = auth(dir, { fetcher });
+    const replacement = auth(dir, { fetcher });
+    const refreshing = old.refresh();
+    await until(() => tokenCalls(calls).length === 1);
+    await replacement.connectToken("pat-1");
+    g.open();
+    const got = await refreshing;
+    const pat = { via: "token", accessToken: "pat-1", refreshToken: null, expiresAt: null, viewer: "Pat", scopes: ["meetings:read", "user:read"] };
+    assert.deepEqual(got, pat, "the replacement's connection is what's returned");
+    assert.deepEqual(readToken(dir), pat, "not overwritten by the old account's refreshed token");
+  }
+  // Another instance disconnects while this one's refresh is in flight.
+  {
+    const dir = ledger();
+    const g = gate();
+    const { calls, fetcher } = gatedRoam(g);
+    writeToken(dir, {});
+    const old = auth(dir, { fetcher });
+    const replacement = auth(dir, { fetcher });
+    const refreshing = old.refresh();
+    await until(() => tokenCalls(calls).length === 1);
+    assert.deepEqual(await replacement.disconnect(), {});
+    g.open();
+    await assert.rejects(refreshing, (e: any) => e instanceof RoamError && e.code === NOT_CONNECTED);
+    assert.equal(fs.existsSync(tokenFile(dir)), false, "the disconnect isn't undone");
+  }
+});
+
 test("three sign-ins back to back while the first listener is still starting: the last one gets the port", async () => {
   const port = await freePort();
   const g = gate();
