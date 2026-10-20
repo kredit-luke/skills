@@ -7,7 +7,7 @@
 # Cloud-neutral: any container platform with a persistent volume works (Kubernetes on
 # GKE/EKS/AKS, a VM with Docker, ...). Nothing here holds a secret; they come from the
 # environment at run time.
-FROM node:24-bookworm-slim
+FROM node:24-trixie-slim
 
 # Upgrade first: the base image lags Debian security releases, so without it a rebuild
 # keeps the packages the base shipped with.
