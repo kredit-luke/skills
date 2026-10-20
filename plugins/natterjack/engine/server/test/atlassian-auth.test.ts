@@ -431,3 +431,51 @@ test("Jira and Confluence: a sign-in for their site comes first; the API token i
   a.disconnect();
   assert.deepEqual(jira.status(), { connected: true, source: "file", viewer: null });
 });
+
+test("review: Confluence scopes come from any Confluence source on the sign-in's site, not just the first", () => {
+  const cfg = atlassianConfig(workspace({
+    "workspace.json": { issues: { kind: "jira", site: SITE }, atlassian: { clientId: "cid" } },
+    "docs.json": { sources: [
+      { key: "other", kind: "external", provider: "confluence", url: "https://other.atlassian.net/wiki" },
+      { key: "wiki", kind: "external", provider: "confluence", url: `https://${SITE}/wiki` },
+    ] },
+  }));
+  assert.deepEqual(cfg.scopes, [...JIRA_SCOPES, ...CONFLUENCE_SCOPES, OFFLINE_SCOPE]);
+});
+
+test("review: a token file that can't be deleted makes disconnect fail instead of claiming it's forgotten", () => {
+  const dir = ledger();
+  fs.mkdirSync(tokenFile(dir)); // unlink on a directory fails (EPERM/EISDIR), not ENOENT
+  assert.throws(() => auth(dir).disconnect());
+  fs.rmdirSync(tokenFile(dir));
+  assert.doesNotThrow(() => auth(dir).disconnect(), "already gone is fine");
+});
+
+test("review: Confluence offers Connect to Atlassian only when the sign-in is for its own site", () => {
+  const dir = ledger();
+  const a = auth(dir);
+  const ctx = { ledgerDir: dir, issues: { kind: "jira", site: SITE }, atlassian: () => a };
+  const same = new ConfluenceProvider({ key: "w", name: "W", kind: "external", provider: "confluence", url: `https://${SITE}/wiki` } as any, ctx);
+  const other = new ConfluenceProvider({ key: "o", name: "O", kind: "external", provider: "confluence", url: "https://other.atlassian.net/wiki" } as any, ctx);
+  assert.equal(same.connectHelp()!.signIn, "atlassian");
+  assert.equal(other.connectHelp()!.signIn, undefined);
+});
+
+test("review: Jira forgets the viewer and the board when the credential in use changes (sign-in expired → API token)", () => {
+  const dir = ledger();
+  fs.writeFileSync(path.join(dir, "jira-api-token"), "bo@acme.com:jira-token-123");
+  writeToken(dir);
+  const a = auth(dir);
+  const jira = new JiraTracker(dir, { kind: "jira", label: "Jira", site: SITE, implementStates: [], ticketPattern: "" } as any, () => a);
+  jira.docsSources = () => [];
+  assert.equal(jira._auth()!.kind, "signin");
+  jira.viewer = "Ada";
+  jira.cache = { issues: [{ id: "ENG-1" }] } as any;
+  assert.equal(jira._auth()!.kind, "signin");
+  assert.equal(jira.viewer, "Ada", "same credential: kept");
+  fs.unlinkSync(tokenFile(dir)); // the sign-in expired and was forgotten
+  assert.equal(jira._auth()!.kind, "token");
+  assert.equal(jira.viewer, null);
+  assert.equal(jira.cache, null);
+  assert.deepEqual(jira.status(), { connected: true, source: "file", viewer: null });
+});

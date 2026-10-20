@@ -14,6 +14,7 @@
  * A sign-in for this site comes before any of them.
  */
 
+import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import https from "node:https";
@@ -181,9 +182,25 @@ class JiraTracker implements IssueTracker {
   /** What requests use: the sign-in first, else the API token; null when there's neither. */
   _auth(): AtlassianCred | null {
     const a = this._signIn();
-    if (a) return { kind: "signin", auth: a };
-    const cred = this._cred();
-    return cred ? { kind: "token", cred } : null;
+    const auth: AtlassianCred | null = a ? { kind: "signin", auth: a } : (() => { const cred = this._cred(); return cred ? { kind: "token" as const, cred } : null; })();
+    this._syncCred(auth);
+    return auth;
+  }
+
+  /** Which credential was last used ("signin", or the token's hash): the viewer and the board belong to it. */
+  private credKey = "";
+
+  /**
+   * A different credential (a sign-in made, dropped or expired, or a new key): the viewer and
+   * the cached board were read as someone who may not be this person, so they go. A request
+   * still in flight with the old one doesn't write them back (see issues()).
+   */
+  _syncCred(auth: AtlassianCred | null) {
+    const key = !auth ? "" : auth.kind === "signin" ? `signin:${auth.auth.current()?.accessToken ? auth.auth.cfg.site : ""}` : `token:${crypto.createHash("sha256").update(auth.cred).digest("hex")}`;
+    if (key === this.credKey) return;
+    this.credKey = key;
+    this.viewer = null;
+    this.cache = null;
   }
 
   _get(cred: string | AtlassianCred, pathAndQuery: string, body?: object): Promise<any> {
@@ -220,8 +237,8 @@ class JiraTracker implements IssueTracker {
   }
 
   status(): TrackerStatus {
-    const a = this._signIn();
-    if (a) return { connected: true, source: "signin", viewer: this.viewer || a.current()?.viewer || null };
+    const auth = this._auth();
+    if (auth?.kind === "signin") return { connected: true, source: "signin", viewer: this.viewer || auth.auth.current()?.viewer || null };
     const c = this._credWithSource();
     return { connected: !!c && !!this.site, source: c ? c.source : null, viewer: this.viewer };
   }
@@ -283,14 +300,21 @@ class JiraTracker implements IssueTracker {
     if (fresh && !force) return this.cache;
     if (!this.inflight) {
       this.inflightKey = key;
+      const asKey = this.credKey;
       this.inflight = (async () => {
         try {
-          if (!this.viewer) this.viewer = (await this._get(cred, "/rest/api/3/myself")).displayName || null;
+          if (!this.viewer) {
+            const me = (await this._get(cred, "/rest/api/3/myself")).displayName || null;
+            if (this.credKey === asKey) this.viewer = me;
+          }
           // teams (project names) narrow the configured projects; project keys and names both work in JQL.
           const projects = filter.teams && filter.teams.length ? filter.teams : this.projects;
           const res = await this._get(cred, "/rest/api/3/search/jql", { jql: jql({ ...filter, teams: [] }, projects), fields: FIELDS, maxResults: LIMIT });
+          // Read as someone else (the credential changed meanwhile): don't put it back.
+          if (this.credKey !== asKey) return;
           this.cache = { connected: true, fetchedAt: Date.now(), error: null, issues: (res.issues || []).map((n) => this.toIssue(n)) };
         } catch (e) {
+          if (this.credKey !== asKey) return;
           // Same board: keep showing the last good list, flagged with the error. A new filter that fails shows nothing.
           const keep = this.cacheKey === key && this.cache ? this.cache : { issues: [] };
           this.cache = { ...keep, connected: true, fetchedAt: Date.now(), error: e.message };
@@ -298,7 +322,10 @@ class JiraTracker implements IssueTracker {
         this.cacheKey = key;
       })().finally(() => { this.inflight = null; });
     }
+    const waitedAs = this.credKey;
     await this.inflight;
+    // That request was made with a credential that's since changed: fetch again with the current one.
+    if (!this.cache || this.credKey !== waitedAs) return this._auth() ? this.issues(filter, true) : { connected: false, issues: [] };
     return this.cache;
   }
 

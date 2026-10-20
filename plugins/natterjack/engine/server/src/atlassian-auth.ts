@@ -33,6 +33,7 @@ import fs from "node:fs";
 import type http from "node:http";
 import path from "node:path";
 import type { AtlassianSignInStatus, AtlassianStatus } from "../../shared/api.ts";
+import { removeKeyFile } from "./atlassian.ts";
 import { readConfigFile, workspaceConfig } from "./config.ts";
 import { OAuthSignIn, hostedCallbackUri, loopbackRedirectProblem, type Listen, type SignInStart, type SignInStatus } from "./oauth-signin.ts";
 
@@ -117,15 +118,16 @@ export function atlassianConfig(dir?: string): AtlassianConfig {
   const a = raw && typeof raw === "object" && !Array.isArray(raw) ? raw : {};
   const issues = dir ? (readConfigFile("workspace.json", dir).data?.issues || {}) : workspaceConfig().issues;
   const sources = readConfigFile("docs.json", dir).data?.sources;
-  const confluence = (Array.isArray(sources) ? sources : []).find((s: any) => s && s.kind === "external" && s.provider === "confluence");
+  const wikiSites = (Array.isArray(sources) ? sources : [])
+    .filter((s: any) => s && s.kind === "external" && s.provider === "confluence")
+    .map((s: any) => hostOf(s.url)).filter((h: string | null): h is string => !!h);
   const jiraSite = issues.kind === "jira" ? hostOf(issues.site) : null;
-  const wikiSite = confluence ? hostOf(confluence.url) : null;
-  const site = jiraSite || wikiSite;
+  const site = jiraSite || wikiSites[0] || null;
   const clientId = typeof a.clientId === "string" && a.clientId.trim() ? a.clientId.trim() : null;
   const redirectUri = typeof a.redirectUri === "string" && a.redirectUri.trim() ? a.redirectUri.trim() : DEFAULT_ATLASSIAN_REDIRECT;
   const listed = Array.isArray(a.scopes) ? a.scopes.filter((s: unknown) => typeof s === "string" && s.trim()).map((s: string) => s.trim()) : null;
   // offline_access is what makes it last: always asked for.
-  const scopes = listed && listed.length ? [...new Set([...listed, OFFLINE_SCOPE])] : defaultScopes(!!jiraSite, !!wikiSite && wikiSite === site);
+  const scopes = listed && listed.length ? [...new Set([...listed, OFFLINE_SCOPE])] : defaultScopes(!!jiraSite, !!site && wikiSites.includes(site));
   const problem = (a.clientId != null && typeof a.clientId !== "string" ? 'workspace.json: "atlassian.clientId" must be the OAuth app\'s client ID (a string), or left out.' : null)
     || (a.redirectUri != null && typeof a.redirectUri !== "string" ? 'workspace.json: "atlassian.redirectUri" must be a string.' : null)
     || (a.scopes != null && !Array.isArray(a.scopes) ? 'workspace.json: "atlassian.scopes" must be a list of scope names.' : null)
@@ -219,9 +221,10 @@ export class AtlassianAuth {
     try { fs.renameSync(tmp, this.file); } catch { fs.copyFileSync(tmp, this.file); fs.unlinkSync(tmp); }
   }
 
+  /** Delete the token file. Already gone is fine; any other failure is thrown, never passed off as forgotten. */
   private forget() {
     this.generation++;
-    try { fs.unlinkSync(this.file); } catch {}
+    removeKeyFile(this.file);
   }
 
   /** What the page sees: whether sign-in is offered, and who's signed in (never the token). main.ts adds `jira`. */

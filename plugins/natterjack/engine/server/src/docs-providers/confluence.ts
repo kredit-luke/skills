@@ -197,7 +197,8 @@ export class ConfluenceProvider implements DocsProvider {
       placeholder: "you@company.com:ATATT…",
       needsKey: true,
       keyFields: "email-token",
-      signIn: "atlassian",
+      // Only where the workspace's sign-in is for this source's site: another site's sign-in wouldn't connect it.
+      ...(this.ctx.atlassian?.()?.cfg.site === this.site ? { signIn: "atlassian" as const } : {}),
     };
   }
 

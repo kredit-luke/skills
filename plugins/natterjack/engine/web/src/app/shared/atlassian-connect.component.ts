@@ -44,15 +44,16 @@ export class AtlassianConnectComponent implements OnInit {
   readonly connected = output<void>();
   readonly status = signal<AtlassianStatus | null>(null);
 
-  async ngOnInit(): Promise<void> { await this.load(); }
+  async ngOnInit(): Promise<void> { await this.refresh(); }
 
-  private async load(): Promise<void> {
+  /** Ask again whether Atlassian is connected (a page calls it after reading something that may have found the sign-in expired). */
+  async refresh(): Promise<void> {
     try { this.status.set(await this.api.get<AtlassianStatus>('/api/atlassian/status')); }
     catch { /* an older server, or it's down: just no button */ }
   }
 
   async signedIn(): Promise<void> {
-    await this.load();
+    await this.refresh();
     this.connected.emit();
   }
 }

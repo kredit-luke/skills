@@ -144,6 +144,8 @@ export class MeetingsComponent implements OnInit {
   private readonly injector = inject(Injector);
   private readonly query = toSignal(this.route.queryParamMap);
   private readonly detailView = viewChild(MeetingDetailComponent);
+  /** The Connect to Atlassian bar: asked again after each list load, which may have found the sign-in expired. */
+  private readonly atlassianBar = viewChild(AtlassianConnectComponent);
   private readonly rowLinks = viewChildren<ElementRef<HTMLAnchorElement>>('rowLink');
   private readonly listNav = viewChild<ElementRef<HTMLElement>>('listNav');
   /** A row was just picked while the layout is stacked: move focus to the detail once it shows. */
@@ -264,6 +266,8 @@ export class MeetingsComponent implements OnInit {
       if (gen !== this.gen) return;
       this.meetings.set(mergePages([], page.meetings));
       this.nextCursor.set(page.nextCursor);
+      // The ticket lookup ran with the Atlassian sign-in: if that's gone, the bar offers to connect again.
+      this.atlassianBar()?.refresh();
     } catch (e) {
       if (gen !== this.gen) return;
       if (isNotConnected(e)) { this.onNotConnected(); return; }
