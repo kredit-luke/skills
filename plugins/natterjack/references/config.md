@@ -68,7 +68,7 @@ With `atlassian.clientId` set, each person signs in with their own Atlassian acc
 
 The site is the one the workspace already names: `issues.site` for Jira, else the first Confluence source in docs.json.
 
-**The client secret.** Atlassian has no public-client (PKCE) option: the code exchange and every refresh send the app's client secret, so every dashboard that finishes a sign-in needs it. Never commit it. The dashboard reads `ATLASSIAN_CLIENT_SECRET`, else `.claude/ledger/atlassian-client-secret` (one line: the secret alone, or `ATLASSIAN_CLIENT_SECRET=<secret>`). Hosted dashboards get it from the deployment's secret (hosting.md). Without it the button says the secret is missing and API tokens still work. The secret alone reads nothing: every person still signs in and agrees.
+**The client secret.** Atlassian has no public-client (PKCE) option: the code exchange and every refresh send the app's client secret, so every dashboard that finishes a sign-in needs it. Never commit it. The dashboard reads `ATLASSIAN_CLIENT_SECRET`, else `.claude/ledger/atlassian-client-secret` (the secret alone, or `ATLASSIAN_CLIENT_SECRET=<secret>`; blank lines and `#` comment lines are skipped, so a committed template carrying the team's instructions, copied there, works as is). Hosted dashboards get it from the deployment's secret (hosting.md). Without it the button says the secret is missing and API tokens still work. The secret alone reads nothing: every person still signs in and agrees.
 
 **Creating the app** (once per team, at developer.atlassian.com → Developer console → Create → OAuth 2.0 integration):
 
