@@ -135,6 +135,11 @@ test("clientSecret: the env var wins, else the ledger file, else none", () => {
     assert.equal(clientSecret(kv), null);
     fs.writeFileSync(path.join(kv, SECRET_FILE), `${SECRET_ENV}= "kv-secret"\r\n`);
     assert.equal(clientSecret(kv), "kv-secret");
+    // A template's instructions: comment and blank lines are skipped.
+    fs.writeFileSync(path.join(kv, SECRET_FILE), `# Where to get it: the team's password manager.\r\n\n# Paste it after the =.\n${SECRET_ENV}=\n`);
+    assert.equal(clientSecret(kv), null);
+    fs.writeFileSync(path.join(kv, SECRET_FILE), `# instructions\n\n${SECRET_ENV}=from-template\n`);
+    assert.equal(clientSecret(kv), "from-template");
     process.env[SECRET_ENV] = "  from-env ";
     assert.equal(clientSecret(dir), "from-env");
   } finally {

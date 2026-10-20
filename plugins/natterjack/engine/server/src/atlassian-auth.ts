@@ -137,14 +137,15 @@ export function atlassianConfig(dir?: string): AtlassianConfig {
 
 /**
  * The app's client secret: ATLASSIAN_CLIENT_SECRET, else <ledger>/atlassian-client-secret; null when
- * neither (or blank). The file holds the secret alone, or `ATLASSIAN_CLIENT_SECRET=<secret>`.
+ * neither (or blank). The file holds the secret alone, or `ATLASSIAN_CLIENT_SECRET=<secret>`;
+ * blank lines and lines starting with # are skipped, so a team's template can carry its instructions.
  */
 export function clientSecret(ledgerDir: string): string | null {
   const env = String(process.env[SECRET_ENV] || "").trim();
   if (env) return env;
   let raw: string;
   try { raw = fs.readFileSync(path.join(ledgerDir, SECRET_FILE), "utf-8"); } catch { return null; }
-  const line = raw.replace(/^﻿/, "").trim();
+  const line = raw.replace(/^\uFEFF/, "").split(/\r?\n/).map((l) => l.trim()).find((l) => l && !l.startsWith("#")) || "";
   const value = line.startsWith(`${SECRET_ENV}=`) ? line.slice(SECRET_ENV.length + 1) : line;
   return value.trim().replace(/^(["'])(.*)\1$/, "$2") || null;
 }
