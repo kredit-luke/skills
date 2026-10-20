@@ -2,7 +2,7 @@
 # plugins/natterjack so the engine's hosted.ts (the shared request checks) comes along:
 #
 #   docker build -f plugins/natterjack/router/Dockerfile --pull --no-cache -t <registry>/natterjack-router:<tag> plugins/natterjack
-FROM node:24-bookworm-slim
+FROM node:24-trixie-slim
 # The base image lags Debian security releases, so without this a rebuild keeps the
 # packages the base shipped with.
 RUN apt-get update \
