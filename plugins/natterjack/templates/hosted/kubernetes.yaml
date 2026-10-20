@@ -58,6 +58,8 @@ spec:
             # - { name: SNAPSHOT_CONFIG, value: '{"source":"s3","bucket":"acme-code","region":"eu-west-1"}' }
             # - { name: SNAPSHOT_S3_ACCESS_KEY_ID, valueFrom: { secretKeyRef: { name: dashboard-hosted, key: snapshot-key-id } } }
             # - { name: SNAPSHOT_S3_SECRET_ACCESS_KEY, valueFrom: { secretKeyRef: { name: dashboard-hosted, key: snapshot-secret } } }
+            # Connect to Atlassian (workspace.json atlassian.clientId): the Atlassian app's client secret.
+            # - { name: ATLASSIAN_CLIENT_SECRET, valueFrom: { secretKeyRef: { name: dashboard-hosted, key: atlassian-client-secret } } }
           resources:
             # Measured: ~115 MB idle, ~300 MB per Claude run (subagents run inside it).
             # The limit covers the first start's npm ci + ng build (~1.6 GB for a minute;
@@ -133,6 +135,7 @@ spec:
 #   --from-literal=cookie-secret=$(openssl rand -hex 16) \
 #   --from-literal=client-secret=<your OIDC app's client secret> \
 #   --from-literal=git-token=<optional read token for the workspace repo>
+#   (optional, for Connect to Atlassian: --from-literal=atlassian-client-secret=<the Atlassian app's client secret>)
 apiVersion: v1
 kind: ConfigMap
 metadata:

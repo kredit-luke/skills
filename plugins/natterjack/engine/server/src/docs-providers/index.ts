@@ -12,6 +12,7 @@
  * docs-providers/<kind>.ts and register it in PROVIDERS.
  */
 
+import type { AtlassianAuth } from "../atlassian-auth.ts";
 import type { DocSiteDef } from "../docs.ts";
 import { ConfluenceProvider } from "./confluence.ts";
 
@@ -34,9 +35,9 @@ export interface DocPage {
 export interface DocSpace { key: string; name: string; url: string }
 export interface ProviderStatus {
   connected: boolean;
-  /** Where the key came from: an env var, the pasted key, or the issue tracker's key for the same site. */
-  source: "env" | "file" | "tracker" | null;
-  /** The key in use is a saved file that Disconnect can delete (false for env vars, including the tracker's). */
+  /** Where the key came from: an env var, the pasted key, the issue tracker's key for the same site, or Connect to Atlassian. */
+  source: "env" | "file" | "tracker" | "signin" | null;
+  /** The key in use is a saved file (or a sign-in) that Disconnect can remove (false for env vars, including the tracker's). */
   removable?: boolean;
   viewer: string | null;
 }
@@ -49,6 +50,8 @@ export interface ProviderHelp {
   title: string; steps: string[]; placeholder: string; needsKey: boolean; method?: "key" | "oauth";
   /** 'email-token': the key is an email and an API token, asked for in two fields and sent as "email:token". */
   keyFields?: "email-token";
+  /** "atlassian": Connect to Atlassian is offered as well (when the workspace has the app set up). */
+  signIn?: "atlassian";
 }
 
 export interface DocsProvider {
@@ -70,6 +73,8 @@ export interface ProviderContext {
   ledgerDir: string;
   /** workspace.json issues (kind, site), so a provider on the same site can reuse the tracker's key. */
   issues: { kind: string; site?: string | null };
+  /** The workspace's Connect to Atlassian, when the dashboard has one. */
+  atlassian?: () => AtlassianAuth | null;
 }
 
 type Factory = (source: DocSiteDef, ctx: ProviderContext) => DocsProvider;
@@ -86,6 +91,9 @@ export class DocsProviders {
   private cache = new Map<string, { sig: string; provider: DocsProvider }>();
   private ctx: () => ProviderContext;
   constructor(ctx: () => ProviderContext) { this.ctx = ctx; }
+
+  /** Start afresh (a new or dropped sign-in: cached spaces and viewers were read with the old one). */
+  reset() { this.cache.clear(); }
 
   /** The provider for a source, or null when the source isn't external or its provider has no adapter. */
   get(source: DocSiteDef | undefined | null): DocsProvider | null {

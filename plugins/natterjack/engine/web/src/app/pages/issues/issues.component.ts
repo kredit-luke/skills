@@ -11,10 +11,11 @@ import { TrustedHtmlPipe } from '../../core/trusted-html.pipe';
 import { IssueSummaryComponent } from '../../shared/issue-summary.component';
 import { PageHeaderComponent } from '../../shared/page-header.component';
 import { KeyFieldsComponent } from '../../shared/key-fields.component';
+import { AtlassianConnectComponent } from '../../shared/atlassian-connect.component';
 
 @Component({
   selector: 'dash-issues',
-  imports: [PageHeaderComponent, RouterLink, IssueSummaryComponent, MdPipe, TrustedHtmlPipe, KeyFieldsComponent],
+  imports: [PageHeaderComponent, RouterLink, IssueSummaryComponent, MdPipe, TrustedHtmlPipe, KeyFieldsComponent, AtlassianConnectComponent],
   changeDetection: ChangeDetectionStrategy.OnPush,
   styleUrl: './issues.component.scss',
   templateUrl: './issues.component.html',
@@ -102,17 +103,17 @@ export class IssuesComponent implements OnInit, OnDestroy {
   claudeQueued(i: Issue): boolean { return i.labels.some((l) => l.name.toLowerCase() === 'claude'); }
   running(i: Issue): boolean { return !!i.lastRun && (i.lastRun.status === 'running' || i.lastRun.status === 'waiting'); }
 
-  /** A saved Atlassian key (not one from env vars) that Disconnect can remove. */
+  /** A sign-in or a saved Atlassian key (not one from env vars) that Disconnect can remove. */
   readonly canForgetAtlassian = computed(() => {
     const d = this.resp();
-    return !!d && d.connected && d.tracker.kind === 'jira' && d.keySource === 'file';
+    return !!d && d.connected && d.tracker.kind === 'jira' && (d.keySource === 'file' || d.keySource === 'signin');
   });
 
   async forgetAtlassian(): Promise<void> {
-    if (!confirm("Remove your saved Atlassian API key? The Issues and Docs pages stop using it until you connect a key again. (Claude's own Atlassian connector isn't affected.)")) return;
+    if (!confirm("Disconnect Atlassian? The Issues and Docs pages stop reading Atlassian as you: your sign-in and any saved API key are removed until you connect again. (Claude's own Atlassian connector isn't affected.)")) return;
     try {
-      const r = await this.api.post<{ envKeys: string[] }>('/api/atlassian/disconnect', {});
-      this.toast.show(r.envKeys.length ? `Saved key removed. ${r.envKeys.join(', ')} is still set in your environment.` : 'Atlassian key removed');
+      const r = await this.api.post<{ envKeys: string[]; note?: string }>('/api/atlassian/disconnect', {});
+      this.toast.show(r.envKeys.length ? `Disconnected. ${r.envKeys.join(', ')} is still set in your environment.` : r.note || 'Atlassian disconnected');
       this.load(true);
     } catch (e) { this.toast.show((e as Error).message); }
   }

@@ -583,10 +583,12 @@ export interface KnowledgeNoteText { rel: string; text: string; etag: string | n
  */
 export interface ExternalDocsStatus {
   site: string; name: string; provider: string; label: string; url: string | null;
-  connected: boolean; source: 'env' | 'file' | 'tracker' | null; viewer: string | null;
-  /** The key in use is a saved file Disconnect can delete. */
+  /** Where the connection comes from: an env key, the pasted key, the tracker's key for the same site, or Connect to Atlassian. */
+  connected: boolean; source: 'env' | 'file' | 'tracker' | 'signin' | null; viewer: string | null;
+  /** The key in use is a saved file (or a sign-in) Disconnect can remove. */
   removable?: boolean;
-  help: { title: string; steps: string[]; placeholder: string; needsKey: boolean; keyFields?: 'email-token' } | null;
+  /** signIn 'atlassian': the card also offers Connect to Atlassian (GET /api/atlassian/status says whether it's set up). */
+  help: { title: string; steps: string[]; placeholder: string; needsKey: boolean; keyFields?: 'email-token'; signIn?: 'atlassian' } | null;
   spaces: { key: string; name: string; url: string }[];
   error: string | null;
 }
@@ -756,13 +758,16 @@ export interface Issue {
   canImplement: boolean; hasWorktree: boolean;
   lastRun: { id: string; status: RunStatus; startedAt: string } | null;
 }
-/** How to connect the tracker when it needs a personal key (steps are markdown). */
-export interface ConnectHelp { title: string; steps: string[]; placeholder: string; needsKey: boolean; method?: 'key' | 'oauth'; keyFields?: 'email-token' }
+/**
+ * How to connect the tracker when it needs a personal key (steps are markdown). signIn 'atlassian':
+ * Connect to Atlassian is offered too (GET /api/atlassian/status says whether it's set up).
+ */
+export interface ConnectHelp { title: string; steps: string[]; placeholder: string; needsKey: boolean; method?: 'key' | 'oauth'; keyFields?: 'email-token'; signIn?: 'atlassian' }
 /** GET /api/issues[?force=1]  (/api/linear/issues still works) */
 export interface IssuesResponse {
   connected: boolean; issues: Issue[]; states: string[]; teams: string[]; viewer: string | null; fetchedAt?: number; error?: string;
-  /** Where the tracker's key comes from: 'env' can't be disconnected from the dashboard. */
-  keySource?: 'env' | 'file' | 'cli' | null;
+  /** Where the tracker's key comes from ('signin': Connect to Atlassian): 'env' can't be disconnected from the dashboard. */
+  keySource?: 'env' | 'file' | 'cli' | 'signin' | null;
   tracker: { kind: string; label: string; configured: boolean; supported: boolean };
   /** Set when not connected and the tracker takes a key. */
   connect: ConnectHelp | null;
@@ -782,6 +787,36 @@ export interface IssueDetail { id: string; title: string; url: string; team: str
  * POST /api/issues/explain { ticket } → 201 { run }  (plan-mode run with the issue embedded)
  * (The /api/linear/* names of these still work.)
  */
+
+// ---------------------------------------------------------------- atlassian
+
+/**
+ * GET /api/atlassian/status: Connect to Atlassian (OAuth 2.0 3LO), which reads Jira and
+ * Confluence as the person. Pasted API tokens are separate and still work.
+ */
+export interface AtlassianStatus {
+  /** The workspace reads Atlassian: a Jira tracker or a Confluence docs source. */
+  used: boolean;
+  /** The site it reads (acme.atlassian.net). */
+  site: string | null;
+  /** Sign-in is offered: workspace.json atlassian.clientId is set and this dashboard has the client secret. */
+  signIn: boolean;
+  /** Why sign-in isn't offered when it's configured (a bad setting, no client secret), or null. */
+  signInProblem: string | null;
+  /** Signed in (for this site). */
+  connected: boolean;
+  viewer: string | null;
+  /** The issue tracker is Jira: whether it's connected at all (sign-in or an API token); null for another tracker. */
+  jira: boolean | null;
+}
+/**
+ * POST /api/atlassian/sign-in { action: 'start' } → AtlassianSignInStart; { action: 'status' | 'finish', url? }
+ * → AtlassianSignInStatus; { action: 'cancel' }. POST /api/atlassian/disconnect → { envKeys, note? }:
+ * forgets the sign-in and the saved API tokens (envKeys: env vars that still supply one).
+ * Hosted, the browser comes back to GET /api/oauth/atlassian/callback on the dashboard itself.
+ */
+export type AtlassianSignInStart = MeetingSignInStart;
+export type AtlassianSignInStatus = McpLoginStatus;
 
 // ---------------------------------------------------------------- meetings
 
@@ -834,7 +869,8 @@ export interface MeetingDetail extends Meeting {
 export interface MeetingConnectHelp { title: string; steps: string[]; placeholder: string }
 /**
  * POST /api/meetings/sign-in { action: 'start' } → the page to open. listening: this dashboard
- * catches the redirect to `callback` itself; otherwise the person pastes that address back.
+ * catches the redirect to `callback` itself (locally on a loopback port, hosted at
+ * GET /api/oauth/<tool>/callback); otherwise the person pastes that address back.
  */
 export interface MeetingSignInStart { url: string; callback: string; listening: boolean }
 /** POST /api/meetings/sign-in { action: 'status' | 'finish' | 'cancel' }. */
@@ -1007,7 +1043,7 @@ export interface SnapshotStatus {
   /** repos.json snapshot.source, and its adapter's label ("Confluence", "Web server"); label null = no adapter. */
   sourceKind: string | null;
   label: string | null;
-  connection: { connected: boolean; source: 'env' | 'file' | 'tracker' | null; viewer: string | null } | null;
+  connection: { connected: boolean; source: 'env' | 'file' | 'tracker' | 'signin' | null; viewer: string | null } | null;
   /** How to connect, when not connected. */
   connect: ConnectHelp | null;
   /** When the published snapshot was built (null until the manifest is read). */

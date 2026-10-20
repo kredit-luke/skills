@@ -2,7 +2,7 @@
   <span class="ty">{{ meta() }}</span>
   <button class="btn ghost sm" (click)="load(true)" [disabled]="loading()">{{ loading() ? 'Refreshing…' : 'Refresh' }}</button>
   @if (canForgetAtlassian()) {
-    <button class="btn ghost sm" (click)="forgetAtlassian()" title="Remove your saved Atlassian API key (used by the Issues and Docs pages) so you can connect a different one">Disconnect Atlassian</button>
+    <button class="btn ghost sm" (click)="forgetAtlassian()" title="Stop the Issues and Docs pages reading Atlassian as you (your sign-in and any saved API key are removed), so you can connect again">Disconnect Atlassian</button>
   }
 </dash-page-header>
 
@@ -26,6 +26,9 @@
   <div class="panel connect-card">
     <div class="panel-h"><h2>{{ help.title }}</h2></div>
     <div class="cc-b">
+      @if (help.signIn === 'atlassian') {
+        <dash-atlassian-connect lead="Sign in with your Atlassian account: nothing to create or paste. Or use an API token:" inputId="issues-atlassian-callback" (connected)="load(true)" />
+      }
       <ol>
         @for (s of help.steps; track $index) { <li class="md tight" [innerHTML]="s | md | trustedHtml"></li> }
       </ol>

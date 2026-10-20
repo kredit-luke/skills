@@ -5,6 +5,9 @@
  * So a request goes to the site first; if the site refuses the key (401/403), it's retried once
  * through the gateway, and a key that works there keeps using it.
  *
+ * Connect to Atlassian (atlassian-auth.ts) is the other credential: an OAuth token, which only
+ * the gateway accepts, sent as Bearer. atlassianCall sends a request with either.
+ *
  * Also: forgetting the saved keys (Disconnect Atlassian).
  */
 
@@ -12,6 +15,7 @@ import crypto from "node:crypto";
 import fs from "node:fs";
 import https from "node:https";
 import path from "node:path";
+import type { AtlassianAuth } from "./atlassian-auth.ts";
 
 export type AtlassianProduct = "jira" | "confluence";
 
@@ -68,6 +72,23 @@ export async function atlassianRequest<T>(
     viaGateway.add(k);
     return out;
   }
+}
+
+/** How a request signs in: a pasted API token ("email:token", sent as Basic) or Connect to Atlassian (Bearer, gateway only). */
+export type AtlassianCred = { kind: "token"; cred: string } | { kind: "signin"; auth: AtlassianAuth };
+
+/**
+ * Send a request with either credential. `send` makes it for a full URL and Authorization
+ * header, and rejects with a StatusError on failure. A sign-in goes straight to the gateway
+ * (a 401 refreshes the token once and retries); an API token goes to the site first, as
+ * atlassianRequest does.
+ */
+export function atlassianCall<T>(
+  product: AtlassianProduct, site: string, cred: AtlassianCred, pathAndQuery: string, send: (url: string, authorization: string) => Promise<T>,
+): Promise<T> {
+  if (cred.kind === "signin") return cred.auth.withToken((token, cloudId) => send(gatewayUrl(product, cloudId, pathAndQuery), `Bearer ${token}`));
+  const basic = `Basic ${Buffer.from(cred.cred).toString("base64")}`;
+  return atlassianRequest(product, site, cred.cred, pathAndQuery, (url) => send(url, basic));
 }
 
 /** Delete a saved key file. Already gone is fine; any other failure is reported, never passed off as removed. */

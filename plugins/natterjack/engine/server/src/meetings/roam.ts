@@ -5,13 +5,15 @@
  * so an expired sign-in is refreshed once and a dead one reads as "connect again".
  */
 
+import type http from "node:http";
 import type { MeetingConnectHelp, MeetingDetail, MeetingListRequest, MeetingPage, MeetingSignInStart, MeetingSignInStatus } from "../../../shared/api.ts";
 import type { MeetingSource, MeetingsConfig, MeetingsContext, SourceStatus } from "./index.ts";
 import { RoamApi, RoamError, transcriptText, type RoamFetch } from "./roam-api.ts";
+import { hostedCallbackUri } from "../oauth-signin.ts";
 import { ROAM_SCOPES, RoamAuth, type RoamAuthOptions } from "./roam-auth.ts";
 
 /** What tests swap in: Roam itself (fetcher, shared by the API calls and sign-in) and the listener. */
-export type RoamDeps = Partial<Omit<RoamAuthOptions, "hosted">> & { fetcher?: RoamFetch };
+export type RoamDeps = Partial<Omit<RoamAuthOptions, "hosted" | "callbackUri">> & { fetcher?: RoamFetch };
 
 /** meeting.transcript's "there's none (yet)" answers. */
 const NO_TRANSCRIPT = new Set(["transcript_pending", "transcript_unavailable"]);
@@ -29,7 +31,8 @@ export class RoamMeetings implements MeetingSource {
     this.signInProblem = cfg.signInProblem;
     this.signIn = !!cfg.clientId && !cfg.signInProblem;
     this.api = new RoamApi({ fetcher: deps.fetcher });
-    this.auth = new RoamAuth(ctx.ledgerDir, cfg, { ...deps, hosted: ctx.hosted });
+    const callbackUri = ctx.hosted && ctx.publicOrigin ? hostedCallbackUri(ctx.publicOrigin, "roam") : null;
+    this.auth = new RoamAuth(ctx.ledgerDir, cfg, { ...deps, hosted: ctx.hosted, callbackUri });
   }
 
   status(): SourceStatus {
@@ -65,6 +68,7 @@ export class RoamMeetings implements MeetingSource {
   signInStart(): Promise<MeetingSignInStart> { return this.auth.signInStart(); }
   signInStatus(): MeetingSignInStatus { return this.auth.signInStatus(); }
   signInFinish(pasted: string): Promise<MeetingSignInStatus> { return this.auth.signInFinish(pasted); }
+  signInCallback(target: URL, res: http.ServerResponse, back: string): Promise<void> { return this.auth.signInCallback(target, res, back); }
   signInCancel() { this.auth.signInCancel(); }
 
   listMeetings(req: MeetingListRequest): Promise<MeetingPage> {

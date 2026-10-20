@@ -11,12 +11,14 @@
  * repo); `state` is the workflow column the board shows.
  */
 
+import type { AtlassianAuth } from "../atlassian-auth.ts";
 import { workspaceConfig, type IssuesConfig } from "../config.ts";
 import { GitHubTracker } from "./github.ts";
 import { JiraTracker } from "./jira.ts";
 import { LinearTracker } from "./linear.ts";
 
-export interface TrackerStatus { connected: boolean; source: "env" | "file" | "cli" | null; viewer: string | null }
+/** source "signin": the person's Connect to Atlassian sign-in (Jira). */
+export interface TrackerStatus { connected: boolean; source: "env" | "file" | "cli" | "signin" | null; viewer: string | null }
 
 /** How the Issues page asks for a key when the tracker isn't connected (null: no key needed). */
 export interface ConnectHelp {
@@ -28,6 +30,8 @@ export interface ConnectHelp {
   needsKey: boolean;
   /** 'email-token': the key is an email and an API token, asked for in two fields and sent as "email:token". */
   keyFields?: "email-token";
+  /** "atlassian": Connect to Atlassian is offered as well (when the workspace has the app set up). */
+  signIn?: "atlassian";
 }
 
 /** query: this person's own extra filter in the tracker's language (Jira JQL, GitHub search), if it has one. */
@@ -83,10 +87,10 @@ class NoTracker implements IssueTracker {
   queryHelp() { return null; }
 }
 
-type Factory = (cfg: IssuesConfig, ledgerDir: string) => IssueTracker;
+type Factory = (cfg: IssuesConfig, ledgerDir: string, atlassian: () => AtlassianAuth | null) => IssueTracker;
 const ADAPTERS: Record<string, Factory> = {
   linear: (cfg, ledgerDir) => new LinearTracker(ledgerDir, cfg),
-  jira: (cfg, ledgerDir) => new JiraTracker(ledgerDir, cfg),
+  jira: (cfg, ledgerDir, atlassian) => new JiraTracker(ledgerDir, cfg, atlassian),
   github: (cfg) => new GitHubTracker(cfg),
 };
 
@@ -99,15 +103,23 @@ export function supportedTrackers() { return Object.keys(ADAPTERS); }
 export class Trackers {
   ledgerDir: string;
   current: { sig: string; tracker: IssueTracker } | null = null;
+  /** The workspace's Connect to Atlassian (Jira reads with it when the person has signed in). */
+  atlassian: () => AtlassianAuth | null;
 
-  constructor(ledgerDir: string) { this.ledgerDir = ledgerDir; }
+  constructor(ledgerDir: string, atlassian: () => AtlassianAuth | null = () => null) {
+    this.ledgerDir = ledgerDir;
+    this.atlassian = atlassian;
+  }
+
+  /** Start afresh (a new or dropped sign-in: the cached board and viewer were read with the old one). */
+  reset() { this.current = null; }
 
   get(): IssueTracker {
     const cfg = workspaceConfig().issues;
     const sig = JSON.stringify(cfg);
     if (this.current && this.current.sig === sig) return this.current.tracker;
     const make = ADAPTERS[cfg.kind];
-    const tracker = make ? make(cfg, this.ledgerDir) : new NoTracker();
+    const tracker = make ? make(cfg, this.ledgerDir, this.atlassian) : new NoTracker();
     this.current = { sig, tracker };
     return tracker;
   }

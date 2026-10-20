@@ -4,6 +4,7 @@ import { ActivatedRoute, Router, RouterLink } from '@angular/router';
 import type { Meeting, MeetingPage, MeetingsStatus } from '../../../../../shared/api';
 import { ApiService } from '../../core/api.service';
 import { ToastService } from '../../core/toast.service';
+import { AtlassianConnectComponent } from '../../shared/atlassian-connect.component';
 import { PageHeaderComponent } from '../../shared/page-header.component';
 import { MeetingDetailComponent } from './meeting-detail.component';
 import { MeetingsConnectComponent } from './meetings-connect.component';
@@ -19,7 +20,7 @@ interface Row { m: Meeting; date: string; time: string; actions: { open: number;
  */
 @Component({
   selector: 'dash-meetings',
-  imports: [PageHeaderComponent, RouterLink, MeetingsConnectComponent, MeetingDetailComponent],
+  imports: [PageHeaderComponent, RouterLink, MeetingsConnectComponent, MeetingDetailComponent, AtlassianConnectComponent],
   changeDetection: ChangeDetectionStrategy.OnPush,
   template: `
     <dash-page-header eyebrow="Company" title="Meetings" [sub]="sub()">
@@ -43,6 +44,9 @@ interface Row { m: Meeting; date: string; time: string; actions: { open: number;
         <span aria-hidden="true">·</span>
         <button class="linkish" type="button" [disabled]="disconnecting()" (click)="disconnect()">{{ disconnecting() ? 'Disconnecting…' : 'Disconnect' }}</button>
       </div>
+      <!-- Tickets made from a meeting are found in Jira as you: without a Jira connection there are none to show. -->
+      <dash-atlassian-connect [forTickets]="true" inputId="meetings-atlassian-callback"
+        lead="Connect to Atlassian to see the tickets made from these meetings, whoever made them." (connected)="refresh()" />
 
       <div class="layout">
         <nav #listNav class="panel list" aria-label="Meetings" tabindex="-1">
@@ -140,6 +144,8 @@ export class MeetingsComponent implements OnInit {
   private readonly injector = inject(Injector);
   private readonly query = toSignal(this.route.queryParamMap);
   private readonly detailView = viewChild(MeetingDetailComponent);
+  /** The Connect to Atlassian bar: asked again after each list load, which may have found the sign-in expired. */
+  private readonly atlassianBar = viewChild(AtlassianConnectComponent);
   private readonly rowLinks = viewChildren<ElementRef<HTMLAnchorElement>>('rowLink');
   private readonly listNav = viewChild<ElementRef<HTMLElement>>('listNav');
   /** A row was just picked while the layout is stacked: move focus to the detail once it shows. */
@@ -260,6 +266,8 @@ export class MeetingsComponent implements OnInit {
       if (gen !== this.gen) return;
       this.meetings.set(mergePages([], page.meetings));
       this.nextCursor.set(page.nextCursor);
+      // The ticket lookup ran with the Atlassian sign-in: if that's gone, the bar offers to connect again.
+      this.atlassianBar()?.refresh();
     } catch (e) {
       if (gen !== this.gen) return;
       if (isNotConnected(e)) { this.onNotConnected(); return; }
