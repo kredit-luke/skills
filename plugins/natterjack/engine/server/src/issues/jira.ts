@@ -1,6 +1,7 @@
 /**
- * The Jira Cloud adapter (IssueTracker): Jira's REST API v3 with the viewer's own
- * API token (their permissions, no Claude usage spent on refreshes). workspace.json:
+ * The Jira Cloud adapter (IssueTracker): Jira's REST API v3 as the viewer (their
+ * permissions, no Claude usage spent on refreshes): their Connect to Atlassian sign-in
+ * (atlassian-auth.ts) when they have one, else their own API token. workspace.json:
  *
  *   "issues": { "kind": "jira", "site": "acme.atlassian.net", "projects": ["ENG", "OPS"],
  *               "implementStates": ["To Do"] }
@@ -10,15 +11,18 @@
  *
  * Key lookup: JIRA_API_TOKEN (+ JIRA_EMAIL) env vars, else <ledger>/jira-api-token
  * (gitignored) as "email:token", which the Connect card writes. Never sent to the browser.
+ * A sign-in for this site comes before any of them.
  */
 
 import fs from "node:fs";
 import path from "node:path";
 import https from "node:https";
-import { atlassianRequest, removeKeyFile } from "../atlassian.ts";
+import { atlassianCall, removeKeyFile, type AtlassianCred } from "../atlassian.ts";
+import type { AtlassianAuth } from "../atlassian-auth.ts";
 import { readConfigFile, type IssuesConfig } from "../config.ts";
 
 const REFUSED = "Jira rejected the email/API token. A scoped token needs at least the read:jira-work and read:jira-user scopes.";
+const SIGNIN_REFUSED = "Jira turned your Atlassian sign-in down. The team's Atlassian app needs the read:jira-work and read:jira-user scopes; if it has them, disconnect Atlassian and connect again.";
 import type { ConnectHelp, IssueFilter, IssueTracker, LinkedIssue, LinkedIssues, TrackerStatus } from "./index.ts";
 import { LINKED_LIMIT, byMarker, chunks, isIssueKey } from "./markers.ts";
 
@@ -123,9 +127,12 @@ class JiraTracker implements IssueTracker {
   confluenceKeyFile: string;
   /** docs.json sources (a field so tests can supply their own). */
   docsSources = (): unknown => readConfigFile("docs.json").data?.sources;
+  /** The workspace's Connect to Atlassian, when the dashboard has one. */
+  atlassian: () => AtlassianAuth | null;
 
-  constructor(ledgerDir: string, cfg: IssuesConfig) {
+  constructor(ledgerDir: string, cfg: IssuesConfig, atlassian: () => AtlassianAuth | null = () => null) {
     this.cfg = cfg as any;
+    this.atlassian = atlassian;
     this.keyFile = path.join(ledgerDir, "jira-api-token");
     this.confluenceKeyFile = path.join(ledgerDir, "confluence-api-token");
   }
@@ -165,15 +172,31 @@ class JiraTracker implements IssueTracker {
 
   _cred(): string | null { return this._credWithSource()?.cred ?? null; }
 
-  _get(cred: string, pathAndQuery: string, body?: object): Promise<any> {
+  /** The person's Connect to Atlassian sign-in, when it's for this site. */
+  _signIn(): AtlassianAuth | null {
+    const a = this.atlassian();
+    return a && this.site && a.cfg.site === this.site && a.connected() ? a : null;
+  }
+
+  /** What requests use: the sign-in first, else the API token; null when there's neither. */
+  _auth(): AtlassianCred | null {
+    const a = this._signIn();
+    if (a) return { kind: "signin", auth: a };
+    const cred = this._cred();
+    return cred ? { kind: "token", cred } : null;
+  }
+
+  _get(cred: string | AtlassianCred, pathAndQuery: string, body?: object): Promise<any> {
     const site = this.site;
     if (!site) return Promise.reject(new Error("Set issues.site in workspace.json (e.g. acme.atlassian.net)."));
-    const send = (url: string) => new Promise<any>((resolve, reject) => {
+    const auth: AtlassianCred = typeof cred === "string" ? { kind: "token", cred } : cred;
+    const refused = auth.kind === "signin" ? SIGNIN_REFUSED : REFUSED;
+    const send = (url: string, authorization: string) => new Promise<any>((resolve, reject) => {
       const data = body ? JSON.stringify(body) : null;
       const req = https.request(url, {
         method: body ? "POST" : "GET",
         headers: {
-          Authorization: `Basic ${Buffer.from(cred).toString("base64")}`,
+          Authorization: authorization,
           Accept: "application/json",
           ...(data ? { "Content-Type": "application/json", "Content-Length": Buffer.byteLength(data) } : {}),
         },
@@ -182,7 +205,7 @@ class JiraTracker implements IssueTracker {
         let out = "";
         res.on("data", (c) => (out += c));
         res.on("end", () => {
-          if (res.statusCode === 401 || res.statusCode === 403) return reject(Object.assign(new Error(REFUSED), { status: res.statusCode }));
+          if (res.statusCode === 401 || res.statusCode === 403) return reject(Object.assign(new Error(refused), { status: res.statusCode }));
           let json;
           try { json = out ? JSON.parse(out) : {}; } catch { return reject(new Error(`Jira returned HTTP ${res.statusCode}`)); }
           if (res.statusCode && res.statusCode >= 400) return reject(new Error((json.errorMessages && json.errorMessages[0]) || `Jira returned HTTP ${res.statusCode}`));
@@ -193,10 +216,12 @@ class JiraTracker implements IssueTracker {
       req.on("error", reject);
       req.end(data || undefined);
     });
-    return atlassianRequest("jira", site, cred, pathAndQuery, send);
+    return atlassianCall("jira", site, auth, pathAndQuery, send);
   }
 
   status(): TrackerStatus {
+    const a = this._signIn();
+    if (a) return { connected: true, source: "signin", viewer: this.viewer || a.current()?.viewer || null };
     const c = this._credWithSource();
     return { connected: !!c && !!this.site, source: c ? c.source : null, viewer: this.viewer };
   }
@@ -215,6 +240,7 @@ class JiraTracker implements IssueTracker {
       placeholder: "you@company.com:ATATT…",
       needsKey: true,
       keyFields: "email-token",
+      signIn: "atlassian",
     };
   }
 
@@ -247,7 +273,7 @@ class JiraTracker implements IssueTracker {
   }
 
   async issues(filter: IssueFilter, force = false) {
-    const cred = this._cred();
+    const cred = this._auth();
     if (!cred || !this.site) return { connected: false, issues: [] };
     cleanQuery(filter.query); // a bad personal filter is the caller's error, not a Jira outage
     // Cached per filter: a changed personal query is a different board.
@@ -278,7 +304,7 @@ class JiraTracker implements IssueTracker {
 
   /** Issues (any status, in the configured projects) whose description has one of the markers exactly. Rejects when Jira fails. */
   async linkedIssues(markers: string[]): Promise<LinkedIssues> {
-    const cred = this._cred();
+    const cred = this._auth();
     if (!cred || !this.site || !markers.length) return new Map();
     const found: { issue: LinkedIssue; text: string }[] = [];
     let truncated = false;
@@ -314,7 +340,7 @@ class JiraTracker implements IssueTracker {
   }
 
   async issue(id: string) {
-    const cred = this._cred();
+    const cred = this._auth();
     if (!cred) throw new Error("Jira isn't connected.");
     const n = await this._get(cred, `/rest/api/3/issue/${encodeURIComponent(id)}?fields=${[...FIELDS, "description"].join(",")}`);
     const base = this.toIssue(n);

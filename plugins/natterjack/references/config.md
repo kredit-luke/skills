@@ -46,14 +46,40 @@ Running it on company infrastructure for people without a dev machine (hosted mo
 | `issues.progressState` / `issues.reviewState` / `issues.doneStates` | `"In Progress"` / `"In Review"` / `["Done"]` | For the `multirepo` plugin's skills: the state a ticket moves to when work starts, when PRs open, and the states its worktree purge treats as shipped (the dashboard ignores them). |
 | (per person) | none | Each person can narrow their own board with "My filter" on the Issues page: JQL for Jira (ANDed in), search qualifiers for GitHub. Saved in their `.claude/ledger/settings.json`, never in the team config. Linear has no query language, so no field. |
 | Linear | `org` | The workspace slug in `linear.app/<org>/...`. Key: pasted on the Issues page (`lin_api_…`) or `LINEAR_API_KEY`. |
-| Jira | `site`, `projects` | `acme.atlassian.net`; project keys or names. Key: `email:api-token` pasted on the Issues page, or `JIRA_EMAIL` + `JIRA_API_TOKEN`. |
+| Jira | `site`, `projects` | `acme.atlassian.net`; project keys or names. Each person connects with **Connect to Atlassian** (with `atlassian.clientId`, below), or a key: `email:api-token` pasted on the Issues page, or `JIRA_EMAIL` + `JIRA_API_TOKEN`. The sign-in wins when both are there. |
 | GitHub Issues | `repos` (or `repo`), `states` | `["owner/name", …]`; `states` maps board columns to labels, e.g. `{ "In progress": ["in progress"] }` (open issues with none = "Open"). Ids are `<repo>#<n>`. Uses `gh` login. |
+| `atlassian` | none | **Connect to Atlassian**: `{ "clientId": "<the team's Atlassian OAuth 2.0 (3LO) app>" }`, optional `redirectUri` and `scopes`. See **Connect to Atlassian** below. |
 | `codeHost.kind` | `github` | The Home page's Needs-you inbox (your PRs, reviews requested, red CI). `github` uses the `gh` CLI; `none` turns it off. |
 | `codeHost.ciRepos` / `ciBranch` | `[]` / `main` | Repos (`owner/name`) that get a CI health dot. |
 | `brand.logo` / `favicon` | none | Files in `brand/`. Use a light logo: the sidebar is dark. No logo = the `name` as text. |
 | `copy` | none | Wording overrides: `linksSub`, `docsSub`, `infrastructureSub`, `issuesSub`, `meetingsSub`, `connectionsSub`, `searchExamples` (array), `askPlaceholder`. |
 | `roles` | Developer, Reader | The roles people pick from, in order: `{ "<id>": { label, description?, profile?, outputStyle?, hiddenPages?, hiddenSkills? } }`. See **Roles** below. With `roles` set, everyone is asked which is theirs (the Windows installer asks first; the dashboard asks on first start); without it nobody is asked. |
 | `profiles.reader` | `{ hiddenPages: ["apps", "workspaces"], hiddenSkills: [] }` | What every role on the **reader** profile hides (people who read and ask about the code but don't build or run it); each role adds its own. `hiddenPages`: nav routes (Home also drops the tiles of a hidden page: Apps up, Workspaces). `hiddenSkills`: project skills. Readers never get Implement. |
+
+### Connect to Atlassian
+
+With `atlassian.clientId` set, each person signs in with their own Atlassian account (OAuth 2.0, "3LO") and the dashboard reads Jira (the Issues page, a meeting's tickets) and Confluence (the Docs page) as them: nothing to create or paste, and they only see what their account can. **Connect to Atlassian** shows on the Issues and Docs connect cards and, when the tracker is Jira and isn't connected, as a bar on the Meetings page (whose ticket badges need it), so roles that hide Issues can still connect. Pasted API tokens keep working as before; where both are there, the sign-in is used. **Disconnect Atlassian** forgets both.
+
+| Key | |
+|---|---|
+| `atlassian.clientId` | The team's Atlassian OAuth 2.0 (3LO) app (below). Left out: no sign-in, API tokens only. |
+| `atlassian.redirectUri` | Where a **local** sign-in comes back to. Default `http://localhost:31418/atlassian/callback`. Same rule as Roam's: `http://`, a loopback host, an explicit port that isn't 0 or 80. |
+| `atlassian.scopes` | What sign-in asks for. Default: `read:jira-work read:jira-user` with a Jira tracker, `read:confluence-content.all search:confluence read:confluence-space.summary read:confluence-user` with a Confluence source on the same site, and always `offline_access`. List them only if the app has a different set; asking for a scope the app doesn't have fails the sign-in. |
+
+The site is the one the workspace already names: `issues.site` for Jira, else the first Confluence source in docs.json.
+
+**The client secret.** Atlassian has no public-client (PKCE) option: the code exchange and every refresh send the app's client secret, so every dashboard that finishes a sign-in needs it. Never commit it. The dashboard reads `ATLASSIAN_CLIENT_SECRET`, else `.claude/ledger/atlassian-client-secret` (one line: the secret alone, or `ATLASSIAN_CLIENT_SECRET=<secret>`). Hosted dashboards get it from the deployment's secret (hosting.md). Without it the button says the secret is missing and API tokens still work. The secret alone reads nothing: every person still signs in and agrees.
+
+**Creating the app** (once per team, at developer.atlassian.com → Developer console → Create → OAuth 2.0 integration):
+
+1. **Permissions:** add the Jira API with `read:jira-work` and `read:jira-user`, and the Confluence API with the four Confluence scopes above, as the workspace needs. (`read:me`, under User identity API, lets the page show the person's name without Jira or Confluence; optional.)
+2. **Authorization → OAuth 2.0 (3LO) → Callback URLs:** `http://localhost:31418/atlassian/callback` (or your `redirectUri`) for local dashboards, and `<DASHBOARD_PUBLIC_URL>/api/oauth/atlassian/callback` for hosted ones (e.g. `https://dashboard.example.com/api/oauth/atlassian/callback`).
+3. **Distribution → Sharing**, so people other than the app's owner can sign in. This isn't a Marketplace listing; the app stays the team's own.
+4. Put the client ID in `workspace.json` as `atlassian.clientId`, and the secret where the dashboards read it (above).
+
+**Where the token is kept:** `.claude/ledger/atlassian-token.json` (never committed; mode 600), never sent to the browser. Access tokens last an hour and are refreshed before they expire; Atlassian rotates the refresh token on each refresh, and one unused for 90 days expires, after which the page asks the person to connect again. 3LO has no revoke call: Disconnect forgets the token, and the person can remove the app from their account at id.atlassian.com → Connected apps (the page links it).
+
+**Sign-in, local and hosted.** As for Roam (meetings.json): locally the server listens on the `redirectUri` port while a sign-in is pending, or the person pastes the last page's address back. A hosted dashboard sends the browser back to its own address, `<DASHBOARD_PUBLIC_URL>/api/oauth/atlassian/callback`, and finishes there by itself.
 
 ### Roles
 
@@ -196,8 +222,8 @@ The Knowledge page (it was Docs; `/docs` links and a `docs` id in `hiddenPages` 
 
 `notes` = a folder of Markdown in a repo, rendered in the page (edited in the repo: **Make edits** starts a run). `site` = a static-site repo (HTML); `port` serves the working copy locally for the Page view (pick unused ports), `live` links the published site. `external` = docs elsewhere (Confluence, Notion, Google Drive, SharePoint, a wiki): a card that opens `url`, and "Ask Claude" starts a read-only run that uses that service's MCP connector (the user connects it in Claude). Local sources are also indexed by search.
 
-With a `provider` that has an adapter (`<engine>/server/src/docs-providers/`: `confluence` so far), an external source is also **searchable**: the Docs page searches it and shows its pages, global search (Ctrl+K) lists its matches, and Ask and the launch dialog get a **Use <name>** checkbox that tells the run to search it through the MCP connector and cite pages. Each person reads it with their own key, pasted on the Docs page (kept in `.claude/ledger/`), so they only see what their account can.
-- **Confluence**: `"provider": "confluence"`, `url` = `https://<site>.atlassian.net/wiki`, optional `spaces` (space keys; empty = every non-personal space). Key: `CONFLUENCE_EMAIL` + `CONFLUENCE_API_TOKEN`, the pasted `email:api-token`, or, when `issues.kind` is `jira` on the same site, the Jira key (nothing more to paste).
+With a `provider` that has an adapter (`<engine>/server/src/docs-providers/`: `confluence` so far), an external source is also **searchable**: the Docs page searches it and shows its pages, global search (Ctrl+K) lists its matches, and Ask and the launch dialog get a **Use <name>** checkbox that tells the run to search it through the MCP connector and cite pages. Each person reads it with their own key, pasted on the Docs page (kept in `.claude/ledger/`), or their own sign-in, so they only see what their account can.
+- **Confluence**: `"provider": "confluence"`, `url` = `https://<site>.atlassian.net/wiki`, optional `spaces` (space keys; empty = every non-personal space). Connect: **Connect to Atlassian** (workspace.json `atlassian`), or a key: `CONFLUENCE_EMAIL` + `CONFLUENCE_API_TOKEN`, the pasted `email:api-token`, or, when `issues.kind` is `jira` on the same site, the Jira key (nothing more to paste).
 
 ## infrastructure.json: the Infrastructure page
 
@@ -236,12 +262,12 @@ Adds a Meetings page under Company. Without this file the page isn't in the nav;
 
 A bad `clientId` or `redirectUri` turns sign-in off and the page says why; pasting a token still works.
 
-**What the page does.** Each person connects their own account, and the page lists their meetings, newest first, with **Load more**. A meeting shows its summary, action items (read-only, with the tool's suggested owner) and who was there. **Open in &lt;tool&gt;** asks the tool for the meeting's share link when clicked (Roam creates one the first time) and opens it. **Ask agent** starts a run (below). Rows and the detail show the tickets made from a meeting, found two ways and merged by key: the Ask run's report (`meeting-tickets.json`, recorded in `.claude/ledger/meeting-tickets.json` when the run's turn ends, for runs on this dashboard), and a search of the issue tracker for the meeting's marker (`roam-meeting-<id>`), which finds them for everyone. The search needs a tracker that supports it (Jira, Linear, GitHub Issues) and is connected; it's cached for a minute, and a slow or failing tracker just leaves the recorded tickets.
+**What the page does.** Each person connects their own account, and the page lists their meetings, newest first, with **Load more**. A meeting shows its summary, action items (read-only, with the tool's suggested owner) and who was there. **Open in &lt;tool&gt;** asks the tool for the meeting's share link when clicked (Roam creates one the first time) and opens it. **Ask agent** starts a run (below). Rows and the detail show the tickets made from a meeting, found two ways and merged by key: the Ask run's report (`meeting-tickets.json`, recorded in `.claude/ledger/meeting-tickets.json` when the run's turn ends, for runs on this dashboard), and a search of the issue tracker for the meeting's marker (`roam-meeting-<id>`), which finds them for everyone. The search needs a tracker that supports it (Jira, Linear, GitHub Issues) and is connected; it's cached for a minute, and a slow or failing tracker just leaves the recorded tickets. With Jira not connected and `atlassian.clientId` set, the page shows a **Connect to Atlassian** bar, so a role that hides the Issues page can still see tickets made from a meeting by anyone.
 
 **Creating the Roam OAuth app** (once per team, by a Roam admin), for **Sign in with Roam**:
 
 1. Roam Administration → **Developer** → **Add ApiClient**, authorization type **OAuth**. Name it after your dashboard, and say in the description that it reads your meetings for the dashboard's Meetings page.
-2. Redirect URI: exactly `http://localhost:31417/roam/callback` (or your `redirectUri`). Matching is exact, so register no variants.
+2. Redirect URI: exactly `http://localhost:31417/roam/callback` (or your `redirectUri`), and for hosted dashboards `<DASHBOARD_PUBLIC_URL>/api/oauth/roam/callback` too. Matching is exact, so register no other variants.
 3. Scopes: `meetings:read` and `user:read`, nothing more.
 4. Client type: public / PKCE (`token_endpoint_auth_method: none`) if Roam offers the choice. Roam shows a client secret when the app is created: the dashboard doesn't use it, so don't store it anywhere.
 5. Allow **Personal** access; people choose it when Roam asks how to connect. With the organization's personal-access policy at "With Approval", each person's first connect waits until an admin approves it (the page says so); "Auto-approve" doesn't wait.
@@ -251,7 +277,7 @@ A bad `clientId` or `redirectUri` turns sign-in off and the page says why; pasti
 
 **Where the token is kept:** `.claude/ledger/roam-token.json` in the workspace (never committed; written with mode 600), and never sent to the browser. A sign-in's access token is refreshed before it expires; Roam rotates the refresh token on each refresh, and the new one is saved before it's used. A sign-in Roam no longer accepts deletes the file, and the page asks the person to connect again.
 
-**Sign-in, local and hosted.** On a local dashboard, the server listens on the `redirectUri` port (on `127.0.0.1`, and `::1` when it can) only while a sign-in is pending, and catches the redirect itself. If the port is taken, or the last page doesn't load, the person copies that page's address and pastes it into the Meetings page. A hosted dashboard never listens: after signing in, the browser lands on a `localhost` address that doesn't load, and the person pastes that address back, as on the Connections page. Either way the `state` must match.
+**Sign-in, local and hosted.** On a local dashboard, the server listens on the `redirectUri` port (on `127.0.0.1`, and `::1` when it can) only while a sign-in is pending, and catches the redirect itself. If the port is taken, or the last page doesn't load, the person copies that page's address and pastes it into the Meetings page. A hosted dashboard never listens on a port: it sends the browser back to its own address, `<DASHBOARD_PUBLIC_URL>/api/oauth/roam/callback`, which reaches the person's container through the login proxy and router like any page, and finishes there by itself (the sign-in tab says so; the Meetings page picks it up). Register that address with the app (step 2). Either way the `state` must match.
 
 **Disconnect** asks Roam to revoke the token, then deletes the file whether or not it did. Roam may keep a revoked access token working for a short while, and it keeps a pasted personal access token working until it's deleted in Roam (User Settings → Developer); the page says so.
 

@@ -1,5 +1,6 @@
 /**
- * Confluence Cloud (REST v1 search + content), with the viewer's own Atlassian
+ * Confluence Cloud (REST v1 search + content) as the viewer: their Connect to Atlassian
+ * sign-in (atlassian-auth.ts) when they have one for this site, else their own Atlassian
  * API token. docs.json:
  *
  *   { "key": "wiki", "name": "Confluence", "kind": "external", "provider": "confluence",
@@ -15,7 +16,8 @@
 import fs from "node:fs";
 import https from "node:https";
 import path from "node:path";
-import { atlassianRequest, removeKeyFile } from "../atlassian.ts";
+import { atlassianCall, removeKeyFile, type AtlassianCred } from "../atlassian.ts";
+import type { AtlassianAuth } from "../atlassian-auth.ts";
 import type { DocSiteDef } from "../docs.ts";
 import type {
   DocHit, DocPage, DocSpace, DocsProvider, ExcerptPart, ProviderContext, ProviderHelp, ProviderStatus,
@@ -128,20 +130,39 @@ export class ConfluenceProvider implements DocsProvider {
     return null;
   }
 
-  _get(pathAndQuery: string, cred = this._cred()?.cred): Promise<any> {
+  /** The person's Connect to Atlassian sign-in, when it's for this site. */
+  _signIn(): AtlassianAuth | null {
+    const a = this.ctx.atlassian?.() || null;
+    return a && this.site && a.cfg.site === this.site && a.connected() ? a : null;
+  }
+
+  /** What requests use: `cred` when given (a key being checked), else the sign-in, else the saved key. */
+  _auth(cred?: string): AtlassianCred | null {
+    if (cred) return { kind: "token", cred };
+    const a = this._signIn();
+    if (a) return { kind: "signin", auth: a };
+    const k = this._cred()?.cred;
+    return k ? { kind: "token", cred: k } : null;
+  }
+
+  _get(pathAndQuery: string, cred?: string): Promise<any> {
     const site = this.site;
     if (!site) return Promise.reject(new Error("The Confluence source needs a url like https://acme.atlassian.net/wiki in docs.json."));
-    if (!cred) return Promise.reject(new HttpStatusError(401, "Connect Confluence first."));
-    const send = (url: string) => new Promise<any>((resolve, reject) => {
+    const auth = this._auth(cred);
+    if (!auth) return Promise.reject(new HttpStatusError(401, "Connect Confluence first."));
+    const refused = auth.kind === "signin"
+      ? "Confluence turned your Atlassian sign-in down. The team's Atlassian app needs Confluence read scopes (read:confluence-content.all, search:confluence, read:confluence-space.summary, read:confluence-user); if it has them, disconnect Atlassian and connect again."
+      : "Confluence rejected the email/API token. A scoped token needs Confluence read scopes (e.g. read:confluence-content.all, search:confluence, read:confluence-space.summary).";
+    const send = (url: string, authorization: string) => new Promise<any>((resolve, reject) => {
       const req = https.request(url, {
-        headers: { Authorization: `Basic ${Buffer.from(cred).toString("base64")}`, Accept: "application/json" },
+        headers: { Authorization: authorization, Accept: "application/json" },
         timeout: 20000,
       }, (res) => {
         let out = "";
         res.on("data", (c) => (out += c));
         res.on("end", () => {
           const status = res.statusCode || 0;
-          if (status === 401 || status === 403) return reject(new HttpStatusError(status, "Confluence rejected the email/API token. A scoped token needs Confluence read scopes (e.g. read:confluence-content.all, search:confluence, read:confluence-space.summary)."));
+          if (status === 401 || status === 403) return reject(new HttpStatusError(status, refused));
           let json;
           try { json = out ? JSON.parse(out) : {}; } catch { return reject(new HttpStatusError(status, `Confluence returned HTTP ${status}`)); }
           if (status >= 400) return reject(new HttpStatusError(status, json.message || (json.data && json.data.errors && json.data.errors[0] && json.data.errors[0].message) || `Confluence returned HTTP ${status}`));
@@ -152,10 +173,12 @@ export class ConfluenceProvider implements DocsProvider {
       req.on("error", reject);
       req.end();
     });
-    return atlassianRequest("confluence", site, cred, pathAndQuery, send);
+    return atlassianCall("confluence", site, auth, pathAndQuery, send);
   }
 
   status(): ProviderStatus {
+    const a = this._signIn();
+    if (a) return { connected: true, source: "signin", removable: true, viewer: this.viewer || a.current()?.viewer || null };
     const c = this._cred();
     return { connected: !!c && !!this.site, source: c ? c.source : null, removable: !!c && c.removable, viewer: this.viewer };
   }
@@ -174,6 +197,7 @@ export class ConfluenceProvider implements DocsProvider {
       placeholder: "you@company.com:ATATT…",
       needsKey: true,
       keyFields: "email-token",
+      signIn: "atlassian",
     };
   }
 

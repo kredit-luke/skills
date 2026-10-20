@@ -10,11 +10,13 @@
  * personal access token; the token stays in the ledger and never reaches the browser.
  */
 
+import type http from "node:http";
 import { LEDGER_DIR, readConfigFile } from "../config.ts";
 import type {
   MeetingConnectHelp, MeetingDetail, MeetingListRequest, MeetingPage, MeetingsBoot, MeetingSignInStart,
   MeetingSignInStatus, MeetingsStatus,
 } from "../../../shared/api.ts";
+import { loopbackRedirectProblem } from "../oauth-signin.ts";
 import { NOT_CONNECTED } from "./roam-auth.ts";
 import { RoamMeetings } from "./roam.ts";
 
@@ -35,8 +37,12 @@ export interface MeetingsConfig {
   signInProblem: string | null;
 }
 
-/** Where a source keeps its token (the ledger), and whether this is a hosted dashboard (no loopback listener). */
-export interface MeetingsContext { ledgerDir: string; hosted: boolean }
+/**
+ * Where a source keeps its token (the ledger), and whether this is a hosted dashboard (no
+ * loopback listener). publicOrigin: a hosted dashboard's own address, where sign-in comes
+ * back to (oauth-signin.ts hostedCallbackUri); without it a hosted sign-in is pasted back.
+ */
+export interface MeetingsContext { ledgerDir: string; hosted: boolean; publicOrigin?: string | null }
 
 export interface SourceStatus {
   configured: boolean; connected: boolean;
@@ -58,6 +64,8 @@ export interface MeetingSource {
   signInStatus(): MeetingSignInStatus;
   /** Finish a sign-in from the redirect address the person pasted back. */
   signInFinish(pasted: string): Promise<MeetingSignInStatus>;
+  /** A hosted dashboard: the browser came back to its own callback address; finish and answer with the page it lands on. */
+  signInCallback?(target: URL, res: http.ServerResponse, back: string): Promise<void>;
   signInCancel(): void;
   listMeetings(req: MeetingListRequest): Promise<MeetingPage>;
   meeting(id: string): Promise<MeetingDetail>;
@@ -130,17 +138,7 @@ export function meetingsErrorStatus(e: unknown): number | null {
 }
 
 /** What's wrong with a redirectUri, or null. It must be http on a loopback host with an explicit port. */
-function redirectProblem(uri: string): string | null {
-  let u: URL;
-  try { u = new URL(uri); } catch { return `meetings.json: "redirectUri" isn't a URL: ${uri}`; }
-  if (u.protocol !== "http:") return `meetings.json: "redirectUri" must start with http:// (the dashboard catches the sign-in on this machine): ${uri}`;
-  if (!["localhost", "127.0.0.1", "[::1]"].includes(u.hostname)) return `meetings.json: "redirectUri" must be on localhost, 127.0.0.1 or [::1]: ${uri}`;
-  // URL drops :80 (http's default), so check what was written before calling the port missing.
-  if (!u.port && /^http:\/\/[^/?#]*:0*80(?:[/?#]|$)/i.test(uri)) return `meetings.json: "redirectUri" can't use port 80 (listening there needs admin rights); pick another, e.g. ${DEFAULT_REDIRECT_URI}: ${uri}`;
-  if (!u.port) return `meetings.json: "redirectUri" needs an explicit port, e.g. ${DEFAULT_REDIRECT_URI}: ${uri}`;
-  if (u.port === "0") return `meetings.json: "redirectUri" needs a real port, not 0, e.g. ${DEFAULT_REDIRECT_URI}: ${uri}`;
-  return null;
-}
+const redirectProblem = (uri: string) => loopbackRedirectProblem(uri, 'meetings.json: "redirectUri"', DEFAULT_REDIRECT_URI);
 
 /** meetings.json with defaults filled in; null when there's no meetings.json. */
 export function meetingsConfig(dir?: string): MeetingsConfig | null {
@@ -171,7 +169,7 @@ export class Meetings {
 
   constructor(dir?: string, ctx?: Partial<MeetingsContext>) {
     this.dir = dir;
-    this.ctx = { ledgerDir: ctx?.ledgerDir || LEDGER_DIR, hosted: !!ctx?.hosted };
+    this.ctx = { ledgerDir: ctx?.ledgerDir || LEDGER_DIR, hosted: !!ctx?.hosted, publicOrigin: ctx?.publicOrigin || null };
   }
 
   /** null when the workspace has no meetings.json. */

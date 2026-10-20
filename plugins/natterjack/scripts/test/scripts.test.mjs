@@ -306,6 +306,26 @@ test("meetings.json: scaffold writes it; validate wants a source the engine has 
   assert.match(validate(ws).errors.join("\n"), /meetings\.json: "source" names the meeting tool/);
 });
 
+test("workspace.json atlassian: clientId, scopes and redirectUri follow the engine's rule; a clientId with nothing to read warns", () => {
+  const ws = fs.mkdtempSync(path.join(os.tmpdir(), "aos-atlassian-"));
+  const cfg = path.join(ws, ".claude", "dashboard");
+  scaffold(ws, { workspace: { name: "T" } });
+  const check = (atlassian, issues = { kind: "jira", site: "acme.atlassian.net" }) => {
+    fs.writeFileSync(path.join(cfg, "workspace.json"), JSON.stringify({ name: "T", issues, atlassian }));
+    const v = validate(ws);
+    const mine = (l) => l.filter((e) => e.startsWith("workspace.json") && e.includes("atlassian")).join("\n");
+    return { errors: mine(v.errors), warnings: mine(v.warnings) };
+  };
+  assert.deepEqual(check({ clientId: "cid" }), { errors: "", warnings: "" });
+  assert.deepEqual(check({ clientId: "cid", scopes: ["read:jira-work"], redirectUri: "http://localhost:4100/atlassian/callback" }), { errors: "", warnings: "" });
+  assert.match(check({ clientId: 7 }).errors, /"atlassian\.clientId" must be/);
+  assert.match(check({ clientId: "cid", scopes: "read:jira-work" }).errors, /"atlassian\.scopes" must be a list/);
+  assert.match(check({ clientId: "cid", redirectUri: "https://x.example/cb" }).errors, /"atlassian\.redirectUri" must start with http:\/\//);
+  assert.match(check({ clientId: "cid", redirectUri: "http://localhost/cb" }).errors, /explicit port, e\.g\. http:\/\/localhost:31418\/atlassian\/callback/);
+  assert.match(check("cid").errors, /"atlassian" is \{ "clientId"/);
+  assert.match(check({ clientId: "cid" }, { kind: "none" }).warnings, /nothing reads Atlassian/);
+});
+
 test("meetings.json: clientId and redirectUri follow the engine's rule (blank or null = left out)", () => {
   const ws = fs.mkdtempSync(path.join(os.tmpdir(), "aos-meetings-signin-"));
   const cfg = path.join(ws, ".claude", "dashboard");

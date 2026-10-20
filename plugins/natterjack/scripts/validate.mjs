@@ -39,15 +39,15 @@ function literalKeys(file, name) {
   return keys;
 }
 
-/** What's wrong with a meetings.json redirectUri (the engine's rule): http, a loopback host, an explicit port that isn't 0 or 80. */
-function redirectProblem(uri) {
+/** What's wrong with a local sign-in redirectUri (the engine's rule, oauth-signin.ts): http, a loopback host, an explicit port that isn't 0 or 80. */
+function redirectProblem(uri, example = "http://localhost:31417/roam/callback") {
   let u;
   try { u = new URL(uri); } catch { return "isn't a URL"; }
   if (u.protocol !== "http:") return "must start with http:// (the dashboard catches the sign-in on this machine)";
   if (!["localhost", "127.0.0.1", "[::1]"].includes(u.hostname)) return "must be on localhost, 127.0.0.1 or [::1]";
   // URL drops :80 (http's default), so check what was written before calling the port missing.
   if (!u.port && /^http:\/\/[^/?#]*:0*80(?:[/?#]|$)/i.test(uri)) return "can't use port 80 (listening there needs admin rights)";
-  if (!u.port) return "needs an explicit port, e.g. http://localhost:31417/roam/callback";
+  if (!u.port) return `needs an explicit port, e.g. ${example}`;
   if (u.port === "0") return "needs a real port, not 0";
   return null;
 }
@@ -259,6 +259,26 @@ export function validate(root) {
     // Only when it's left out (null, absent or blank): a non-string is already an error above.
     const noClientId = mtg.clientId == null || (typeof mtg.clientId === "string" && !mtg.clientId.trim());
     if (source === "roam" && noClientId) warn("meetings.json", 'no "clientId" (the team\'s Roam OAuth app), so there\'s no Sign in with Roam: people can only paste a personal access token');
+  }
+
+  // ---- workspace.json atlassian (Connect to Atlassian; engine server/src/atlassian-auth.ts). Bad settings only
+  // turn sign-in off there (pasted API tokens still work); here they're errors to fix.
+  const atl = ws && ws.atlassian;
+  if (atl !== undefined && atl !== null) {
+    if (typeof atl !== "object" || Array.isArray(atl)) err("workspace.json", '"atlassian" is { "clientId": "<the team\'s Atlassian OAuth 2.0 (3LO) app>" }');
+    else {
+      if (atl.clientId != null && typeof atl.clientId !== "string") err("workspace.json", '"atlassian.clientId" must be the OAuth app\'s client ID (a string), or left out');
+      if (atl.scopes != null && (!Array.isArray(atl.scopes) || atl.scopes.some((x) => typeof x !== "string"))) err("workspace.json", '"atlassian.scopes" must be a list of scope names, e.g. ["read:jira-work", "read:jira-user"]');
+      if (atl.redirectUri != null && typeof atl.redirectUri !== "string") err("workspace.json", '"atlassian.redirectUri" must be a string, e.g. http://localhost:31418/atlassian/callback');
+      else if (typeof atl.redirectUri === "string" && atl.redirectUri.trim()) {
+        const problem = redirectProblem(atl.redirectUri.trim(), "http://localhost:31418/atlassian/callback");
+        if (problem) err("workspace.json", `"atlassian.redirectUri" ${problem}: ${atl.redirectUri.trim()}`);
+      }
+      const wiki = docs && Array.isArray(docs.sources) && docs.sources.some((x) => x && x.kind === "external" && x.provider === "confluence");
+      if (typeof atl.clientId === "string" && atl.clientId.trim() && !(ws.issues && ws.issues.kind === "jira") && !wiki) {
+        warn("workspace.json", '"atlassian.clientId" is set, but nothing reads Atlassian (no Jira issues.kind and no Confluence source in docs.json)');
+      }
+    }
   }
 
   // ---- hosting.json (the People page: who has a hosted dashboard; engine people/config.ts has the full checks)

@@ -159,7 +159,8 @@ const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 before(async () => {
   fs.mkdirSync(path.join(ROOT, ".claude", "dashboard"), { recursive: true });
-  fs.writeFileSync(path.join(ROOT, ".claude", "dashboard", "workspace.json"), JSON.stringify({ name: "Shop", codeHost: { kind: "none" } }));
+  // Jira with the team's Atlassian app, for Connect to Atlassian (nothing here reaches Atlassian).
+  fs.writeFileSync(path.join(ROOT, ".claude", "dashboard", "workspace.json"), JSON.stringify({ name: "Shop", codeHost: { kind: "none" }, issues: { kind: "jira", site: "acme.atlassian.net" }, atlassian: { clientId: "atl-client" } }));
   // The GitHub CLI check is what offers the in-page GitHub sign-in.
   fs.writeFileSync(path.join(ROOT, ".claude", "dashboard", "machine.json"), JSON.stringify({ checks: [{ use: "gh" }] }));
   fs.mkdirSync(BIN);
@@ -179,6 +180,7 @@ before(async () => {
     GH_CONFIG_DIR: GH_DIR,
     // The sign-in's `git config --global` lands here, never in the developer's own config.
     GIT_CONFIG_GLOBAL: GIT_GLOBAL,
+    ATLASSIAN_CLIENT_SECRET: "atl-secret",
     ...ENV, DASHBOARD_PUBLIC_URL: `https://${PUBLIC_HOST}`, DASHBOARD_OWNER: "ana@example.com",
     // Loopback in the test, so no OS firewall prompt; a container uses the 0.0.0.0 default.
     DASHBOARD_BIND: "127.0.0.1",
@@ -222,6 +224,37 @@ test("hosted server: features that open things on the server's own machine are r
   }
   // The People page drives the engineer's own kubectl and cloud CLIs: not even readable here.
   assert.equal((await request("GET", "/api/people", signedIn)).status, 400);
+});
+
+test("hosted server: Connect to Atlassian comes back to the dashboard's own address; the callback needs the proxy too", async () => {
+  const st = JSON.parse((await request("GET", "/api/atlassian/status", signedIn)).text);
+  assert.deepEqual(st, { used: true, site: "acme.atlassian.net", signIn: true, signInProblem: null, connected: false, viewer: null, jira: false });
+  const start = JSON.parse((await post("/api/atlassian/sign-in", { action: "start" })).text);
+  const callback = `https://${PUBLIC_HOST}/api/oauth/atlassian/callback`;
+  assert.equal(start.listening, true, "nothing to paste: the dashboard catches it");
+  assert.equal(start.callback, callback);
+  const u = new URL(start.url);
+  assert.equal(u.origin, "https://auth.atlassian.com");
+  assert.equal(u.searchParams.get("redirect_uri"), callback);
+  assert.equal(u.searchParams.get("client_id"), "atl-client");
+  assert.match(u.searchParams.get("scope")!, /read:jira-work read:jira-user offline_access/);
+
+  // The browser arriving with the wrong state: a page saying so, and the sign-in still waiting.
+  let r = await request("GET", "/api/oauth/atlassian/callback?code=c1&state=wrong", signedIn);
+  assert.equal(r.status, 400);
+  assert.match(r.text, /<title>Not connected<\/title>/);
+  assert.match(r.text, /href="https:\/\/dash\.example\.com\/"/);
+  assert.equal(JSON.parse((await post("/api/atlassian/sign-in", { action: "status" })).text).pending, true);
+  // Not through the proxy: refused like any other page.
+  assert.equal((await request("GET", "/api/oauth/atlassian/callback?code=c1&state=wrong", { host: PUBLIC_HOST })).status, 401);
+
+  await post("/api/atlassian/sign-in", { action: "cancel" });
+  r = await request("GET", `/api/oauth/atlassian/callback?code=c1&state=${u.searchParams.get("state")}`, signedIn);
+  assert.equal(r.status, 410);
+  assert.match(r.text, /isn&#39;t waiting any more/);
+  // No meeting tool here, and no such tool at all.
+  assert.equal((await request("GET", "/api/oauth/roam/callback?code=c1&state=x", signedIn)).status, 404);
+  assert.equal((await request("GET", "/api/oauth/nope/callback", signedIn)).status, 404);
 });
 
 test("hosted server: Claude sign-in from the page", async () => {

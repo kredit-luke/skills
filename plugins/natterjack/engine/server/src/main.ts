@@ -80,6 +80,8 @@ import type { RunWorktree } from "./run-changes.ts";
 import { Attachments, MAX_ATTACHMENT_BYTES, contentTypeOf, outputHeaders } from "./attachments.ts";
 import { Explore, MAX_SAVE_BYTES, rawType, resolveSafe } from "./explore.ts";
 import { forgetAtlassianKeys } from "./atlassian.ts";
+import { Atlassian } from "./atlassian-auth.ts";
+import { hostedCallbackPath, sendCallbackPage } from "./oauth-signin.ts";
 import { HOSTED_HIDDEN_PAGES, NOT_HOSTED, checkHostedRequest, hostedConfig } from "./hosted.ts";
 import { ClaudeLogin } from "./claude-login.ts";
 import { GithubLogin } from "./github-login.ts";
@@ -414,14 +416,23 @@ function cleanupAttachments() {
 cleanupAttachments();
 setInterval(cleanupAttachments, 6 * 3600 * 1000).unref();
 const inbox = new Inbox(runs);
-const trackers = new Trackers(LEDGER_DIR);
-const meetings = new Meetings(undefined, { ledgerDir: LEDGER_DIR, hosted: !!HOSTED });
+// Connect to Atlassian: Jira and Confluence read as the person who signed in. Hosted, sign-in comes back to the dashboard's own address.
+const atlassian = new Atlassian(LEDGER_DIR, { hosted: !!HOSTED, publicOrigin: HOSTED ? HOSTED.publicOrigin : null });
+const atlassianAuth = () => atlassian.get();
+const trackers = new Trackers(LEDGER_DIR, atlassianAuth);
+const meetings = new Meetings(undefined, { ledgerDir: LEDGER_DIR, hosted: !!HOSTED, publicOrigin: HOSTED ? HOSTED.publicOrigin : null });
 const meetingLinks = new MeetingTicketLinks(meetingTickets);
 const machine = new Machine(MAIN_WORKSPACE_PATH, { hosted: !!HOSTED });
 const claudeLogin = new ClaudeLogin();
 const githubLogin = new GithubLogin({ signing: !!HOSTED });
 const docSites = new DocSites(MAIN_WORKSPACE_PATH);
-const docsProviders = new DocsProviders(() => ({ ledgerDir: LEDGER_DIR, issues: workspaceConfig().issues }));
+const docsProviders = new DocsProviders(() => ({ ledgerDir: LEDGER_DIR, issues: workspaceConfig().issues, atlassian: atlassianAuth }));
+/** A new or dropped Atlassian sign-in: what was read with the old one (the board, Confluence spaces, a meeting's tickets) is read again. */
+function atlassianChanged() {
+  trackers.reset();
+  docsProviders.reset();
+  meetingLinks.clear();
+}
 const snapshotSources = new SnapshotSources(() => ({ ledgerDir: LEDGER_DIR, issues: workspaceConfig().issues }));
 // The role assigned on the People page (DASHBOARD_ROLE), if any: in effect, and theirs to see but not change.
 const ROLE_LOCK = ((ws) => lockedRole(ws.rolesConfigured ? ws.roles : []))(workspaceConfig());
@@ -1327,6 +1338,23 @@ async function handleApi(req: http.IncomingMessage, res: http.ServerResponse, ur
       return r ? sendJson(res, r) : sendError(res, 404, "No README in that repo");
     }
     if (p === "/api/infrastructure") return sendJson(res, infrastructure(MAIN_WORKSPACE_PATH));
+    if (p === "/api/atlassian/status") {
+      const issues = workspaceConfig().issues;
+      return sendJson(res, { ...atlassian.get().status(), jira: issues.kind === "jira" ? trackers.get().status().connected : null });
+    }
+    // A hosted dashboard's sign-in callback: the person's own browser, sent back by Atlassian or the meeting tool.
+    const oauth = /^\/api\/oauth\/([a-z]+)\/callback$/.exec(p);
+    if (oauth) {
+      const back = HOSTED ? `${HOSTED.publicOrigin}/` : "/";
+      if (!HOSTED || p !== hostedCallbackPath(oauth[1])) return sendError(res, 404, "Not found");
+      if (oauth[1] === "atlassian") {
+        await atlassian.get().signInCallback(url, res, back);
+        return atlassianChanged();
+      }
+      const source = meetings.get();
+      if (source && source.kind === oauth[1] && source.signInCallback) return source.signInCallback(url, res, back);
+      return sendCallbackPage(res, 404, false, "There's no sign-in waiting for that here. Start again from the dashboard.", back);
+    }
     if (p === "/api/meetings/status") return sendJson(res, meetings.status());
     if (p === "/api/meetings/connect-help") return sendMeetings(res, async (s) => s.connectHelp());
     if (p === "/api/meetings/list") {
@@ -1537,11 +1565,25 @@ async function handleApi(req: http.IncomingMessage, res: http.ServerResponse, ur
     try { return sendJson(res, trackers.get().disconnect()); } finally { meetingLinks.clear(); }
   }
   if (p === "/api/atlassian/disconnect") {
-    // Issues and Docs fall back to each other's Atlassian key, so forgetting one forgets both.
+    // Issues and Docs fall back to each other's Atlassian key, so forgetting one forgets both; and the sign-in, which both use.
     const out = forgetAtlassianKeys(LEDGER_DIR);
     if (workspaceConfig().issues.kind === "jira") { trackers.get().disconnect(); meetingLinks.clear(); }
     for (const src of docSources().sources) { const dp = docsProviders.get(src); if (dp && dp.kind === "confluence") dp.disconnect(); }
-    return sendJson(res, out);
+    const { note } = atlassian.get().disconnect();
+    atlassianChanged();
+    return sendJson(res, note ? { ...out, note } : out);
+  }
+  if (p === "/api/atlassian/sign-in") {
+    // Shaped like /api/meetings/sign-in: start → the page to open; finish → the address the browser ended on.
+    const auth = atlassian.get();
+    if (body.action === "start") return sendJson(res, await auth.signInStart());
+    if (body.action === "status" || body.action === "finish") {
+      const st = body.action === "status" ? auth.signInStatus() : await auth.signInFinish(String(body.url || ""));
+      if (st.done && st.ok) atlassianChanged();
+      return sendJson(res, st);
+    }
+    if (body.action === "cancel") { auth.signInCancel(); return sendJson(res, { ok: true }); }
+    return sendError(res, 400, "Unknown action");
   }
   if (p === "/api/issues/implement" || p === "/api/linear/implement") {
     const ticket = ticketParam(body.ticket);

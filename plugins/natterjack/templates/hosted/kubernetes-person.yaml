@@ -46,6 +46,8 @@ spec:
             # - { name: SNAPSHOT_CONFIG, value: '{"source":"s3","bucket":"acme-code","region":"eu-west-1"}' }
             # - { name: SNAPSHOT_S3_ACCESS_KEY_ID, valueFrom: { secretKeyRef: { name: dashboard-router, key: snapshot-key-id } } }
             # - { name: SNAPSHOT_S3_SECRET_ACCESS_KEY, valueFrom: { secretKeyRef: { name: dashboard-router, key: snapshot-secret } } }
+            # Connect to Atlassian (workspace.json atlassian.clientId): the Atlassian app's client secret.
+            # - { name: ATLASSIAN_CLIENT_SECRET, valueFrom: { secretKeyRef: { name: dashboard-router, key: atlassian-client-secret } } }
           ports: [{ name: http, containerPort: 3333 }]
           resources:
             requests: { cpu: 100m, memory: 512Mi }

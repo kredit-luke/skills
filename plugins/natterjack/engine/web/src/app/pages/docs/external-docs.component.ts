@@ -9,6 +9,7 @@ import { ToastService } from '../../core/toast.service';
 import { TrustedHtmlPipe } from '../../core/trusted-html.pipe';
 import { relTime } from '../../core/util';
 import { KeyFieldsComponent } from '../../shared/key-fields.component';
+import { AtlassianConnectComponent } from '../../shared/atlassian-connect.component';
 
 /**
  * An external docs source with a provider adapter (Confluence, …): search it and read
@@ -18,7 +19,7 @@ import { KeyFieldsComponent } from '../../shared/key-fields.component';
  */
 @Component({
   selector: 'dash-external-docs',
-  imports: [MdPipe, TrustedHtmlPipe, KeyFieldsComponent],
+  imports: [MdPipe, TrustedHtmlPipe, KeyFieldsComponent, AtlassianConnectComponent],
   changeDetection: ChangeDetectionStrategy.OnPush,
   styleUrl: './docs.component.scss',
   styles: [`
@@ -51,6 +52,9 @@ import { KeyFieldsComponent } from '../../shared/key-fields.component';
       <div class="panel connect">
         @if (st.help; as help) {
           <h2>{{ help.title }}</h2>
+          @if (help.signIn === 'atlassian') {
+            <dash-atlassian-connect lead="Sign in with your Atlassian account: nothing to create or paste. Or use an API token:" inputId="docs-atlassian-callback" (connected)="loadStatus(site().key)" />
+          }
           <ol>@for (s of help.steps; track $index) { <li class="md tight" [innerHTML]="s | md | trustedHtml"></li> }</ol>
           @if (help.needsKey) {
             <form (submit)="$event.preventDefault(); connect()">
@@ -65,7 +69,7 @@ import { KeyFieldsComponent } from '../../shared/key-fields.component';
       <div class="docs-layout">
         <aside class="panel side">
           @if (st.provider === 'confluence' && st.removable) {
-            <button class="btn ghost sm forget" type="button" (click)="forgetAtlassian()" title="Remove your saved Atlassian API key (used by the Docs and Issues pages) so you can connect a different one">Disconnect Atlassian</button>
+            <button class="btn ghost sm forget" type="button" (click)="forgetAtlassian()" title="Stop the Docs and Issues pages reading Atlassian as you (your sign-in and any saved API key are removed), so you can connect again">Disconnect Atlassian</button>
           }
           <div class="search-box">
             <input placeholder="Search {{ st.name }}…" [value]="q()" (input)="onQuery($any($event.target).value)" autocomplete="off">
@@ -153,7 +157,7 @@ export class ExternalDocsComponent {
     });
   }
 
-  private async loadStatus(site: string): Promise<void> {
+  async loadStatus(site: string): Promise<void> {
     this.status.set(null);
     this.statusError.set(null);
     try { this.status.set(await this.api.get<ExternalDocsStatus>('/api/docs/external?site=' + encodeURIComponent(site))); }
@@ -171,10 +175,10 @@ export class ExternalDocsComponent {
   }
 
   async forgetAtlassian(): Promise<void> {
-    if (!confirm("Remove your saved Atlassian API key? The Docs and Issues pages stop using it until you connect a key again. (Claude's own Atlassian connector isn't affected.)")) return;
+    if (!confirm("Disconnect Atlassian? The Docs and Issues pages stop reading Atlassian as you: your sign-in and any saved API key are removed until you connect again. (Claude's own Atlassian connector isn't affected.)")) return;
     try {
-      const r = await this.api.post<{ envKeys: string[] }>('/api/atlassian/disconnect', {});
-      this.toast.show(r.envKeys.length ? `Saved key removed. ${r.envKeys.join(', ')} is still set in your environment.` : 'Atlassian key removed');
+      const r = await this.api.post<{ envKeys: string[]; note?: string }>('/api/atlassian/disconnect', {});
+      this.toast.show(r.envKeys.length ? `Disconnected. ${r.envKeys.join(', ')} is still set in your environment.` : r.note || 'Atlassian disconnected');
       await this.loadStatus(this.site().key);
     } catch (e) { this.toast.show((e as Error).message); }
   }
