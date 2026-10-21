@@ -61,7 +61,7 @@
       <div class="actions">
         @if (r.status === 'running' || r.status === 'waiting') { <button class="btn danger" (click)="cancel()">{{ r.status === 'waiting' ? 'Cancel run' : 'Cancel turn' }}</button> }
         @if (!api.hosted()) {
-          @if (r.status !== 'handedOff') {
+          @if (r.status !== 'handedOff' && !r.handoffPendingAt) {
             <button class="btn" (click)="terminal()" title="Open this conversation in a terminal and keep going interactively. The dashboard stops driving it.">Continue in terminal</button>
           }
           @if (canSendToHosted()) {

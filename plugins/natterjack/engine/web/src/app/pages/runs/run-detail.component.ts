@@ -12,6 +12,7 @@ import { buildThread, countSteps, isOpenModel, openModelSummary, stripAgents, st
 import { RunEventCache, type RunEvents } from '../../runs/event-cache';
 import { runTicket } from '../../../../../shared/run-ticket';
 import { runWorkspace } from '../../../../../shared/run-workspace';
+import { BETWEEN_TURNS } from '../../../../../shared/send-to-hosted';
 import { runStatus, toReview } from '../../shared/run-status';
 import { RunComposerComponent } from './run-composer.component';
 import { RunChangesComponent } from './run-changes.component';
@@ -27,8 +28,8 @@ type Tab = 'issue' | 'transcript' | 'changes' | 'apps';
 type IssueLookup = { detail: IssueDetail } | { error: string };
 
 const STICK_PX = 80;
-/** Statuses a run can be sent to the hosted dashboard from: between turns (the server's REPLYABLE). */
-const SENDABLE = new Set(['waiting', 'succeeded', 'failed', 'cancelled', 'interrupted']);
+/** Statuses a run can be sent to the hosted dashboard from: between turns (as the server checks). */
+const SENDABLE = new Set(BETWEEN_TURNS);
 /** Shared by every run page, so it outlives leaving Activity. */
 const eventCache = new RunEventCache();
 

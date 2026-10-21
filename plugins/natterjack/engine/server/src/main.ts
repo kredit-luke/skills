@@ -22,7 +22,7 @@ import path from "node:path";
 import crypto from "node:crypto";
 import { execFile } from "node:child_process";
 import { restartSelf } from "./self-restart.ts";
-import type { Boot, LaunchRequest, ProfileInfo, PublishPlanResponse, RunEvent, RunMeta } from "../../shared/api.ts";
+import type { Boot, ImportRunJob, LaunchRequest, ProfileInfo, PublishPlanResponse, RunEvent, RunMeta } from "../../shared/api.ts";
 import { implementTicket, runTicket } from "../../shared/run-ticket.ts";
 import { runWorkspace } from "../../shared/run-workspace.ts";
 import { CLAUDE_SESSION_ENV } from "./claude.ts";
@@ -312,6 +312,32 @@ function listWorkspaces(): Ws[] {
 
 function workspaceBySlug(slug: unknown): Ws | null {
   return listWorkspaces().find((w) => w.slug === slug) || null;
+}
+
+/** Send to hosted's imports, by the bundle's hash (the import page polls; kept an hour). */
+const importJobs = new Map<string, ImportRunJob & { at: number }>();
+const IMPORT_JOB_ID = /^[0-9a-f]{16}$/;
+
+function startImport(bundle: Buffer): ImportRunJob {
+  for (const [k, j] of importJobs) if (Date.now() - j.at > 3600_000) importJobs.delete(k);
+  const id = crypto.createHash("sha256").update(bundle).digest("hex").slice(0, 16);
+  const seen = importJobs.get(id);
+  if (seen && seen.state !== "failed") return seen; // posted again (a retry after a timeout): the same import
+  const job: ImportRunJob & { at: number } = { id, state: "running", run: null, warnings: [], error: null, at: Date.now() };
+  importJobs.set(id, job);
+  importBundle(bundle, {
+    workspaceRoot: MAIN_WORKSPACE_PATH,
+    worktreeRoot: worktreeRoot(),
+    runsDir: runs.runsDir,
+    attachmentsRoot: attachments.root,
+    claudeDir: process.env.CLAUDE_CONFIG_DIR || path.join(os.homedir(), ".claude"),
+    mainRepos: mainRepos(),
+  }, isRoutedId).then(({ meta, warnings }) => {
+    Object.assign(job, { state: "done", run: runs.get(meta.id) || meta, warnings });
+  }, (e) => {
+    Object.assign(job, { state: "failed", error: (e && e.message) || String(e) });
+  });
+  return job;
 }
 
 /** The main workspace's clones (absolute): repos.json's, the apps' repos, and the root itself if it's one. */
@@ -1065,7 +1091,8 @@ async function handleHandoffCors(req: http.IncomingMessage, res: http.ServerResp
     if (!runId) return fail(410, "This send was already confirmed or has expired.");
     // Only a link back to the hosted dashboard itself is kept.
     const link = typeof body.url === "string" && body.url.startsWith(`${origin}/`) ? body.url : null;
-    runs.finishSend(runId, link);
+    try { runs.finishSend(runId, link); }
+    catch (e) { return fail(e.status || 409, e.message); }
     res.writeHead(200, { ...cors, "Content-Type": "application/json" });
     return res.end(JSON.stringify({ ok: true }));
   }
@@ -1283,6 +1310,13 @@ async function handleApi(req: http.IncomingMessage, res: http.ServerResponse, ur
   if (HOSTED && p.startsWith("/api/people")) return sendError(res, 400, NOT_HOSTED);
 
   if (req.method === "GET") {
+    const importMatch = p.match(/^\/api\/runs\/import\/([0-9a-f]+)$/);
+    if (importMatch) {
+      const job = IMPORT_JOB_ID.test(importMatch[1]) ? importJobs.get(importMatch[1]) : null;
+      if (!job) return sendError(res, 404, "No such import (they're kept for an hour).");
+      const { at: _at, ...pub } = job;
+      return sendJson(res, pub);
+    }
     const fileMatch = p.match(RUN_FILE_ROUTE);
     if (fileMatch) return serveRunFile(res, fileMatch[1], decodeURIComponent(fileMatch[2]));
     const outputMatch = p.match(RUN_OUTPUT_ROUTE);
@@ -1526,15 +1560,7 @@ async function handleApi(req: http.IncomingMessage, res: http.ServerResponse, ur
     // Send to hosted's other end: the raw bundle the import page fetched from the person's computer.
     if (!HOSTED) return sendError(res, 400, "Runs are imported by a hosted dashboard. Use Send to hosted on the run's page instead.");
     const data = await readRawBody(req, MAX_BUNDLE_BYTES);
-    const { meta, warnings } = await importBundle(data, {
-      workspaceRoot: MAIN_WORKSPACE_PATH,
-      worktreeRoot: worktreeRoot(),
-      runsDir: runs.runsDir,
-      attachmentsRoot: attachments.root,
-      claudeDir: process.env.CLAUDE_CONFIG_DIR || path.join(os.homedir(), ".claude"),
-      mainRepos: mainRepos(),
-    }, isRoutedId);
-    return sendJson(res, { run: runs.get(meta.id) || meta, warnings }, 201);
+    return sendJson(res, startImport(data), 202);
   }
   if (p === "/api/explore/save") {
     // Its own reader: a file can be far bigger than readJsonBody's 64 KB.
@@ -1640,6 +1666,7 @@ async function handleApi(req: http.IncomingMessage, res: http.ServerResponse, ur
   if (runMatch && runMatch[2] === "flag") return sendJson(res, { run: runs.setFlag(runMatch[1], !!body.flagged) });
   if (runMatch && runMatch[2] === "watch-stop") return sendJson(res, { run: runs.stopWatch(runMatch[1]) });
   if (runMatch && runMatch[2] === "terminal") {
+    handoffs.drop(runMatch[1]); // a send in flight can't be fetched or confirmed any more
     const meta = runs.handOff(runMatch[1]);
     // Give a just-killed turn a moment to release the session before the terminal resumes it.
     if (meta && runs.live.has(meta.id)) await new Promise((r) => setTimeout(r, 1500));

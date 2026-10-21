@@ -6,9 +6,10 @@ import path from "node:path";
 import zlib from "node:zlib";
 import { execFileSync } from "node:child_process";
 import {
-  CONFIRM_TTL_MS, FETCH_TTL_MS, HandoffTokens, buildBundle, importBundle, localDashboardOrigin,
-  mapCwd, projectFolder, publicRemote, remoteKey,
+  CONFIRM_TTL_MS, FETCH_TTL_MS, HandoffTokens, buildBundle, importBundle,
+  mapCwd, projectFolder, publicRemote, remoteKey, writeInside,
 } from "../src/handoff.ts";
+import { localDashboardOrigin } from "../../shared/send-to-hosted.ts";
 import { RunManager } from "../src/runs.ts";
 import type { RunMeta } from "../../shared/api.ts";
 
@@ -189,10 +190,39 @@ test("a bundle with an unsafe path or a bad id is refused before anything is wri
   assert.deepEqual(fs.readdirSync(s.ctx.runsDir), []);
 });
 
+test("the uncommitted changes apply whatever the person's git config does to diffs", async () => {
+  const s = setup();
+  git(s.repo, "config", "diff.noprefix", "true");
+  git(s.repo, "config", "color.ui", "always");
+  const { bundle } = await bundleOf(s);
+  await importBundle(bundle, s.ctx);
+  assert.equal(read(path.join(s.P, "worktrees", "WT-1", "api", "a.txt")), "one, edited\n");
+});
+
+test("writeInside never writes through or over a link", (t) => {
+  const root = tmp();
+  const outside = tmp();
+  // A junction on Windows: it needs no rights there, and Node sees it as a link like a symlink.
+  fs.symlinkSync(outside, path.join(root, "link"), process.platform === "win32" ? "junction" : "dir");
+  assert.throws(() => writeInside(root, "link/x.txt", Buffer.from("x")), /goes through a link/);
+  assert.throws(() => writeInside(root, "link/deeper/x.txt", Buffer.from("x")), /goes through a link/);
+  assert.deepEqual(fs.readdirSync(outside), []);
+  assert.throws(() => writeInside(root, "../x.txt", Buffer.from("x")), /unsafe path/);
+  writeInside(root, "a/b/c.txt", Buffer.from("ok"));
+  assert.equal(fs.readFileSync(path.join(root, "a", "b", "c.txt"), "utf-8"), "ok");
+  // A file link in a file's place (symlinks need rights on Windows: only where they can be made).
+  try { fs.symlinkSync(path.join(outside, "f.txt"), path.join(root, "f.txt"), "file"); } catch { t.diagnostic("file symlinks unavailable here"); return; }
+  assert.throws(() => writeInside(root, "f.txt", Buffer.from("x")), /is a link/);
+});
+
 test("helpers: folder mapping, Claude's project folder, remotes, the hosted page's allowed source", () => {
   assert.equal(mapCwd({ workspaceRoot: "C:\\agentic-workspace", cwd: "C:\\agentic-workspace\\worktrees\\KREDIT-1", platform: "win32" }, "/data/workspace"), path.join("/data/workspace", "worktrees", "KREDIT-1"));
   assert.equal(mapCwd({ workspaceRoot: "C:\\ws", cwd: "C:\\ws", platform: "win32" }, "/data/workspace"), path.join("/data/workspace"));
   assert.equal(mapCwd({ workspaceRoot: "C:\\ws", cwd: "C:\\other", platform: "win32" }, "/data/workspace"), null);
+  // A run in a worktree kept outside the workspace (worktrees.dir "../wt") lands in the recreated worktree.
+  assert.equal(mapCwd({ workspaceRoot: "C:\\ws", cwd: "C:\\wt\\KREDIT-1\\api", platform: "win32" }, "/data/workspace", { from: "C:\\wt\\KREDIT-1", to: "/data/workspace/worktrees/KREDIT-1" }), path.join("/data/workspace/worktrees/KREDIT-1", "api"));
+  // A run at the workspace root that worked in a worktree stays at the root.
+  assert.equal(mapCwd({ workspaceRoot: "C:\\ws", cwd: "C:\\ws", platform: "win32" }, "/data/workspace", { from: "C:\\ws\\worktrees\\K", to: "/data/workspace/worktrees/K" }), path.join("/data/workspace"));
   assert.equal(projectFolder("C:\\agentic-workspace"), "C--agentic-workspace");
   assert.equal(projectFolder("/data/workspace"), "-data-workspace");
   assert.equal(projectFolder("/data/workspace/worktrees/KREDIT-8677"), "-data-workspace-worktrees-KREDIT-8677");
@@ -236,10 +266,19 @@ test("a run being sent takes no replies; finishing marks it moved, cancelling un
   fs.writeFileSync(path.join(ledger, "runs", `${RUN_ID}.json`), JSON.stringify(runMeta("/ws", { watch: { prs: [], everyMinutes: 5, prompt: "x", startedAt: "2026-10-21T12:00:00.000Z", endedAt: null } as any })));
   const runs = new RunManager(ledger);
   runs.beginSend(RUN_ID);
+  assert.throws(() => runs.beginSend(RUN_ID), /already being sent/); // a second send would swap the token mid-import
   assert.throws(() => runs.reply(RUN_ID, "hi"), /being sent to the hosted dashboard/);
   assert.throws(() => runs.enqueue(RUN_ID, "hi"), /being sent to the hosted dashboard/);
   assert.equal(runs.cancelSend(RUN_ID), true);
   assert.equal(runs.get(RUN_ID)!.handoffPendingAt, null);
+  // Cancelled before the hosted page confirmed: the confirmation is refused, so the page can warn.
+  assert.throws(() => runs.finishSend(RUN_ID, null), /cancelled on your computer/);
+
+  // Continued in a terminal while the send was pending: same.
+  runs.beginSend(RUN_ID);
+  runs.handOff(RUN_ID);
+  assert.throws(() => runs.finishSend(RUN_ID, null), /continued in a terminal/);
+  fs.writeFileSync(path.join(ledger, "runs", `${RUN_ID}.json`), JSON.stringify(runMeta("/ws", { watch: { prs: [], everyMinutes: 5, prompt: "x", startedAt: "2026-10-21T12:00:00.000Z", endedAt: null } as any })));
 
   runs.beginSend(RUN_ID);
   const done = runs.finishSend(RUN_ID, "https://hosted.example.com/runs/" + RUN_ID);

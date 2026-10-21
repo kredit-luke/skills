@@ -359,10 +359,19 @@ export interface TerminalResponse { opened: boolean; command: string; run: RunMe
  */
 export interface SendToHostedResponse { url: string; warnings: string[]; bytes: number; run: RunMeta }
 /**
- * POST /api/runs/import (hosted dashboards) body: the bundle's raw bytes → 201 ImportRunResponse.
- * Recreates the run, its transcript and its worktree here (409 when it's already here).
+ * POST /api/runs/import (hosted dashboards) body: the bundle's raw bytes → 202 ImportRunJob.
+ * Recreates the run, its transcript and its worktree here, in the background (it fetches each
+ * repo, which can outlast a proxy's response timeout): poll GET /api/runs/import/:id until
+ * `state` isn't 'running'. The same bundle posted again gets the same job, unless that failed.
  */
-export interface ImportRunResponse { run: RunMeta; warnings: string[] }
+export interface ImportRunJob {
+  id: string;
+  state: 'running' | 'done' | 'failed';
+  run: RunMeta | null;
+  warnings: string[];
+  /** Why it failed (e.g. the run or its worktree is already here). */
+  error: string | null;
+}
 /**
  * GET /api/runs/:id/changes[?force=1] → RunChanges: what the run changed, per repo.
  * baseKind 'run-start' = compared with a snapshot taken when the run's first turn started

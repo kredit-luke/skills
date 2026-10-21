@@ -22,6 +22,7 @@ import crypto from "node:crypto";
 import zlib from "node:zlib";
 import { execFile } from "node:child_process";
 import type { RunMeta } from "../../shared/api.ts";
+import { REPLYABLE } from "./runs.ts";
 import { safeMemberPath } from "./tar.ts";
 
 export const HANDOFF_FORMAT = 1;
@@ -59,7 +60,8 @@ export interface HandoffManifest {
   run: { id: string; sessionId: string; label: string };
   source: { workspaceRoot: string; cwd: string; platform: string };
   transcript: boolean;
-  worktree: { name: string; repos: HandoffRepo[]; extras: string[] } | null;
+  /** `sourcePath`: the worktree's folder on the computer it came from (it may be outside the workspace: worktrees.dir). */
+  worktree: { name: string; sourcePath: string; repos: HandoffRepo[]; extras: string[] } | null;
 }
 
 interface BundleDoc { manifest: HandoffManifest; files: Record<string, string> }
@@ -136,9 +138,17 @@ export function projectFolder(cwd: string): string {
 
 const toPosix = (p: string) => p.split(path.sep).join("/");
 
+/** What's read in before packing: past this the run can't fit in MAX_BUNDLE_BYTES gzipped, so stop early (memory, not a 500). */
+const MAX_RAW_BYTES = 120 * 1024 * 1024;
+
 function addFile(files: Record<string, string>, key: string, data: Buffer, sizes: { n: number }) {
-  files[key] = data.toString("base64");
   sizes.n += data.length;
+  if (sizes.n > MAX_RAW_BYTES) throw tooBig(`over ${MAX_RAW_BYTES / 1048576} MB before packing`);
+  files[key] = data.toString("base64");
+}
+
+function tooBig(size: string) {
+  return Object.assign(new Error(`This run is ${size}, over the ${MAX_BUNDLE_BYTES / 1048576} MB the hosted dashboard takes. Commit and push large files (or add them to .gitignore), or continue in a terminal instead.`), { status: 413 });
 }
 
 /** Every file under `dir`, relative with `/`, skipping `skip(relDir)` folders. */
@@ -189,8 +199,9 @@ async function packRepo(repoDir: string, rel: string, key: string, files: Record
       fs.rmSync(tmp, { force: true });
     }
   }
-  // Uncommitted changes to tracked files, staged or not.
-  const diff = await gitRaw(repoDir, ["diff", "HEAD", "--binary"], 120_000);
+  // Uncommitted changes to tracked files, staged or not, in the form `git apply` takes whatever the
+  // person's git config says (diff.noprefix, color.ui=always, external diff and textconv drivers).
+  const diff = await gitRaw(repoDir, ["-c", "core.quotePath=false", "diff", "--binary", "--full-index", "--no-color", "--no-ext-diff", "--no-textconv", "--no-relative", "--src-prefix=a/", "--dst-prefix=b/", "HEAD"], 120_000);
   if (diff.code !== 0) throw new Error(`Couldn't read ${name}'s uncommitted changes: ${diff.stderr.trim()}`);
   if (diff.stdout.length) { addFile(files, `${key}/changes.patch`, diff.stdout, sizes); repo.patch = true; }
   // New files git doesn't ignore.
@@ -259,7 +270,7 @@ export async function buildBundle(input: BuildInput): Promise<BuildResult> {
         extras.push(f);
       }
     }
-    worktree = { name, repos, extras };
+    worktree = { name, sourcePath: wt.path, repos, extras };
   }
 
   const manifest: HandoffManifest = {
@@ -272,9 +283,7 @@ export async function buildBundle(input: BuildInput): Promise<BuildResult> {
     worktree,
   };
   const bundle = zlib.gzipSync(Buffer.from(JSON.stringify({ manifest, files } satisfies BundleDoc)));
-  if (bundle.length > MAX_BUNDLE_BYTES) {
-    throw Object.assign(new Error(`This run is ${(bundle.length / 1048576).toFixed(1)} MB packed, over the ${MAX_BUNDLE_BYTES / 1048576} MB the hosted dashboard takes. Commit and push large files, or continue in a terminal instead.`), { status: 413 });
-  }
+  if (bundle.length > MAX_BUNDLE_BYTES) throw tooBig(`${(bundle.length / 1048576).toFixed(1)} MB packed`);
   return { bundle, manifest, warnings };
 }
 
@@ -293,21 +302,31 @@ export interface ImportContext {
 
 export interface ImportResult { meta: RunMeta; warnings: string[] }
 
-const REPLYABLE = new Set(["waiting", "succeeded", "failed", "cancelled", "interrupted"]);
+/** A folder on the computer the run came from, and where it is here. */
+export interface FolderMap { from: string; to: string }
 
-/** The run's folder here: the same place relative to the workspace as on the computer it came from. */
-export function mapCwd(source: HandoffManifest["source"], workspaceRoot: string): string | null {
-  const p = source.platform === "win32" ? path.win32 : path.posix;
-  const rel = p.relative(source.workspaceRoot, source.cwd);
+/** `cwd` (a path on the source computer) under `base` there, as the same place under `to` here; null when it isn't under it. */
+function under(platform: string, base: string, cwd: string, to: string): string | null {
+  const p = platform === "win32" ? path.win32 : path.posix;
+  const rel = p.relative(base, cwd);
   if (rel.startsWith("..") || p.isAbsolute(rel)) return null;
   const parts = rel.split(/[\\/]+/).filter(Boolean);
   if (parts.some((s) => s === ".." || s.includes("\0"))) return null;
-  return path.join(workspaceRoot, ...parts);
+  return path.join(to, ...parts);
+}
+
+/**
+ * The run's folder here: in its worktree, the same place in the recreated worktree (wherever
+ * worktrees.dir puts them on either side); else the same place relative to the workspace.
+ */
+export function mapCwd(source: HandoffManifest["source"], workspaceRoot: string, worktree: FolderMap | null = null): string | null {
+  return (worktree && under(source.platform, worktree.from, source.cwd, worktree.to)) || under(source.platform, source.workspaceRoot, source.cwd, workspaceRoot);
 }
 
 /** What the run is told on every turn from now on, so the old paths in its history don't mislead it. */
-export function movedNote(source: HandoffManifest["source"], workspaceRoot: string): string {
-  return `This conversation was moved here from another computer, where the workspace was ${source.workspaceRoot}. Paths earlier in the conversation under that folder are now under ${workspaceRoot} (use / as the separator). Apps, services and terminals started there aren't running here.`;
+export function movedNote(source: HandoffManifest["source"], workspaceRoot: string, worktree: FolderMap | null = null): string {
+  const wt = worktree ? ` Its worktree ${worktree.from} is now ${worktree.to}.` : "";
+  return `This conversation was moved here from another computer, where the workspace was ${source.workspaceRoot}. Paths earlier in the conversation under that folder are now under ${workspaceRoot} (use / as the separator).${wt} Apps, services and terminals started there aren't running here.`;
 }
 
 function parseBundle(buf: Buffer): BundleDoc {
@@ -327,6 +346,7 @@ function parseBundle(buf: Buffer): BundleDoc {
   }
   if (m.worktree) {
     if (!WORKTREE_NAME_RE.test(String(m.worktree.name || ""))) throw Object.assign(new Error("The worktree's name isn't valid."), { status: 400 });
+    if (typeof m.worktree.sourcePath !== "string" || !m.worktree.sourcePath) throw Object.assign(new Error("The bundle doesn't say where its worktree was."), { status: 400 });
     for (const r of m.worktree.repos || []) {
       if (r.path && safeMemberPath(r.path) !== r.path) throw Object.assign(new Error(`The bundle has an unsafe repo path (${r.path}).`), { status: 400 });
       if (!/^[0-9a-f]{40,64}$/.test(String(r.head))) throw Object.assign(new Error("A repo's commit id isn't valid."), { status: 400 });
@@ -335,8 +355,27 @@ function parseBundle(buf: Buffer): BundleDoc {
   return doc as BundleDoc;
 }
 
-function writeOut(dest: string, data: Buffer) {
-  fs.mkdirSync(path.dirname(dest), { recursive: true });
+/**
+ * Write `rel` (a bundle path, with `/`) under `root`, through real folders only: a symlink on
+ * the way (one the bundle's own commits checked out, say `link -> ~/.ssh`) or in its place is
+ * refused, so nothing in a bundle can write outside where it belongs.
+ */
+export function writeInside(root: string, rel: string, data: Buffer) {
+  if (safeMemberPath(rel) !== rel) throw Object.assign(new Error(`The bundle has an unsafe path (${rel}).`), { status: 400 });
+  const parts = rel.split("/");
+  let cur = root;
+  fs.mkdirSync(root, { recursive: true });
+  for (const part of parts.slice(0, -1)) {
+    cur = path.join(cur, part);
+    let st: fs.Stats | null = null;
+    try { st = fs.lstatSync(cur); } catch {}
+    if (!st) fs.mkdirSync(cur);
+    else if (st.isSymbolicLink() || !st.isDirectory()) throw Object.assign(new Error(`${rel} goes through a link or a file, so it wasn't written.`), { status: 409 });
+  }
+  const dest = path.join(cur, parts[parts.length - 1]);
+  let st: fs.Stats | null = null;
+  try { st = fs.lstatSync(dest); } catch {}
+  if (st && (st.isSymbolicLink() || !st.isFile())) throw Object.assign(new Error(`${rel} is a link or a folder here, so it wasn't written.`), { status: 409 });
   fs.writeFileSync(dest, data);
 }
 
@@ -363,8 +402,9 @@ export async function importBundle(buf: Buffer, ctx: ImportContext, isRoutedMode
 
   const metaPath = path.join(ctx.runsDir, `${id}.json`);
   if (fs.existsSync(metaPath)) throw Object.assign(new Error("This run is already on the hosted dashboard."), { status: 409 });
-  const cwd = mapCwd(m.source, ctx.workspaceRoot);
-  if (!cwd) throw Object.assign(new Error("The run's folder is outside its workspace, so it can't be placed here."), { status: 400 });
+  const wtMap: FolderMap | null = m.worktree ? { from: String(m.worktree.sourcePath || ""), to: path.join(ctx.worktreeRoot, m.worktree.name) } : null;
+  const cwd = mapCwd(m.source, ctx.workspaceRoot, wtMap);
+  if (!cwd) throw Object.assign(new Error("The run's folder is outside its workspace and its worktree, so it can't be placed here."), { status: 400 });
   const metaBuf = file("run/meta.json");
   if (!metaBuf) throw Object.assign(new Error("The bundle has no run in it."), { status: 400 });
   const meta = JSON.parse(metaBuf.toString("utf-8")) as RunMeta;
@@ -417,14 +457,13 @@ export async function importBundle(buf: Buffer, ctx: ImportContext, isRoutedMode
         }
         for (const f of repo.untracked || []) {
           const data = file(`${key}/files/${f}`);
-          if (data && safeMemberPath(f) === f) writeOut(path.join(dest, ...f.split("/")), data);
+          if (data) writeInside(dest, f, data);
         }
       }
       for (const f of m.worktree.extras || []) {
         const data = file(`worktree/extras/${f}`);
-        if (!data || safeMemberPath(f) !== f) continue;
-        const dest = path.join(target, ...f.split("/"));
-        if (!fs.existsSync(dest)) writeOut(dest, data); // never over a repo's own file
+        if (!data) continue;
+        if (!fs.existsSync(path.join(target, ...String(f).split("/")))) writeInside(target, f, data); // never over a repo's own file
       }
     }
 
@@ -434,10 +473,13 @@ export async function importBundle(buf: Buffer, ctx: ImportContext, isRoutedMode
       const prefix = `transcript/${m.run.sessionId}`;
       for (const k of Object.keys(doc.files)) {
         if (k !== `${prefix}.jsonl` && !k.startsWith(`${prefix}/`)) continue;
-        const dest = path.join(dir, ...k.slice("transcript/".length).split("/"));
-        if (fs.existsSync(dest)) continue;
-        writeOut(dest, file(k)!);
-        undo.push(() => fs.rmSync(dest, { force: true }));
+        const rel = k.slice("transcript/".length);
+        const dest = path.join(dir, ...rel.split("/"));
+        // One left from an earlier import of this session (its run since deleted) is older: replace it, and put it back on failure.
+        let before: Buffer | null = null;
+        try { before = fs.readFileSync(dest); } catch {}
+        writeInside(dir, rel, file(k)!);
+        undo.push(() => (before ? fs.writeFileSync(dest, before) : fs.rmSync(dest, { force: true })));
       }
     } else {
       warnings.push("The transcript didn't come along, so replying starts a fresh conversation.");
@@ -445,11 +487,10 @@ export async function importBundle(buf: Buffer, ctx: ImportContext, isRoutedMode
 
     // Attached files and outputs.
     const attDir = path.join(ctx.attachmentsRoot, id);
-    for (const k of Object.keys(doc.files)) {
-      if (!k.startsWith("attachments/")) continue;
-      writeOut(path.join(attDir, ...k.slice("attachments/".length).split("/")), file(k)!);
+    if (Object.keys(doc.files).some((k) => k.startsWith("attachments/"))) {
+      undo.push(() => fs.rmSync(attDir, { recursive: true, force: true }));
+      for (const k of Object.keys(doc.files)) if (k.startsWith("attachments/")) writeInside(attDir, k.slice("attachments/".length), file(k)!);
     }
-    if (fs.existsSync(attDir)) undo.push(() => fs.rmSync(attDir, { recursive: true, force: true }));
 
     // The run itself, pointed at its new folder and ready for a reply.
     meta.cwd = cwd;
@@ -465,11 +506,14 @@ export async function importBundle(buf: Buffer, ctx: ImportContext, isRoutedMode
     meta.addDirs = undefined;
     if (isRoutedModel(meta.model)) { meta.model = null; meta.effort = null; meta.resolvedModel = null; }
     meta.movedFrom = { at: new Date().toISOString(), cwd: m.source.cwd };
-    meta.extraPrompt = [meta.extraPrompt, movedNote(m.source, ctx.workspaceRoot)].filter(Boolean).join("\n\n");
+    meta.extraPrompt = [meta.extraPrompt, movedNote(m.source, ctx.workspaceRoot, wtMap)].filter(Boolean).join("\n\n");
     if (Array.isArray(meta.attachments)) meta.attachments = meta.attachments.map((a) => ({ ...a, path: path.join(attDir, path.basename(a.file || a.name)) }));
     const events = file("run/events.jsonl");
-    if (events) writeOut(path.join(ctx.runsDir, `${id}.events.jsonl`), events);
-    writeOut(metaPath, Buffer.from(JSON.stringify(meta, null, 2)));
+    if (events) {
+      writeInside(ctx.runsDir, `${id}.events.jsonl`, events);
+      undo.push(() => fs.rmSync(path.join(ctx.runsDir, `${id}.events.jsonl`), { force: true }));
+    }
+    writeInside(ctx.runsDir, `${id}.json`, Buffer.from(JSON.stringify(meta, null, 2)));
     return { meta, warnings };
   } catch (e) {
     for (const fn of undo.reverse()) { try { await fn(); } catch {} }
@@ -561,16 +605,5 @@ export class HandoffTokens {
   isPending(runId: string): boolean {
     for (const p of this.pending.values()) if (p.runId === runId) return true;
     return false;
-  }
-}
-
-/** The hosted page may fetch only from a dashboard on the same computer as the browser. */
-export function localDashboardOrigin(from: string): string | null {
-  try {
-    const u = new URL(from);
-    if (u.protocol !== "http:" || !["localhost", "127.0.0.1", "[::1]"].includes(u.hostname) || u.pathname !== "/" || u.search || u.username) return null;
-    return u.origin;
-  } catch {
-    return null;
   }
 }

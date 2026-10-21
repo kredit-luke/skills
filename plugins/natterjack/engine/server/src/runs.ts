@@ -27,6 +27,7 @@ import crypto from "node:crypto";
 import { execFile, type ChildProcess } from "node:child_process";
 import type { ServerResponse } from "node:http";
 import type { Attachment, Effort, PermissionMode, QueuedMessage, Question, RunEvent, RunMeta, RunWatch, WatchedPr } from "../../shared/api.ts";
+import { BETWEEN_TURNS } from "../../shared/send-to-hosted.ts";
 import { agentHeadlessRules, agentOf, keepRunningRule, outputsRule, type ParseState, type TurnInput } from "./agents/index.ts";
 import { LOCAL_MODEL_RULE, isRoutedId } from "./models/routes.ts";
 import { expandSlash } from "./agents/skills.ts";
@@ -126,7 +127,7 @@ const WATCH_PROMPT_MAX = 8000;
 const WATCH_DEFAULT_PROMPT = "Check each pull request: act on new review feedback, fix failing checks if the fix is yours to make, update a branch that is behind, and report each PR's status in a short table.";
 const SCHEDULE_TOOLS = new Set(["CronCreate", "ScheduleWakeup", "Monitor"]);
 /** A run in one of these can take a reply. */
-const REPLYABLE = new Set(["waiting", "succeeded", "failed", "cancelled", "interrupted"]);
+export const REPLYABLE = new Set(BETWEEN_TURNS);
 /** Finished for the purposes of stats and verdicts. */
 const SETTLED = new Set(["waiting", "succeeded", "failed", "cancelled", "interrupted", "handedOff"]);
 
@@ -603,16 +604,26 @@ export class RunManager {
     if (agentOf(meta.agent).id !== "claude") throw httpError(400, "Only Claude runs can move to the hosted dashboard.");
     if (this.live.has(id) || meta.status === "running") throw httpError(409, "Wait for this turn to finish (or stop it), then send the run.");
     if (meta.status === "handedOff") throw httpError(409, handedOffMessage(meta));
+    if (meta.handoffPendingAt) throw httpError(409, "This run is already being sent. Finish in the tab that opened, or cancel the send first.");
     if (!REPLYABLE.has(meta.status)) throw httpError(409, `Can't send a ${meta.status} run.`);
     meta.handoffPendingAt = new Date().toISOString();
     this._save(meta);
     return meta;
   }
 
-  /** The hosted dashboard has the run: this copy stops driving it, like a terminal hand-off. */
+  /**
+   * The hosted dashboard has the run: this copy stops driving it, like a terminal hand-off.
+   * Only while the send is still pending: a run whose send was cancelled, or that was continued
+   * in a terminal, since is refused (409), so the hosted page can warn that two copies are live.
+   */
   finishSend(id: string, hostedRunUrl: string | null): RunMeta {
     const meta = this.get(id);
     if (!meta) throw httpError(404, "Unknown run");
+    if (!meta.handoffPendingAt) {
+      throw httpError(409, meta.status === "handedOff" && meta.handedOffTo !== "hosted"
+        ? "The run was continued in a terminal on your computer meanwhile."
+        : "The send was cancelled on your computer meanwhile, so the run is still open there.");
+    }
     meta.status = "handedOff";
     meta.handedOffTo = "hosted";
     meta.hostedRunUrl = hostedRunUrl;
