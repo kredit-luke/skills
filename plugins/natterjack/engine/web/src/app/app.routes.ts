@@ -10,6 +10,8 @@ export const routes: Routes = [
   { path: 'infrastructure', loadComponent: () => import('./pages/infrastructure/infrastructure.component').then((m) => m.InfrastructureComponent), title: 'Infrastructure' },
   { path: 'reference', redirectTo: 'infrastructure' }, // the page's old name, in bookmarks and link tiles
   { path: 'ask', loadComponent: () => import('./pages/ask/ask.component').then((m) => m.AskComponent), title: 'Ask' },
+  // Send to hosted's other end (a hosted dashboard; opened by the person's own dashboard).
+  { path: 'import-run', loadComponent: () => import('./pages/import-run/import-run.component').then((m) => m.ImportRunComponent), title: 'Move a run here' },
   { path: 'runs', loadComponent: () => import('./pages/runs/runs.component').then((m) => m.RunsComponent), title: 'Activity' },
   { path: 'runs/:id', loadComponent: () => import('./pages/runs/runs.component').then((m) => m.RunsComponent), title: 'Activity' },
   { path: 'usage', loadComponent: () => import('./pages/usage/usage.component').then((m) => m.UsageComponent), title: 'Usage' },

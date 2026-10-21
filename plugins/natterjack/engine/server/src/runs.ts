@@ -281,6 +281,11 @@ export class RunManager {
         meta.error = "The dashboard restarted mid-turn. Reply to carry on, or continue in a terminal.";
         this._write(meta);
       }
+      // A send to the hosted dashboard doesn't survive a restart (its token was in memory).
+      if (meta.handoffPendingAt) {
+        meta.handoffPendingAt = null;
+        this._write(meta);
+      }
     }
   }
 
@@ -386,7 +391,8 @@ export class RunManager {
     if (!text && !ids.length) throw httpError(400, "Reply is empty.");
     if (text.length > REPLY_MAX) throw httpError(400, "Reply is too long.");
     if (this.live.has(id) || meta.status === "running") throw httpError(409, "Claude is still working on this run.");
-    if (meta.status === "handedOff") throw httpError(409, "This run continued in a terminal; reply there.");
+    if (meta.status === "handedOff") throw httpError(409, handedOffMessage(meta));
+    if (meta.handoffPendingAt) throw httpError(409, SENDING_MESSAGE);
     if (!REPLYABLE.has(meta.status)) throw httpError(409, `Can't reply to a ${meta.status} run.`);
     if (opts.budgetUsd !== undefined) meta.budgetUsd = opts.budgetUsd;
     if (opts.model !== undefined && opts.model !== meta.model) {
@@ -411,7 +417,8 @@ export class RunManager {
     if (!text) throw httpError(400, "The message is empty.");
     if (text.length > REPLY_MAX) throw httpError(400, "The message is too long.");
     const meta = this._queueOwner(id);
-    if (meta.status === "handedOff") throw httpError(409, "This run continued in a terminal; reply there.");
+    if (meta.status === "handedOff") throw httpError(409, handedOffMessage(meta));
+    if (meta.handoffPendingAt) throw httpError(409, SENDING_MESSAGE);
     const queued = meta.queued || (meta.queued = []);
     if (queued.length >= QUEUE_MAX) throw httpError(409, `Up to ${QUEUE_MAX} messages can wait in the queue.`);
     queued.push({ id: crypto.randomBytes(4).toString("hex"), text, at: new Date().toISOString() });
@@ -533,7 +540,8 @@ export class RunManager {
     const meta = this.get(id);
     if (!meta) throw httpError(404, "Unknown run");
     if (this.live.has(id)) throw httpError(409, "Wait for this turn to finish, then change plan mode.");
-    if (meta.status === "handedOff") throw httpError(409, "This run continued in a terminal (use Shift+Tab there).");
+    if (meta.status === "handedOff") throw httpError(409, meta.handedOffTo === "hosted" ? handedOffMessage(meta) : "This run continued in a terminal (use Shift+Tab there).");
+    if (meta.handoffPendingAt) throw httpError(409, SENDING_MESSAGE);
     meta.planMode = !!on;
     this._save(meta);
     return meta;
@@ -571,6 +579,8 @@ export class RunManager {
       killTree(live.child);
     }
     meta.status = "handedOff";
+    meta.handedOffTo = "terminal";
+    meta.handoffPendingAt = null;
     meta.question = null;
     meta.queued = [];
     meta.queueBlocked = null;
@@ -579,6 +589,56 @@ export class RunManager {
     this._save(meta);
     return meta;
   }
+
+  // ------------------------------------------------------------ send to hosted (handoff.ts)
+
+  /**
+   * Lock a run while it's sent to the hosted dashboard: replies, queued messages and plan
+   * mode wait until the hosted tab confirms (finishSend) or the send is called off (cancelSend).
+   * Only a Claude run that isn't mid-turn can go: its transcript is what moves.
+   */
+  beginSend(id: string): RunMeta {
+    const meta = this.get(id);
+    if (!meta) throw httpError(404, "Unknown run");
+    if (agentOf(meta.agent).id !== "claude") throw httpError(400, "Only Claude runs can move to the hosted dashboard.");
+    if (this.live.has(id) || meta.status === "running") throw httpError(409, "Wait for this turn to finish (or stop it), then send the run.");
+    if (meta.status === "handedOff") throw httpError(409, handedOffMessage(meta));
+    if (!REPLYABLE.has(meta.status)) throw httpError(409, `Can't send a ${meta.status} run.`);
+    meta.handoffPendingAt = new Date().toISOString();
+    this._save(meta);
+    return meta;
+  }
+
+  /** The hosted dashboard has the run: this copy stops driving it, like a terminal hand-off. */
+  finishSend(id: string, hostedRunUrl: string | null): RunMeta {
+    const meta = this.get(id);
+    if (!meta) throw httpError(404, "Unknown run");
+    meta.status = "handedOff";
+    meta.handedOffTo = "hosted";
+    meta.hostedRunUrl = hostedRunUrl;
+    meta.handoffPendingAt = null;
+    meta.question = null;
+    meta.queued = [];
+    meta.queueBlocked = null;
+    meta.handedOffAt = new Date().toISOString();
+    endWatch(meta, "Moved to the hosted dashboard, which watches it from now on.");
+    this._save(meta);
+    return meta;
+  }
+
+  /** Unlock a run whose send didn't finish. False when it wasn't being sent. */
+  cancelSend(id: string): boolean {
+    const meta = this.get(id);
+    if (!meta || !meta.handoffPendingAt) return false;
+    meta.handoffPendingAt = null;
+    this._save(meta);
+    return true;
+  }
+
+  /** Where Claude Code keeps a session's transcript, or null when it isn't on this computer. */
+  transcriptPath(sessionId: string): string | null { return this._transcriptPath(sessionId); }
+  metaFile(id: string): string { return this._metaPath(id); }
+  eventsFile(id: string): string { return this._eventsPath(id); }
 
   /** End a run's PR watch. Works mid-turn, like rename. */
   stopWatch(id: string, reason = "Stopped from the dashboard."): RunMeta {
@@ -1206,6 +1266,13 @@ function killTree(child: ChildProcess) {
 
 export function httpError(status: number, message: string) {
   return Object.assign(new Error(message), { status });
+}
+
+export const SENDING_MESSAGE = "This run is being sent to the hosted dashboard. Finish in the tab that opened, or cancel the send.";
+
+/** Why a handed-off run takes no replies here. */
+export function handedOffMessage(meta: Pick<RunMeta, "handedOffTo">): string {
+  return meta.handedOffTo === "hosted" ? "This run moved to the hosted dashboard; reply there." : "This run continued in a terminal; reply there.";
 }
 
 /**

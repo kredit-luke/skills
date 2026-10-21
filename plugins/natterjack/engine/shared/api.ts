@@ -50,6 +50,11 @@ export interface Boot {
    * `user` is the signed-in email the proxy passed on. null when it runs on the person's own machine.
    */
   hosted: { user: string | null } | null;
+  /**
+   * A local dashboard's hosted counterpart (hosting.json `url`, or DASHBOARD_HOSTED_URL): where
+   * Send to hosted moves a run. null when hosted, or when none is set.
+   */
+  hostedUrl?: string | null;
 }
 
 /** The configured issue tracker, as the UI needs it everywhere (badges, links, ticket ids). */
@@ -158,6 +163,14 @@ export interface RunMeta {
   resolvedModel?: string | null;
   continuedAt?: string | null; // first activity seen in a terminal after the headless part
   handedOffAt?: string | null;
+  /** Where a handedOff run went: a terminal (also when missing: runs from before Send to hosted) or the hosted dashboard. */
+  handedOffTo?: 'terminal' | 'hosted' | null;
+  /** The run's page on the hosted dashboard, once it moved there. */
+  hostedRunUrl?: string | null;
+  /** Send to hosted is under way (the hosted tab is importing it): replies wait until it finishes or is cancelled. */
+  handoffPendingAt?: string | null;
+  /** On the hosted dashboard: the run came from someone's computer (its folder there). */
+  movedFrom?: { at: string; cwd: string } | null;
   /** Files sent with the first prompt. A reply's files are on its `human` event. */
   attachments?: Attachment[];
   /** When the run's files were deleted (keepAttachmentsDays after it was done). */
@@ -335,6 +348,21 @@ export interface PlanModeRequest { on: boolean }
  * in a terminal in the run's folder.
  */
 export interface TerminalResponse { opened: boolean; command: string; run: RunMeta }
+/**
+ * POST /api/runs/:id/send-to-hosted → SendToHostedResponse (local dashboards with Boot.hostedUrl)
+ * Packs the run (transcript, ledger files, its worktree's unpushed work) and holds it for the
+ * hosted dashboard, which `url` opens: that page fetches it once with the token in the URL
+ * (GET /api/handoff/bundle?t=, allowed from the hosted origin only), imports it, and confirms
+ * (POST /api/handoff/confirm?t= { url }), which marks the run handedOff to 'hosted'. Until then
+ * the run is locked (handoffPendingAt); POST /api/runs/:id/send-cancel unlocks it, as does a
+ * send that isn't fetched within 5 minutes or confirmed within 30.
+ */
+export interface SendToHostedResponse { url: string; warnings: string[]; bytes: number; run: RunMeta }
+/**
+ * POST /api/runs/import (hosted dashboards) body: the bundle's raw bytes → 201 ImportRunResponse.
+ * Recreates the run, its transcript and its worktree here (409 when it's already here).
+ */
+export interface ImportRunResponse { run: RunMeta; warnings: string[] }
 /**
  * GET /api/runs/:id/changes[?force=1] → RunChanges: what the run changed, per repo.
  * baseKind 'run-start' = compared with a snapshot taken when the run's first turn started
