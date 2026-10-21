@@ -139,6 +139,9 @@ metadata:
   annotations:
     nginx.ingress.kubernetes.io/proxy-read-timeout: "3600"
     nginx.ingress.kubernetes.io/proxy-buffering: "off"
+    # Attachments go up to 20 MB; NGINX's 1 MB default answers anything bigger with a 413.
+    # (NGINX Inc's controller: nginx.org/client-max-body-size.)
+    nginx.ingress.kubernetes.io/proxy-body-size: "25m"
 spec:
   # ingressClassName: nginx   # or alb (EKS), azure-application-gateway (AKS), gce (GKE)
   tls: [{ hosts: [dashboard.example.com], secretName: natterjack-router-tls }]
