@@ -313,6 +313,19 @@ An engineer who starts a run on their own dashboard can carry on with it on thei
 
 What doesn't move: running apps and services, Continue-in-terminal sessions, PR watches (the hosted dashboard picks the watch up from the run), and anything outside the run's worktree. The pack is capped at 20 MB (gzipped). The hosted ingress must take a request that big: ingress-nginx's default is 1 MB, which the router template raises (`proxy-body-size: 25m`; on NGINX Inc's controller, `nginx.org/client-max-body-size`).
 
+## Linking your computer (Remote control)
+
+Remote control keeps a run on your own computer, with its SDKs, databases and running services, while you follow and answer it from the hosted dashboard, on a phone say. For that, the dashboard on your computer has to reach your hosted one without a browser. This section is the link; mirroring runs over it comes next. It needs the router layout ("One address for everyone"); the single-container layout (`templates/hosted/kubernetes.yaml`) and App Service don't take link tokens yet.
+
+1. **On the hosted dashboard**, Settings › **Linked computers** › **Make a link token**. It's shown once; the dashboard keeps only its hash (`<ledger>/remote-links.json`). **Remove** stops it at once. The token is `njl1.<email>.<id>.<secret>`: the email is how the router finds your dashboard, and your dashboard checks the rest.
+2. **On your computer** (hosting.json has `url`), Settings › **Hosted dashboard link**: paste the token. If your ingress asks for a client certificate (mutual TLS), add it as a `.p12`/`.pfx` file with its passphrase. One in the operating system's certificate store can't be used: Node only presents a certificate it can read from a file, so issue one as a file. Both are kept in `<ledger>/hosted-link/` (owner-only); `DASHBOARD_LINK_TOKEN`, `DASHBOARD_CLIENT_CERT`, `DASHBOARD_CLIENT_CERT_PASS` (and `DASHBOARD_HOSTED_CA` for a private server CA) override them. **Check** tries each step and says which failed.
+3. **The login proxy** lets `/api/remote/*` through without a sign-in: `--skip-auth-route=^/api/remote/` (in the router template). There's no browser on that side to sign in with. What protects the path:
+   - the router routes it only on a link token, and refuses it without one, whatever headers came with it;
+   - the dashboard serves `/api/remote/*` only to its own owner's valid tokens, and a token opens nothing outside that path;
+   - your ingress's other gates (a client certificate, an IP allowlist) still apply.
+
+Why not a Google token from `gcloud auth print-identity-token`: where the company requires Google reauthentication, it can't be refreshed without a prompt, so a background link would stop at every reauth.
+
 ## Hosting a model for the team
 
 An open model on the team's own GPU gives everyone (hosted dashboards too) a free model for code search and exploring. List it in `models.json` `endpoints` ([config.md](config.md#modelsjson-the-models-page-local-and-team-open-models)) and it shows up in every Model select.

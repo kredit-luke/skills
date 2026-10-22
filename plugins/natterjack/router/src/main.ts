@@ -15,6 +15,7 @@ import fs from "node:fs";
 import http from "node:http";
 import https from "node:https";
 import { SECRET_HEADER, checkHostedRequest } from "../../engine/server/src/hosted.ts";
+import { REMOTE_PREFIX, linkTokenOf, parseLinkToken, resolvedPath } from "../../engine/server/src/link-tokens.ts";
 import { routerConfig } from "./config.ts";
 import { HOP, backendHeaders, backendUrl, makeBackend, type Backend } from "./backends.ts";
 
@@ -95,9 +96,24 @@ function proxy(req: http.IncomingMessage, res: http.ServerResponse, base: string
 
 const server = http.createServer(async (req, res) => {
   if (req.method === "GET" && req.url === "/healthz") { res.writeHead(200, { "Content-Type": "text/plain" }); return res.end("ok"); }
-  const verdict = checkHostedRequest(cfg.front, req.headers);
-  if (verdict.ok === false) { res.writeHead(verdict.status, { "Content-Type": "text/plain; charset=utf-8" }); return res.end(verdict.message); }
-  const email = verdict.user;
+  // Remote control: a person's own computer, linked with a token from their dashboard
+  // (engine link-tokens.ts). The login proxy lets /api/remote/* through without a sign-in
+  // (there's no browser to sign in with), so the token's email says whose dashboard to send
+  // it to. That's only a routing hint: the dashboard checks the token against its own.
+  const link = linkTokenOf(req.url, req.headers);
+  let email: string;
+  if (link) {
+    if (!cfg.front.hosts.has(String(req.headers.host || "").toLowerCase())) { res.writeHead(421); return res.end("Misdirected request"); }
+    email = parseLinkToken(link)!.email;
+  } else if (String(req.url || "").startsWith(REMOTE_PREFIX) || resolvedPath(req.url)?.startsWith(REMOTE_PREFIX)) {
+    // The login proxy doesn't sign anyone in here, so its headers mean nothing on this path.
+    res.writeHead(401, { "Content-Type": "application/json" });
+    return res.end(JSON.stringify({ error: "This path takes a link token (Authorization: Bearer) from your dashboard's Settings." }));
+  } else {
+    const verdict = checkHostedRequest(cfg.front, req.headers);
+    if (verdict.ok === false) { res.writeHead(verdict.status, { "Content-Type": "text/plain; charset=utf-8" }); return res.end(verdict.message); }
+    email = verdict.user;
+  }
   let target;
   try { target = await backend.find(email); }
   catch (e) {
@@ -105,6 +121,7 @@ const server = http.createServer(async (req, res) => {
     return page(res, 502, "Couldn't find your dashboard", "The router couldn't reach the platform that runs the dashboards. Try again in a minute.");
   }
   if (!target) {
+    if (link) { res.writeHead(403, { "Content-Type": "application/json" }); return res.end(JSON.stringify({ error: "That link token doesn't belong to anyone with a hosted dashboard." })); }
     return page(res, 403, "No dashboard for you yet", `There's no dashboard set up for ${email}.${cfg.admin ? ` Ask ${cfg.admin} to add you.` : " Ask whoever runs the dashboards to add you."}`);
   }
   if (!target.ready && target.canStart) { touch(email, 0); startOnce(email); return starting(req, res); }

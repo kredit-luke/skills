@@ -10,6 +10,7 @@ import { spawn, type ChildProcess } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { routerConfig } from "../src/config.ts";
 import { backendUrl } from "../src/backends.ts";
+import { LinkTokens } from "../../engine/server/src/link-tokens.ts";
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const ROUTER_MAIN = path.join(HERE, "..", "src", "main.ts");
@@ -206,6 +207,47 @@ test("router: streams pass through as they come, with the backend secret and ema
     req.end();
   });
   assert.deepEqual(JSON.parse(first.replace(/^data: /, "")), { secret: BACK, email: "bo@example.com" });
+});
+
+test("router: a link token reaches its owner's /api/remote/ without a login; nothing else does", async () => {
+  // Made the way the dashboard's Settings makes them (the dashboard reads the file on each check).
+  const links = new LinkTokens(path.join(TMP, "ws", ".claude", "ledger"));
+  const ana = links.create("ana@example.com", "Work laptop");
+  const bearer = (t: string, extra: Record<string, string> = {}) => ({ host: HOST, authorization: `Bearer ${t}`, ...extra });
+
+  // No proxy secret and no email: the token says whose dashboard, and that dashboard checks it.
+  const ok = await request(P.routerStatic, "/api/remote/hello", bearer(ana.token));
+  assert.equal(ok.status, 200, ok.text);
+  assert.equal(JSON.parse(ok.text).owner, "ana@example.com");
+  assert.equal(JSON.parse(ok.text).link.label, "Work laptop");
+
+  // The same token opens nothing outside /api/remote/: that still needs the login proxy.
+  assert.equal((await request(P.routerStatic, "/api/boot", bearer(ana.token))).status, 401);
+  // And /api/remote/ needs the token: the login proxy doesn't sign anyone in there, so its headers count for nothing.
+  assert.equal((await request(P.routerStatic, "/api/remote/hello", as("ana@example.com"))).status, 401);
+
+  // Dot segments can't climb out of /api/remote/: forwarded as /api/boot, the browser token would leak
+  // on a token nobody checked. A made-up token naming ana, and a real one, both get a 401.
+  const madeUp = ["njl1", Buffer.from("ana@example.com").toString("base64url"), "0badc0de", "x".repeat(43)].join(".");
+  for (const t of [madeUp, ana.token]) {
+    for (const p of ["/api/remote/../boot", "/api/remote/%2e%2e/boot", "/api/remote/%2E%2E/boot", "/api/remote/a/../../boot"]) {
+      const r = await request(P.routerStatic, p, bearer(t));
+      assert.equal(r.status, 401, `${p}: ${r.text.slice(0, 80)}`);
+      assert.ok(!r.text.includes('"token"'), `${p} leaked the boot token`);
+    }
+  }
+  assert.equal((await request(P.routerStatic, "/api/remote/hello", bearer(ana.token, { host: "evil.example" }))).status, 421);
+
+  // A token for someone with no dashboard; a token naming eve (whose routing points at ana's
+  // dashboard by mistake) is refused by ana's dashboard; a removed token is refused.
+  const nobody = new LinkTokens(path.join(TMP, "other-ledger")).create("dee@example.com", "x");
+  assert.equal((await request(P.routerStatic, "/api/remote/hello", bearer(nobody.token))).status, 403);
+  const eve = new LinkTokens(path.join(TMP, "eve-ledger")).create("eve@example.com", "x");
+  assert.equal((await request(P.routerStatic, "/api/remote/hello", bearer(eve.token))).status, 403);
+  links.revoke(ana.link.id);
+  const gone = await request(P.routerStatic, "/api/remote/hello", bearer(ana.token));
+  assert.equal(gone.status, 401);
+  assert.match(gone.text, /isn't valid here/);
 });
 
 test("router: a protocol-relative request target can't send the request (and secret) elsewhere", async () => {

@@ -79,6 +79,8 @@ import { RunChanges } from "./run-changes.ts";
 import type { RunWorktree } from "./run-changes.ts";
 import { Attachments, MAX_ATTACHMENT_BYTES, contentTypeOf, outputHeaders } from "./attachments.ts";
 import { HandoffTokens, MAX_BUNDLE_BYTES, buildBundle, importBundle } from "./handoff.ts";
+import { LinkTokens, REMOTE_PREFIX, linkTokenOf } from "./link-tokens.ts";
+import { HostedLink } from "./hosted-link.ts";
 import { Explore, MAX_SAVE_BYTES, rawType, resolveSafe } from "./explore.ts";
 import { forgetAtlassianKeys } from "./atlassian.ts";
 import { Atlassian } from "./atlassian-auth.ts";
@@ -425,6 +427,9 @@ const usageHistory = new UsageHistory();
 usageHistory.refresh().catch(() => {}); // first scan in the background so the Usage page opens fast
 const runChanges = new RunChanges(path.join(LEDGER_DIR, "runs"));
 const attachments = new Attachments(LEDGER_DIR);
+const linkTokens = new LinkTokens(LEDGER_DIR);
+/** Remote control, local side: the link to this person's hosted dashboard (hosted-link.ts). */
+const hostedLink = new HostedLink(LEDGER_DIR, () => hostedUrl());
 const live = new LiveHub(); // topics registered once every service exists, below
 const meetingTickets = new MeetingTickets(LEDGER_DIR);
 const runs = new RunManager(LEDGER_DIR, {
@@ -1298,6 +1303,22 @@ function serveExploreRaw(res: http.ServerResponse, pathname: string) {
   fs.createReadStream(full).pipe(res);
 }
 
+/**
+ * /api/remote/*: the person's own computer, linked with a token from Settings (link-tokens.ts).
+ * Hosted only. The router sent it here on the token's email; the token must be one of this
+ * dashboard's and its owner's, or nothing is served. No dashboard token (x-dash-token): that's
+ * the browser's, and this caller has none.
+ */
+async function handleRemote(req: http.IncomingMessage, res: http.ServerResponse, p: string, user: string | null) {
+  if (!HOSTED) return sendError(res, 404, "Not found");
+  const link = linkTokens.verify(linkTokenOf(req.url, req.headers), HOSTED.owner || user);
+  if (!link) return sendError(res, 401, "This computer's link token isn't valid here (it was removed, or is for someone else's dashboard). Make a new one in your hosted dashboard's Settings.");
+  if (req.method === "GET" && p === "/api/remote/hello") {
+    return sendJson(res, { ok: true, owner: HOSTED.owner || user, link, version: VERSION });
+  }
+  return sendError(res, 404, "Not found");
+}
+
 /** POSTs that open something on the server's own screen or ports, refused when hosted. */
 const LOCAL_ONLY_POSTS = new Set(["/api/models/routing", "/api/models/start", "/api/models/pull", "/api/models/cancel", "/api/models/delete", "/api/models/prepare", "/api/models/install-ollama", "/api/machine/install", "/api/machine/google-client", "/api/knowledge/setup", "/api/knowledge/store-source", "/api/docs/preview", "/api/apps/action", "/api/restart"]);
 
@@ -1308,6 +1329,24 @@ async function handleApi(req: http.IncomingMessage, res: http.ServerResponse, ur
   const runMatch = p.match(RUN_ROUTE);
   // The People page drives kubectl and cloud CLIs with the engineer's own sign-in: never from a hosted dashboard.
   if (HOSTED && p.startsWith("/api/people")) return sendError(res, 400, NOT_HOSTED);
+  // Remote control: only a link token gets into /api/remote/*, and it gets into nothing else.
+  if (p.startsWith(REMOTE_PREFIX)) return handleRemote(req, res, p, user);
+  if (p === "/api/remote-links") {
+    // This dashboard's linked computers (link-tokens.ts): hosted only; made and removed by its owner in the browser.
+    if (!HOSTED) return sendError(res, 400, "Computers link to a hosted dashboard. Open your hosted dashboard's Settings to link this one.");
+    if (req.method === "GET") return sendJson(res, { links: linkTokens.list() });
+    if (req.method !== "POST") return sendError(res, 405, "Method not allowed");
+    if (req.headers["x-dash-token"] !== DASH_TOKEN) return sendError(res, 403, "Missing or stale token; reload the page.");
+    const body = await readJsonBody(req);
+    if (body.action === "create") {
+      const made = linkTokens.create(HOSTED.owner || user || "", String(body.label || ""));
+      return sendJson(res, { ...made, links: linkTokens.list() }, 201);
+    }
+    if (body.action === "revoke") {
+      return linkTokens.revoke(String(body.id || "")) ? sendJson(res, { links: linkTokens.list() }) : sendError(res, 404, "No such linked computer.");
+    }
+    return sendError(res, 400, "Unknown action");
+  }
 
   if (req.method === "GET") {
     const importMatch = p.match(/^\/api\/runs\/import\/([0-9a-f]+)$/);
@@ -1326,6 +1365,7 @@ async function handleApi(req: http.IncomingMessage, res: http.ServerResponse, ur
       return serveRunOutput(res, outputMatch[1], rel);
     }
     if (p === "/api/settings") return sendJson(res, settingsView());
+    if (p === "/api/hosted-link") return HOSTED ? sendError(res, 400, NOT_HOSTED) : sendJson(res, hostedLink.status());
     if (p.startsWith("/api/explore/raw/")) return serveExploreRaw(res, p);
     if (p === "/api/explore/list") return sendJson(res, explore.list(q("path")));
     if (p === "/api/explore/file") return sendJson(res, explore.read(q("path")));
@@ -1607,6 +1647,17 @@ async function handleApi(req: http.IncomingMessage, res: http.ServerResponse, ur
     // The restart stops this server, ending any turn in flight (it shows as interrupted; replying carries on).
     restartSelf({ script: path.join(DASHBOARD_DIR, "bin", "dashboard.mjs"), ledgerDir: LEDGER_DIR, env: { ...process.env, WORKSPACE_ROOT } });
     return sendJson(res, { ok: true, interrupted: runs.runningCount() }, 202);
+  }
+  if (p === "/api/hosted-link") {
+    // Remote control, local side: { action: "certificate", pfx (base64), passphrase } | { action: "token", token }
+    // | { action: "check" } → the steps | { action: "forget" }. Each answers with the link's status.
+    if (HOSTED) return sendError(res, 400, NOT_HOSTED);
+    if (body.action === "certificate") hostedLink.saveCertificate(Buffer.from(String(body.pfx || ""), "base64"), String(body.passphrase ?? ""));
+    else if (body.action === "token") hostedLink.saveToken(String(body.token || ""));
+    else if (body.action === "check") await hostedLink.check();
+    else if (body.action === "forget") hostedLink.forget();
+    else return sendError(res, 400, "Unknown action");
+    return sendJson(res, hostedLink.status());
   }
   if (p === "/api/runs") {
     // A run that uses a knowledge store reads the latest notes: sync them first (briefly; a slow store doesn't hold the run up).

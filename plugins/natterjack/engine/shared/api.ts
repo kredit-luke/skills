@@ -359,6 +359,26 @@ export interface TerminalResponse { opened: boolean; command: string; run: RunMe
  */
 export interface SendToHostedResponse { url: string; warnings: string[]; bytes: number; run: RunMeta }
 /**
+ * Remote control: a person's own computer linked to their hosted dashboard (server/src/link-tokens.ts).
+ * GET /api/remote-links (hosted) → { links: RemoteLink[] }
+ * POST /api/remote-links { action: "create", label } → 201 { token, link, links }: the token is shown this once
+ *                        { action: "revoke", id } → { links }
+ */
+export interface RemoteLink { id: string; label: string; createdAt: string; lastUsedAt: string | null }
+export interface LinkCheckStep { name: string; ok: boolean; message: string }
+/**
+ * GET /api/hosted-link (local) → HostedLinkStatus: this computer's link to its hosted dashboard (server/src/hosted-link.ts).
+ * POST /api/hosted-link { action: "certificate", pfx (base64), passphrase } | { action: "token", token }
+ *                       | { action: "check" } | { action: "forget" } → HostedLinkStatus
+ */
+export interface HostedLinkStatus {
+  /** The hosted dashboard's address (hosting.json `url`), or null. */
+  url: string | null;
+  certificate: { present: boolean; fromEnv: boolean };
+  token: { present: boolean; fromEnv: boolean; email: string | null };
+  lastCheck: { at: string; ok: boolean; steps: LinkCheckStep[] } | null;
+}
+/**
  * POST /api/runs/import (hosted dashboards) body: the bundle's raw bytes → 202 ImportRunJob.
  * Recreates the run, its transcript and its worktree here, in the background (it fetches each
  * repo, which can outlast a proxy's response timeout): poll GET /api/runs/import/:id until
