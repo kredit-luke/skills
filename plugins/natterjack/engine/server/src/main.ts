@@ -1652,12 +1652,16 @@ async function handleApi(req: http.IncomingMessage, res: http.ServerResponse, ur
     // Remote control, local side: { action: "certificate", pfx (base64), passphrase } | { action: "token", token }
     // | { action: "check" } → the steps | { action: "forget" }. Each answers with the link's status.
     if (HOSTED) return sendError(res, 400, NOT_HOSTED);
-    if (body.action === "certificate") hostedLink.saveCertificate(Buffer.from(String(body.pfx || ""), "base64"), String(body.passphrase ?? ""));
+    let notice: string | null = null;
+    if (body.action === "certificate") {
+      const { converted } = hostedLink.saveCertificate(Buffer.from(String(body.pfx || ""), "base64"), String(body.passphrase ?? ""));
+      if (converted) notice = "Certificate added. It used the older encryption phones need, so a modern copy was made for this dashboard; keep the original for your phone.";
+    }
     else if (body.action === "token") hostedLink.saveToken(String(body.token || ""));
     else if (body.action === "check") await hostedLink.check();
     else if (body.action === "forget") hostedLink.forget();
     else return sendError(res, 400, "Unknown action");
-    return sendJson(res, hostedLink.status());
+    return sendJson(res, { ...hostedLink.status(), notice });
   }
   if (p === "/api/runs") {
     // A run that uses a knowledge store reads the latest notes: sync them first (briefly; a slow store doesn't hold the run up).
