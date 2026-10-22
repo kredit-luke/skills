@@ -11,7 +11,7 @@ import https from "node:https";
 import tls from "node:tls";
 import { execFileSync } from "node:child_process";
 import { LinkTokens, linkTokenOf, parseLinkToken } from "../src/link-tokens.ts";
-import { HostedLink } from "../src/hosted-link.ts";
+import { CONVERT_BY_HAND, HostedLink } from "../src/hosted-link.ts";
 
 const tmp = () => fs.mkdtempSync(path.join(os.tmpdir(), "dash-link-"));
 const ANA = "ana@example.com";
@@ -145,6 +145,15 @@ test("hosted link: a legacy .p12 (RC2/3DES) is converted with the machine's open
   assert.deepEqual(pfxSubject(stored, "pw"), pfxSubject(certs.p12, "pw"), "the same certificate, re-packed");
   assert.deepEqual(link.saveCertificate(certs.p12, "pw"), { converted: false }, "a modern one is kept as it is");
   assert.deepEqual(fs.readdirSync(os.tmpdir()).filter((f) => f.startsWith("natterjack-p12-")), [], "no unpacked key left behind");
+
+  // The steps by hand work as written: run each quoted openssl command (passphrases given on the command line here).
+  const work = tmp();
+  fs.writeFileSync(path.join(work, "old.pfx"), certs.legacy!);
+  const commands = [...CONVERT_BY_HAND.matchAll(/`openssl ([^`]+)`/g)].map((m) => m[1].split(" "));
+  assert.equal(commands.length, 2);
+  execFileSync("openssl", [...commands[0], "-passin", "pass:pw"], { cwd: work, stdio: "pipe" });
+  execFileSync("openssl", [...commands[1], "-passout", "pass:pw"], { cwd: work, stdio: "pipe" });
+  tls.createSecureContext({ pfx: fs.readFileSync(path.join(work, "laptop.p12")), passphrase: "pw" });
 
   // No openssl to be found: the steps to do it by hand.
   const none = { DASHBOARD_OPENSSL_BIN: path.join(tmp(), "no-openssl"), PATH: "", Path: "", ProgramFiles: tmp(), "ProgramFiles(x86)": tmp(), LOCALAPPDATA: tmp() };

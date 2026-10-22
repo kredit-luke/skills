@@ -26,8 +26,13 @@ export interface RemoteResponse { status: number; json: any; retryAfter: number 
 
 const RETRIES_503 = 12;
 
-/** The steps by hand, for when there's no openssl to do it here (Git Bash, macOS and Linux all have one). */
-const CONVERT_BY_HAND = "In a terminal: `openssl pkcs12 -legacy -in old.pfx -nodes -out tmp.pem`, then `openssl pkcs12 -export -in tmp.pem -out laptop.p12`, then delete tmp.pem, and add laptop.p12 here.";
+/**
+ * The steps by hand, for when there's no openssl to do it here (Git Bash, macOS and Linux all have
+ * one). The same options as the automatic conversion: `-legacy` only where it's known (OpenSSL 3;
+ * 1.1 and LibreSSL refuse it and read the old format without it), and explicit AES-256/SHA-256 on
+ * the export, since 1.1's and LibreSSL's defaults are the legacy ones.
+ */
+export const CONVERT_BY_HAND = "In a terminal: `openssl pkcs12 -legacy -in old.pfx -nodes -out tmp.pem` (if it says -legacy is unknown, run it again without -legacy), then `openssl pkcs12 -export -in tmp.pem -out laptop.p12 -keypbe AES-256-CBC -certpbe AES-256-CBC -macalg sha256`, then delete tmp.pem, and add laptop.p12 here.";
 
 /** openssl to try, in order: DASHBOARD_OPENSSL_BIN, then PATH, then Git for Windows' copies. */
 function opensslCandidates(env: NodeJS.ProcessEnv): string[] {
