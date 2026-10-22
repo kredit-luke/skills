@@ -24,6 +24,7 @@ import { execFile } from "node:child_process";
 import type { RunMeta } from "../../shared/api.ts";
 import { REPLYABLE } from "./runs.ts";
 import { safeMemberPath } from "./tar.ts";
+import { slugify } from "./workspaces.ts";
 
 export const HANDOFF_FORMAT = 1;
 /** The bundle as sent (gzipped). The hosted ingress must allow at least this much (e.g. proxy-body-size 25m). */
@@ -151,7 +152,7 @@ function tooBig(size: string) {
   return Object.assign(new Error(`This run is ${size}, over the ${MAX_BUNDLE_BYTES / 1048576} MB the hosted dashboard takes. Commit and push large files (or add them to .gitignore), or continue in a terminal instead.`), { status: 413 });
 }
 
-/** Every file under `dir`, relative with `/`, skipping `skip(relDir)` folders. */
+/** Every file under `dir`, relative with `/`, skipping `skip(relDir)` folders. Links (to files or folders) are left out. */
 function walk(dir: string, skip: (rel: string, name: string) => boolean, limit = Infinity): string[] {
   const out: string[] = [];
   const visit = (rel: string) => {
@@ -187,12 +188,13 @@ async function packRepo(repoDir: string, rel: string, key: string, files: Record
     patch: false,
     untracked: [],
   };
-  // Commits that aren't on any remote branch travel as a git bundle.
-  const ahead = parseInt(await gitOr(repoDir, ["rev-list", "--count", "HEAD", "--not", "--remotes"], "0"), 10) || 0;
+  // Commits that aren't on origin travel as a git bundle: the hosted dashboard fetches origin only,
+  // so a commit only on another remote (a fork, upstream) has to come along too.
+  const ahead = parseInt(await gitOr(repoDir, ["rev-list", "--count", "HEAD", "--not", "--remotes=origin"], "0"), 10) || 0;
   if (ahead > 0) {
     const tmp = path.join(os.tmpdir(), `natterjack-handoff-${crypto.randomBytes(6).toString("hex")}.bundle`);
     try {
-      await git(repoDir, ["bundle", "create", tmp, "HEAD", "--not", "--remotes"], 120_000);
+      await git(repoDir, ["bundle", "create", tmp, "HEAD", "--not", "--remotes=origin"], 120_000);
       addFile(files, `${key}/commits.bundle`, fs.readFileSync(tmp), sizes);
       repo.commits = true;
     } finally {
@@ -210,7 +212,8 @@ async function packRepo(repoDir: string, rel: string, key: string, files: Record
     const safe = safeMemberPath(f);
     if (!safe) continue;
     let st: fs.Stats;
-    try { st = fs.statSync(path.join(repoDir, safe)); } catch { continue; }
+    // lstat: a link (to ~/.ssh/config, say) is left behind, never packed as the file it points to.
+    try { st = fs.lstatSync(path.join(repoDir, safe)); } catch { continue; }
     if (!st.isFile()) continue;
     if (st.size > MAX_UNTRACKED_FILE) { warnings.push(`${name}/${safe} is over 10 MB, so it stayed on this computer.`); continue; }
     addFile(files, `${key}/files/${safe}`, fs.readFileSync(path.join(repoDir, safe)), sizes);
@@ -252,7 +255,8 @@ export async function buildBundle(input: BuildInput): Promise<BuildResult> {
     const repos: HandoffRepo[] = [];
     const repoRels = wt.repos.map((r) => toPosix(path.relative(wt.path, r))).map((r) => (r === "." ? "" : r));
     for (let i = 0; i < wt.repos.length; i++) {
-      const packed = await packRepo(wt.repos[i], repoRels[i], `worktree/repos/${i}`, files, sizes, warnings);
+      // Keyed by its place in the manifest (what the import reads), not in the input: a repo left out shifts the rest.
+      const packed = await packRepo(wt.repos[i], repoRels[i], `worktree/repos/${repos.length}`, files, sizes, warnings);
       if (packed) repos.push(packed);
     }
     // The worktree's own files outside its repos: what a worktree tool copied in from the main workspace.
@@ -264,7 +268,7 @@ export async function buildBundle(input: BuildInput): Promise<BuildResult> {
       for (const f of found.slice(0, MAX_EXTRA_FILES)) {
         const full = path.join(wt.path, f);
         let st: fs.Stats;
-        try { st = fs.statSync(full); } catch { continue; }
+        try { st = fs.lstatSync(full); } catch { continue; }
         if (st.size > MAX_EXTRA_FILE) { warnings.push(`${name}/${f} is over 2 MB, so it stayed on this computer.`); continue; }
         addFile(files, `worktree/extras/${f}`, fs.readFileSync(full), sizes);
         extras.push(f);
@@ -356,6 +360,46 @@ function parseBundle(buf: Buffer): BundleDoc {
 }
 
 /**
+ * `root`/`rel` (a folder path with `/`, "" for root itself), made where missing, through real
+ * folders only: a link or a file on the way is refused (409), so nothing lands outside `root`.
+ */
+function realFolders(root: string, rel: string, what: string): string {
+  let top: fs.Stats | null = null;
+  try { top = fs.lstatSync(root); } catch {}
+  if (!top) fs.mkdirSync(root, { recursive: true });
+  else if (top.isSymbolicLink() || !top.isDirectory()) throw Object.assign(new Error(`${what} goes through a link or a file, so it wasn't written.`), { status: 409 });
+  let cur = root;
+  for (const part of rel.split("/").filter(Boolean)) {
+    cur = path.join(cur, part);
+    let st: fs.Stats | null = null;
+    try { st = fs.lstatSync(cur); } catch {}
+    if (!st) fs.mkdirSync(cur);
+    else if (st.isSymbolicLink() || !st.isDirectory()) throw Object.assign(new Error(`${what} goes through a link or a file, so it wasn't written.`), { status: 409 });
+  }
+  return cur;
+}
+
+/** A branch of a clone as it is now: its tip (null when there's no such branch) and what it tracks. */
+interface BranchState { tip: string | null; remote: string | null; merge: string | null }
+
+async function branchState(repo: string, branch: string): Promise<BranchState> {
+  return {
+    tip: (await gitOr(repo, ["rev-parse", "--verify", "--quiet", `refs/heads/${branch}`])) || null,
+    remote: (await gitOr(repo, ["config", "--get", `branch.${branch}.remote`])) || null,
+    merge: (await gitOr(repo, ["config", "--get", `branch.${branch}.merge`])) || null,
+  };
+}
+
+/** Put a branch back as `before` (delete one that didn't exist), tracking included. Its worktree must be gone first. */
+async function restoreBranch(repo: string, branch: string, before: BranchState): Promise<void> {
+  if (!before.tip) { await gitRaw(repo, ["branch", "-D", branch]); return; }
+  await gitRaw(repo, ["update-ref", `refs/heads/${branch}`, before.tip]);
+  for (const [key, value] of [["remote", before.remote], ["merge", before.merge]] as const) {
+    await gitRaw(repo, value ? ["config", `branch.${branch}.${key}`, value] : ["config", "--unset", `branch.${branch}.${key}`]);
+  }
+}
+
+/**
  * Write `rel` (a bundle path, with `/`) under `root`, through real folders only: a symlink on
  * the way (one the bundle's own commits checked out, say `link -> ~/.ssh`) or in its place is
  * refused, so nothing in a bundle can write outside where it belongs.
@@ -363,15 +407,7 @@ function parseBundle(buf: Buffer): BundleDoc {
 export function writeInside(root: string, rel: string, data: Buffer) {
   if (safeMemberPath(rel) !== rel) throw Object.assign(new Error(`The bundle has an unsafe path (${rel}).`), { status: 400 });
   const parts = rel.split("/");
-  let cur = root;
-  fs.mkdirSync(root, { recursive: true });
-  for (const part of parts.slice(0, -1)) {
-    cur = path.join(cur, part);
-    let st: fs.Stats | null = null;
-    try { st = fs.lstatSync(cur); } catch {}
-    if (!st) fs.mkdirSync(cur);
-    else if (st.isSymbolicLink() || !st.isDirectory()) throw Object.assign(new Error(`${rel} goes through a link or a file, so it wasn't written.`), { status: 409 });
-  }
+  const cur = realFolders(root, parts.slice(0, -1).join("/"), rel);
   const dest = path.join(cur, parts[parts.length - 1]);
   let st: fs.Stats | null = null;
   try { st = fs.lstatSync(dest); } catch {}
@@ -438,9 +474,18 @@ export async function importBundle(buf: Buffer, ctx: ImportContext, isRoutedMode
           throw Object.assign(new Error(`${label}'s commit ${repo.head.slice(0, 9)} isn't on its remote. Push it, or send the run again.`), { status: 409 });
         }
         const dest = repo.path ? path.join(target, ...repo.path.split("/")) : target;
-        if (repo.path) fs.mkdirSync(path.dirname(dest), { recursive: true });
-        else fs.rmSync(target, { recursive: true, force: true }); // git worktree add makes the folder itself
+        // Through real folders only: an earlier repo's checkout may hold a link (first/link -> /outside),
+        // and a later repo at first/link/second would otherwise be checked out wherever it points.
+        if (repo.path) {
+          realFolders(target, repo.path.split("/").slice(0, -1).join("/"), label);
+          let there: fs.Stats | null = null;
+          try { there = fs.lstatSync(dest); } catch {}
+          if (there) throw Object.assign(new Error(`${label}: something is already at that place in the worktree, so it wasn't checked out.`), { status: 409 });
+        } else fs.rmSync(target, { recursive: true, force: true }); // git worktree add makes the folder itself
         const addArgs = await worktreeAddArgs(main, repo, dest, warnings, label);
+        // The branch as it was here (absent, or its tip and tracking), put back if the import fails.
+        const branchBefore = repo.branch && addArgs[0] !== "--detach" ? await branchState(main, repo.branch) : null;
+        if (branchBefore) undo.push(() => restoreBranch(main, repo.branch!, branchBefore));
         await git(main, ["worktree", "add", "--quiet", ...addArgs], 180_000);
         undo.push(() => gitRaw(main, ["worktree", "remove", "--force", dest]).then(() => {}));
         if (repo.upstream && repo.branch) await gitRaw(dest, ["branch", "--set-upstream-to", repo.upstream]);
@@ -506,6 +551,9 @@ export async function importBundle(buf: Buffer, ctx: ImportContext, isRoutedMode
     meta.addDirs = undefined;
     if (isRoutedModel(meta.model)) { meta.model = null; meta.effort = null; meta.resolvedModel = null; }
     meta.movedFrom = { at: new Date().toISOString(), cwd: m.source.cwd };
+    // The run belongs to its recreated worktree here, by name: its events hold the other computer's
+    // paths, so working that out from its edits (shared/run-workspace.ts) would find nothing here.
+    if (m.worktree) meta.workspace = slugify(m.worktree.name) || meta.workspace;
     meta.extraPrompt = [meta.extraPrompt, movedNote(m.source, ctx.workspaceRoot, wtMap)].filter(Boolean).join("\n\n");
     if (Array.isArray(meta.attachments)) meta.attachments = meta.attachments.map((a) => ({ ...a, path: path.join(attDir, path.basename(a.file || a.name)) }));
     const events = file("run/events.jsonl");
@@ -540,21 +588,24 @@ export const FETCH_TTL_MS = 5 * 60_000;
 /** After the fetch, how long the import may take before the run is unlocked again. */
 export const CONFIRM_TTL_MS = 30 * 60_000;
 
-interface Pending { runId: string; bundle: Buffer | null; createdAt: number; fetchedAt: number | null }
+interface Pending { runId: string; attempt: string; bundle: Buffer | null; createdAt: number; fetchedAt: number | null }
+/** A send: its run, and which send of it (the run's handoffPendingAt when it began). */
+export interface SendAttempt { runId: string; attempt: string }
 
 /**
  * Single-use tokens for a bundle: the hosted page can fetch it once, then confirm once.
- * `expired()` lists the runs whose send ran out of time, so their lock can be lifted.
+ * Each belongs to one send attempt, so a confirm or timeout acts on that send only.
+ * `expired()` lists the sends that ran out of time, so their lock can be lifted.
  */
 export class HandoffTokens {
   private pending = new Map<string, Pending>();
   private now: () => number;
   constructor(now: () => number = Date.now) { this.now = now; }
 
-  create(runId: string, bundle: Buffer): string {
+  create(runId: string, bundle: Buffer, attempt = ""): string {
     for (const [t, p] of this.pending) if (p.runId === runId) this.pending.delete(t); // a new send replaces an old one
     const token = crypto.randomBytes(24).toString("hex");
-    this.pending.set(token, { runId, bundle, createdAt: this.now(), fetchedAt: null });
+    this.pending.set(token, { runId, attempt, bundle, createdAt: this.now(), fetchedAt: null });
     return token;
   }
 
@@ -576,14 +627,14 @@ export class HandoffTokens {
     return { runId: p.runId, bundle };
   }
 
-  /** The import finished: the run id, once (only after the bundle was fetched). */
-  confirm(token: string | null): string | null {
+  /** The import finished: its send, once (only after the bundle was fetched). */
+  confirm(token: string | null): SendAttempt | null {
     const hit = this.find(token);
     if (!hit) return null;
     const [t, p] = hit;
     if (p.fetchedAt === null || this.now() - p.fetchedAt > CONFIRM_TTL_MS) return null;
     this.pending.delete(t);
-    return p.runId;
+    return { runId: p.runId, attempt: p.attempt };
   }
 
   /** Forget a run's send (cancelled from its page). */
@@ -591,13 +642,13 @@ export class HandoffTokens {
     for (const [t, p] of this.pending) if (p.runId === runId) this.pending.delete(t);
   }
 
-  /** Runs whose send timed out (never fetched, or never confirmed); forgotten as they're returned. */
-  expired(): string[] {
-    const out: string[] = [];
+  /** Sends that timed out (never fetched, or never confirmed); forgotten as they're returned. */
+  expired(): SendAttempt[] {
+    const out: SendAttempt[] = [];
     const now = this.now();
     for (const [t, p] of this.pending) {
       const late = p.fetchedAt === null ? now - p.createdAt > FETCH_TTL_MS : now - p.fetchedAt > CONFIRM_TTL_MS;
-      if (late) { out.push(p.runId); this.pending.delete(t); }
+      if (late) { out.push({ runId: p.runId, attempt: p.attempt }); this.pending.delete(t); }
     }
     return out;
   }

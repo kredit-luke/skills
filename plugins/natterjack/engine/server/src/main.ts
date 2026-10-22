@@ -1055,7 +1055,7 @@ function hostedUrl(): string | null {
 
 const handoffs = new HandoffTokens();
 // A send that wasn't fetched in time, or never confirmed, unlocks its run again.
-setInterval(() => { for (const id of handoffs.expired()) runs.cancelSend(id); }, 30_000).unref();
+setInterval(() => { for (const s of handoffs.expired()) runs.cancelSend(s.runId, s.attempt); }, 30_000).unref();
 
 /**
  * The only routes a page on another site may call: the hosted dashboard's import page
@@ -1087,11 +1087,11 @@ async function handleHandoffCors(req: http.IncomingMessage, res: http.ServerResp
   if (req.method === "POST" && url.pathname === "/api/handoff/confirm") {
     let body: any = {};
     try { body = JSON.parse((await readRawBody(req, 64 * 1024)).toString("utf-8") || "{}"); } catch {}
-    const runId = handoffs.confirm(token);
-    if (!runId) return fail(410, "This send was already confirmed or has expired.");
+    const sent = handoffs.confirm(token);
+    if (!sent) return fail(410, "This send was already confirmed or has expired.");
     // Only a link back to the hosted dashboard itself is kept.
     const link = typeof body.url === "string" && body.url.startsWith(`${origin}/`) ? body.url : null;
-    try { runs.finishSend(runId, link); }
+    try { runs.finishSend(sent.runId, link, sent.attempt); }
     catch (e) { return fail(e.status || 409, e.message); }
     res.writeHead(200, { ...cors, "Content-Type": "application/json" });
     return res.end(JSON.stringify({ ok: true }));
@@ -1677,6 +1677,9 @@ async function handleApi(req: http.IncomingMessage, res: http.ServerResponse, ur
     if (!target) return sendError(res, 400, "No hosted dashboard is set: add its address as \"url\" in .claude/dashboard/hosting.json.");
     const id = runMatch[1];
     const meta = runs.beginSend(id); // locks the run; throws if it can't go
+    // This send, from here to its confirm: packing takes a while (git fetches), and the send can be
+    // cancelled or continued in a terminal meanwhile, or replaced by a newer one.
+    const attempt = meta.handoffPendingAt!;
     try {
       const { bundle, warnings } = await buildBundle({
         meta,
@@ -1688,12 +1691,16 @@ async function handleApi(req: http.IncomingMessage, res: http.ServerResponse, ur
         worktree: runWorktree(meta, runs.events(id)),
         engineVersion: VERSION,
       });
-      const token = handoffs.create(id, bundle);
+      // Called off while packing: this pack is stale, and publishing it could take over a newer send.
+      if (runs.get(id)?.handoffPendingAt !== attempt) {
+        return sendError(res, 409, "The send was cancelled (or the run continued in a terminal) while it was being packed.");
+      }
+      const token = handoffs.create(id, bundle, attempt);
       const from = `http://localhost:${DASHBOARD_PORT}`;
       const url = `${target}/import-run?from=${encodeURIComponent(from)}&run=${encodeURIComponent(id)}&t=${token}`;
       return sendJson(res, { url, warnings, bytes: bundle.length, run: runs.get(id) });
     } catch (e) {
-      runs.cancelSend(id);
+      runs.cancelSend(id, attempt); // only this send: a newer one stays locked
       throw e;
     }
   }

@@ -615,11 +615,12 @@ export class RunManager {
    * The hosted dashboard has the run: this copy stops driving it, like a terminal hand-off.
    * Only while the send is still pending: a run whose send was cancelled, or that was continued
    * in a terminal, since is refused (409), so the hosted page can warn that two copies are live.
+   * `attempt` is the send's handoffPendingAt (beginSend): a confirm for an earlier send is refused too.
    */
-  finishSend(id: string, hostedRunUrl: string | null): RunMeta {
+  finishSend(id: string, hostedRunUrl: string | null, attempt?: string): RunMeta {
     const meta = this.get(id);
     if (!meta) throw httpError(404, "Unknown run");
-    if (!meta.handoffPendingAt) {
+    if (!meta.handoffPendingAt || (attempt !== undefined && meta.handoffPendingAt !== attempt)) {
       throw httpError(409, meta.status === "handedOff" && meta.handedOffTo !== "hosted"
         ? "The run was continued in a terminal on your computer meanwhile."
         : "The send was cancelled on your computer meanwhile, so the run is still open there.");
@@ -637,10 +638,13 @@ export class RunManager {
     return meta;
   }
 
-  /** Unlock a run whose send didn't finish. False when it wasn't being sent. */
-  cancelSend(id: string): boolean {
+  /**
+   * Unlock a run whose send didn't finish. False when it wasn't being sent. With `attempt`
+   * (a send's handoffPendingAt), only that send: an earlier one failing late leaves a newer one be.
+   */
+  cancelSend(id: string, attempt?: string): boolean {
     const meta = this.get(id);
-    if (!meta || !meta.handoffPendingAt) return false;
+    if (!meta || !meta.handoffPendingAt || (attempt !== undefined && meta.handoffPendingAt !== attempt)) return false;
     meta.handoffPendingAt = null;
     this._save(meta);
     return true;

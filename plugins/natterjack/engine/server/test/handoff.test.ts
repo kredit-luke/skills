@@ -178,6 +178,73 @@ test("a branch on the hosted clone with commits of its own is left alone: the wo
   assert.equal(git(path.join(s.P, "worktrees", "WT-1", "api"), "branch", "--show-current"), ""); // detached
 });
 
+test("a failed import puts a branch it made on the hosted clone back as it was", async () => {
+  const s = setup();
+  const { bundle } = await bundleOf(s);
+  // The transcript's folder can't be made (a file is in the way): the import fails after the worktree was added.
+  const projects = path.join(s.ctx.claudeDir, "projects");
+  fs.mkdirSync(projects, { recursive: true });
+  fs.writeFileSync(path.join(projects, projectFolder(s.P)), "in the way");
+  await assert.rejects(importBundle(bundle, s.ctx), /goes through a link or a file/);
+  const hosted = path.join(s.P, "api");
+  assert.equal(git(hosted, "branch", "--list", "feature/x"), "", "the branch it created is gone");
+  assert.ok(!fs.existsSync(path.join(s.P, "worktrees", "WT-1")));
+
+  // And one that existed (behind the run's commit, so fast-forwarded) goes back to its old tip and tracking.
+  const base = git(hosted, "rev-parse", "HEAD");
+  git(hosted, "branch", "feature/x", base);
+  git(hosted, "config", "branch.feature/x.remote", "origin");
+  git(hosted, "config", "branch.feature/x.merge", "refs/heads/old-name");
+  await assert.rejects(importBundle(bundle, s.ctx), /goes through a link or a file/);
+  assert.equal(git(hosted, "rev-parse", "feature/x"), base);
+  assert.equal(git(hosted, "config", "--get", "branch.feature/x.merge"), "refs/heads/old-name");
+});
+
+test("a repo with no commits shifts nothing: the next repo's changes still arrive", async () => {
+  const s = setup();
+  const empty = path.join(s.wt, "aaa-empty");
+  git(s.wt, "init", "-q", empty);
+  const built = await buildBundle({
+    meta: s.meta, metaFile: path.join(s.ledger, "runs", `${RUN_ID}.json`), eventsFile: path.join(s.ledger, "runs", `${RUN_ID}.events.jsonl`),
+    transcript: s.transcript, attachmentsDir: null, workspaceRoot: s.L, worktree: { path: s.wt, repos: [empty, s.repo] }, engineVersion: "t",
+  });
+  assert.match(built.warnings.join(" "), /aaa-empty has no commits yet/);
+  assert.deepEqual(built.manifest.worktree!.repos.map((r) => r.path), ["api"]);
+  await importBundle(built.bundle, s.ctx);
+  const dest = path.join(s.P, "worktrees", "WT-1", "api");
+  assert.equal(read(path.join(dest, "a.txt")), "one, edited\n");
+  assert.equal(read(path.join(dest, "new.txt")), "untracked\n");
+});
+
+test("commits only on another remote travel in the bundle (the hosted dashboard fetches origin)", async () => {
+  const s = setup();
+  const upstream = path.join(s.base, "upstream.git");
+  git(s.base, "init", "-q", "--bare", upstream);
+  git(s.repo, "remote", "add", "upstream", upstream);
+  git(s.repo, "push", "-q", "upstream", "feature/x");
+  git(s.repo, "fetch", "-q", "upstream");
+  const { bundle, manifest } = await bundleOf(s);
+  assert.equal(manifest.worktree!.repos[0].commits, true);
+  await importBundle(bundle, s.ctx);
+  assert.equal(git(path.join(s.P, "worktrees", "WT-1", "api"), "rev-parse", "HEAD"), manifest.worktree!.repos[0].head);
+});
+
+test("an untracked link is left behind, not packed as what it points to", async (t) => {
+  const s = setup();
+  const secret = path.join(s.base, "secret.txt");
+  fs.writeFileSync(secret, "do not send");
+  try { fs.symlinkSync(secret, path.join(s.repo, "link.txt"), "file"); } catch { t.skip("file symlinks need rights here"); return; }
+  const { manifest } = await bundleOf(s);
+  assert.deepEqual(manifest.worktree!.repos[0].untracked, ["new.txt"]);
+});
+
+test("the imported run belongs to its recreated worktree, whatever paths its events hold", async () => {
+  const s = setup();
+  const { bundle } = await bundleOf(s);
+  const { meta } = await importBundle(bundle, s.ctx);
+  assert.equal(meta.workspace, "wt-1");
+});
+
 test("a bundle with an unsafe path or a bad id is refused before anything is written", async () => {
   const s = setup();
   const make = (manifest: any, files: Record<string, string>) => zlib.gzipSync(Buffer.from(JSON.stringify({ manifest, files })));
@@ -240,23 +307,23 @@ test("helpers: folder mapping, Claude's project folder, remotes, the hosted page
 test("tokens: the bundle goes out once, confirms once, and an unfetched or unconfirmed send expires", () => {
   let now = 1_000_000;
   const t = new HandoffTokens(() => now);
-  const a = t.create("run-a", Buffer.from("x"));
+  const a = t.create("run-a", Buffer.from("x"), "send-1");
   assert.equal(t.confirm(a), null); // not before the fetch
   assert.deepEqual(t.take(a)?.runId, "run-a");
   assert.equal(t.take(a), null); // single use
-  assert.equal(t.confirm(a), "run-a");
+  assert.deepEqual(t.confirm(a), { runId: "run-a", attempt: "send-1" }, "the confirm names its send");
   assert.equal(t.confirm(a), null);
   assert.equal(t.take("f".repeat(48)), null);
 
-  const b = t.create("run-b", Buffer.from("x"));
+  const b = t.create("run-b", Buffer.from("x"), "send-2");
   now += FETCH_TTL_MS + 1;
   assert.equal(t.take(b), null);
-  assert.deepEqual(t.expired(), ["run-b"]);
+  assert.deepEqual(t.expired(), [{ runId: "run-b", attempt: "send-2" }]);
 
-  const c = t.create("run-c", Buffer.from("x"));
+  const c = t.create("run-c", Buffer.from("x"), "send-3");
   t.take(c);
   now += CONFIRM_TTL_MS + 1;
-  assert.deepEqual(t.expired(), ["run-c"]);
+  assert.deepEqual(t.expired(), [{ runId: "run-c", attempt: "send-3" }]);
   assert.equal(t.isPending("run-c"), false);
 });
 
@@ -280,8 +347,14 @@ test("a run being sent takes no replies; finishing marks it moved, cancelling un
   assert.throws(() => runs.finishSend(RUN_ID, null), /continued in a terminal/);
   fs.writeFileSync(path.join(ledger, "runs", `${RUN_ID}.json`), JSON.stringify(runMeta("/ws", { watch: { prs: [], everyMinutes: 5, prompt: "x", startedAt: "2026-10-21T12:00:00.000Z", endedAt: null } as any })));
 
-  runs.beginSend(RUN_ID);
-  const done = runs.finishSend(RUN_ID, "https://hosted.example.com/runs/" + RUN_ID);
+  // An earlier send finishing late acts on nothing: neither its failure nor its confirm touches a newer send.
+  const newer = runs.beginSend(RUN_ID).handoffPendingAt!;
+  assert.equal(runs.cancelSend(RUN_ID, "2000-01-01T00:00:00.000Z"), false);
+  assert.equal(runs.get(RUN_ID)!.handoffPendingAt, newer);
+  assert.throws(() => runs.finishSend(RUN_ID, null, "2000-01-01T00:00:00.000Z"), /cancelled on your computer/);
+  assert.equal(runs.get(RUN_ID)!.status, "succeeded");
+
+  const done = runs.finishSend(RUN_ID, "https://hosted.example.com/runs/" + RUN_ID, newer);
   assert.equal(done.status, "handedOff");
   assert.equal(done.handedOffTo, "hosted");
   assert.ok(done.watch!.endedAt);
