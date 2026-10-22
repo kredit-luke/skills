@@ -77,6 +77,10 @@ spec:
             - --cookie-secure=true
             - --skip-provider-button=true
             - --redirect-url=https://dashboard.example.com/oauth2/callback
+            # Remote control: a person's own computer has no browser session to sign in with. It
+            # sends a link token instead (made in their dashboard's Settings), which the router
+            # routes on and their dashboard checks; nothing else is served on this path.
+            - --skip-auth-route=^/api/remote/
           env:
             - { name: OAUTH2_PROXY_COOKIE_SECRET, valueFrom: { secretKeyRef: { name: dashboard-router, key: cookie-secret } } }
             - { name: ROUTER_PROXY_SECRET, valueFrom: { secretKeyRef: { name: dashboard-router, key: proxy-secret } } }

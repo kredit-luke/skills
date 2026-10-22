@@ -1,5 +1,6 @@
 # The natterjack router (references/hosting.md, "One address for everyone"). Build from
-# plugins/natterjack so the engine's hosted.ts (the shared request checks) comes along:
+# plugins/natterjack so the engine's hosted.ts (the shared request checks) and
+# link-tokens.ts (Remote control's routing) come along:
 #
 #   docker build -f plugins/natterjack/router/Dockerfile --pull --no-cache -t <registry>/natterjack-router:<tag> plugins/natterjack
 FROM node:24-trixie-slim
@@ -10,6 +11,7 @@ RUN apt-get update \
  && rm -rf /var/lib/apt/lists/*
 WORKDIR /app
 COPY engine/server/src/hosted.ts engine/server/src/hosted.ts
+COPY engine/server/src/link-tokens.ts engine/server/src/link-tokens.ts
 COPY router/package.json router/package.json
 COPY router/src router/src
 USER node

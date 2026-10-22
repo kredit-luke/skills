@@ -6,6 +6,7 @@ import { DataService } from '../../core/data.service';
 import { ToastService } from '../../core/toast.service';
 import { bytes } from '../../core/util';
 import { PageHeaderComponent } from '../../shared/page-header.component';
+import { RemoteLinkComponent } from './remote-link.component';
 
 type LimitKey = Exclude<SettingKey, 'model' | 'effort'>;
 
@@ -17,7 +18,7 @@ interface NumberRow { key: LimitKey; label: string; help: string; min: number; m
  */
 @Component({
   selector: 'dash-settings',
-  imports: [PageHeaderComponent, NgTemplateOutlet],
+  imports: [PageHeaderComponent, NgTemplateOutlet, RemoteLinkComponent],
   changeDetection: ChangeDetectionStrategy.OnPush,
   styleUrl: './settings.component.scss',
   template: `
@@ -145,6 +146,8 @@ interface NumberRow { key: LimitKey; label: string; help: string; min: number; m
     } @else if (!error()) {
       <div class="empty">Loading…</div>
     }
+
+    <dash-remote-link />
 
     <ng-template #num let-row>
       <div class="row">
