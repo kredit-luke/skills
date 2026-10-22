@@ -15,7 +15,7 @@ import fs from "node:fs";
 import http from "node:http";
 import https from "node:https";
 import { SECRET_HEADER, checkHostedRequest } from "../../engine/server/src/hosted.ts";
-import { REMOTE_PREFIX, linkTokenOf, parseLinkToken } from "../../engine/server/src/link-tokens.ts";
+import { REMOTE_PREFIX, linkTokenOf, parseLinkToken, resolvedPath } from "../../engine/server/src/link-tokens.ts";
 import { routerConfig } from "./config.ts";
 import { HOP, backendHeaders, backendUrl, makeBackend, type Backend } from "./backends.ts";
 
@@ -105,7 +105,7 @@ const server = http.createServer(async (req, res) => {
   if (link) {
     if (!cfg.front.hosts.has(String(req.headers.host || "").toLowerCase())) { res.writeHead(421); return res.end("Misdirected request"); }
     email = parseLinkToken(link)!.email;
-  } else if (String(req.url || "").startsWith(REMOTE_PREFIX)) {
+  } else if (String(req.url || "").startsWith(REMOTE_PREFIX) || resolvedPath(req.url)?.startsWith(REMOTE_PREFIX)) {
     // The login proxy doesn't sign anyone in here, so its headers mean nothing on this path.
     res.writeHead(401, { "Content-Type": "application/json" });
     return res.end(JSON.stringify({ error: "This path takes a link token (Authorization: Bearer) from your dashboard's Settings." }));

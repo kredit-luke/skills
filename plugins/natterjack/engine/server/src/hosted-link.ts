@@ -42,7 +42,11 @@ export class HostedLink {
   }
 
   private certFile() { return this.env.DASHBOARD_CLIENT_CERT || path.join(this.dir, "client.p12"); }
-  private passphrase() { return this.env.DASHBOARD_CLIENT_CERT_PASS ?? readText(path.join(this.dir, "client.pass")) ?? ""; }
+  /** As saved, untrimmed: a passphrase can begin or end with spaces. */
+  private passphrase() {
+    if (this.env.DASHBOARD_CLIENT_CERT_PASS !== undefined) return this.env.DASHBOARD_CLIENT_CERT_PASS;
+    try { return fs.readFileSync(path.join(this.dir, "client.pass"), "utf-8"); } catch { return ""; }
+  }
   private token() { return this.env.DASHBOARD_LINK_TOKEN || readText(path.join(this.dir, "token")); }
 
   private write(name: string, data: Buffer | string) {

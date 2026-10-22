@@ -48,6 +48,11 @@ test("linkTokenOf: only a Bearer link token on an /api/remote/ path", () => {
   assert.equal(linkTokenOf("/api/runs", { authorization: `Bearer ${token}` }), null, "a token opens nothing outside /api/remote/");
   assert.equal(linkTokenOf("/api/remote/hello", { authorization: "Bearer abc" }), null);
   assert.equal(linkTokenOf("/api/remote/hello", {}), null);
+  // Dot segments resolve outside /api/remote/: the router would forward /api/boot on an unchecked token.
+  for (const escape of ["/api/remote/../boot", "/api/remote/%2e%2e/boot", "/api/remote/%2E%2E/boot", "/api/remote/./../runs", "/api/remote/a/../../boot"]) {
+    assert.equal(linkTokenOf(escape, { authorization: `Bearer ${token}` }), null, escape);
+  }
+  assert.equal(linkTokenOf("/api/remote/a/../hello", { authorization: `Bearer ${token}` }), token, "a dot segment that stays inside is fine");
 });
 
 function serve(handler: http.RequestListener): Promise<{ url: string; close: () => void }> {
@@ -102,7 +107,7 @@ test("hosted link: saves a real token only, sends it, retries a starting dashboa
 });
 
 /** A CA, a server certificate for 127.0.0.1 and a client .p12 signed by the CA; null without openssl. */
-function makeCerts(dir: string): { ca: string; serverKey: string; serverCert: string; p12: Buffer } | null {
+function makeCerts(dir: string): { ca: string; serverKey: string; serverCert: string; p12: Buffer; spaced: Buffer } | null {
   const ssl = (...a: string[]) => execFileSync("openssl", a, { cwd: dir, stdio: ["ignore", "pipe", "pipe"] });
   try { ssl("version"); } catch { return null; }
   fs.writeFileSync(path.join(dir, "server.ext"), "subjectAltName=IP:127.0.0.1\nextendedKeyUsage=serverAuth\n");
@@ -113,8 +118,10 @@ function makeCerts(dir: string): { ca: string; serverKey: string; serverCert: st
     ssl("x509", "-req", "-in", `${who}.csr`, "-CA", "ca.crt", "-CAkey", "ca.key", "-CAcreateserial", "-out", `${who}.crt`, "-days", "1", "-extfile", `${who}.ext`);
   }
   ssl("pkcs12", "-export", "-in", "client.crt", "-inkey", "client.key", "-out", "client.p12", "-passout", "pass:pw");
+  // A passphrase with spaces at both ends: kept exactly as typed.
+  ssl("pkcs12", "-export", "-in", "client.crt", "-inkey", "client.key", "-out", "client-spaced.p12", "-passout", "pass: pw ");
   const read = (f: string) => fs.readFileSync(path.join(dir, f), "utf-8");
-  return { ca: read("ca.crt"), serverKey: read("server.key"), serverCert: read("server.crt"), p12: fs.readFileSync(path.join(dir, "client.p12")) };
+  return { ca: read("ca.crt"), serverKey: read("server.key"), serverCert: read("server.crt"), p12: fs.readFileSync(path.join(dir, "client.p12")), spaced: fs.readFileSync(path.join(dir, "client-spaced.p12")) };
 }
 
 test("hosted link: through mutual TLS with a client certificate, and a clear message without one", async (t) => {
@@ -143,5 +150,10 @@ test("hosted link: through mutual TLS with a client certificate, and a clear mes
     const withCert = await link.check();
     assert.ok(withCert.ok, JSON.stringify(withCert.steps));
     assert.match(withCert.steps.at(-1)!.message, /Linked as "cert client"/);
+
+    // Saved with a passphrase that starts and ends with spaces, it still opens when it's used.
+    link.saveCertificate(certs.spaced, " pw ");
+    const spaced = await link.check();
+    assert.ok(spaced.ok, JSON.stringify(spaced.steps));
   } finally { server.close(); }
 });

@@ -225,6 +225,17 @@ test("router: a link token reaches its owner's /api/remote/ without a login; not
   assert.equal((await request(P.routerStatic, "/api/boot", bearer(ana.token))).status, 401);
   // And /api/remote/ needs the token: the login proxy doesn't sign anyone in there, so its headers count for nothing.
   assert.equal((await request(P.routerStatic, "/api/remote/hello", as("ana@example.com"))).status, 401);
+
+  // Dot segments can't climb out of /api/remote/: forwarded as /api/boot, the browser token would leak
+  // on a token nobody checked. A made-up token naming ana, and a real one, both get a 401.
+  const madeUp = ["njl1", Buffer.from("ana@example.com").toString("base64url"), "0badc0de", "x".repeat(43)].join(".");
+  for (const t of [madeUp, ana.token]) {
+    for (const p of ["/api/remote/../boot", "/api/remote/%2e%2e/boot", "/api/remote/%2E%2E/boot", "/api/remote/a/../../boot"]) {
+      const r = await request(P.routerStatic, p, bearer(t));
+      assert.equal(r.status, 401, `${p}: ${r.text.slice(0, 80)}`);
+      assert.ok(!r.text.includes('"token"'), `${p} leaked the boot token`);
+    }
+  }
   assert.equal((await request(P.routerStatic, "/api/remote/hello", bearer(ana.token, { host: "evil.example" }))).status, 421);
 
   // A token for someone with no dashboard; a token naming eve (whose routing points at ana's

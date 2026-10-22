@@ -47,9 +47,23 @@ export function parseLinkToken(token: string | null | undefined): { email: strin
   return { email, id: parts[2], secret: parts[3] };
 }
 
+/** A request target's path once dot segments (`..`, `%2e%2e`) are resolved, as the router forwards it; null if it can't be read. */
+export function resolvedPath(url: string | undefined): string | null {
+  try { return new URL(String(url || "/"), "http://link.invalid").pathname; } catch { return null; }
+}
+
+/**
+ * Under /api/remote/ both as sent and as it resolves. The router forwards the resolved path,
+ * so `/api/remote/../boot` (or `%2e%2e`) must not count: it would reach /api/boot on a token
+ * the dashboard never checked.
+ */
+export function isRemotePath(url: string | undefined): boolean {
+  return String(url || "").startsWith(REMOTE_PREFIX) && !!resolvedPath(url)?.startsWith(REMOTE_PREFIX);
+}
+
 /** The link token on a request to a remote path (Authorization: Bearer …), else null. */
 export function linkTokenOf(url: string | undefined, headers: Record<string, string | string[] | undefined>): string | null {
-  if (!String(url || "").startsWith(REMOTE_PREFIX)) return null;
+  if (!isRemotePath(url)) return null;
   const auth = headers.authorization;
   const m = String(Array.isArray(auth) ? auth[0] : auth || "").match(/^Bearer\s+(\S+)$/i);
   return m && parseLinkToken(m[1]) ? m[1] : null;
