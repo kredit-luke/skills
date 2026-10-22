@@ -13,6 +13,8 @@
  */
 
 import fs from "node:fs";
+import os from "node:os";
+import { execFileSync } from "node:child_process";
 import path from "node:path";
 import http from "node:http";
 import https from "node:https";
@@ -23,6 +25,65 @@ import { parseLinkToken } from "./link-tokens.ts";
 export interface RemoteResponse { status: number; json: any; retryAfter: number | null }
 
 const RETRIES_503 = 12;
+
+/** The steps by hand, for when there's no openssl to do it here (Git Bash, macOS and Linux all have one). */
+const CONVERT_BY_HAND = "In a terminal: `openssl pkcs12 -legacy -in old.pfx -nodes -out tmp.pem`, then `openssl pkcs12 -export -in tmp.pem -out laptop.p12`, then delete tmp.pem, and add laptop.p12 here.";
+
+/** openssl to try, in order: DASHBOARD_OPENSSL_BIN, then PATH, then Git for Windows' copies. */
+function opensslCandidates(env: NodeJS.ProcessEnv): string[] {
+  const out = [env.DASHBOARD_OPENSSL_BIN, "openssl"].filter(Boolean) as string[];
+  if (process.platform === "win32") {
+    for (const base of [env.ProgramFiles, env["ProgramFiles(x86)"], env.LOCALAPPDATA && path.join(env.LOCALAPPDATA, "Programs")]) {
+      if (base) out.push(path.join(base, "Git", "usr", "bin", "openssl.exe"), path.join(base, "Git", "mingw64", "bin", "openssl.exe"));
+    }
+  }
+  return out;
+}
+
+/**
+ * A legacy PKCS#12 (RC2/3DES encrypted) re-packed as AES-256 with the same passphrase, using the
+ * machine's openssl. The passphrase goes through the environment (never the command line), and
+ * the unpacked key only ever sits in a private temporary folder that is removed afterwards.
+ * Throws (400) with what to do when it can't.
+ */
+export function modernPkcs12(pfx: Buffer, passphrase: string, env: NodeJS.ProcessEnv = process.env): Buffer {
+  const run = (bin: string, args: string[], extraEnv: Record<string, string> = {}) =>
+    execFileSync(bin, args, { env: { ...env, ...extraEnv }, stdio: ["ignore", "pipe", "pipe"], timeout: 30_000, windowsHide: true });
+  const bin = opensslCandidates(env).find((b) => { try { run(b, ["version"]); return true; } catch { return false; } });
+  if (!bin) throw httpErr(400, `That certificate uses the older encryption (RC2/3DES) phones need, which this dashboard can't read, and there's no openssl here to convert it. ${CONVERT_BY_HAND}`);
+
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "natterjack-p12-"));
+  try { fs.chmodSync(dir, 0o700); } catch {}
+  const old = path.join(dir, "old.p12"), pem = path.join(dir, "key.pem"), out = path.join(dir, "new.p12");
+  const pass = { NATTERJACK_P12_PASS: passphrase };
+  try {
+    fs.writeFileSync(old, pfx, { mode: 0o600 });
+    // OpenSSL 3 needs -legacy to read RC2; OpenSSL 1.1 and LibreSSL (macOS) read it as is and don't know -legacy.
+    const unpack = (legacy: boolean) => run(bin, ["pkcs12", ...(legacy ? ["-legacy"] : []), "-in", old, "-nodes", "-out", pem, "-passin", "env:NATTERJACK_P12_PASS"], pass);
+    try { unpack(true); }
+    catch (e) {
+      const why = String((e as any).stderr || (e as Error).message);
+      if (/mac verify|invalid password|bad decrypt/i.test(why)) throw httpErr(400, "The passphrase doesn't open that certificate.");
+      try { unpack(false); }
+      catch (e2) {
+        const why2 = String((e2 as any).stderr || (e2 as Error).message);
+        throw httpErr(400, /mac verify|invalid password|bad decrypt/i.test(why2) ? "The passphrase doesn't open that certificate." : `That certificate uses the older encryption (RC2/3DES), and openssl couldn't convert it (${why2.trim().split(/\r?\n/)[0]}). ${CONVERT_BY_HAND}`);
+      }
+    }
+    // Explicit ciphers, so OpenSSL 1.1 and LibreSSL (whose defaults are the legacy ones) make a modern file too.
+    try {
+      run(bin, ["pkcs12", "-export", "-in", pem, "-out", out, "-keypbe", "AES-256-CBC", "-certpbe", "AES-256-CBC", "-macalg", "sha256", "-passout", "env:NATTERJACK_P12_PASS"], pass);
+    } catch (e) {
+      throw httpErr(400, `openssl couldn't re-pack the certificate (${String((e as any).stderr || (e as Error).message).trim().split(/\r?\n/)[0]}). ${CONVERT_BY_HAND}`);
+    }
+    const modern = fs.readFileSync(out);
+    try { tls.createSecureContext({ pfx: modern, passphrase }); }
+    catch (e) { throw httpErr(400, `The converted certificate still doesn't open (${(e as Error).message}). ${CONVERT_BY_HAND}`); }
+    return modern;
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+}
 
 const readText = (f: string) => { try { return fs.readFileSync(f, "utf-8").trim(); } catch { return null; } };
 const httpErr = (status: number, message: string) => Object.assign(new Error(message), { status });
@@ -65,16 +126,27 @@ export class HostedLink {
   }
 
   /** Keep a client certificate (.p12/.pfx) once it opens with `passphrase`. */
-  saveCertificate(pfx: Buffer, passphrase: string) {
+  /**
+   * Keep a client certificate (.p12/.pfx) once it opens with `passphrase`. One in the legacy
+   * format (RC2/3DES, what phones need and older tools still make) is re-packed as AES-256 with
+   * the machine's openssl, since Node can't read it; `converted` says so.
+   */
+  saveCertificate(pfx: Buffer, passphrase: string): { converted: boolean } {
     if (!pfx.length) throw httpErr(400, "That certificate file is empty.");
+    let converted = false;
     try { tls.createSecureContext({ pfx, passphrase }); }
     catch (e) {
       const msg = String((e as Error).message || e);
-      throw httpErr(400, /mac verify|password|decrypt/i.test(msg) ? "The passphrase doesn't open that certificate." : `That isn't a certificate file this can use (.p12 or .pfx with its key): ${msg}`);
+      if (!/unsupported pkcs12/i.test(msg)) {
+        throw httpErr(400, /mac verify|password|decrypt/i.test(msg) ? "The passphrase doesn't open that certificate." : `That isn't a certificate file this can use (.p12 or .pfx with its key): ${msg}`);
+      }
+      pfx = modernPkcs12(pfx, passphrase, this.env);
+      converted = true;
     }
     this.write("client.p12", pfx);
     this.write("client.pass", passphrase);
     this.lastCheck = null;
+    return { converted };
   }
 
   /** Keep the link token made on the hosted dashboard. */

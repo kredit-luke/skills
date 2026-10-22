@@ -377,6 +377,8 @@ export interface HostedLinkStatus {
   certificate: { present: boolean; fromEnv: boolean };
   token: { present: boolean; fromEnv: boolean; email: string | null };
   lastCheck: { at: string; ok: boolean; steps: LinkCheckStep[] } | null;
+  /** POST only: something worth saying about what was just done (a certificate converted from the legacy format). */
+  notice?: string | null;
 }
 /**
  * POST /api/runs/import (hosted dashboards) body: the bundle's raw bytes → 202 ImportRunJob.

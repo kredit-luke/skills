@@ -184,7 +184,7 @@ export class RemoteLinkComponent implements OnInit {
     const st = await this.run(() => this.api.post<HostedLinkStatus>('/api/hosted-link', body));
     if (!st) return;
     this.status.set(st);
-    if (done) this.toast.show(done);
+    if (st.notice || done) this.toast.show(st.notice || done!);
   }
 
   async saveToken(): Promise<void> {
