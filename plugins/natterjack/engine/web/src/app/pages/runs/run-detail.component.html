@@ -61,8 +61,12 @@
       <div class="actions">
         @if (r.status === 'running' || r.status === 'waiting') { <button class="btn danger" (click)="cancel()">{{ r.status === 'waiting' ? 'Cancel run' : 'Cancel turn' }}</button> }
         @if (!api.hosted()) {
-          @if (r.status !== 'handedOff') {
+          @if (r.status !== 'handedOff' && !r.handoffPendingAt) {
             <button class="btn" (click)="terminal()" title="Open this conversation in a terminal and keep going interactively. The dashboard stops driving it.">Continue in terminal</button>
+          }
+          @if (canSendToHosted()) {
+            <button class="btn" [disabled]="sending()" (click)="sendToHosted()"
+              title="Move this conversation, and the worktree it worked in (unpushed commits and changes included), to your hosted dashboard and carry on there. This copy stops driving it.">{{ sending() ? 'Packing…' : 'Send to hosted' }}</button>
           }
           <button class="btn ghost" (click)="copyResume()" [title]="resumeCmd()">Copy resume cmd</button>
         }
@@ -79,6 +83,10 @@
         }
       </div>
       @if (terminalCmd()) { <div class="hint cmd">Terminal command: <code>{{ terminalCmd() }}</code></div> }
+      @if (r.handoffPendingAt && !api.hosted()) {
+        <div class="hint">Sending to your hosted dashboard: finish in the tab that opened. Replies wait until it's there.
+          <button class="btn sm ghost" (click)="cancelSend()">Cancel send</button></div>
+      }
     </div>
 
     @if (thread().agents.length) {

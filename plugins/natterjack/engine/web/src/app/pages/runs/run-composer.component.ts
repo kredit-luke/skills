@@ -25,7 +25,11 @@ const AUTO_SEND_KEY = 'dash.queueAutoSend';
   styleUrl: './run-composer.component.scss',
   template: `
     @let r = run();
-    @if (r.status === 'handedOff') {
+    @if (r.status === 'handedOff' && r.handedOffTo === 'hosted') {
+      <div class="composer ro">
+        <div class="note">Moved to your hosted dashboard, so this copy is read-only. Carry on there@if (r.hostedRunUrl) {: <a [href]="r.hostedRunUrl" target="_blank" rel="noopener">open it</a>}.</div>
+      </div>
+    } @else if (r.status === 'handedOff') {
       <div class="composer ro">
         <div class="note">Continued in a terminal, so the dashboard is read-only for this run. What happens there shows up above.</div>
         <code class="cmd">claude --resume {{ r.sessionId }}</code>

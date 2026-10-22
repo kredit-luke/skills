@@ -428,6 +428,7 @@ On Azure App Service instead (one Web App per person, deployed from `templates/h
 | `areas` | A key only some people get, usually a Knowledge store's `KNOWLEDGE_<STORE>_KEY`. Kubernetes: `secret` is a Secret holding it, created once by an engineer. App Service: `secret` is a Key Vault secret and `env` the setting it becomes (a Key Vault reference, so the key isn't in the app's config). |
 | `profiles` | Picked per person on the page. `areas` they get; `maxConcurrentRuns` (1–10) becomes `DASHBOARD_MAX_CONCURRENT_RUNS`. Kubernetes: `memory` and `cpu` set the container's limits. App Service: `parameters` go over `platform.parameters` (sizing is per plan, so a profile picks its `plan`). |
 | `defaultProfile` | The one a new person starts with (default: the first). |
+| `url` | The hosted dashboards' shared address (`https://dashboard.example.com`). Turns on **Send to hosted** on local run pages ([hosting.md](hosting.md#moving-a-run-from-your-computer)); `DASHBOARD_HOSTED_URL` overrides it. Read on its own, so the rest of the file needn't be complete. |
 
 **people.json**, next to it, is the roster: who has a hosted dashboard, their profile, their role if one was assigned (`"role": "<workspace.json role id>"`), and who set them up and when. The People page writes it; commit it like any other config (the page has a **Commit** button that commits just this file; pushing is yours). Git history is its audit log. It holds names and emails, no secrets.
 

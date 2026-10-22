@@ -24,7 +24,9 @@ import { runStatus, toReview } from './run-status';
           @if (r.trigger && r.trigger.startsWith('routine:')) { <span class="tag routine">routine</span> }
           @if (r.agent && r.agent !== 'claude') { <span class="tag agent" [title]="'Run by ' + agentName()">{{ agentName() }}</span> }
           @if (r.planMode) { <span class="tag" title="Read-only">plan</span> }
-          @if (r.status === 'handedOff' || r.continuedAt) { <span class="tag routine" title="Continued in a terminal">terminal</span> }
+          @if (r.status === 'handedOff' && r.handedOffTo === 'hosted') { <span class="tag routine" title="Moved to the hosted dashboard">hosted</span> }
+          @else if (r.status === 'handedOff' || r.continuedAt) { <span class="tag routine" title="Continued in a terminal">terminal</span> }
+          @if (r.movedFrom) { <span class="tag routine" [title]="'Moved here from ' + r.movedFrom.cwd">moved here</span> }
           @if (r.verdict === 'good') { <span class="tag good">good</span> }
           @if (r.verdict === 'needed-fix') { <span class="tag bad">needed fix</span> }
         </div>

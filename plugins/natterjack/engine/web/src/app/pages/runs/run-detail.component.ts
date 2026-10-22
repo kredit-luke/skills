@@ -1,6 +1,6 @@
 import { ChangeDetectionStrategy, Component, ElementRef, OnDestroy, computed, effect, inject, input, signal, untracked, viewChild } from '@angular/core';
 import { NgTemplateOutlet } from '@angular/common';
-import type { Continuation, IssueDetail, RunDetail, RunEvent, RunMeta, RunOutput, TerminalResponse } from '../../../../../shared/api';
+import type { Continuation, IssueDetail, RunDetail, RunEvent, RunMeta, RunOutput, SendToHostedResponse, TerminalResponse } from '../../../../../shared/api';
 import { ApiService } from '../../core/api.service';
 import { DataService, normaliseRun } from '../../core/data.service';
 import { agentLabel, isRoutedModel } from '../../core/agents';
@@ -12,6 +12,7 @@ import { buildThread, countSteps, isOpenModel, openModelSummary, stripAgents, st
 import { RunEventCache, type RunEvents } from '../../runs/event-cache';
 import { runTicket } from '../../../../../shared/run-ticket';
 import { runWorkspace } from '../../../../../shared/run-workspace';
+import { BETWEEN_TURNS } from '../../../../../shared/send-to-hosted';
 import { runStatus, toReview } from '../../shared/run-status';
 import { RunComposerComponent } from './run-composer.component';
 import { RunChangesComponent } from './run-changes.component';
@@ -27,6 +28,8 @@ type Tab = 'issue' | 'transcript' | 'changes' | 'apps';
 type IssueLookup = { detail: IssueDetail } | { error: string };
 
 const STICK_PX = 80;
+/** Statuses a run can be sent to the hosted dashboard from: between turns (as the server checks). */
+const SENDABLE = new Set(BETWEEN_TURNS);
 /** Shared by every run page, so it outlives leaving Activity. */
 const eventCache = new RunEventCache();
 
@@ -57,6 +60,8 @@ export class RunDetailComponent implements OnDestroy {
   readonly outputs = signal<RunOutput[]>([]);
   readonly loadError = signal<string | null>(null);
   readonly terminalCmd = signal<string | null>(null);
+  /** Send to hosted is packing the run (git fetches each repo, so it can take a few seconds). */
+  readonly sending = signal(false);
   readonly expanded = signal<Set<string>>(new Set());
   readonly now = signal(Date.now());
   /** Issue (its tracker ticket), Transcript, Changes (what the run changed in the code) or Apps (its workspace's). */
@@ -407,6 +412,44 @@ export class RunDetailComponent implements OnDestroy {
       this.terminalCmd.set(res.command || 'claude --resume ' + r.sessionId);
       if (res.opened) this.toast.show('Opened a terminal on this conversation');
       else if (await copyText(res.command)) this.toast.show('Copied: ' + res.command);
+    } catch (e) { this.toast.error((e as Error).message); }
+  }
+
+  /** A Claude run between turns, on a local dashboard that has a hosted one (hosting.json `url`). */
+  canSendToHosted(): boolean {
+    const r = this.run();
+    return !!r && !this.api.hosted() && !!this.api.boot()?.hostedUrl && (r.agent || 'claude') === 'claude'
+      && SENDABLE.has(r.status) && !r.handoffPendingAt;
+  }
+
+  async sendToHosted(): Promise<void> {
+    const r = this.run();
+    if (!r) return;
+    // Opened during the click: a tab opened after the wait would be blocked as a pop-up.
+    const tab = window.open('', '_blank');
+    if (tab) tab.opener = null;
+    this.sending.set(true);
+    try {
+      const res = await this.api.post<SendToHostedResponse>('/api/runs/' + r.id + '/send-to-hosted');
+      if (res.run) this.setRun(res.run);
+      if (tab) tab.location.href = res.url; else window.open(res.url, '_blank', 'noopener');
+      this.toast.show(res.warnings.length ? res.warnings.join(' ') : 'Finish in the hosted dashboard tab');
+      this.data.loadRuns();
+    } catch (e) {
+      tab?.close();
+      this.toast.error((e as Error).message);
+    } finally {
+      this.sending.set(false);
+    }
+  }
+
+  async cancelSend(): Promise<void> {
+    const r = this.run();
+    if (!r) return;
+    try {
+      const res = await this.api.post<{ run: RunMeta }>('/api/runs/' + r.id + '/send-cancel');
+      if (res.run) this.setRun(res.run);
+      this.toast.show('Send cancelled: the run stays here');
     } catch (e) { this.toast.error((e as Error).message); }
   }
 

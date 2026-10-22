@@ -7,7 +7,8 @@ export function toReview(r: Pick<RunMeta, 'status' | 'verdict' | 'endedAt'>, now
 }
 
 /** Status label + badge class, so colour never carries meaning alone (§13). */
-export function runStatus(r: Pick<RunMeta, 'status' | 'warning'>): { label: string; cls: string; dot: string } {
+export function runStatus(r: Pick<RunMeta, 'status' | 'warning'> & Partial<Pick<RunMeta, 'handedOffTo'>>): { label: string; cls: string; dot: string } {
+  if (r.status === 'handedOff' && r.handedOffTo === 'hosted') return { label: 'Moved to hosted', cls: 'navy', dot: 'handedOff' };
   switch (r.status) {
     case 'running': return { label: 'Running', cls: 'live', dot: 'running' };
     case 'waiting': return { label: 'Needs your answer', cls: 'amber', dot: 'waiting' };

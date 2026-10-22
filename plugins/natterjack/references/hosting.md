@@ -42,6 +42,7 @@ The dashboard refuses to start when `DASHBOARD_HOSTED` is on and the URL or secr
 
 What changes for the person:
 - The Apps and Workspaces pages are hidden, and the server refuses app actions, Machine-page installs, "Continue in terminal", "Implement in terminal" and local docs previews. All of those open something on the server's own screen or ports.
+- Runs started on an engineer's own dashboard can be moved here with **Send to hosted** ("Moving a run from your computer" below).
 - Knowledge stores (docs.json `kind: "store"`) read their key from `KNOWLEDGE_<SOURCE KEY>_KEY` (uppercased, `-` as `_`), so nobody pastes one and the page says the admin connects it. To set one up: create a bucket (or a folder in one) per area that only some people should read; create a key that can list, read, write and delete there (an IAM user or role for S3; an HMAC key for Google Cloud Storage; a container SAS with read, add, create, write, delete and list for Azure, from a stored access policy so it can be revoked); put it in the deployment's secrets under that name for the people who should read and edit that area. The tool list on the Knowledge page is the workspace repo's config: change it from a local dashboard and commit it.
 - The Connections page's **Sign in** works in the page: the person signs in in their own browser, which ends on a `http://localhost:<port>/callback` page that can't load (that's their own computer). They paste its address into the page, and it's typed at the prompt of the `claude mcp login` waiting in the container (run under `script` for a pseudo-terminal; `script` comes with every Debian image). Only an address on the port and path that CLI named is accepted. claude.ai connectors sign in on claude.ai.
 - The Machine page's Claude Code check gets an in-page sign-in (below). The container's tools are the image's job, so it has no install buttons.
@@ -296,6 +297,21 @@ browser ── login proxy (Cloudflare Access, or oauth2-proxy) at natterjack.ex
 - **Each person's app** (the template): their own managed identity reads their secrets from the vault (Key Vault Secrets User) and pulls the image (AcrPull), so no password sits in the app's settings. **Always On** is on, or idle apps are unloaded mid-run. The router stops idle ones (`ROUTER_IDLE_MINUTES`), which frees room on the plan.
 - **Who deploys** needs Contributor on the resource group, permission to create role assignments on the vault and registry (Owner, or Role Based Access Control Administrator), and to list the storage account's keys (for the `/data` mount).
 - **Dashboards set up by hand** before the People page (tagged `owner` and `purpose: hosted-workspace-dashboard`) show as **Not in roster**. **Adopt** them, then **Update** to move them onto the template; their name and file share stay.
+
+## Moving a run from your computer
+
+An engineer who starts a run on their own dashboard can carry on with it on their hosted one, e.g. before closing the laptop. Set `url` in hosting.json to the shared address ([config.md](config.md)); local run pages then have **Send to hosted** next to Continue in terminal (Claude runs, between turns).
+
+1. **Send to hosted** packs the run (`server/src/handoff.ts`) and locks it here. The pack holds:
+   - Claude's transcript of the session and its subagents;
+   - the run's files;
+   - the worktree it worked in, if any (the same one its Changes tab shows). For each repo it carries the commits that aren't on any remote (a git bundle, after a `git fetch --prune`), uncommitted changes and untracked files that git doesn't ignore. It also carries the worktree's own files outside its repos (a copied `.claude/`, CLAUDE.md), but not `.claude/ledger`.
+2. A tab opens on the hosted dashboard's **Move a run here** page, which asks first. It then fetches the pack straight from `http://localhost:<port>` with a single-use token. Chrome asks once whether the page may reach your local network: allow it. Only the hosted address may make that request (CORS), and only a dashboard on `localhost` is accepted as the source.
+3. The hosted dashboard recreates the run in the same place relative to its workspace. A worktree is added with `git worktree add` from its own clone of each repo, on the run's branch (fast-forwarded if it exists and isn't checked out, else detached with a warning). Then the changes are applied and the transcript goes where `claude --resume` finds it from the new folder. Every later turn is told the old paths now live under the hosted workspace. A failure undoes everything it did.
+   The import runs in the background (the page polls it), so a proxy's response timeout can't cut it off. Files are only written through real folders: never through a link, including one the run's own commits made.
+4. The page confirms back to your computer, whose copy becomes read-only ("Moved to hosted", with a link). If the tab is closed before then, the run unlocks after 5 minutes (not fetched) or 30 (not confirmed), or at once with **Cancel send**. A send that was cancelled, or continued in a terminal, meanwhile can't be confirmed: the page then says the run is now open in both places.
+
+What doesn't move: running apps and services, Continue-in-terminal sessions, PR watches (the hosted dashboard picks the watch up from the run), and anything outside the run's worktree. The pack is capped at 20 MB (gzipped). The hosted ingress must take a request that big: ingress-nginx's default is 1 MB, which the router template raises (`proxy-body-size: 25m`; on NGINX Inc's controller, `nginx.org/client-max-body-size`).
 
 ## Hosting a model for the team
 

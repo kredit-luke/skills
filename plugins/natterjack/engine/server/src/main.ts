@@ -22,13 +22,13 @@ import path from "node:path";
 import crypto from "node:crypto";
 import { execFile } from "node:child_process";
 import { restartSelf } from "./self-restart.ts";
-import type { Boot, LaunchRequest, ProfileInfo, PublishPlanResponse, RunEvent, RunMeta } from "../../shared/api.ts";
+import type { Boot, ImportRunJob, LaunchRequest, ProfileInfo, PublishPlanResponse, RunEvent, RunMeta } from "../../shared/api.ts";
 import { implementTicket, runTicket } from "../../shared/run-ticket.ts";
 import { runWorkspace } from "../../shared/run-workspace.ts";
 import { CLAUDE_SESSION_ENV } from "./claude.ts";
 import {
   BRAND_DIR, DASHBOARD_DIR, ENGINE_FOLDER, LEDGER_DIR, WORKSPACE_ROOT,
-  dashboardPort, portsFile, ticketInTextRe, ticketRe, workspaceConfig, worktreeRoot,
+  dashboardPort, portsFile, readConfigFile, ticketInTextRe, ticketRe, workspaceConfig, worktreeRoot,
 } from "./config.ts";
 import * as workspaces from "./workspaces.ts";
 import type { Ws } from "./workspaces.ts";
@@ -78,6 +78,7 @@ import { infrastructure } from "./infrastructure.ts";
 import { RunChanges } from "./run-changes.ts";
 import type { RunWorktree } from "./run-changes.ts";
 import { Attachments, MAX_ATTACHMENT_BYTES, contentTypeOf, outputHeaders } from "./attachments.ts";
+import { HandoffTokens, MAX_BUNDLE_BYTES, buildBundle, importBundle } from "./handoff.ts";
 import { Explore, MAX_SAVE_BYTES, rawType, resolveSafe } from "./explore.ts";
 import { forgetAtlassianKeys } from "./atlassian.ts";
 import { Atlassian } from "./atlassian-auth.ts";
@@ -311,6 +312,43 @@ function listWorkspaces(): Ws[] {
 
 function workspaceBySlug(slug: unknown): Ws | null {
   return listWorkspaces().find((w) => w.slug === slug) || null;
+}
+
+/** Send to hosted's imports, by the bundle's hash (the import page polls; kept an hour). */
+const importJobs = new Map<string, ImportRunJob & { at: number }>();
+const IMPORT_JOB_ID = /^[0-9a-f]{16}$/;
+
+function startImport(bundle: Buffer): ImportRunJob {
+  for (const [k, j] of importJobs) if (Date.now() - j.at > 3600_000) importJobs.delete(k);
+  const id = crypto.createHash("sha256").update(bundle).digest("hex").slice(0, 16);
+  const seen = importJobs.get(id);
+  if (seen && seen.state !== "failed") return seen; // posted again (a retry after a timeout): the same import
+  const job: ImportRunJob & { at: number } = { id, state: "running", run: null, warnings: [], error: null, at: Date.now() };
+  importJobs.set(id, job);
+  importBundle(bundle, {
+    workspaceRoot: MAIN_WORKSPACE_PATH,
+    worktreeRoot: worktreeRoot(),
+    runsDir: runs.runsDir,
+    attachmentsRoot: attachments.root,
+    claudeDir: process.env.CLAUDE_CONFIG_DIR || path.join(os.homedir(), ".claude"),
+    mainRepos: mainRepos(),
+  }, isRoutedId).then(({ meta, warnings }) => {
+    Object.assign(job, { state: "done", run: runs.get(meta.id) || meta, warnings });
+  }, (e) => {
+    Object.assign(job, { state: "failed", error: (e && e.message) || String(e) });
+  });
+  return job;
+}
+
+/** The main workspace's clones (absolute): repos.json's, the apps' repos, and the root itself if it's one. */
+function mainRepos(): string[] {
+  const out = new Set<string>();
+  for (const r of readRepos(MAIN_WORKSPACE_PATH).repos) {
+    const full = path.join(MAIN_WORKSPACE_PATH, r.relativePath);
+    if (fs.existsSync(path.join(full, ".git"))) out.add(full);
+  }
+  for (const r of listRepos(MAIN_WORKSPACE_PATH)) out.add(path.resolve(MAIN_WORKSPACE_PATH, r));
+  return [...out];
 }
 
 /** The worktree a run worked in (the run page's rule) and its repos, or null for a run that stayed in main. */
@@ -999,6 +1037,68 @@ function originAllowed(origin: string) {
   return ["http://localhost", "http://127.0.0.1"].some((o) => ports.some((port) => origin === `${o}:${port}`));
 }
 
+/**
+ * Send to hosted (handoff.ts): this computer's dashboard's hosted counterpart, from
+ * DASHBOARD_HOSTED_URL or hosting.json `url` ("https://dashboard.example.com"). null when
+ * hosted itself, or when neither is set.
+ */
+function hostedUrl(): string | null {
+  if (HOSTED) return null;
+  const raw = String(process.env.DASHBOARD_HOSTED_URL || readConfigFile("hosting.json").data?.url || "").trim();
+  try {
+    const u = new URL(raw);
+    return u.protocol === "https:" || (u.protocol === "http:" && ["localhost", "127.0.0.1"].includes(u.hostname)) ? u.origin : null;
+  } catch {
+    return null;
+  }
+}
+
+const handoffs = new HandoffTokens();
+// A send that wasn't fetched in time, or never confirmed, unlocks its run again.
+setInterval(() => { for (const s of handoffs.expired()) runs.cancelSend(s.runId, s.attempt); }, 30_000).unref();
+
+/**
+ * The only routes a page on another site may call: the hosted dashboard's import page
+ * fetching a bundle it was given a token for, and confirming the import. Origin must be
+ * the hosted dashboard's; the token (single use, minutes long) is the only credential.
+ * Chrome asks the person before a public page may reach this computer (Local Network Access).
+ */
+async function handleHandoffCors(req: http.IncomingMessage, res: http.ServerResponse, url: URL, origin: string) {
+  const cors = {
+    "Access-Control-Allow-Origin": origin,
+    "Access-Control-Allow-Methods": "GET, POST",
+    "Access-Control-Allow-Headers": "content-type",
+    "Access-Control-Allow-Private-Network": "true",
+    "Access-Control-Max-Age": "60",
+    "Vary": "Origin",
+  };
+  const fail = (status: number, message: string) => {
+    res.writeHead(status, { ...cors, "Content-Type": "application/json" });
+    res.end(JSON.stringify({ error: message }));
+  };
+  if (req.method === "OPTIONS") { res.writeHead(204, cors); return res.end(); }
+  const token = url.searchParams.get("t");
+  if (req.method === "GET" && url.pathname === "/api/handoff/bundle") {
+    const got = handoffs.take(token);
+    if (!got) return fail(410, "This link was already used or has expired. Send the run again from your computer.");
+    res.writeHead(200, { ...cors, "Content-Type": "application/octet-stream", "Content-Length": got.bundle.length, "Cache-Control": "no-store" });
+    return res.end(got.bundle);
+  }
+  if (req.method === "POST" && url.pathname === "/api/handoff/confirm") {
+    let body: any = {};
+    try { body = JSON.parse((await readRawBody(req, 64 * 1024)).toString("utf-8") || "{}"); } catch {}
+    const sent = handoffs.confirm(token);
+    if (!sent) return fail(410, "This send was already confirmed or has expired.");
+    // Only a link back to the hosted dashboard itself is kept.
+    const link = typeof body.url === "string" && body.url.startsWith(`${origin}/`) ? body.url : null;
+    try { runs.finishSend(sent.runId, link, sent.attempt); }
+    catch (e) { return fail(e.status || 409, e.message); }
+    res.writeHead(200, { ...cors, "Content-Type": "application/json" });
+    return res.end(JSON.stringify({ ok: true }));
+  }
+  return fail(404, "Not found");
+}
+
 /** GET /api/boot: the token plus who this workspace is (name, brand, tracker) for the UI. `user`: hosted mode's signed-in email. */
 function bootInfo(user: string | null): Boot {
   const ws = workspaceConfig();
@@ -1036,6 +1136,7 @@ function bootInfo(user: string | null): Boot {
       return { current: me.profile, role: me.current.id, roleLabel: me.current.label, ask: ws.rolesConfigured && !me.roleChosen && !ROLE_LOCK, roleLocked: !!ROLE_LOCK, hiddenPages };
     })(),
     hosted: HOSTED ? { user } : null,
+    hostedUrl: hostedUrl(),
   };
 }
 
@@ -1145,7 +1246,7 @@ async function openTerminalForRun(run: RunMeta) {
   return { opened: r.opened, command: `cd "${run.cwd}"; ${command}` };
 }
 
-const RUN_ROUTE = /^\/api\/runs\/([a-z0-9-]+)(?:\/(stream|cancel|verdict|flag|terminal|continuation|reply|plan-mode|changes|diff|rename|watch-stop|queue|queue-edit|queue-remove|queue-send|queue-auto))?$/i;
+const RUN_ROUTE = /^\/api\/runs\/([a-z0-9-]+)(?:\/(stream|cancel|verdict|flag|terminal|continuation|reply|plan-mode|changes|diff|rename|watch-stop|queue|queue-edit|queue-remove|queue-send|queue-auto|send-to-hosted|send-cancel))?$/i;
 const RUN_FILE_ROUTE = /^\/api\/runs\/([a-z0-9-]+)\/files\/([^/]+)$/i;
 const RUN_OUTPUT_ROUTE = /^\/api\/runs\/([a-z0-9-]+)\/outputs\/(.+)$/i;
 
@@ -1209,6 +1310,13 @@ async function handleApi(req: http.IncomingMessage, res: http.ServerResponse, ur
   if (HOSTED && p.startsWith("/api/people")) return sendError(res, 400, NOT_HOSTED);
 
   if (req.method === "GET") {
+    const importMatch = p.match(/^\/api\/runs\/import\/([0-9a-f]+)$/);
+    if (importMatch) {
+      const job = IMPORT_JOB_ID.test(importMatch[1]) ? importJobs.get(importMatch[1]) : null;
+      if (!job) return sendError(res, 404, "No such import (they're kept for an hour).");
+      const { at: _at, ...pub } = job;
+      return sendJson(res, pub);
+    }
     const fileMatch = p.match(RUN_FILE_ROUTE);
     if (fileMatch) return serveRunFile(res, fileMatch[1], decodeURIComponent(fileMatch[2]));
     const outputMatch = p.match(RUN_OUTPUT_ROUTE);
@@ -1448,6 +1556,12 @@ async function handleApi(req: http.IncomingMessage, res: http.ServerResponse, ur
     const data = await readRawBody(req, MAX_ATTACHMENT_BYTES);
     return sendJson(res, attachments.stage(String(q("name") || "file"), data), 201);
   }
+  if (p === "/api/runs/import") {
+    // Send to hosted's other end: the raw bundle the import page fetched from the person's computer.
+    if (!HOSTED) return sendError(res, 400, "Runs are imported by a hosted dashboard. Use Send to hosted on the run's page instead.");
+    const data = await readRawBody(req, MAX_BUNDLE_BYTES);
+    return sendJson(res, startImport(data), 202);
+  }
   if (p === "/api/explore/save") {
     // Its own reader: a file can be far bigger than readJsonBody's 64 KB.
     let save: any;
@@ -1456,7 +1570,7 @@ async function handleApi(req: http.IncomingMessage, res: http.ServerResponse, ur
   }
   const body = await readJsonBody(req);
 
-  if (HOSTED && (LOCAL_ONLY_POSTS.has(p) || (runMatch && runMatch[2] === "terminal") || (body.mode === "terminal" && /^\/api\/(issues|linear)\/implement$/.test(p)))) {
+  if (HOSTED && (LOCAL_ONLY_POSTS.has(p) || (runMatch && ["terminal", "send-to-hosted", "send-cancel"].includes(runMatch[2])) || (body.mode === "terminal" && /^\/api\/(issues|linear)\/implement$/.test(p)))) {
     return sendError(res, 400, NOT_HOSTED);
   }
   if (p === "/api/claude/login") {
@@ -1552,10 +1666,47 @@ async function handleApi(req: http.IncomingMessage, res: http.ServerResponse, ur
   if (runMatch && runMatch[2] === "flag") return sendJson(res, { run: runs.setFlag(runMatch[1], !!body.flagged) });
   if (runMatch && runMatch[2] === "watch-stop") return sendJson(res, { run: runs.stopWatch(runMatch[1]) });
   if (runMatch && runMatch[2] === "terminal") {
+    handoffs.drop(runMatch[1]); // a send in flight can't be fetched or confirmed any more
     const meta = runs.handOff(runMatch[1]);
     // Give a just-killed turn a moment to release the session before the terminal resumes it.
     if (meta && runs.live.has(meta.id)) await new Promise((r) => setTimeout(r, 1500));
     return sendJson(res, { ...(await openTerminalForRun(meta)), run: runs.get(meta.id) });
+  }
+  if (runMatch && runMatch[2] === "send-to-hosted") {
+    const target = hostedUrl();
+    if (!target) return sendError(res, 400, "No hosted dashboard is set: add its address as \"url\" in .claude/dashboard/hosting.json.");
+    const id = runMatch[1];
+    const meta = runs.beginSend(id); // locks the run; throws if it can't go
+    // This send, from here to its confirm: packing takes a while (git fetches), and the send can be
+    // cancelled or continued in a terminal meanwhile, or replaced by a newer one.
+    const attempt = meta.handoffPendingAt!;
+    try {
+      const { bundle, warnings } = await buildBundle({
+        meta,
+        metaFile: runs.metaFile(id),
+        eventsFile: runs.eventsFile(id),
+        transcript: runs.transcriptPath(meta.sessionId),
+        attachmentsDir: attachments.runDir(id),
+        workspaceRoot: MAIN_WORKSPACE_PATH,
+        worktree: runWorktree(meta, runs.events(id)),
+        engineVersion: VERSION,
+      });
+      // Called off while packing: this pack is stale, and publishing it could take over a newer send.
+      if (runs.get(id)?.handoffPendingAt !== attempt) {
+        return sendError(res, 409, "The send was cancelled (or the run continued in a terminal) while it was being packed.");
+      }
+      const token = handoffs.create(id, bundle, attempt);
+      const from = `http://localhost:${DASHBOARD_PORT}`;
+      const url = `${target}/import-run?from=${encodeURIComponent(from)}&run=${encodeURIComponent(id)}&t=${token}`;
+      return sendJson(res, { url, warnings, bytes: bundle.length, run: runs.get(id) });
+    } catch (e) {
+      runs.cancelSend(id, attempt); // only this send: a newer one stays locked
+      throw e;
+    }
+  }
+  if (runMatch && runMatch[2] === "send-cancel") {
+    handoffs.drop(runMatch[1]);
+    return runs.cancelSend(runMatch[1]) ? sendJson(res, { run: runs.get(runMatch[1]) }) : sendError(res, 409, "This run isn't being sent.");
   }
   // A meeting's tracker tickets were found with the old connection: search again with the new one.
   if (p === "/api/issues/connect" || p === "/api/linear/connect") {
@@ -1915,8 +2066,13 @@ const server = http.createServer(async (req, res) => {
       res.writeHead(421);
       return res.end("Misdirected request");
     }
-    // A browser POST from another site carries its Origin; only our own is allowed.
+    // A browser POST from another site carries its Origin; only our own is allowed,
+    // except the hosted dashboard fetching a run it was sent (Send to hosted).
     const origin = req.headers.origin;
+    if (origin && origin === hostedUrl() && /^\/api\/handoff\/(bundle|confirm)(\?|$)/.test(req.url || "")) {
+      try { return await handleHandoffCors(req, res, new URL(req.url || "/", `http://localhost:${DASHBOARD_PORT}`), origin); }
+      catch (e) { if (!res.headersSent) sendError(res, 400, e.message || String(e)); else res.end(); return; }
+    }
     if (origin && !originAllowed(origin)) {
       res.writeHead(403);
       return res.end("Cross-origin request refused");
