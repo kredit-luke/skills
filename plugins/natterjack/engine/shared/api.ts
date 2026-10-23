@@ -188,6 +188,38 @@ export interface RunMeta {
   queueBlocked?: string | null;
   /** Auto-send: the queue also goes out when Claude ends a turn with a question, as the answer (for when you've walked away). */
   queueAutoSend?: boolean;
+  /** On the hosted dashboard: a run mirrored from a linked computer (Remote control), which runs it. */
+  remote?: RemoteRunInfo;
+}
+
+/**
+ * A mirrored run's link (RunMeta.remote). The hosted dashboard only shows the run; replies
+ * and other commands wait in `pending` until the computer acks them.
+ */
+export interface RemoteRunInfo {
+  /** The link token's id: the computer. */
+  linkId: string;
+  /** The link's label ("Work laptop"). */
+  label: string;
+  /**
+   * The computer synced in the last minute (ONLINE_MS in shared/remote.ts). Only on a single run
+   * (GET /api/runs/:id, its stream's `meta`, the live `run` event). Not in the runs list
+   * (RunsResponse.remote): there a run's online state is its link's, in RunsResponse.remoteLinks
+   * and the live `remote-links` topic, so a heartbeat doesn't change the list.
+   */
+  online?: boolean;
+  /** As `online`: only on a single run; in the runs list, read the link's (RemoteLinkLive). */
+  lastSeenAt?: string | null;
+  /** Remote control is on there; false after it was turned off (commands are refused with 409). */
+  enabled: boolean;
+  /** Commands not acked yet; `delivered` once they went down the open link. */
+  pending: { id: string; kind: RemoteCommandKind; text?: string; at: string; delivered: boolean }[];
+  /**
+   * The last command the computer refused or failed to run (e.g. "Claude is still working"), or
+   * one the pod failed itself. Always a command: a failed sync is an HTTP status to the computer
+   * and shows on its own Remote control state, not on a run.
+   */
+  lastError?: { kind: RemoteCommandKind; message: string; at: string } | null;
 }
 
 /** A message queued on a run (RunMeta.queued). Editable and removable until it's sent. */
@@ -265,8 +297,40 @@ export interface RunOutput { name: string; size: number; modifiedAt: string }
 
 export interface PresetStats { runs: number; succeeded: number; rated: number; good: number; costUsd: number; durationMs: number; lastRunAt: string | null }
 
-/** GET /api/runs?limit=N */
-export interface RunsResponse { runs: RunMeta[]; stats: Record<string, PresetStats> }
+/** GET /api/runs?limit=N (and the live `runs` topic, with N = 200 and no `remoteLinks`) */
+export interface RunsResponse {
+  runs: RunMeta[];
+  stats: Record<string, PresetStats>;
+  /**
+   * Hosted dashboards: runs mirrored from a linked computer (RunMeta.remote), apart from
+   * `runs` because the router's idle check reads only `runs` (they run on the computer).
+   * A run here with the same id as one in `runs` is left out: the pod's own run wins. At most
+   * N, latest activity first. Their `remote` has no `online` or `lastSeenAt`: read the run's
+   * link (`remote.linkId`) in `remoteLinks` / the `remote-links` topic.
+   */
+  remote?: RunMeta[];
+  /**
+   * Hosted dashboards, GET /api/runs only: every linked computer that has connected, with its
+   * live state. After the first load the live `remote-links` topic carries the same list.
+   */
+  remoteLinks?: RemoteLinkLive[];
+}
+
+/**
+ * A linked computer's live state (hosted): RunsResponse.remoteLinks, and the live `remote-links`
+ * topic (data: RemoteLinkLive[], sent when it changes: on a sync, an open or a revoke, and as a
+ * link goes offline). A mirrored run is online when its link (`remote.linkId`) is.
+ */
+export interface RemoteLinkLive {
+  linkId: string;
+  /** The link's label ("Work laptop"). */
+  label: string;
+  /** Remote control is on there; false after it was turned off (commands are refused with 409). */
+  enabled: boolean;
+  /** Synced or opened in the last minute (ONLINE_MS in shared/remote.ts); false once a newer link from the same computer took over. */
+  online: boolean;
+  lastSeenAt: string | null;
+}
 
 /**
  * GET /api/runs/:id → { run, events, outputs }
@@ -300,9 +364,19 @@ export interface RunDetail { run: RunMeta; events: RunEvent[]; outputs?: RunOutp
  *  - { type: 'human', text, uuid, timestamp, turn }  — a reply sent from the dashboard (turn >= 2)
  *    or typed in a terminal after hand-off (from /continuation; no turn)
  *  - { type: 'turn', turn, uuid, timestamp, planMode }  — marks the start of turn N (N >= 2)
+ *  - { type: 'omitted', reason: 'too-large' | 'invalid', bytes, uuid?, timestamp? }  — a mirrored run's (RunMeta.remote)
+ *    event too big, or not well-formed enough, to send over the link, in its place so indexes stay in step
+ *    (shared/remote.ts OmittedEvent)
  * The server strips <<QUESTION>>…<</QUESTION>> and <<WATCH>>…<</WATCH>> blocks from main-session text before saving.
  */
 export type RunEvent = { type: string; uuid?: string; [k: string]: any };
+
+/**
+ * What a Remote control command does on the computer (shared/remote.ts RemoteCommand), through the
+ * same RunManager rules as the run page there: reply (an answer to a question is a reply too),
+ * queue and the queue's own actions, cancel, plan mode.
+ */
+export type RemoteCommandKind = 'reply' | 'queue' | 'queue-edit' | 'queue-remove' | 'queue-send' | 'queue-auto' | 'cancel' | 'plan-mode';
 
 /** POST /api/runs  body: LaunchRequest → 201 { run } */
 export interface LaunchRequest {
@@ -343,6 +417,19 @@ export interface PlanModeRequest { on: boolean }
 /** POST /api/runs/:id/flag  { flagged: boolean } → { run }   (any time, even mid-turn) */
 /** POST /api/runs/:id/watch-stop → { run }   ends the run's PR watch (409 when there's none running) */
 /**
+ * A mirrored run (RunMeta.remote) on the hosted dashboard: reply, queue, queue-*, cancel and
+ * plan-mode → 202 { run } once the command is held for the computer (run.remote.pending), with
+ * the same body as on the computer (body → RemoteCommand.payload, shared/remote.ts).
+ *   409 when Remote control is off there.
+ *   409 when the computer is offline, except `queue`, and `queue-edit` / `queue-remove` on a queue
+ *       still pending on the pod and not yet delivered (`delivered === false`; applied there in place).
+ *   409 "Already sent to your computer" for `queue-edit` / `queue-remove` on a pending queue that was
+ *       delivered but not acked yet, online or offline.
+ *   429 "Too many messages waiting for your computer" once the link has PENDING_MAX pending.
+ *   400 for a reply or queue with attachments.
+ * Every other run POST (rename, verdict, terminal, …) → 409 "Open it on your computer."
+ */
+/**
  * POST /api/runs/:id/terminal → TerminalResponse
  * Kills a running turn first, marks the run handedOff and opens `claude --resume <sessionId>`
  * in a terminal in the run's folder.
@@ -362,14 +449,26 @@ export interface SendToHostedResponse { url: string; warnings: string[]; bytes: 
  * Remote control: a person's own computer linked to their hosted dashboard (server/src/link-tokens.ts).
  * GET /api/remote-links (hosted) → { links: RemoteLink[] }
  * POST /api/remote-links { action: "create", label } → 201 { token, link, links }: the token is shown this once
- *                        { action: "revoke", id } → { links }
+ *                        { action: "revoke", id } → { links }: also closes its open link and drops its mirrored runs
+ * The link itself (link token as Bearer; protocol in shared/remote.ts):
+ * GET /api/remote/link[?machine=<id>] → Server-Sent Events: hello, then command / watch / unwatch (409 while another computer's link is online)
+ * POST /api/remote/sync SyncRequest → SyncResponse (413 "A sync can be up to 2 MB.")
+ * POST /api/remote/ack AckRequest → { ok: true }
  */
-export interface RemoteLink { id: string; label: string; createdAt: string; lastUsedAt: string | null }
+export interface RemoteLink {
+  id: string; label: string; createdAt: string; lastUsedAt: string | null;
+  /** Synced in the last minute. */
+  online?: boolean;
+  lastSeenAt?: string | null;
+  /** Remote control is on there (false once turned off; true before the first sync). */
+  enabled?: boolean;
+}
 export interface LinkCheckStep { name: string; ok: boolean; message: string }
 /**
  * GET /api/hosted-link (local) → HostedLinkStatus: this computer's link to its hosted dashboard (server/src/hosted-link.ts).
  * POST /api/hosted-link { action: "certificate", pfx (base64), passphrase } | { action: "token", token }
  *                       | { action: "check" } | { action: "forget" } → HostedLinkStatus
+ *                       | { action: "remote-control", on } → HostedLinkStatus: mirror this computer's runs (off by default; forget turns it off)
  */
 export interface HostedLinkStatus {
   /** The hosted dashboard's address (hosting.json `url`), or null. */
@@ -377,6 +476,16 @@ export interface HostedLinkStatus {
   certificate: { present: boolean; fromEnv: boolean };
   token: { present: boolean; fromEnv: boolean; email: string | null };
   lastCheck: { at: string; ok: boolean; steps: LinkCheckStep[] } | null;
+  /**
+   * Remote control: `on` is the switch; `state` is the link right now ('refused': the hosted
+   * dashboard turned the token down, so it stopped trying). `message` says why for refused/error.
+   */
+  remoteControl: {
+    on: boolean;
+    state: 'off' | 'connecting' | 'connected' | 'refused' | 'error';
+    message: string | null;
+    lastSyncAt: string | null;
+  };
   /** POST only: something worth saying about what was just done (a certificate converted from the legacy format). */
   notice?: string | null;
 }

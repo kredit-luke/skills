@@ -1,58 +1,18 @@
 import { test, before, after } from "node:test";
 import assert from "node:assert/strict";
 import fs from "node:fs";
-import os from "node:os";
 import path from "node:path";
 import { RunManager, drainable, queuedText, normaliseMeta, runLabel, QUEUED_OVER_QUESTION } from "../src/runs.ts";
 import { agentOf } from "../src/agents/index.ts";
-import type { RunMeta } from "../../shared/api.ts";
+import { fakeClaude, settled } from "./fake-claude.ts";
 
-// A fake claude: each turn writes its prompt to a log and ends with a result.
-// A prompt containing "slow" keeps the turn open for a moment, so messages can be
-// queued while it works; "slow ask" ends the turn with a question.
-const TMP = fs.mkdtempSync(path.join(os.tmpdir(), "dash-queue-"));
-const LOG = path.join(TMP, "prompts.log");
-const FAKE = `
-import fs from "node:fs";
-const a = process.argv.slice(2);
-const prompt = a[a.indexOf("-p") + 1] || "";
-fs.appendFileSync(${JSON.stringify(LOG)}, JSON.stringify(prompt) + "\\n");
-const result = prompt.includes("slow ask") ? 'Which one? <<QUESTION>>{"questions":[{"question":"Which?","header":"Pick","multiSelect":false,"options":[{"label":"A","description":""}]}]}<</QUESTION>>' : "done";
-setTimeout(() => {
-  console.log(JSON.stringify({ type: "result", subtype: "success", is_error: false, result, total_cost_usd: 0, num_turns: 1 }));
-  process.exit(0);
-}, prompt.includes("slow") ? 700 : 10);
-`;
+// A fake claude (fake-claude.ts): "slow" keeps a turn open, "slow ask" ends it with a question.
+const fake = fakeClaude("dash-queue-");
+const TMP = fake.dir;
+const prompts = fake.prompts;
 
-before(() => {
-  const bin = path.join(TMP, "bin");
-  fs.mkdirSync(bin);
-  fs.writeFileSync(path.join(bin, "fake-claude.mjs"), FAKE);
-  const file = process.platform === "win32" ? path.join(bin, "claude.cmd") : path.join(bin, "claude");
-  if (process.platform === "win32") fs.writeFileSync(file, `@"${process.execPath}" "%~dp0fake-claude.mjs" %*\r\n`);
-  else fs.writeFileSync(file, `#!/bin/sh\nexec "${process.execPath}" "$(dirname "$0")/fake-claude.mjs" "$@"\n`, { mode: 0o755 });
-  process.env.DASHBOARD_CLAUDE_BIN = file;
-});
-
-after(() => { try { fs.rmSync(TMP, { recursive: true, force: true }); } catch {} });
-
-const prompts = (): string[] => {
-  try { return fs.readFileSync(LOG, "utf-8").split("\n").filter(Boolean).map((l) => JSON.parse(l)); } catch { return []; }
-};
-
-/** Resolves once the run is idle in one of `statuses` (a drain may start another turn first). */
-function settled(runs: RunManager, id: string, statuses = ["succeeded", "failed", "waiting", "cancelled"], ms = 15000): Promise<RunMeta> {
-  const end = Date.now() + ms;
-  return new Promise((resolve, reject) => {
-    const tick = () => {
-      const m = runs.get(id);
-      if (m && !runs.live.has(id) && statuses.includes(m.status) && !drainable(m)) return resolve(m);
-      if (Date.now() > end) return reject(new Error(`run ${id} still ${m && m.status}`));
-      setTimeout(tick, 50);
-    };
-    tick();
-  });
-}
+before(() => fake.install());
+after(() => fake.cleanup());
 
 function manager(dir: string, gate?: () => { blocker: string | null }) {
   return new RunManager(path.join(dir, "ledger"), { queueGate: gate });

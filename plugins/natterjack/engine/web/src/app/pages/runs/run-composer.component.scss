@@ -39,3 +39,41 @@
 .queue-h .auto input { margin: 0; }
 .next-model { display: flex; align-items: center; justify-content: flex-end; gap: 8px; font-size: 12px; color: var(--ink-soft); margin-top: 4px; }
 .next-model select { font-size: 12px; padding: 2px 6px; border: 1px solid var(--line); border-radius: 6px; background: var(--surface); color: var(--ink); margin-left: 6px; }
+
+/* Small screens (a phone-sized browser on the hosted dashboard).
+   600px = SMALL_SCREEN in core/small-screen.ts. */
+@media (max-width: 600px) {
+  /* Only the reply row (box + button) stays at the bottom of the screen while the page scrolls the
+     transcript; the notes, plan bar, attach row and next-model row scroll with the page.
+     A sticky box can't leave its parent's box, and the host is a flex item of the run's .detail
+     column, so it is a block whatever its own display says. So the host and .composer are
+     display: contents here: the row's parent box becomes .detail (header to composer), and it sticks
+     while any of the run is on screen. The composer's padding, gap and paper background move to its
+     children and to .detail (run-detail.component.scss). */
+  :host, .composer { display: contents; }
+  .composer > * { margin: 0.6rem 0.8rem 0; }
+  .composer > :last-child { margin-bottom: 0.8rem; }
+  /* env(safe-area-inset-bottom) only takes effect with viewport-fit=cover, which index.html leaves
+     out on purpose (it would put the rail under the notch in landscape); it's 0 until then. */
+  .composer > .reply {
+    position: sticky; bottom: 0; z-index: 2;
+    margin-inline: 0; padding: 0.5rem 0.8rem calc(0.5rem + env(safe-area-inset-bottom, 0px));
+    background: var(--paper); box-shadow: 0 -4px 10px -4px rgba(11,29,111,.18);
+  }
+  /* The slash-command list opens above the box, outside it: nothing here clips it. */
+
+  .questions { padding: 10px; }
+  .opts { flex-direction: column; flex-wrap: nowrap; }
+  .opt { max-width: none; width: 100%; min-height: 44px; justify-content: center; }
+  .q-send .btn { flex: 1; justify-content: center; min-height: 44px; }
+
+  .plan-bar span { min-width: 0; flex-basis: 100%; }
+  .queue-h, .queue-item { flex-wrap: wrap; }
+  .queue-h span { flex-basis: 100%; }
+  .queue-acts .linkish { padding: 6px 0; }
+  .reply .btn { min-height: 42px; }
+  .next-model { flex-wrap: wrap; justify-content: flex-start; }
+  .note, .hint, .cmd { white-space: normal; overflow-wrap: anywhere; }
+  /* 16px stops iOS Safari zooming the page when the control is focused. */
+  .reply ::ng-deep textarea, .q-other, .queue-item textarea, .next-model select { font-size: 16px; }
+}

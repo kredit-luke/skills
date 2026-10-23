@@ -24,7 +24,23 @@ import { parseLinkToken } from "./link-tokens.ts";
 
 export interface RemoteResponse { status: number; json: any; retryAfter: number | null }
 
+export interface RemoteRequestOptions {
+  /** Aborting it destroys the request in flight and drops any 503 retry still to come. */
+  signal?: AbortSignal;
+  /** How many times a 503 is retried (default 12, about a minute); 0 for none. */
+  retries503?: number;
+}
+
+/** What request() rejects with when its signal is aborted. */
+const abortError = () => Object.assign(new Error("The request was aborted."), { name: "AbortError", code: "ABORT_ERR" });
+
+type RemoteControlStatus = HostedLinkStatus["remoteControl"];
+/** What the Remote control client (remote-link.ts) last said about its link. */
+export type RemoteControlState = Omit<RemoteControlStatus, "on">;
+
 const RETRIES_503 = 12;
+/** No bytes at all (the hosted side pings every 25 s) for this long: the stream is dead. */
+const STREAM_IDLE_MS = 60_000;
 
 /**
  * The steps by hand, for when there's no openssl to do it here (Git Bash, macOS and Linux all have
@@ -90,6 +106,39 @@ export function modernPkcs12(pfx: Buffer, passphrase: string, env: NodeJS.Proces
   }
 }
 
+/**
+ * Server-sent events, fed in chunks as they arrive: `field: value` lines, a blank line ending a
+ * frame, `:` lines (pings) ignored. `id` carries over to later frames, as in EventSource.
+ */
+function sseParser(onFrame: (event: string, data: any, id: string | null) => void): (chunk: string) => void {
+  let buf = "", event = "", id: string | null = null;
+  let data: string[] = [];
+  return (chunk) => {
+    buf += chunk;
+    for (let i = buf.indexOf("\n"); i >= 0; i = buf.indexOf("\n")) {
+      const line = buf.slice(0, i).replace(/\r$/, "");
+      buf = buf.slice(i + 1);
+      if (line === "") {
+        if (data.length) {
+          let parsed: unknown, ok = true;
+          try { parsed = JSON.parse(data.join("\n")); } catch { ok = false; }
+          if (ok) onFrame(event || "message", parsed, id);
+        }
+        event = "";
+        data = [];
+        continue;
+      }
+      if (line.startsWith(":")) continue;
+      const c = line.indexOf(":");
+      const field = c < 0 ? line : line.slice(0, c);
+      const value = c < 0 ? "" : line.slice(c + 1).replace(/^ /, "");
+      if (field === "event") event = value;
+      else if (field === "data") data.push(value);
+      else if (field === "id") id = value;
+    }
+  };
+}
+
 const readText = (f: string) => { try { return fs.readFileSync(f, "utf-8").trim(); } catch { return null; } };
 const httpErr = (status: number, message: string) => Object.assign(new Error(message), { status });
 
@@ -98,8 +147,11 @@ export class HostedLink {
   private url: () => string | null;
   private env: NodeJS.ProcessEnv;
   private lastCheck: HostedLinkStatus["lastCheck"] = null;
+  private remoteState: RemoteControlState | null = null;
   /** Wait between 503 retries (a stopped hosted dashboard starting); shortened in tests. */
   retryMs = 5000;
+  /** How long stream() waits with no bytes before it gives the stream up; shortened in tests. */
+  streamIdleMs = STREAM_IDLE_MS;
 
   constructor(ledgerDir: string, hostedUrl: () => string | null, env: NodeJS.ProcessEnv = process.env) {
     this.dir = path.join(ledgerDir, "hosted-link");
@@ -127,10 +179,33 @@ export class HostedLink {
       certificate: { present: fs.existsSync(this.certFile()), fromEnv: !!this.env.DASHBOARD_CLIENT_CERT },
       token: { present: !!token, fromEnv: !!this.env.DASHBOARD_LINK_TOKEN, email: parseLinkToken(token)?.email || null },
       lastCheck: this.lastCheck,
+      remoteControl: this.remoteControlStatus(),
     };
   }
 
-  /** Keep a client certificate (.p12/.pfx) once it opens with `passphrase`. */
+  private remoteControlStatus(): RemoteControlStatus {
+    const on = this.remoteControl();
+    const live = this.remoteState;
+    if (!on) return { on, state: "off", message: null, lastSyncAt: live?.lastSyncAt ?? null };
+    return { on, state: live?.state ?? "connecting", message: live?.message ?? null, lastSyncAt: live?.lastSyncAt ?? null };
+  }
+
+  /** Whether Remote control is on for this computer (<ledger>/hosted-link/remote-control.json; off by default). */
+  remoteControl(): boolean {
+    try { return JSON.parse(fs.readFileSync(path.join(this.dir, "remote-control.json"), "utf-8")).on === true; } catch { return false; }
+  }
+
+  /** Turn Remote control on or off; the client's live state starts again. */
+  setRemoteControl(on: boolean) {
+    this.write("remote-control.json", JSON.stringify({ on: !!on }));
+    this.remoteState = null;
+  }
+
+  /** The Remote control client's live state, which status() reports while the switch is on. */
+  setRemoteState(state: RemoteControlState) {
+    this.remoteState = { ...state };
+  }
+
   /**
    * Keep a client certificate (.p12/.pfx) once it opens with `passphrase`. One in the legacy
    * format (RC2/3DES, what phones need and older tools still make) is re-packed as AES-256 with
@@ -162,10 +237,11 @@ export class HostedLink {
     this.lastCheck = null;
   }
 
-  /** Forget both credentials (those from the environment stay). */
+  /** Forget both credentials (those from the environment stay), and turn Remote control off. */
   forget() {
     fs.rmSync(this.dir, { recursive: true, force: true });
     this.lastCheck = null;
+    this.remoteState = null;
   }
 
   private tlsOptions(): { pfx: Buffer; passphrase: string } | null {
@@ -181,39 +257,128 @@ export class HostedLink {
 
   /**
    * A request to the hosted dashboard's `p` (an /api/remote/ path) with the link's
-   * credentials. A 503 (the hosted dashboard is starting) is retried for about a minute.
+   * credentials. A 503 (the hosted dashboard is starting) is retried for about a minute
+   * (`retries503`). Rejects when no answer comes (a network error, the timeout) and, the same
+   * way, with an AbortError when `signal` is aborted: the request in flight is destroyed and no
+   * 503 retry is made after it.
    */
-  async request(method: string, p: string, body?: unknown, timeoutMs = 30_000): Promise<RemoteResponse> {
+  async request(method: string, p: string, body?: unknown, timeoutMs = 30_000, opts: RemoteRequestOptions = {}): Promise<RemoteResponse> {
+    const { target, token } = this.target(p);
+    const { signal, retries503 = RETRIES_503 } = opts;
+    for (let attempt = 0; ; attempt++) {
+      const r = await this.once(method, target, token, body, timeoutMs, signal);
+      if (r.status !== 503 || attempt >= retries503) return r;
+      const ms = r.retryAfter ? Math.min(r.retryAfter * 1000, this.retryMs) : this.retryMs;
+      await new Promise<void>((ok, fail) => {
+        if (signal?.aborted) return fail(abortError());
+        const stop = () => { clearTimeout(timer); fail(abortError()); };
+        const timer = setTimeout(() => { signal?.removeEventListener("abort", stop); ok(); }, ms);
+        signal?.addEventListener("abort", stop, { once: true });
+      });
+    }
+  }
+
+  /**
+   * An SSE GET of the hosted dashboard's `p` (an /api/remote/ path) with the link's credentials
+   * and no request timeout: `onEvent(event, data, id)` for each frame (its `data` parsed as JSON;
+   * a frame whose data isn't JSON is skipped; comment lines are pings; an `onEvent` that throws
+   * is logged and the stream goes on). Resolves with the HTTP status once the stream ends, fails,
+   * is aborted through `signal`, or goes `streamIdleMs` without a byte, pings included. Status 0
+   * when nothing answered: then `error` says why when the request failed (a refused connection,
+   * a TLS failure), or when it couldn't even be made (a client certificate that doesn't open);
+   * none when aborted. A non-200 answer's body is read and dropped. Rejects (400) only when
+   * there's no hosted address or link token.
+   */
+  async stream(p: string, onEvent: (event: string, data: any, id: string | null) => void, signal?: AbortSignal): Promise<{ status: number; error?: string }> {
+    const { target, token } = this.target(p);
+    if (signal?.aborted) return { status: 0 };
+    return new Promise((resolve) => {
+      let status = 0, done = false, error: string | undefined;
+      let idle: NodeJS.Timeout | undefined;
+      let req: http.ClientRequest | undefined;
+      const finish = () => {
+        if (done) return;
+        done = true;
+        clearTimeout(idle);
+        signal?.removeEventListener("abort", finish);
+        req?.destroy();
+        resolve(status === 0 && error ? { status, error } : { status });
+      };
+      const touch = () => { clearTimeout(idle); idle = setTimeout(finish, this.streamIdleMs); };
+      try {
+        req = this.send("GET", target, token, { accept: "text/event-stream", "cache-control": "no-cache" }, null, (res) => {
+          status = res.statusCode || 0;
+          touch();
+          res.on("end", finish);
+          res.on("close", finish);
+          res.on("error", finish);
+          if (status !== 200) { res.on("data", touch); res.resume(); return; }
+          res.setEncoding("utf-8");
+          const parse = sseParser((event, data, id) => {
+            try { onEvent(event, data, id); }
+            catch (e) { console.error(`[remote] the link's ${event} event failed: ${(e as Error)?.message || e}`); }
+          });
+          res.on("data", (chunk: string) => { touch(); parse(chunk); });
+        });
+      } catch (e) {
+        // Thrown before any request went out (https.request reading a .p12 that doesn't open).
+        error = String((e as Error)?.message || e);
+        finish();
+        return;
+      }
+      req.on("error", (e) => { if (!signal?.aborted) error = e.message; finish(); });
+      signal?.addEventListener("abort", finish, { once: true });
+      touch();
+      req.end();
+    });
+  }
+
+  /** The hosted address for `p` and the link token, or a 400 saying which is missing. */
+  private target(p: string): { target: URL; token: string } {
     const base = this.url();
     if (!base) throw httpErr(400, "No hosted dashboard is set: add its address as \"url\" in .claude/dashboard/hosting.json.");
     const token = this.token();
     if (!token) throw httpErr(400, "This computer isn't linked yet: paste a link token from your hosted dashboard's Settings.");
-    for (let attempt = 0; ; attempt++) {
-      const r = await this.once(method, new URL(p, base), token, body, timeoutMs);
-      if (r.status !== 503 || attempt >= RETRIES_503) return r;
-      await new Promise((ok) => setTimeout(ok, r.retryAfter ? Math.min(r.retryAfter * 1000, this.retryMs) : this.retryMs));
-    }
+    return { target: new URL(p, base), token };
   }
 
-  private once(method: string, target: URL, token: string, body: unknown, timeoutMs: number): Promise<RemoteResponse> {
-    const data = body === undefined ? null : Buffer.from(JSON.stringify(body));
+  /** A request with the link token, and over https the client certificate and DASHBOARD_HOSTED_CA; `timeoutMs` null for none. */
+  private send(method: string, target: URL, token: string, headers: http.OutgoingHttpHeaders, timeoutMs: number | null, onResponse: (res: http.IncomingMessage) => void): http.ClientRequest {
     const secure = target.protocol === "https:";
     const lib = secure ? https : http;
-    const headers: http.OutgoingHttpHeaders = { authorization: `Bearer ${token}`, accept: "application/json", ...(data ? { "content-type": "application/json", "content-length": data.length } : {}) };
+    return lib.request(target, {
+      method,
+      headers: { authorization: `Bearer ${token}`, ...headers },
+      ...(timeoutMs === null ? {} : { timeout: timeoutMs }),
+      ...(secure ? { ...(this.tlsOptions() || {}), ...(this.serverCa() || {}) } : {}),
+    }, onResponse);
+  }
+
+  /** One request; aborted through `signal`, it's destroyed and rejects with an AbortError. */
+  private once(method: string, target: URL, token: string, body: unknown, timeoutMs: number, signal?: AbortSignal): Promise<RemoteResponse> {
+    const data = body === undefined ? null : Buffer.from(JSON.stringify(body));
+    const headers: http.OutgoingHttpHeaders = { accept: "application/json", ...(data ? { "content-type": "application/json", "content-length": data.length } : {}) };
+    if (signal?.aborted) return Promise.reject(abortError());
     return new Promise((resolve, reject) => {
-      const req = lib.request(target, { method, headers, timeout: timeoutMs, ...(secure ? { ...(this.tlsOptions() || {}), ...(this.serverCa() || {}) } : {}) }, (res) => {
+      let settled = false;
+      const onAbort = () => { fail(abortError()); req.destroy(); };
+      const settle = () => { settled = true; signal?.removeEventListener("abort", onAbort); };
+      const ok = (r: RemoteResponse) => { if (!settled) { settle(); resolve(r); } };
+      const fail = (e: unknown) => { if (!settled) { settle(); reject(e); } };
+      const req = this.send(method, target, token, headers, timeoutMs, (res) => {
         let text = "";
         res.setEncoding("utf-8");
         res.on("data", (d) => (text += d));
         res.on("end", () => {
           let json: any = null;
           try { json = JSON.parse(text); } catch { json = { error: text.slice(0, 300) }; }
-          resolve({ status: res.statusCode || 0, json, retryAfter: parseInt(String(res.headers["retry-after"] || ""), 10) || null });
+          ok({ status: res.statusCode || 0, json, retryAfter: parseInt(String(res.headers["retry-after"] || ""), 10) || null });
         });
-        res.on("error", reject);
+        res.on("error", fail);
       });
       req.on("timeout", () => req.destroy(Object.assign(new Error("The hosted dashboard took too long to answer."), { code: "ETIMEDOUT" })));
-      req.on("error", reject);
+      req.on("error", fail);
+      signal?.addEventListener("abort", onAbort, { once: true });
       if (data) req.write(data);
       req.end();
     });

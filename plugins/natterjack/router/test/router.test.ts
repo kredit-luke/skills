@@ -84,8 +84,13 @@ before(async () => {
   }, ["--port", String(P.dash)]);
 
   // A dashboard that streams: one event, then holds the response open.
+  // A Remote control link stream (/api/remote/link) gets a `hello` event saying what arrived.
   const stream = http.createServer((req, res) => {
     res.writeHead(200, { "Content-Type": "text/event-stream", "Cache-Control": "no-cache" });
+    if (req.url === "/api/remote/link") {
+      res.write(`event: hello\ndata: ${JSON.stringify({ path: req.url, authorization: req.headers.authorization, secret: req.headers["x-dashboard-proxy-secret"], email: req.headers["x-forwarded-email"] })}\n\n`);
+      return;
+    }
     res.write(`data: ${JSON.stringify({ secret: req.headers["x-dashboard-proxy-secret"], email: req.headers["x-forwarded-email"] })}\n\n`);
   });
   stream.listen(P.stream, "127.0.0.1");
@@ -248,6 +253,38 @@ test("router: a link token reaches its owner's /api/remote/ without a login; not
   const gone = await request(P.routerStatic, "/api/remote/hello", bearer(ana.token));
   assert.equal(gone.status, 401);
   assert.match(gone.text, /isn't valid here/);
+});
+
+test("router: a link token's /api/remote/link stream passes through as it comes, held open", async () => {
+  // Bo's dashboard is the streaming fake, which doesn't check the token (a real one does: above).
+  const bo = new LinkTokens(path.join(TMP, "bo-ledger")).create("bo@example.com", "Bo's laptop");
+  const got = await new Promise<{ status: number; type: string; first: string; endedBeforeFirst: boolean; stillOpen: boolean }>((resolve, reject) => {
+    const req = http.request({ host: "127.0.0.1", port: P.routerStatic, path: "/api/remote/link", headers: { host: HOST, authorization: `Bearer ${bo.token}` } }, (res) => {
+      let ended = false;
+      res.on("end", () => (ended = true));
+      res.on("close", () => (ended = true));
+      res.once("data", (d) => {
+        const endedBeforeFirst = ended;
+        // The pod holds the link open: it's still open a moment after the first event.
+        setTimeout(() => {
+          clearTimeout(giveUp);
+          resolve({ status: res.statusCode || 0, type: String(res.headers["content-type"]), first: String(d), endedBeforeFirst, stillOpen: !ended });
+          req.destroy();
+        }, 300);
+      });
+    });
+    req.on("error", (e) => { clearTimeout(giveUp); reject(e); });
+    const giveUp = setTimeout(() => reject(new Error("the hello event never arrived while the stream was open")), 3000);
+    req.end();
+  });
+  assert.equal(got.status, 200);
+  assert.equal(got.type, "text/event-stream");
+  assert.equal(got.endedBeforeFirst, false, "the event arrived before the response ended");
+  assert.equal(got.stillOpen, true, "the link stream stays open");
+  assert.match(got.first, /^event: hello\n/);
+  const hello = JSON.parse(got.first.match(/^data: (.*)$/m)![1]);
+  // The token passes through for the dashboard to check; the router adds its own secret and the token's email.
+  assert.deepEqual(hello, { path: "/api/remote/link", authorization: `Bearer ${bo.token}`, secret: BACK, email: "bo@example.com" });
 });
 
 test("router: a protocol-relative request target can't send the request (and secret) elsewhere", async () => {

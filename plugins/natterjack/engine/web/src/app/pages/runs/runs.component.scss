@@ -2,6 +2,16 @@
 @media (max-width: 1100px) { .runs-layout { grid-template-columns: 1fr; } }
 .runs-list { max-height: calc(100vh - 330px); overflow-y: auto; }
 .detail-col { min-width: 0; }
+.back { display: none; }
+/* Phones: the list or the open run, not both (the run would start more than a screen down), and the
+   list is part of the page rather than a box that scrolls inside it. 601–1100 px stays one column.
+   600px = SMALL_SCREEN in core/small-screen.ts. */
+@media (max-width: 600px) {
+  .runs-layout.has-run > .col { display: none; }
+  .runs-layout:not(.has-run) > .detail-col { display: none; }
+  .runs-list { max-height: none; overflow-y: visible; }
+  .back { display: inline-block; margin-bottom: 0.6rem; padding: 6px 0; font-size: 13.5px; color: var(--link); text-decoration: none; }
+}
 .panel-h select { padding: 4px 8px; font-size: 12.5px; }
 .panel-h .shown { font-size: 12px; color: var(--text-muted); }
 .chips { display: flex; flex-wrap: wrap; gap: 5px; padding: 8px 12px 10px; border-bottom: 1px solid var(--line-soft); align-items: center; }

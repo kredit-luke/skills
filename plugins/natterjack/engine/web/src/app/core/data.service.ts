@@ -1,8 +1,11 @@
 import { Injectable, computed, inject, signal } from '@angular/core';
 import type {
   AgentInfo, ConnectionsResponse, DeckResponse, DocSite, DocsResponse, KnowledgeArea, Inbox, Job, JobsResponse, MachineReport, ModelsView, Overview, PresetStats,
-  RunMeta, RunsResponse, Stack, StatusResponse,
+  RemoteLinkLive, RunMeta, RunsResponse, Stack, StatusResponse,
 } from '../../../../shared/api';
+import { linkLive, mergeRuns, stampLinks, upsertRunSplit } from '../runs/remote';
+import { needsAnswer as canAnswerHere } from '../shared/run-status';
+import type { LinkLive, StampedLink } from '../runs/remote';
 import { ApiService } from './api.service';
 import { ToastService } from './toast.service';
 
@@ -20,7 +23,25 @@ export class DataService {
 
   readonly deck = signal<DeckResponse | null>(null);
   readonly deckError = signal<string | null>(null);
+  /** The pod's own runs (Home, Ask, the sidebar's counts). */
   readonly runs = signal<RunMeta[]>([]);
+  /** Hosted only: runs mirrored from a linked computer (RunsResponse.remote, RunMeta.remote). */
+  readonly remoteRuns = signal<RunMeta[]>([]);
+  /** The Activity page and the run page: the pod's runs and the mirrored ones, latest activity first. */
+  readonly activityRuns = computed(() => mergeRuns(this.runs(), this.remoteRuns()));
+  /**
+   * Hosted only: every linked computer's live state (RunsResponse.remoteLinks, then the live
+   * `remote-links` topic), each stamped with when this browser received it. Read it through
+   * remoteLive(run), which applies the online rule.
+   */
+  readonly remoteLinks = signal<StampedLink[]>([]);
+  private readonly linksById = computed(() => new Map(this.remoteLinks().map((l) => [l.linkId, l])));
+  /**
+   * Ticks every 10 s while there are mirrored runs or linked computers (and not otherwise), so
+   * "offline" shows a minute after a computer's last online flag arrived without a reload.
+   * remoteLive reads it, so nothing pairs a stamp with the clock by hand.
+   */
+  readonly now = signal(Date.now());
   readonly stats = signal<Record<string, PresetStats>>({});
   readonly overview = signal<Overview | null>(null);
   readonly status = signal<StatusResponse | null>(null);
@@ -48,6 +69,10 @@ export class DataService {
 
   readonly runningCount = computed(() => this.runs().filter((r) => r.status === 'running').length);
   readonly waitingCount = computed(() => this.runs().filter((r) => r.status === 'waiting').length);
+  /** The Activity nav's waiting pill: the pod's runs and mirrored ones waiting for an answer (needsAnswer, the same rule as the "Needs answer" chip and Focus). */
+  readonly activityWaiting = computed(() =>
+    // Local runs count through waitingCount(): for them needsAnswer is just status === 'waiting'.
+    this.waitingCount() + this.remoteRuns().filter((r) => this.needsAnswer(r)).length);
   readonly runningJobs = computed(() => this.jobs().filter((j) => j.status === 'running').length);
   readonly runsToday = computed(() => {
     const d = new Date(); d.setHours(0, 0, 0, 0);
@@ -60,6 +85,7 @@ export class DataService {
   private es: EventSource | null = null;
   private polls: ReturnType<typeof setInterval>[] = [];
   private retry: ReturnType<typeof setTimeout> | null = null;
+  private clock: ReturnType<typeof setInterval> | null = null;
 
   start(): void {
     if (this.started) return;
@@ -87,6 +113,7 @@ export class DataService {
     on<JobsResponse>('jobs', (d) => this.applyJobs(d));
     on<RunsResponse>('runs', (d) => this.applyRuns(d));
     on<RunMeta>('run', (r) => this.upsertRun(r));
+    on<RemoteLinkLive[]>('remote-links', (d) => this.applyLinks(d));
     on<Overview>('overview', (d) => this.overview.set(d));
     on<StatusResponse>('status', (d) => this.status.set(d));
     on<DeckResponse>('deck', (d) => { this.deck.set(d); this.deckError.set(null); });
@@ -140,17 +167,65 @@ export class DataService {
     try { this.applyRuns(await this.api.get<RunsResponse>('/api/runs?limit=200')); } catch { /* server restarting */ }
   }
 
+  /**
+   * The pod's own runs and, on a hosted dashboard, those mirrored from a linked computer
+   * (RunsResponse.remote), and from GET /api/runs the links' live state (the `runs` topic has none:
+   * `remote-links` carries it).
+   */
   private applyRuns(d: RunsResponse): void {
-    this.runs.set(d.runs.map(normaliseRun));
+    const local = d.runs.map(normaliseRun);
+    const ids = new Set(local.map((r) => r.id));
+    const remote = (d.remote ?? []).filter((r) => !ids.has(r.id)).map(normaliseRun);
+    this.runs.set(local);
+    this.remoteRuns.set(remote);
     this.stats.set(d.stats);
+    if (d.remoteLinks) this.applyLinks(d.remoteLinks);
+    else this.syncClock();
   }
 
-  /** Put a fresher copy of one run into the list (from a stream `meta` or a POST response). */
+  /** Every linked computer's live state, stamped now (runs/remote.ts stampLinks): the whole list replaces the last. */
+  private applyLinks(links: RemoteLinkLive[]): void {
+    this.remoteLinks.set(stampLinks(links, Date.now()));
+    this.syncClock();
+  }
+
+  /** Put a fresher copy of one run into its list (from a stream `meta` or a POST response). */
   upsertRun(run: RunMeta): void {
     const r = normaliseRun(run);
-    const list = this.runs();
-    const i = list.findIndex((x) => x.id === r.id);
-    this.runs.set(i >= 0 ? list.map((x) => (x.id === r.id ? r : x)) : [r, ...list]);
+    const next = upsertRunSplit(this.runs(), this.remoteRuns(), r);
+    if (next.local !== this.runs()) this.runs.set(next.local);
+    if (next.remote !== this.remoteRuns()) {
+      this.remoteRuns.set(next.remote);
+      this.syncClock();
+    }
+  }
+
+  /**
+   * A mirrored run's computer right now: its link's entry in remoteLinks, online while the pod said
+   * so, Remote control is on there and that arrived within ONLINE_MS (runs/remote.ts linkLive).
+   * Reads `now` and `remoteLinks`, so a computed that calls it updates on both. Null for a run that
+   * isn't mirrored. Never reads the run's own `remote.online`, so a list row and the run page agree.
+   */
+  remoteLive(run: Pick<RunMeta, 'remote'> | null | undefined): LinkLive | null {
+    const r = run?.remote;
+    return r ? linkLive(this.linksById().get(r.linkId), r, this.now()) : null;
+  }
+
+  /**
+   * Waiting for an answer you can give here (shared/run-status.ts needsAnswer), with the link's
+   * live Remote control state (remoteLive's `enabled`, without the clock). Reads `remoteLinks`.
+   */
+  needsAnswer(run: Pick<RunMeta, 'status' | 'remote'>): boolean {
+    const r = run.remote;
+    return canAnswerHere(run, r ? this.linksById().get(r.linkId)?.enabled : undefined);
+  }
+
+  /** Run `now` every 10 s while there are mirrored runs or linked computers; stop it when there are none. */
+  private syncClock(): void {
+    this.now.set(Date.now());
+    const want = this.remoteRuns().length > 0 || this.remoteLinks().length > 0;
+    if (want && !this.clock) this.clock = setInterval(() => this.now.set(Date.now()), 10_000);
+    else if (!want && this.clock) { clearInterval(this.clock); this.clock = null; }
   }
 
   async loadOverview(): Promise<void> {
