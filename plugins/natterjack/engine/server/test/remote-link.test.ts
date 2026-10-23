@@ -107,6 +107,207 @@ test("hosted link: saves a real token only, sends it, retries a starting dashboa
   assert.throws(() => none.saveCertificate(Buffer.from("not a p12"), "pw"), /isn't a certificate file/);
 });
 
+/** A hosted side that answers every request with an SSE stream `script` writes. */
+async function sseServer(script: (res: http.ServerResponse, req: http.IncomingMessage) => void) {
+  const seen: http.IncomingHttpHeaders[] = [];
+  const s = await serve((req, res) => {
+    seen.push(req.headers);
+    script(res, req);
+  });
+  const { token } = new LinkTokens(tmp()).create(ANA, "Work laptop");
+  const link = new HostedLink(tmp(), () => s.url, {});
+  link.saveToken(token);
+  return { ...s, link, token, seen };
+}
+const sseHead = (res: http.ServerResponse) => res.writeHead(200, { "Content-Type": "text/event-stream", "Cache-Control": "no-cache" });
+const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
+test("stream: frames parsed across chunk splits, several to a chunk, CRLF and multi-line data; pings and bad JSON emit nothing", async () => {
+  const s = await sseServer(async (res) => {
+    sseHead(res);
+    res.write('event: hello\ndata: {"a":1}\n\n: ping\n\nevent: command\nid: 3\ndata: {"x":');
+    await wait(20);
+    res.write('2}\n\nevent: watch\r\ndata: {"runId":"r1",\r\ndata: "after":4}\r\n\r\nevent: bad\ndata: not json\n\n');
+    await wait(20);
+    res.write("event: unwatch\ndata: {\"runId\":\"r1\"}\n");
+    await wait(20);
+    res.end("\n");
+  });
+  try {
+    const got: [string, any, string | null][] = [];
+    const r = await s.link.stream("/api/remote/link", (e, d, id) => got.push([e, d, id]));
+    assert.equal(r.status, 200);
+    assert.deepEqual(got, [
+      ["hello", { a: 1 }, null],
+      ["command", { x: 2 }, "3"],
+      ["watch", { runId: "r1", after: 4 }, "3"],
+      ["unwatch", { runId: "r1" }, "3"],
+    ]);
+    assert.equal(s.seen[0].authorization, `Bearer ${s.token}`);
+    assert.equal(s.seen[0].accept, "text/event-stream");
+  } finally { s.close(); }
+});
+
+test("stream: a non-200 answer resolves with its status and no events", async () => {
+  const s = await sseServer((res) => {
+    res.writeHead(409, { "Content-Type": "application/json" });
+    res.end(JSON.stringify({ error: "Another computer is linked" }) + "\n\nevent: hello\ndata: {}\n\n");
+  });
+  try {
+    const got: string[] = [];
+    assert.deepEqual(await s.link.stream("/api/remote/link", (e) => got.push(e)), { status: 409 });
+    assert.deepEqual(got, []);
+  } finally { s.close(); }
+
+  // Nothing answering at all: status 0 and why, not a throw.
+  const gone = await serve(() => {});
+  gone.close();
+  const link = new HostedLink(tmp(), () => gone.url, { DASHBOARD_LINK_TOKEN: new LinkTokens(tmp()).create(ANA, "x").token });
+  const r = await link.stream("/api/remote/link", () => {});
+  assert.equal(r.status, 0);
+  assert.match(r.error || "", /ECONNREFUSED/);
+  await assert.rejects(new HostedLink(tmp(), () => gone.url, {}).stream("/api/remote/link", () => {}), /isn't linked yet/);
+});
+
+test("stream: a client certificate that doesn't open resolves status 0 with the reason, not a rejection", async () => {
+  const ledger = tmp();
+  const bad = path.join(ledger, "bad.p12");
+  fs.writeFileSync(bad, "not a p12");
+  const link = new HostedLink(ledger, () => "https://127.0.0.1:9", {
+    DASHBOARD_LINK_TOKEN: new LinkTokens(tmp()).create(ANA, "x").token,
+    DASHBOARD_CLIENT_CERT: bad, DASHBOARD_CLIENT_CERT_PASS: "pw",
+  });
+  const r = await link.stream("/api/remote/link", () => {});
+  assert.equal(r.status, 0);
+  assert.ok(r.error, "says why");
+  assert.doesNotMatch(r.error!, /ECONNREFUSED/, "it never got as far as connecting");
+});
+
+test("stream: an onEvent that throws is logged and the stream goes on", async () => {
+  const s = await sseServer((res) => {
+    sseHead(res);
+    res.end('event: hello\ndata: {"a":1}\n\nevent: watch\ndata: {"b":2}\n\n');
+  });
+  const logged: string[] = [];
+  const orig = console.error;
+  console.error = (...a: unknown[]) => { logged.push(a.join(" ")); };
+  try {
+    const got: string[] = [];
+    const r = await s.link.stream("/api/remote/link", (e) => { got.push(e); if (e === "hello") throw new Error("boom"); });
+    assert.equal(r.status, 200);
+    assert.deepEqual(got, ["hello", "watch"]);
+    assert.equal(logged.length, 1);
+    assert.match(logged[0], /hello.*boom/);
+  } finally { console.error = orig; s.close(); }
+});
+
+test("stream: aborting through the signal resolves and closes the connection", async () => {
+  let closed: Promise<void> | null = null;
+  const s = await sseServer((res, req) => {
+    closed = new Promise((r) => req.socket.on("close", () => r()));
+    sseHead(res);
+    res.write('event: hello\ndata: {"protocol":1}\n\n'); // then held open
+  });
+  try {
+    const ac = new AbortController();
+    const got: string[] = [];
+    const r = s.link.stream("/api/remote/link", (e) => { got.push(e); ac.abort(); }, ac.signal);
+    assert.deepEqual(await r, { status: 200 });
+    assert.deepEqual(got, ["hello"]);
+    await closed;
+    const before = new AbortController();
+    before.abort();
+    assert.deepEqual(await s.link.stream("/api/remote/link", () => {}, before.signal), { status: 0 }, "already aborted");
+    assert.equal(s.seen.length, 1, "and no request made");
+  } finally { s.close(); }
+});
+
+test("request: aborting through the signal stops the 503 retries and destroys a request in flight; retries503: 0 makes none", async () => {
+  // Answering 503: aborted between retries, it rejects at once and tries no more.
+  let n503 = 0;
+  const starting = await serve((_req, res) => { n503++; res.writeHead(503, { "Content-Type": "application/json" }); res.end(JSON.stringify({ error: "starting" })); });
+  const { token } = new LinkTokens(tmp()).create(ANA, "x");
+  try {
+    const link = new HostedLink(tmp(), () => starting.url, { DASHBOARD_LINK_TOKEN: token });
+    link.retryMs = 200;
+    const ac = new AbortController();
+    const r = link.request("POST", "/api/remote/sync", { a: 1 }, 5000, { signal: ac.signal });
+    while (n503 < 1) await wait(10);
+    const t0 = Date.now();
+    ac.abort();
+    await assert.rejects(r, (e: any) => e.name === "AbortError");
+    assert.ok(Date.now() - t0 < 100, `${Date.now() - t0} ms`);
+    await wait(500);
+    assert.equal(n503, 1, "no retry after the abort");
+    // Already aborted: no request at all.
+    await assert.rejects(link.request("POST", "/api/remote/sync", {}, 5000, { signal: ac.signal }), (e: any) => e.name === "AbortError");
+    assert.equal(n503, 1);
+    // No 503 retry asked for: the 503 itself comes back.
+    assert.equal((await link.request("POST", "/api/remote/ack", {}, 5000, { retries503: 0 })).status, 503);
+    assert.equal(n503, 2);
+  } finally { starting.close(); }
+
+  // Held with no answer: aborted, the request is destroyed (the server sees its connection close).
+  let closed: Promise<void> | null = null;
+  const held = await serve((req) => { closed = new Promise((ok) => req.socket.on("close", () => ok())); });
+  try {
+    const link = new HostedLink(tmp(), () => held.url, { DASHBOARD_LINK_TOKEN: token });
+    const ac = new AbortController();
+    const r = link.request("POST", "/api/remote/sync", { a: 1 }, 5000, { signal: ac.signal });
+    while (!closed) await wait(10);
+    ac.abort();
+    await assert.rejects(r, (e: any) => e.name === "AbortError");
+    await closed;
+  } finally { held.close(); }
+});
+
+test("stream: pings keep it alive; no bytes for the idle limit gives it up", async () => {
+  const s = await sseServer(async (res) => {
+    sseHead(res);
+    for (let i = 0; i < 4; i++) { res.write(": ping\n\n"); await wait(40); }
+    // then silent, held open (a laptop lid closed on the other end)
+  });
+  try {
+    s.link.streamIdleMs = 100;
+    const t0 = Date.now();
+    const got: string[] = [];
+    assert.deepEqual(await s.link.stream("/api/remote/link", (e) => got.push(e)), { status: 200 });
+    const took = Date.now() - t0;
+    assert.ok(took >= 200, `the pings kept it open past one idle limit (${took} ms)`);
+    assert.ok(took < 2000, `and silence ended it (${took} ms)`);
+    assert.deepEqual(got, []);
+  } finally { s.close(); }
+});
+
+test("remote control switch: off by default, persisted, forget turns it off; status shows the switch and the client's state", () => {
+  const ledger = tmp();
+  const link = new HostedLink(ledger, () => "https://hosted.example", {});
+  assert.equal(link.remoteControl(), false);
+  assert.deepEqual(link.status().remoteControl, { on: false, state: "off", message: null, lastSyncAt: null });
+
+  link.setRemoteControl(true);
+  assert.equal(link.remoteControl(), true);
+  assert.deepEqual(JSON.parse(fs.readFileSync(path.join(ledger, "hosted-link", "remote-control.json"), "utf-8")), { on: true });
+  assert.equal(new HostedLink(ledger, () => null, {}).remoteControl(), true, "read back by a new process");
+  assert.deepEqual(link.status().remoteControl, { on: true, state: "connecting", message: null, lastSyncAt: null });
+
+  link.setRemoteState({ state: "connected", message: null, lastSyncAt: "2026-10-23T10:00:00.000Z" });
+  assert.deepEqual(link.status().remoteControl, { on: true, state: "connected", message: null, lastSyncAt: "2026-10-23T10:00:00.000Z" });
+  link.setRemoteState({ state: "refused", message: "link token refused", lastSyncAt: "2026-10-23T10:00:00.000Z" });
+  assert.equal(link.status().remoteControl.state, "refused");
+  assert.equal(link.status().remoteControl.message, "link token refused");
+
+  link.setRemoteControl(false);
+  assert.equal(link.remoteControl(), false);
+  assert.deepEqual(link.status().remoteControl, { on: false, state: "off", message: null, lastSyncAt: null });
+
+  link.setRemoteControl(true);
+  link.forget();
+  assert.equal(link.remoteControl(), false);
+  assert.equal(fs.existsSync(path.join(ledger, "hosted-link", "remote-control.json")), false);
+  assert.equal(link.status().remoteControl.state, "off");
+});
+
 /** A CA, a server certificate for 127.0.0.1 and a client .p12 signed by the CA; null without openssl. */
 function makeCerts(dir: string): { ca: string; serverKey: string; serverCert: string; p12: Buffer; spaced: Buffer; legacy: Buffer | null } | null {
   const ssl = (...a: string[]) => execFileSync("openssl", a, { cwd: dir, stdio: ["ignore", "pipe", "pipe"] });

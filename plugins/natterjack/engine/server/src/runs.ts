@@ -28,6 +28,7 @@ import { execFile, type ChildProcess } from "node:child_process";
 import type { ServerResponse } from "node:http";
 import type { Attachment, Effort, PermissionMode, QueuedMessage, Question, RunEvent, RunMeta, RunWatch, WatchedPr } from "../../shared/api.ts";
 import { BETWEEN_TURNS } from "../../shared/send-to-hosted.ts";
+import { lastActivity } from "../../shared/remote.ts";
 import { agentHeadlessRules, agentOf, keepRunningRule, outputsRule, type ParseState, type TurnInput } from "./agents/index.ts";
 import { LOCAL_MODEL_RULE, isRoutedId } from "./models/routes.ts";
 import { expandSlash } from "./agents/skills.ts";
@@ -227,6 +228,8 @@ export class RunManager {
   onTurnStart: (meta: RunMeta) => void;
   /** A run's meta was written (any change the run list shows). */
   onChange: (meta: RunMeta) => void;
+  /** An event was appended to a run's events file; `index` is its place there (the SSE id). */
+  onEvent: (meta: RunMeta, ev: RunEvent, index: number) => void;
   queueGate: QueueGate;
   attachments: Attachments | null;
   /** The command for bin/dashboard.mjs when the dashboard can start this workspace's apps, else null (asked each turn). */
@@ -237,15 +240,20 @@ export class RunManager {
   private _paths = new Map<string, string>();
   /** list() parses every run file; kept until a write, a file added or removed, or LIST_TTL_MS. */
   private _listCache: { runs: RunMeta[]; names: string; at: number } | null = null;
-  /** Events in each streamed run's file: the SSE id of its next live event. */
+  /**
+   * Events in each run's file once this process has appended to it: the index of its next event,
+   * which is both its SSE id and onEvent's index. Counted from the file on the first append, then
+   * kept for the life of the process.
+   */
   private _counts = new Map<string, number>();
 
-  constructor(ledgerDir: string, { onFinish, onTurnStart, onChange, queueGate, attachments, appsCli, workspaceRoot }: { onFinish?: (meta: RunMeta) => void; onTurnStart?: (meta: RunMeta) => void; onChange?: (meta: RunMeta) => void; queueGate?: QueueGate; attachments?: Attachments; appsCli?: () => string | null; workspaceRoot?: string } = {}) {
+  constructor(ledgerDir: string, { onFinish, onTurnStart, onChange, onEvent, queueGate, attachments, appsCli, workspaceRoot }: { onFinish?: (meta: RunMeta) => void; onTurnStart?: (meta: RunMeta) => void; onChange?: (meta: RunMeta) => void; onEvent?: (meta: RunMeta, ev: RunEvent, index: number) => void; queueGate?: QueueGate; attachments?: Attachments; appsCli?: () => string | null; workspaceRoot?: string } = {}) {
     this.runsDir = path.join(ledgerDir, "runs");
     fs.mkdirSync(this.runsDir, { recursive: true });
     this.onFinish = onFinish || (() => {});
     this.onTurnStart = onTurnStart || (() => {});
     this.onChange = onChange || (() => {});
+    this.onEvent = onEvent || (() => {});
     this.queueGate = queueGate || (() => ({ blocker: null }));
     this.attachments = attachments || null;
     this.appsCli = appsCli || (() => null);
@@ -322,6 +330,11 @@ export class RunManager {
 
   events(id: string): RunEvent[] {
     if (!this.get(id)) return [];
+    return this._readEvents(id);
+  }
+
+  /** The events file as events() and subscribe() index it: blank and unreadable lines skipped. */
+  private _readEvents(id: string): RunEvent[] {
     try {
       return fs.readFileSync(this._eventsPath(id), "utf-8").split("\n").filter(Boolean)
         .map((l) => { try { return JSON.parse(l); } catch { return null; } })
@@ -712,14 +725,13 @@ export class RunManager {
     // Synchronous read + add: no event can be appended in between.
     const events = this.events(id);
     for (let i = Math.max(0, after + 1); i < events.length; i++) res.write(`id: ${i}\nevent: event\ndata: ${JSON.stringify(events[i])}\n\n`);
-    this._counts.set(id, events.length);
     res.write(`event: meta\ndata: ${JSON.stringify(meta)}\n\n`);
     let set = this.subscribers.get(id);
     if (!set) this.subscribers.set(id, (set = new Set()));
     set.add(res);
     res.on("close", () => {
       set.delete(res);
-      if (!set.size) { this.subscribers.delete(id); this._counts.delete(id); }
+      if (!set.size) this.subscribers.delete(id);
     });
     return true;
   }
@@ -734,12 +746,33 @@ export class RunManager {
   // ------------------------------------------------------------ one turn
 
   private _append(meta: RunMeta, ev: RunEvent) {
+    // The new event's index (its SSE id): the file is counted on this process's first append, as events() reads it.
+    let index = this._counts.get(meta.id);
+    if (index === undefined) {
+      index = this._readEvents(meta.id).length;
+      // A last line cut short (a crash mid-write) ends here, so this event starts a line of its own
+      // instead of joining it as one unreadable line, which would shift every later index.
+      if (!this._endsWithNewline(meta.id)) fs.appendFileSync(this._eventsPath(meta.id), "\n");
+    }
     fs.appendFileSync(this._eventsPath(meta.id), JSON.stringify(ev) + "\n");
-    // Counted only while someone is subscribed; subscribe() counts the file again.
-    const n = this._counts.get(meta.id);
-    if (n === undefined) return;
-    this._counts.set(meta.id, n + 1);
-    this._broadcast(meta.id, "event", ev, n);
+    this._counts.set(meta.id, index + 1);
+    try { this.onEvent(meta, ev, index); } catch {}
+    // subscribe() replays the file as events() reads it, so this index follows on from its last id.
+    this._broadcast(meta.id, "event", ev, index);
+  }
+
+  /** The events file is missing, empty, or its last byte is a newline. */
+  private _endsWithNewline(id: string): boolean {
+    let fd: number | undefined;
+    try {
+      fd = fs.openSync(this._eventsPath(id), "r");
+      const size = fs.fstatSync(fd).size;
+      if (!size) return true;
+      const last = Buffer.alloc(1);
+      fs.readSync(fd, last, 0, 1, size - 1);
+      return last[0] === 0x0a;
+    } catch { return true; }
+    finally { if (fd !== undefined) try { fs.closeSync(fd); } catch {} }
   }
 
   /** `files` are a reply's attachments (the first turn's are already in `prompt`). */
@@ -1135,11 +1168,8 @@ function blankWatch(now: Date, prs: WatchedPr[], everyMinutes: number, prompt: s
   };
 }
 
-/** When a run last did something: the newest of its start, current turn's start and last finish.
- *  A resumed turn keeps the previous turn's endedAt, so take the max rather than a fallback chain. ISO strings sort lexically. */
-export function lastActivity(r: Pick<RunMeta, "startedAt" | "turnStartedAt" | "endedAt">): string {
-  return [r.startedAt, r.turnStartedAt, r.endedAt].reduce<string>((max, t) => (t && t > max ? t : max), "");
-}
+/** When a run last did something (shared/remote.ts, where the mirror and the web read it too). */
+export { lastActivity };
 
 /** Update counters from one event. For a result, returns whether it failed. */
 function applyEvent(meta: RunMeta, ev: RunEvent, main: boolean, costBefore: number, roundTripsBefore: number): boolean | undefined {

@@ -82,6 +82,19 @@ describe('buildThread basics', () => {
     expect(sys[1]).toMatch(/^Resumed · opus · auto/);
   });
 
+  it("shows a mirrored run's omitted placeholders as short system lines, and still skips unknown types", () => {
+    const t = buildThread([
+      { type: 'human', text: 'go', turn: 1 },
+      { type: 'omitted', reason: 'too-large', bytes: 3_000_000 },
+      { type: 'omitted', reason: 'invalid', bytes: 12 },
+      { type: 'something-new', text: 'ignored' },
+      { type: 'result', subtype: 'success', result: 'done' },
+    ]);
+    expect(kinds(t.items)).toEqual(['human', 'sys', 'sys', 'result']);
+    const sys = t.items.filter((i) => i.kind === 'sys').map((i) => (i.kind === 'sys' ? i.text : ''));
+    expect(sys).toEqual(['Event too large to mirror. Open it on your computer.', "Event couldn't be mirrored."]);
+  });
+
   it('drops the assistant text the result repeats', () => {
     const t = buildThread([
       { type: 'assistant', parent_tool_use_id: null, message: { content: [{ type: 'text', text: 'All done.' }] } },

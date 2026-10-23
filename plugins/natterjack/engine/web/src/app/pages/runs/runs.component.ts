@@ -1,24 +1,28 @@
-import { ChangeDetectionStrategy, Component, computed, effect, inject, input, signal } from '@angular/core';
-import { ActivatedRoute, Router } from '@angular/router';
+import { ChangeDetectionStrategy, Component, computed, effect, inject, input, signal, untracked } from '@angular/core';
+import { ActivatedRoute, Router, RouterLink } from '@angular/router';
 import type { RunMeta } from '../../../../../shared/api';
 import { DataService } from '../../core/data.service';
+import { SmallScreenService } from '../../core/small-screen';
 import { dur, lsGet, lsSet, pct } from '../../core/util';
 import { PageHeaderComponent } from '../../shared/page-header.component';
 import { RunRowComponent } from '../../shared/run-row.component';
-import { toReview } from '../../shared/run-status';
+import { toReview, unrated } from '../../shared/run-status';
 import { RunDetailComponent } from './run-detail.component';
 
-/** Status chips. Selecting several shows runs matching any of them; none selected = all. */
-const CHIPS: { key: string; label: string; test: (r: RunMeta) => boolean }[] = [
+/**
+ * Status chips. Selecting several shows runs matching any of them; none selected = all. `data`
+ * gives "Needs answer" (and so Focus) the same rule as the Activity waiting pill.
+ */
+const CHIPS: { key: string; label: string; test: (r: RunMeta, data: DataService) => boolean }[] = [
   { key: 'flagged', label: 'Flagged', test: (r) => !!r.flagged },
   { key: 'running', label: 'Running', test: (r) => r.status === 'running' },
-  { key: 'waiting', label: 'Needs answer', test: (r) => r.status === 'waiting' },
+  { key: 'waiting', label: 'Needs answer', test: (r, data) => data.needsAnswer(r) },
   { key: 'review', label: 'To review', test: (r) => toReview(r) },
   { key: 'succeeded', label: 'Done', test: (r) => r.status === 'succeeded' },
   { key: 'failed', label: 'Failed', test: (r) => r.status === 'failed' || r.status === 'interrupted' },
   { key: 'cancelled', label: 'Cancelled', test: (r) => r.status === 'cancelled' },
   { key: 'handedOff', label: 'In terminal', test: (r) => r.status === 'handedOff' },
-  { key: 'unrated', label: 'Unrated', test: (r) => !['running', 'waiting'].includes(r.status) && !r.verdict },
+  { key: 'unrated', label: 'Unrated', test: (r) => unrated(r) },
 ];
 const FOCUS = ['flagged', 'running', 'waiting', 'review'];
 const KEYS = new Set(CHIPS.map((c) => c.key));
@@ -26,15 +30,16 @@ const parse = (s: string | null | undefined) => new Set(String(s || '').split(',
 
 @Component({
   selector: 'dash-runs',
-  imports: [PageHeaderComponent, RunRowComponent, RunDetailComponent],
+  imports: [RouterLink, PageHeaderComponent, RunRowComponent, RunDetailComponent],
   changeDetection: ChangeDetectionStrategy.OnPush,
   styleUrl: './runs.component.scss',
   template: `
     <dash-page-header eyebrow="Activity" title="Activity" sub="Everything the agents have worked on here: live transcript, subagents, questions it asks you, and replies." />
-    <div class="runs-layout">
+    <!-- Small screens show one thing at a time: the list, or the open run with "All runs" back to the list. -->
+    <div class="runs-layout" [class.has-run]="!!selectedId()">
       <div class="col">
         <div class="panel">
-          <div class="panel-h"><h2>History</h2><span class="shown">{{ list().length }} of {{ data.runs().length }}</span></div>
+          <div class="panel-h"><h2>History</h2><span class="shown">{{ list().length }} of {{ data.activityRuns().length }}</span></div>
           <div class="chips" role="group" aria-label="Filter runs by status">
             <button type="button" class="chip preset" [class.on]="isFocus()" (click)="setFilter(isFocus() ? [] : focus)" title="Only what needs you now: flagged, running, waiting for an answer, and finished in the last day but not rated yet">Focus</button>
             <button type="button" class="chip" [class.on]="!selected().size" (click)="setFilter([])">All</button>
@@ -65,6 +70,7 @@ const parse = (s: string | null | undefined) => new Set(String(s || '').split(',
       </div>
       <div class="detail-col">
         @if (selectedId(); as id) {
+          <a class="back" routerLink="/runs" queryParamsHandling="preserve">← All runs</a>
           <dash-run-detail [runId]="id" />
         } @else {
           <div class="panel"><div class="empty" style="padding:3rem">Select a run.</div></div>
@@ -77,6 +83,8 @@ export class RunsComponent {
   readonly data = inject(DataService);
   private readonly router = inject(Router);
   private readonly route = inject(ActivatedRoute);
+  /** Phone-sized: the list and the open run take turns (runs.component.scss). */
+  private readonly small = inject(SmallScreenService).matches;
   /** Route param (/runs/:id), bound via withComponentInputBinding. */
   readonly id = input<string | undefined>(undefined);
   readonly focus = FOCUS;
@@ -84,16 +92,16 @@ export class RunsComponent {
   readonly selected = signal<Set<string>>(parse(this.route.snapshot.queryParamMap.get('status') ?? lsGet('dash.runs.status', '')));
   readonly isFocus = computed(() => this.selected().size === FOCUS.length && FOCUS.every((k) => this.selected().has(k)));
   readonly chips = computed(() => CHIPS.map((c) => {
-    const count = this.data.runs().filter(c.test).length;
+    const count = this.data.activityRuns().filter((r) => c.test(r, this.data)).length;
     return { key: c.key, label: c.label, count, hot: (c.key === 'waiting' || c.key === 'running' || c.key === 'flagged') && count > 0 };
   }));
 
   readonly selectedId = computed(() => this.id() || null);
   readonly list = computed(() => {
     const sel = this.selected();
-    if (!sel.size) return this.data.runs();
+    if (!sel.size) return this.data.activityRuns();
     const tests = CHIPS.filter((c) => sel.has(c.key)).map((c) => c.test);
-    const hits = this.data.runs().filter((r) => tests.some((t) => t(r)));
+    const hits = this.data.activityRuns().filter((r) => tests.some((t) => t(r, this.data)));
     // In a filtered view, flagged runs come first (stable, so newest-first holds within each group).
     return [...hits.filter((r) => r.flagged), ...hits.filter((r) => !r.flagged)];
   });
@@ -108,11 +116,20 @@ export class RunsComponent {
   });
 
   constructor() {
-    // Open the newest run when none is selected (replaceUrl so Back still works).
+    // Open the newest run when none is selected (replaceUrl so Back still works). Not on a small
+    // screen: there the list and the run take turns, and /runs is the list ("All runs" goes back to it).
+    // Decided once, at the screen size the page loaded with: rotating or resizing doesn't change it,
+    // so turning a phone after "All runs" doesn't open a run again.
+    const autoOpen = !untracked(this.small);
     effect(() => {
-      if (this.id()) return;
-      const first = this.list()[0] || this.data.runs()[0];
+      if (this.id() || !autoOpen) return;
+      const first = this.list()[0] || this.data.activityRuns()[0];
       if (first) this.router.navigate(['/runs', first.id], { replaceUrl: true, queryParamsHandling: 'preserve' });
+    });
+    // Small screens: a run opened from further down the list starts at its top (the router doesn't
+    // restore scroll). Only on opening a run: "All runs" back to the list leaves the page where it is.
+    effect(() => {
+      if (this.selectedId() && untracked(this.small)) untracked(() => window.scrollTo({ top: 0 }));
     });
   }
 

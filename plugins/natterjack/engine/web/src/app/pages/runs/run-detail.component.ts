@@ -5,11 +5,13 @@ import { ApiService } from '../../core/api.service';
 import { DataService, normaliseRun } from '../../core/data.service';
 import { agentLabel, isRoutedModel } from '../../core/agents';
 import { MdPipe } from '../../core/md.pipe';
+import { SmallScreenService } from '../../core/small-screen';
 import { ToastService } from '../../core/toast.service';
 import { TrustedHtmlPipe } from '../../core/trusted-html.pipe';
 import { copyText, dur, relTime, tokens, usd } from '../../core/util';
 import { buildThread, countSteps, isOpenModel, openModelSummary, stripAgents, stripSummary, type AgentCard, type ThreadItem } from '../../runs/thread';
 import { RunEventCache, type RunEvents } from '../../runs/event-cache';
+import { cancelBlockedReason, pendingLabel, pendingText, remoteAllows, remoteBanner, withListRemote } from '../../runs/remote';
 import { runTicket } from '../../../../../shared/run-ticket';
 import { runWorkspace } from '../../../../../shared/run-workspace';
 import { BETWEEN_TURNS } from '../../../../../shared/send-to-hosted';
@@ -51,6 +53,7 @@ export class RunDetailComponent implements OnDestroy {
   readonly api = inject(ApiService);
   private readonly data = inject(DataService);
   private readonly toast = inject(ToastService);
+  private readonly small = inject(SmallScreenService).matches;
 
   readonly runId = input.required<string>();
   readonly run = signal<RunMeta | null>(null);
@@ -90,6 +93,36 @@ export class RunDetailComponent implements OnDestroy {
   private outputsKey = '';
 
   readonly active = computed(() => this.run()?.status === 'running');
+  /**
+   * What the page shows: the run, with a mirrored run's `enabled`, `pending` and `lastError` from
+   * DataService's copy (runs/remote.ts withListRemote), so the page and its list row agree. Online
+   * is the link's (`live`), never the run's own. A pod-local run is `run()`.
+   */
+  readonly current = computed(() => withListRemote(this.run(), this.data.remoteRuns()));
+  /** A mirrored run's computer right now (DataService.remoteLive); null for a pod-local run. */
+  readonly live = computed(() => this.data.remoteLive(this.current()));
+  /**
+   * Mirrored from a linked computer (hosted dashboard, RunMeta.remote): the pod has its meta and
+   * events only, so everything but the commands (reply, queue, cancel, plan mode) and the run and
+   * stream GETs is refused with 409 and hidden here. The issue lookup is the pod's own route, so it stays.
+   */
+  readonly mirrored = computed(() => !!this.run()?.remote);
+  /** The line above a mirrored run. Reads the shared clock, so "offline" shows without a reload. */
+  readonly banner = computed(() => {
+    const r = this.current();
+    return r?.remote ? remoteBanner(r, this.live(), this.data.now()) : null;
+  });
+  /** Why Cancel is disabled on a mirrored run (offline, Remote control off, a cancel already on its way); null when it isn't. */
+  readonly cancelBlocked = computed(() => {
+    const r = this.current();
+    return r?.remote ? cancelBlockedReason(r, this.live()) : null;
+  });
+  /** Small screens: the meta line shows status, model and updated; the rest is behind Details. */
+  readonly detailsOpen = signal(false);
+  readonly pendingText = pendingText;
+  readonly pendingLabel = pendingLabel;
+  /** A pending command being removed from the pod. */
+  readonly removing = signal(false);
   /** A PR watch waiting for its next check: the clock ticks so the countdown moves. */
   readonly watching = computed(() => { const r = this.run(); return r?.status === 'succeeded' && !!r.watch && !r.watch.endedAt; });
   readonly st = computed(() => (this.run() ? runStatus(this.run()!) : null));
@@ -140,6 +173,7 @@ export class RunDetailComponent implements OnDestroy {
     const t = this.tab();
     if (t === 'issue' && !this.issue()) return 'transcript';
     if (t === 'apps' && (!this.workWs() || this.api.hosted())) return 'transcript';
+    if (t === 'changes' && this.mirrored()) return 'transcript';
     return t;
   });
   readonly ranAs = computed(() => {
@@ -157,17 +191,30 @@ export class RunDetailComponent implements OnDestroy {
     else if (!this.es) this.connect(this.runId());
   };
 
+  /** Small screens: the page scrolls the transcript, so "at the bottom" is the page's (onScroll covers the box). */
+  private readonly onWindowScroll = (): void => {
+    if (!this.pageScrolls()) return;
+    const doc = document.documentElement;
+    this.stick = doc.scrollHeight - window.scrollY - window.innerHeight < STICK_PX;
+  };
+
   constructor() {
     document.addEventListener('visibilitychange', this.onVisibility);
+    window.addEventListener('scroll', this.onWindowScroll, { passive: true });
     effect(() => {
       const id = this.runId();
       untracked(() => this.load(id));
     });
-    // Follow new output only when the reader is already at the bottom.
+    // Follow new output only when the reader is already at the bottom: of the transcript box, or on
+    // small screens (no height cap) of the page, which then ends with the composer.
     effect(() => {
       this.thread();
       const el = this.box()?.nativeElement;
-      if (el && this.stick) setTimeout(() => { el.scrollTop = el.scrollHeight; });
+      if (!el || !this.stick) return;
+      setTimeout(() => {
+        if (getComputedStyle(el).overflowY !== 'visible') el.scrollTop = el.scrollHeight;
+        else if (!el.hidden) window.scrollTo({ top: document.documentElement.scrollHeight });
+      });
     });
     this.tick = setInterval(() => { if (this.active() || this.watching()) this.now.set(Date.now()); }, 1000);
     // A turn starting or ending (status, endedAt over the stream's meta): re-read the outputs folder,
@@ -178,7 +225,7 @@ export class RunDetailComponent implements OnDestroy {
       untracked(() => {
         const prev = this.outputsKey;
         this.outputsKey = key;
-        if (r && prev !== key && prev.startsWith(r.id + '|')) this.loadOutputs(r.id);
+        if (r && !r.remote && prev !== key && prev.startsWith(r.id + '|')) this.loadOutputs(r.id);
       });
     });
     effect(() => {
@@ -197,6 +244,7 @@ export class RunDetailComponent implements OnDestroy {
 
   ngOnDestroy(): void {
     document.removeEventListener('visibilitychange', this.onVisibility);
+    window.removeEventListener('scroll', this.onWindowScroll);
     this.closeStream();
     if (this.contTimer) clearInterval(this.contTimer);
     if (this.tick) clearInterval(this.tick);
@@ -206,10 +254,11 @@ export class RunDetailComponent implements OnDestroy {
 
   private async load(id: string): Promise<void> {
     this.stripOpen.set(false); // the detail component is reused across runs: each one starts collapsed
+    this.detailsOpen.set(false);
     const seq = ++this.loadSeq;
     this.closeStream();
     if (this.contTimer) { clearInterval(this.contTimer); this.contTimer = null; }
-    this.run.set(this.data.runs().find((r) => r.id === id) || null);
+    this.run.set(this.data.activityRuns().find((r) => r.id === id) || null);
     // A run opened recently shows its cached events now; its stream sends only the newer ones.
     this.cur = eventCache.open(id);
     this.events.set(this.cur.events);
@@ -219,7 +268,9 @@ export class RunDetailComponent implements OnDestroy {
     this.terminalCmd.set(null);
     this.titleDraft.set(null);
     this.expanded.set(new Set());
-    this.stick = true;
+    // A phone opens a run at its top (the page would otherwise jump to the composer); following starts
+    // once the reader scrolls to the bottom.
+    this.stick = !this.pageScrolls();
     this.streamOpened = false;
     this.eventsFetched = false;
     // The stream replays the saved events, so this GET only needs the run (a big run's events are megabytes).
@@ -233,6 +284,8 @@ export class RunDetailComponent implements OnDestroy {
       if (seq === this.loadSeq) this.loadError.set((e as Error).message);
       return;
     }
+    // A mirrored run has no terminal continuation on the pod (its /continuation is a 409).
+    if (this.run()?.remote) return;
     this.contTimer = setInterval(() => this.pollContinuation(id), 3000);
     this.pollContinuation(id);
   }
@@ -319,7 +372,7 @@ export class RunDetailComponent implements OnDestroy {
 
   private async pollContinuation(id: string): Promise<void> {
     const r = this.run();
-    if (!r || r.status === 'running' || this.runId() !== id || document.hidden) return;
+    if (!r || r.remote || r.status === 'running' || this.runId() !== id || document.hidden) return;
     try {
       const c = await this.api.get<Continuation>('/api/runs/' + encodeURIComponent(id) + '/continuation');
       if (this.runId() !== id) return;
@@ -331,6 +384,16 @@ export class RunDetailComponent implements OnDestroy {
   onScroll(): void {
     const el = this.box()?.nativeElement;
     if (el) this.stick = el.scrollHeight - el.scrollTop - el.clientHeight < STICK_PX;
+  }
+
+  /**
+   * The transcript isn't a scroll container (small screens: no height cap), so the page scrolls it.
+   * Before the transcript first renders, the same breakpoint as run-detail.component.scss.
+   */
+  private pageScrolls(): boolean {
+    const el = this.box()?.nativeElement;
+    if (el) return getComputedStyle(el).overflowY === 'visible';
+    return untracked(this.small);
   }
 
   // ------------------------------------------------------------ view helpers
@@ -357,7 +420,9 @@ export class RunDetailComponent implements OnDestroy {
       const el = find(card.id) || sibling;
       if (box && el) {
         this.stick = false;
-        box.scrollTop = el.getBoundingClientRect().top - box.getBoundingClientRect().top + box.scrollTop - 8;
+        // Small screens: the transcript has no height cap and the page scrolls instead.
+        if (getComputedStyle(box).overflowY === 'visible') el.scrollIntoView({ block: 'start' });
+        else box.scrollTop = el.getBoundingClientRect().top - box.getBoundingClientRect().top + box.scrollTop - 8;
         if (el !== find(card.id)) this.toast.show(`Pass ${card.pass} isn't in the transcript; showing pass ${this.thread().agents.find((a) => find(a.id) === el)?.pass ?? '?'} of the same agent.`);
       } else {
         this.toast.show(`${card.agentType || 'This agent'}'s steps aren't in this transcript.`);
@@ -399,8 +464,35 @@ export class RunDetailComponent implements OnDestroy {
   async cancel(): Promise<void> {
     const r = this.run();
     if (!r) return;
+    if (r.remote) {
+      // Mirrored: a 202 with the run, its cancel pending until the computer does it.
+      try {
+        const res = await this.api.post<{ run: RunMeta }>('/api/runs/' + r.id + '/cancel');
+        if (res.run) this.setRun(res.run);
+        this.toast.show('Cancel sent to your computer');
+      } catch (e) { this.toast.error((e as Error).message); }
+      return;
+    }
     try { await this.api.post('/api/runs/' + r.id + '/cancel'); this.toast.show(r.status === 'waiting' ? 'Cancelled' : 'Cancelling…'); this.data.loadRuns(); this.refreshMeta(); }
     catch (e) { this.toast.error((e as Error).message); }
+  }
+
+  /** On a mirrored run, a removable pending command: a queued message the computer hasn't been sent yet. */
+  canRemovePending(id: string): boolean {
+    const r = this.current();
+    return !!r?.remote && remoteAllows(r, 'queue-remove', this.live(), id);
+  }
+
+  /** Take a queued message back before it reaches the computer (the pod drops it; works offline). */
+  async removePending(id: string): Promise<void> {
+    const r = this.run();
+    if (!r || this.removing()) return;
+    this.removing.set(true);
+    try {
+      const res = await this.api.post<{ run: RunMeta }>('/api/runs/' + r.id + '/queue-remove', { id });
+      if (res.run) this.setRun(res.run);
+    } catch (e) { this.toast.error((e as Error).message); }
+    finally { this.removing.set(false); }
   }
 
   async terminal(): Promise<void> {

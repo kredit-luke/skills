@@ -45,7 +45,7 @@ interface NavItem { path: string; label: string; icon: string; exact?: boolean; 
               <span class="lbl-t">{{ n.label }}</span>
               @switch (n.path) {
                 @case ('/runs') {
-                  @if (data.waitingCount()) { <span class="pill amber" title="Waiting for your answer">{{ data.waitingCount() }}</span> }
+                  @if (data.activityWaiting()) { <span class="pill amber" title="Waiting for your answer">{{ data.activityWaiting() }}</span> }
                   @if (data.runningCount()) { <span class="pill" title="Running">{{ data.runningCount() }}</span> }
                 }
                 @case ('/apps') { @if (data.runningJobs()) { <span class="pill">{{ data.runningJobs() }}</span> } }

@@ -1,8 +1,10 @@
-import { ChangeDetectionStrategy, Component, OnInit, inject, signal } from '@angular/core';
+import { ChangeDetectionStrategy, Component, OnDestroy, OnInit, computed, inject, signal } from '@angular/core';
 import type { HostedLinkStatus, RemoteLink } from '../../../../../shared/api';
 import { ApiService } from '../../core/api.service';
+import { DataService } from '../../core/data.service';
 import { ToastService } from '../../core/toast.service';
 import { copyText, relTime } from '../../core/util';
+import { linkLive, linkState, remoteControlLine } from '../../runs/remote';
 
 /** A file's bytes as base64, for a JSON body. */
 async function base64Of(file: File): Promise<string> {
@@ -55,7 +57,9 @@ async function base64Of(file: File): Promise<string> {
             <div class="row">
               <div class="lbl">
                 <div class="t">{{ l.label }}</div>
-                <div class="h">Linked {{ rel(l.createdAt) }} · {{ l.lastUsedAt ? 'last used ' + rel(l.lastUsedAt) : 'not used yet' }}</div>
+                <!-- The state line below shows when it was last seen; "last used" only when it has never synced. -->
+                <div class="h">Linked {{ rel(l.createdAt) }}@if (!l.lastSeenAt) { · {{ l.lastUsedAt ? 'last used ' + rel(l.lastUsedAt) : 'not used yet' }}}</div>
+                @if (linkLine(l); as s) { <div class="h state" [class.on]="s.startsWith('Online')">{{ s }}</div> }
               </div>
               <div class="ctl"><button class="btn danger" type="button" [disabled]="busy()" (click)="revoke(l)">Remove</button></div>
             </div>
@@ -119,6 +123,20 @@ async function base64Of(file: File): Promise<string> {
               @if (st?.token?.present || st?.certificate?.present) { <button class="btn ghost" type="button" [disabled]="busy()" (click)="forget()">Forget</button> }
             </div>
           </div>
+          <div class="row">
+            <div class="lbl">
+              <div class="t">Remote control</div>
+              <div class="h">Lets you follow and reply to this computer's runs from your hosted dashboard. Your runs' records and recent events are copied there; the work stays on this computer.</div>
+              <!-- Not a live region: the line's "last sync 12 s ago" changes every 5 s and would be read out each time. -->
+              @if (st) { <div id="rc-state" class="h state" [class.on]="st.remoteControl.on && st.remoteControl.state === 'connected'" [class.bad]="st.remoteControl.on && (st.remoteControl.state === 'refused' || st.remoteControl.state === 'error')">{{ controlLine() }}</div> }
+              @if (rcBlocked()) { <div id="rc-hint" class="h">Add a link token first.</div> }
+            </div>
+            <div class="ctl">
+              <label class="chk">
+                <input type="checkbox" aria-label="Remote control" [attr.aria-describedby]="rcDescribedBy()" [checked]="!!st?.remoteControl?.on" [disabled]="busy() || rcBlocked()" (change)="setRemoteControl($any($event.target))"> On
+              </label>
+            </div>
+          </div>
         </div>
       </div>
     }
@@ -130,11 +148,15 @@ async function base64Of(file: File): Promise<string> {
     .token { font-family: var(--font-mono); font-size: 12px; word-break: break-all; max-width: 420px; user-select: all; }
     .steps { margin: 8px 0 0 0; padding: 0; list-style: none; display: flex; flex-direction: column; gap: 4px; font-size: 13px; color: var(--ink-soft); }
     .steps li.bad b { color: var(--bad, #b42318); }
+    .state { margin-top: 4px; }
+    .state.on { color: var(--green); }
+    .state.bad { color: var(--bad, #b42318); }
   `],
 })
-export class RemoteLinkComponent implements OnInit {
+export class RemoteLinkComponent implements OnInit, OnDestroy {
   readonly api = inject(ApiService);
   private readonly toast = inject(ToastService);
+  private readonly data = inject(DataService);
 
   readonly links = signal<RemoteLink[]>([]);
   readonly newToken = signal<string | null>(null);
@@ -144,16 +166,80 @@ export class RemoteLinkComponent implements OnInit {
   readonly pass = signal('');
   readonly busy = signal(false);
   readonly checking = signal(false);
+  /** Ticks with the refresh, so "last sync 12 s ago" and "Online" / "Last seen" stay current. */
+  private readonly now = signal(Date.now());
+  /** When this browser received `links` (Date.now()): their `online` is trusted for ONLINE_MS after (runs/remote.ts linkLive), when DataService has no live entry. */
+  private linksAt: number | null = null;
+  private timer: ReturnType<typeof setInterval> | null = null;
+  private destroyed = false;
+  /** Bumped when a change starts and ends, so a refresh that was in flight meanwhile drops its (older) result. */
+  private seq = 0;
+
+  /** Remote control needs a link token and the hosted dashboard's address. */
+  readonly canRemote = computed(() => {
+    const st = this.status();
+    return !!st?.token?.present && !!(st.url || this.api.boot()?.hostedUrl);
+  });
+  /** The switch is off and can't be turned on yet. */
+  readonly rcBlocked = computed(() => !this.status()?.remoteControl?.on && !this.canRemote());
+  readonly rcDescribedBy = computed(() => [this.status() ? 'rc-state' : '', this.rcBlocked() ? 'rc-hint' : ''].filter(Boolean).join(' ') || null);
+  readonly controlLine = computed(() => {
+    const st = this.status();
+    return st ? remoteControlLine(st.remoteControl, this.now()) : '';
+  });
 
   async ngOnInit(): Promise<void> {
     await this.api.loadBoot();
+    await this.refresh();
+    if (this.destroyed || !(this.api.hosted() || this.api.boot()?.hostedUrl)) return;
+    // Linked computers come and go, and Remote control's state changes on its own: refresh while the page is open.
+    this.timer = setInterval(() => { this.now.set(Date.now()); if (!document.hidden && !this.busy()) this.refresh(); }, 5000);
+  }
+
+  ngOnDestroy(): void {
+    this.destroyed = true;
+    if (this.timer) clearInterval(this.timer);
+  }
+
+  private async refresh(): Promise<void> {
+    const seq = this.seq;
     try {
-      if (this.api.hosted()) this.links.set((await this.api.get<{ links: RemoteLink[] }>('/api/remote-links')).links);
-      else if (this.api.boot()?.hostedUrl) this.status.set(await this.api.get<HostedLinkStatus>('/api/hosted-link'));
+      if (this.api.hosted()) {
+        const links = (await this.api.get<{ links: RemoteLink[] }>('/api/remote-links')).links;
+        if (seq === this.seq) this.setLinks(links);
+      } else if (this.api.boot()?.hostedUrl) {
+        const st = await this.api.get<HostedLinkStatus>('/api/hosted-link');
+        if (seq === this.seq) this.status.set(st);
+      }
     } catch { /* the rest of Settings still works */ }
+    this.now.set(Date.now());
+  }
+
+  private setLinks(links: RemoteLink[]): void {
+    this.linksAt = Date.now();
+    this.links.set(links);
   }
 
   rel(at: string): string { return relTime(at); }
+
+  /**
+   * A link's state line, by the run list's rule (runs/remote.ts linkLive): DataService's live entry
+   * for it (the `remote-links` topic, stamped on arrival), else this page's last fetch, stamped when
+   * it arrived. Reads both clocks, so it moves with the list's and this page's refresh.
+   */
+  linkLine(l: RemoteLink): string {
+    const now = Math.max(this.now(), this.data.now());
+    const entry = this.data.remoteLinks().find((x) => x.linkId === l.id)
+      ?? (this.linksAt == null ? null : { label: l.label, online: !!l.online, enabled: l.enabled !== false, lastSeenAt: l.lastSeenAt ?? null, receivedAt: this.linksAt });
+    return linkState(linkLive(entry, { enabled: l.enabled !== false, label: l.label }, now), now);
+  }
+
+  async setRemoteControl(box: HTMLInputElement): Promise<void> {
+    const on = box.checked;
+    await this.local({ action: 'remote-control', on }, on ? 'Remote control on' : 'Remote control off');
+    // A refused change leaves the binding's value as it was, so put the box back by hand.
+    box.checked = !!this.status()?.remoteControl?.on;
+  }
 
   async copy(t: string): Promise<void> {
     if (await copyText(t)) this.toast.show('Copied the link token'); else this.toast.error("Couldn't copy: select it and copy it yourself.");
@@ -161,23 +247,24 @@ export class RemoteLinkComponent implements OnInit {
 
   private async run<T>(fn: () => Promise<T>): Promise<T | null> {
     this.busy.set(true);
+    this.seq++;
     try { return await fn(); }
     catch (e) { this.toast.error((e as Error).message); return null; }
-    finally { this.busy.set(false); }
+    finally { this.seq++; this.busy.set(false); }
   }
 
   async create(): Promise<void> {
     const r = await this.run(() => this.api.post<{ token: string; links: RemoteLink[] }>('/api/remote-links', { action: 'create', label: this.label() }));
     if (!r) return;
     this.newToken.set(r.token);
-    this.links.set(r.links);
+    this.setLinks(r.links);
     this.label.set('');
   }
 
   async revoke(l: RemoteLink): Promise<void> {
     if (!confirm(`Remove "${l.label}"? Its token stops working at once.`)) return;
     const r = await this.run(() => this.api.post<{ links: RemoteLink[] }>('/api/remote-links', { action: 'revoke', id: l.id }));
-    if (r) { this.links.set(r.links); this.toast.show('Removed'); }
+    if (r) { this.setLinks(r.links); this.toast.show('Removed'); }
   }
 
   private async local(body: Record<string, unknown>, done?: string): Promise<void> {

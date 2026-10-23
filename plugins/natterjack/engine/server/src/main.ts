@@ -81,6 +81,10 @@ import { Attachments, MAX_ATTACHMENT_BYTES, contentTypeOf, outputHeaders } from 
 import { HandoffTokens, MAX_BUNDLE_BYTES, buildBundle, importBundle } from "./handoff.ts";
 import { LinkTokens, REMOTE_PREFIX, linkTokenOf } from "./link-tokens.ts";
 import { HostedLink } from "./hosted-link.ts";
+import { RemoteMirror } from "./remote-mirror.ts";
+import { RemoteLinkClient, remoteExecutor, type QueueAction } from "./remote-link.ts";
+import type { RemoteCommandKind } from "../../shared/api.ts";
+import { MACHINE_ID_RE, ONLINE_MS, REMOTE_COMMAND_KINDS, REMOTE_PROTOCOL, SYNC_MAX_BYTES } from "../../shared/remote.ts";
 import { Explore, MAX_SAVE_BYTES, rawType, resolveSafe } from "./explore.ts";
 import { forgetAtlassianKeys } from "./atlassian.ts";
 import { Atlassian } from "./atlassian-auth.ts";
@@ -428,10 +432,36 @@ usageHistory.refresh().catch(() => {}); // first scan in the background so the U
 const runChanges = new RunChanges(path.join(LEDGER_DIR, "runs"));
 const attachments = new Attachments(LEDGER_DIR);
 const linkTokens = new LinkTokens(LEDGER_DIR);
+/**
+ * Remote control, hosted side: the runs a linked computer mirrors here (remote-mirror.ts). Null on
+ * a computer, so every use is behind HOSTED. A change goes out as the run (unless a pod-local run
+ * has its id: that one wins); the runs list refreshes only when the set of mirrored runs changes,
+ * else on its own cadence. Each link's online state goes on its own topic, `remote-links`, so a
+ * heartbeat doesn't resend the runs list. DASHBOARD_TEST_REMOTE_ONLINE_MS is for tests only (hosted.test.ts):
+ * it shortens how long a computer counts as online after its last sync (ONLINE_MS, a minute).
+ * Only a shorter positive value is taken: anything else (unset, junk, longer) leaves ONLINE_MS,
+ * so it can never lengthen the one-computer-at-a-time hold.
+ */
+const testOnlineEnv = Number(process.env.DASHBOARD_TEST_REMOTE_ONLINE_MS);
+const testOnlineMs = testOnlineEnv > 0 && testOnlineEnv < ONLINE_MS ? testOnlineEnv : undefined;
+const mirror = HOSTED
+  ? new RemoteMirror(LEDGER_DIR, Date.now, {
+      onChange: (meta) => { if (!runs.get(meta.id)) live.publish("run", meta); },
+      onListChange: () => { live.refresh("runs"); },
+      onLinksChange: () => { live.refresh("remote-links"); },
+      onlineMs: testOnlineMs,
+    })
+  : null;
 /** Remote control, local side: the link to this person's hosted dashboard (hosted-link.ts). */
 const hostedLink = new HostedLink(LEDGER_DIR, () => hostedUrl());
 const live = new LiveHub(); // topics registered once every service exists, below
 const meetingTickets = new MeetingTickets(LEDGER_DIR);
+/**
+ * Remote control, local side: mirrors runs up the link and runs the commands typed on the hosted
+ * dashboard (remote-link.ts). Declared before RunManager, whose constructor already calls
+ * onChange; made just after it. Null when hosted.
+ */
+let remoteLink: RemoteLinkClient | null = null;
 const runs = new RunManager(LEDGER_DIR, {
   onFinish: (meta) => {
     usage.invalidate(); live.refresh("runs"); live.refresh("overview"); // a finished turn moves the meters and preset stats
@@ -439,7 +469,11 @@ const runs = new RunManager(LEDGER_DIR, {
     if (meta.trigger === "meetings" && meta.meetingId) recordRunTickets(meetingTickets, meta, attachments.output(meta.id, TICKETS_FILE));
   },
   onTurnStart: (meta) => { runChanges.snapshot({ ...meta }).catch(() => {}); },
-  onChange: (meta) => live.publish("run", meta), // one run, not the whole list: a live run saves every 1.5 s
+  onChange: (meta) => {
+    live.publish("run", meta); // one run, not the whole list: a live run saves every 1.5 s
+    remoteLink?.noteChange(meta);
+  },
+  onEvent: (meta, ev, index) => remoteLink?.noteEvent(meta, ev, index),
   // Messages queued during a turn go out under the same limits as a reply you send.
   queueGate: (meta) => ({ blocker: launchBlocker(meta.agent, meta.model), budgetUsd: deck.config().limits.runBudget ? undefined : null }),
   attachments,
@@ -447,6 +481,23 @@ const runs = new RunManager(LEDGER_DIR, {
   appsCli: () => (HOSTED || !appsConfig().configured ? null : APPS_CLI),
   workspaceRoot: MAIN_WORKSPACE_PATH,
 });
+if (!HOSTED) {
+  remoteLink = new RemoteLinkClient({
+    link: hostedLink,
+    runs,
+    // A command typed on the hosted dashboard goes through the same run actions as the run page's
+    // POSTs (their limits included); refused while the switch is off.
+    execute: remoteExecutor({
+      has: (id) => !!runs.get(id),
+      reply: replyToRun,
+      queue: queueAction,
+      planMode: setRunPlanMode,
+      cancel: cancelRun,
+    }, () => hostedLink.remoteControl()),
+    ledgerDir: LEDGER_DIR,
+  });
+  remoteLink.start(); // only when the switch is on
+}
 const deck = new Deck(MAIN_WORKSPACE_PATH, path.join(LEDGER_DIR, "settings.json"));
 
 /** Delete done runs' attachments after keepAttachmentsDays (at start, then every 6 hours). */
@@ -770,6 +821,59 @@ function launchBlocker(agentId: unknown = "claude", model?: string | null): stri
   return null;
 }
 
+// ------------------------------------------------------------------ run actions
+// What a run's POST routes do (reply, the queue, plan mode, cancel), shared by those routes and the
+// commands Remote control brings from the hosted dashboard (remoteExecutor), so both go through the
+// same limits. Each throws httpError with a user-facing message.
+
+/** POST /api/runs/:id/reply: a new turn. { model } moves the rest of the run on to another model. */
+function replyToRun(id: string, body: Record<string, any>): RunMeta {
+  const run = runs.get(id);
+  // { model }: the rest of the run on another model (Claude runs: e.g. from a local model on to Opus).
+  const switchTo = body.model !== undefined && body.model !== run?.model ? String(body.model || "") : undefined;
+  if (switchTo !== undefined) {
+    if (agentOf(run?.agent).id !== "claude") throw httpError(400, "Only Claude runs can change model.");
+    if (!(isRoutedId(switchTo) ? routeOf(switchTo) : MODEL_RE.test(switchTo))) throw httpError(400, `Unknown model ${switchTo}`);
+  }
+  const model = switchTo ?? run?.model;
+  const blocker = launchBlocker(run?.agent, model);
+  if (blocker) throw httpError(429, blocker);
+  const ids = attachments.check(body.attachments);
+  // The cap follows the current setting: off drops it, even for a run started with one; none on a local or team model.
+  // A run started on one has no cap stored, so moving it on to Claude gets the default cap a new run would.
+  const budgetUsd = !deck.config().limits.runBudget || isRoutedId(model) ? null : run?.budgetUsd ? undefined : DEFAULT_RUN_BUDGET_USD;
+  // On to a Claude model: the effort asked for, else the deck's default (an open model takes none).
+  const effort = switchTo === undefined ? undefined : isRoutedId(switchTo) ? null : (EFFORTS.includes(body.effort) ? body.effort : deck.config().defaults.effort) || null;
+  return runs.reply(id, body.text, { budgetUsd, attachments: ids, ...(switchTo !== undefined ? { model: switchTo, effort } : {}) });
+}
+
+const QUEUE_ACTIONS = new Set<string>(["queue", "queue-auto", "queue-edit", "queue-remove", "queue-send"]);
+
+/** POST /api/runs/:id/<action>: queued messages, typed while Claude works and sent when the turn ends (shared/api.ts RunMeta.queued). */
+function queueAction(id: string, action: QueueAction, body: Record<string, any>): RunMeta {
+  switch (action) {
+    case "queue": return runs.enqueue(id, body.text, typeof body.autoSend === "boolean" ? body.autoSend : undefined);
+    case "queue-auto": return runs.setQueueAutoSend(id, !!body.on);
+    case "queue-edit": return runs.editQueued(id, String(body.id || ""), body.text);
+    case "queue-remove": return runs.removeQueued(id, String(body.id || ""));
+    case "queue-send": {
+      const blocker = launchBlocker(runs.get(id)?.agent, runs.get(id)?.model);
+      if (blocker) throw httpError(429, blocker);
+      return runs.sendQueued(id, { budgetUsd: deck.config().limits.runBudget ? undefined : null });
+    }
+  }
+}
+
+/** POST /api/runs/:id/plan-mode. */
+function setRunPlanMode(id: string, on: boolean): RunMeta {
+  return runs.setPlanMode(id, on);
+}
+
+/** POST /api/runs/:id/cancel: stop the turn, or dismiss a waiting question. */
+function cancelRun(id: string): void {
+  if (!runs.cancel(id)) throw httpError(409, "Nothing to cancel: the run isn't working or waiting.");
+}
+
 /** Validate a launch request and start the run. Throws with a user-facing message. */
 function launchRun(body: LaunchRequest, trigger: string): RunMeta {
   const presetAgent = body.presetId ? (deck.preset(body.presetId) as any)?.agent : undefined;
@@ -844,14 +948,14 @@ function settingsView() {
   };
 }
 
-/** A raw request body (an upload), up to `max` bytes. */
-function readRawBody(req: http.IncomingMessage, max: number): Promise<Buffer> {
+/** A raw request body (an upload), up to `max` bytes; past that a 413 with `tooLarge` (by default, about files). */
+function readRawBody(req: http.IncomingMessage, max: number, tooLarge = `Files can be up to ${Math.round(max / 1024 / 1024)} MB.`): Promise<Buffer> {
   return new Promise((resolve, reject) => {
     const chunks: Buffer[] = [];
     let n = 0;
     req.on("data", (d: Buffer) => {
       n += d.length;
-      if (n > max) { reject(httpError(413, `Files can be up to ${Math.round(max / 1024 / 1024)} MB.`)); req.destroy(); return; }
+      if (n > max) { reject(httpError(413, tooLarge)); req.destroy(); return; }
       chunks.push(d);
     });
     req.on("end", () => resolve(Buffer.concat(chunks)));
@@ -886,12 +990,15 @@ watcher.start();
 // /api/events: the shared data each page used to poll. Cadences are the old poll
 // intervals; runs and jobs also refresh the moment they change (hooks above).
 live.register("jobs", jobsView, 10000);
-live.register("runs", () => ({ runs: runs.list().slice(0, 200), stats: runs.stats() }), 15000);
+live.register("runs", () => ({ runs: runs.list().slice(0, 200), stats: runs.stats(), ...remoteRuns(200) }), 15000);
 live.register("overview", getOverview, 5000);
 live.register("status", sharedStatus, 5000);
 live.register("deck", deckView, 30000);
 live.register("inbox", () => inbox.get(false), 60000);
 live.register("models", () => models.view(), 30000);
+// Hosted: each linked computer's online state (RemoteLinkLive[]). Refreshed by every sync, open and
+// revoke; the cadence catches a link going quiet (offline after ONLINE_MS with nothing to refresh it).
+if (mirror) live.register("remote-links", () => mirror.remoteLinks(), 15000);
 
 let sessionsCache = { at: 0, data: [] as any[] };
 function listSessions(): Promise<any[]> {
@@ -1304,6 +1411,25 @@ function serveExploreRaw(res: http.ServerResponse, pathname: string) {
 }
 
 /**
+ * Hosted: the newest `limit` mirrored runs for RunsResponse.remote, less any id this pod has (a
+ * pod-local run wins). Their `remote` leaves out `online` and `lastSeenAt`, which change on every
+ * heartbeat: those are per link (RunsResponse.remoteLinks, the `remote-links` topic).
+ */
+function remoteRuns(limit: number): { remote?: RunMeta[] } {
+  if (!mirror) return {};
+  const remote = mirror.list().filter((r) => !runs.get(r.id)).slice(0, limit).map((r) => {
+    const { online: _o, lastSeenAt: _s, ...rest } = r.remote!;
+    return { ...r, remote: rest };
+  });
+  return { remote };
+}
+
+/** Hosted: the mirrored run with this id, when no pod-local run has it. */
+function mirroredRun(id: string): RunMeta | null {
+  return mirror && !runs.get(id) ? mirror.get(id) : null;
+}
+
+/**
  * /api/remote/*: the person's own computer, linked with a token from Settings (link-tokens.ts).
  * Hosted only. The router sent it here on the token's email; the token must be one of this
  * dashboard's and its owner's, or nothing is served. No dashboard token (x-dash-token): that's
@@ -1314,7 +1440,33 @@ async function handleRemote(req: http.IncomingMessage, res: http.ServerResponse,
   const link = linkTokens.verify(linkTokenOf(req.url, req.headers), HOSTED.owner || user);
   if (!link) return sendError(res, 401, "This computer's link token isn't valid here (it was removed, or is for someone else's dashboard). Make a new one in your hosted dashboard's Settings.");
   if (req.method === "GET" && p === "/api/remote/hello") {
-    return sendJson(res, { ok: true, owner: HOSTED.owner || user, link, version: VERSION });
+    return sendJson(res, { ok: true, owner: HOSTED.owner || user, link, version: VERSION, protocol: REMOTE_PROTOCOL });
+  }
+  // Everything below is keyed on the verified `link`, never on what the computer says it is.
+  if (req.method === "GET" && p === "/api/remote/link") {
+    // Which computer it is (shared/remote.ts MACHINE_ID_RE, else ignored): only decides a takeover.
+    const asked = new URL(req.url || "", "http://x").searchParams.get("machine");
+    const machine = asked && MACHINE_ID_RE.test(asked) ? asked : null;
+    // A refusal (401/409) is a plain error, before any header; then headers and openLink, no await between.
+    mirror!.assertCanOpen(link, machine);
+    res.writeHead(200, { "Content-Type": "text/event-stream", "Cache-Control": "no-cache", Connection: "keep-alive", "X-Accel-Buffering": "no" });
+    mirror!.openLink(link, res, machine); // pings, and lets go of the stream on close, itself
+    return;
+  }
+  if (req.method === "POST" && p === "/api/remote/sync") {
+    // Its own reader: a sync can be far bigger than readJsonBody's 64 KB (413 past SYNC_MAX_BYTES).
+    // A declared oversize body gets a real 413, unread. One over the limit without a Content-Length
+    // (or with a wrong one) still hits readRawBody's limit, which can reset the connection instead.
+    const tooLarge = "A sync can be up to 2 MB.";
+    const declared = Number(req.headers["content-length"]);
+    if (Number.isFinite(declared) && declared > SYNC_MAX_BYTES) throw httpError(413, tooLarge);
+    let body: any;
+    try { body = JSON.parse((await readRawBody(req, SYNC_MAX_BYTES, tooLarge)).toString("utf-8")); } catch (e) { throw e.status ? e : httpError(400, "Invalid JSON"); }
+    return sendJson(res, mirror!.sync(link, body));
+  }
+  if (req.method === "POST" && p === "/api/remote/ack") {
+    mirror!.ack(link, await readJsonBody(req));
+    return sendJson(res, { ok: true });
   }
   return sendError(res, 404, "Not found");
 }
@@ -1334,21 +1486,45 @@ async function handleApi(req: http.IncomingMessage, res: http.ServerResponse, ur
   if (p === "/api/remote-links") {
     // This dashboard's linked computers (link-tokens.ts): hosted only; made and removed by its owner in the browser.
     if (!HOSTED) return sendError(res, 400, "Computers link to a hosted dashboard. Open your hosted dashboard's Settings to link this one.");
-    if (req.method === "GET") return sendJson(res, { links: linkTokens.list() });
+    const withStatus = () => linkTokens.list().map((l) => ({ ...l, ...mirror!.linkStatus(l.id) }));
+    if (req.method === "GET") return sendJson(res, { links: withStatus() });
     if (req.method !== "POST") return sendError(res, 405, "Method not allowed");
     if (req.headers["x-dash-token"] !== DASH_TOKEN) return sendError(res, 403, "Missing or stale token; reload the page.");
     const body = await readJsonBody(req);
     if (body.action === "create") {
       const made = linkTokens.create(HOSTED.owner || user || "", String(body.label || ""));
-      return sendJson(res, { ...made, links: linkTokens.list() }, 201);
+      return sendJson(res, { ...made, links: withStatus() }, 201);
     }
     if (body.action === "revoke") {
-      return linkTokens.revoke(String(body.id || "")) ? sendJson(res, { links: linkTokens.list() }) : sendError(res, 404, "No such linked computer.");
+      const id = String(body.id || "");
+      if (!linkTokens.revoke(id)) return sendError(res, 404, "No such linked computer.");
+      // Its open link closes and its mirrored runs go.
+      mirror!.drop(id);
+      live.refresh("runs");
+      return sendJson(res, { links: withStatus() });
     }
     return sendError(res, 400, "Unknown action");
   }
 
   if (req.method === "GET") {
+    // A run mirrored from the linked computer (hosted): its page and stream; nothing that needs its files.
+    const mirroredMatch = runMatch ?? p.match(RUN_FILE_ROUTE) ?? p.match(RUN_OUTPUT_ROUTE);
+    const mirrored = mirroredMatch ? mirroredRun(mirroredMatch[1]) : null;
+    if (mirrored) {
+      if (runMatch && !runMatch[2]) {
+        return sendJson(res, { run: mirrored, events: q("events") === "0" ? [] : mirror!.events(mirrored.id), outputs: [] });
+      }
+      if (runMatch && runMatch[2] === "stream") {
+        res.writeHead(200, { "Content-Type": "text/event-stream", "Cache-Control": "no-cache", Connection: "keep-alive", "X-Accel-Buffering": "no" });
+        res.write(": connected\n\n");
+        const lastId = parseInt(String(req.headers["last-event-id"] ?? q("after") ?? ""), 10);
+        mirror!.subscribe(mirrored.id, res, Number.isFinite(lastId) ? lastId : -1);
+        const ping = setInterval(() => res.write(": ping\n\n"), 25000);
+        res.on("close", () => clearInterval(ping));
+        return;
+      }
+      return sendError(res, 409, "This run is on your computer.");
+    }
     const importMatch = p.match(/^\/api\/runs\/import\/([0-9a-f]+)$/);
     if (importMatch) {
       const job = IMPORT_JOB_ID.test(importMatch[1]) ? importJobs.get(importMatch[1]) : null;
@@ -1537,7 +1713,7 @@ async function handleApi(req: http.IncomingMessage, res: http.ServerResponse, ur
     if (p === "/api/deck") return sendJson(res, deckView());
     if (p === "/api/runs") {
       const limit = Math.min(parseInt(q("limit") || "", 10) || 100, 500);
-      return sendJson(res, { runs: runs.list().slice(0, limit), stats: runs.stats() });
+      return sendJson(res, { runs: runs.list().slice(0, limit), stats: runs.stats(), ...remoteRuns(limit), ...(mirror ? { remoteLinks: mirror.remoteLinks() } : {}) });
     }
     if (runMatch && !runMatch[2]) {
       const meta = runs.get(runMatch[1]);
@@ -1610,6 +1786,15 @@ async function handleApi(req: http.IncomingMessage, res: http.ServerResponse, ur
   }
   const body = await readJsonBody(req);
 
+  // A run mirrored from the linked computer (hosted): a command held for it, under the computer's
+  // limits rather than this pod's (so before launchBlocker and attachments.check).
+  const mirroredPost = runMatch ? mirroredRun(runMatch[1]) : null;
+  if (mirroredPost) {
+    const kind = runMatch![2] as RemoteCommandKind | undefined;
+    if (!kind || !REMOTE_COMMAND_KINDS.has(kind)) return sendError(res, 409, "Open it on your computer.");
+    return sendJson(res, { run: mirror!.command(mirroredPost.id, kind, body) }, 202);
+  }
+
   if (HOSTED && (LOCAL_ONLY_POSTS.has(p) || (runMatch && ["terminal", "send-to-hosted", "send-cancel"].includes(runMatch[2])) || (body.mode === "terminal" && /^\/api\/(issues|linear)\/implement$/.test(p)))) {
     return sendError(res, 400, NOT_HOSTED);
   }
@@ -1650,16 +1835,32 @@ async function handleApi(req: http.IncomingMessage, res: http.ServerResponse, ur
   }
   if (p === "/api/hosted-link") {
     // Remote control, local side: { action: "certificate", pfx (base64), passphrase } | { action: "token", token }
-    // | { action: "check" } → the steps | { action: "forget" }. Each answers with the link's status.
+    // | { action: "check" } → the steps | { action: "forget" } | { action: "remote-control", on }.
+    // Each answers with the link's status.
     if (HOSTED) return sendError(res, 400, NOT_HOSTED);
     let notice: string | null = null;
     if (body.action === "certificate") {
       const { converted } = hostedLink.saveCertificate(Buffer.from(String(body.pfx || ""), "base64"), String(body.passphrase ?? ""));
       if (converted) notice = "Certificate added. It used the older encryption phones need, so a modern copy was made for this dashboard; keep the original for your phone.";
+      if (hostedLink.remoteControl()) remoteLink?.restart(); // new credentials: a refused link tries again
     }
-    else if (body.action === "token") hostedLink.saveToken(String(body.token || ""));
+    else if (body.action === "token") {
+      hostedLink.saveToken(String(body.token || ""));
+      if (hostedLink.remoteControl()) remoteLink?.restart();
+    }
     else if (body.action === "check") await hostedLink.check();
-    else if (body.action === "forget") hostedLink.forget();
+    else if (body.action === "forget") {
+      // With Remote control on, a last sync tells the hosted dashboard first (best effort, bounded).
+      if (hostedLink.remoteControl()) await remoteLink?.turnOff();
+      else remoteLink?.stop();
+      hostedLink.forget();
+    }
+    else if (body.action === "remote-control") {
+      if (typeof body.on !== "boolean") return sendError(res, 400, "Expected on: true or false.");
+      hostedLink.setRemoteControl(body.on);
+      if (body.on) remoteLink?.restart();
+      else await remoteLink?.turnOff(); // a last sync tells the hosted dashboard (best effort, bounded)
+    }
     else return sendError(res, 400, "Unknown action");
     return sendJson(res, { ...hostedLink.status(), notice });
   }
@@ -1669,36 +1870,10 @@ async function handleApi(req: http.IncomingMessage, res: http.ServerResponse, ur
     if (stores.length) await Promise.race([Promise.allSettled(stores.map((k) => knowledge.sync(k, true))), new Promise((r) => setTimeout(r, 10_000))]);
     return sendJson(res, { run: launchRun(body, "manual") }, 201);
   }
-  if (runMatch && runMatch[2] === "reply") {
-    const run = runs.get(runMatch[1]);
-    // { model }: the rest of the run on another model (Claude runs: e.g. from a local model on to Opus).
-    const switchTo = body.model !== undefined && body.model !== run?.model ? String(body.model || "") : undefined;
-    if (switchTo !== undefined) {
-      if (agentOf(run?.agent).id !== "claude") return sendError(res, 400, "Only Claude runs can change model.");
-      if (!(isRoutedId(switchTo) ? routeOf(switchTo) : MODEL_RE.test(switchTo))) return sendError(res, 400, `Unknown model ${switchTo}`);
-    }
-    const model = switchTo ?? run?.model;
-    const blocker = launchBlocker(run?.agent, model);
-    if (blocker) return sendError(res, 429, blocker);
-    const ids = attachments.check(body.attachments);
-    // The cap follows the current setting: off drops it, even for a run started with one; none on a local or team model.
-    // A run started on one has no cap stored, so moving it on to Claude gets the default cap a new run would.
-    const budgetUsd = !deck.config().limits.runBudget || isRoutedId(model) ? null : run?.budgetUsd ? undefined : DEFAULT_RUN_BUDGET_USD;
-    // On to a Claude model: the effort asked for, else the deck's default (an open model takes none).
-    const effort = switchTo === undefined ? undefined : isRoutedId(switchTo) ? null : (EFFORTS.includes(body.effort) ? body.effort : deck.config().defaults.effort) || null;
-    return sendJson(res, { run: runs.reply(runMatch[1], body.text, { budgetUsd, attachments: ids, ...(switchTo !== undefined ? { model: switchTo, effort } : {}) }) });
-  }
+  // reply, the queue, plan mode and cancel go through the run actions Remote control's commands use too.
+  if (runMatch && runMatch[2] === "reply") return sendJson(res, { run: replyToRun(runMatch[1], body) });
   if (runMatch && runMatch[2] === "rename") return sendJson(res, { run: runs.rename(runMatch[1], body.label) });
-  // Queued messages: typed while Claude works, sent when the turn ends (shared/api.ts RunMeta.queued).
-  if (runMatch && runMatch[2] === "queue") return sendJson(res, { run: runs.enqueue(runMatch[1], body.text, typeof body.autoSend === "boolean" ? body.autoSend : undefined) });
-  if (runMatch && runMatch[2] === "queue-auto") return sendJson(res, { run: runs.setQueueAutoSend(runMatch[1], !!body.on) });
-  if (runMatch && runMatch[2] === "queue-edit") return sendJson(res, { run: runs.editQueued(runMatch[1], String(body.id || ""), body.text) });
-  if (runMatch && runMatch[2] === "queue-remove") return sendJson(res, { run: runs.removeQueued(runMatch[1], String(body.id || "")) });
-  if (runMatch && runMatch[2] === "queue-send") {
-    const blocker = launchBlocker(runs.get(runMatch[1])?.agent, runs.get(runMatch[1])?.model);
-    if (blocker) return sendError(res, 429, blocker);
-    return sendJson(res, { run: runs.sendQueued(runMatch[1], { budgetUsd: deck.config().limits.runBudget ? undefined : null }) });
-  }
+  if (runMatch && QUEUE_ACTIONS.has(runMatch[2])) return sendJson(res, { run: queueAction(runMatch[1], runMatch[2] as QueueAction, body) });
   if (p === "/api/settings") {
     try {
       deck.savePersonal({ limits: body.limits, defaults: body.defaults, issues: body.issues }, { models: (m) => MODEL_RE.test(m) || isRoutedId(m), efforts: EFFORTS });
@@ -1709,9 +1884,10 @@ async function handleApi(req: http.IncomingMessage, res: http.ServerResponse, ur
     if (body.limits && "keepAttachmentsDays" in body.limits) cleanupAttachments();
     return sendJson(res, settingsView());
   }
-  if (runMatch && runMatch[2] === "plan-mode") return sendJson(res, { run: runs.setPlanMode(runMatch[1], !!body.on) });
+  if (runMatch && runMatch[2] === "plan-mode") return sendJson(res, { run: setRunPlanMode(runMatch[1], !!body.on) });
   if (runMatch && runMatch[2] === "cancel") {
-    return runs.cancel(runMatch[1]) ? sendJson(res, { ok: true }) : sendError(res, 409, "Nothing to cancel: the run isn't working or waiting.");
+    cancelRun(runMatch[1]);
+    return sendJson(res, { ok: true });
   }
   if (runMatch && runMatch[2] === "verdict") {
     const verdict = body.verdict === "good" || body.verdict === "needed-fix" ? body.verdict : null;
@@ -2171,6 +2347,7 @@ for (const r of HOSTED ? [] : workspaceConfig().dashboard.legacyRedirects) {
 for (const sig of ["SIGINT", "SIGTERM"] as const) {
   process.on(sig, () => {
     for (const id of runs.live.keys()) runs.cancel(id);
+    remoteLink?.stop();
     claudeLogin.cancel();
     githubLogin.cancel();
     mcpLogin.cancelAll();

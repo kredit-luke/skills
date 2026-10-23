@@ -109,5 +109,60 @@
 .agent-h .model.routed { color: var(--accent); border-color: currentColor; }
 .chip .open-mk { color: var(--accent); font-size: 9px; margin-left: 3px; }
 
+/* A mirrored run (hosted dashboard, RunMeta.remote): where it runs, what waits for the computer, its last error. */
+.remote-banner.off { font-size: 0.72rem; color: var(--text-muted); background: var(--surface-2); border: 1px solid var(--border); border-radius: 7px; padding: 0.45rem 0.6rem; }
+.remote-banner .seen { margin-left: 0.35em; opacity: 0.8; }
+.remote-pending { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 3px; font-size: 0.72rem; }
+.remote-pending li { display: flex; align-items: baseline; gap: 8px; min-width: 0; }
+.remote-pending .pt { color: var(--text); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
+.remote-pending .pl { color: var(--text-faint); font-family: var(--mono); font-size: 0.66rem; flex: none; }
+.remote-pending .linkish { font-size: 0.68rem; flex: none; }
+.remote-err { font-size: 0.72rem; color: var(--red); opacity: 0.85; overflow-wrap: anywhere; }
+.cancel-why { font-size: 0.72rem; color: var(--text-muted); }
+
 .watch-note { display: flex; align-items: center; gap: 0.6rem; justify-content: space-between; }
 .watch-note .watch-err { display: block; color: var(--red); margin-top: 0.2rem; }
+
+/* The Details toggle exists for small screens only: wider, the whole meta line shows. */
+.kv-more { display: none; }
+
+/* Small screens (a phone-sized browser on the hosted dashboard): one column that the page
+   scrolls, rather than boxes that scroll inside a short viewport. Desktop rules above are unchanged.
+   600px = SMALL_SCREEN in core/small-screen.ts. */
+@media (max-width: 600px) {
+  /* The composer's children sit directly in .detail here (run-composer.component.scss): paper behind
+     them as on desktop, with the header kept white (its corners rounded like the panel's) and a rule
+     where the feed ends. */
+  .detail { background: var(--paper); }
+  .detail-h { padding: 0.8rem 0.8rem; background: var(--surface); border-radius: calc(var(--radius) - 1px) calc(var(--radius) - 1px) 0 0; }
+  .transcript, .tab-body, dash-run-changes { border-bottom: 1px solid var(--border); }
+  dash-run-changes { display: block; } /* an inline host would draw the rule under its last line box only */
+  .detail-h .name { font-size: 17px; overflow-wrap: anywhere; min-width: 0; }
+  .rename { min-width: 0; flex-basis: 100%; }
+
+  .kv:not(.open) .x { display: none; }
+  .kv-more { display: inline; order: 1; font-size: 0.72rem; padding: 6px 0; }
+
+  .detail-h .prompt-box { max-height: 4.5rem; }
+
+  .actions .btn { flex: 1 1 auto; justify-content: center; min-height: 40px; }
+  .actions .grow { display: none; }
+  .actions .rate { flex: 1 1 100%; flex-wrap: wrap; }
+  .cancel-why { flex-basis: 100%; }
+
+  .remote-pending li { flex-wrap: wrap; gap: 2px 8px; }
+  .remote-pending .pt { white-space: normal; overflow-wrap: anywhere; flex-basis: 100%; }
+  .remote-pending .linkish { padding: 6px 0; }
+  .watch-note { flex-wrap: wrap; }
+
+  .agent-strip, .agent-strip.open { flex-wrap: nowrap; overflow-x: auto; overflow-y: hidden; max-height: none; padding: 8px 0.8rem; -webkit-overflow-scrolling: touch; }
+  .agent-strip > * { flex: none; white-space: nowrap; }
+
+  .ticket-strip { padding: 10px 0.8rem 4px; }
+  .tabs { padding: 0 8px; }
+  .transcript, .tab-body { max-height: none; overflow-y: visible; min-height: 160px; }
+  .transcript { padding: 0.8rem 0.8rem 1rem; }
+  .issue-tab { padding: 0.8rem; }
+  .agent-h { flex-wrap: wrap; }
+  .agent-h .grow { display: none; }
+}

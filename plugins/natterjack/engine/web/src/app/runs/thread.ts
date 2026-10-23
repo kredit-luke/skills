@@ -304,6 +304,11 @@ export function buildThread(events: readonly any[], opts: BuildOptions = {}): Th
       main.push({ kind: 'divider', key: key('div'), text: String(ev.text || '') });
       continue;
     }
+    if (ev.type === 'omitted') {
+      // A mirrored run's placeholder (shared/remote.ts OmittedEvent): the computer couldn't send that event.
+      main.push({ kind: 'sys', key: key('omitted'), text: ev.reason === 'too-large' ? 'Event too large to mirror. Open it on your computer.' : "Event couldn't be mirrored." });
+      continue;
+    }
 
     if (ev.type === 'assistant' && ev.message && Array.isArray(ev.message.content)) {
       const parent: string | null = currentPass(ev.parent_tool_use_id || null);

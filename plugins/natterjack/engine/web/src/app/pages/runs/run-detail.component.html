@@ -1,8 +1,12 @@
 @if (loadError()) {
   <div class="panel"><div class="empty" style="padding:3rem">{{ loadError() }}</div></div>
-} @else if (run(); as r) {
+} @else if (current(); as r) {
   <div class="panel detail">
     <div class="detail-h">
+      @if (banner(); as b) {
+        <!-- The live region is the state only: "Last seen 3m ago" changes every minute and would be re-announced. -->
+        <div class="remote-banner" [class]="'remote-banner ' + (b.tone === 'info' ? 'info-note' : b.tone === 'warn' ? 'warn-note' : 'off')"><span role="status">{{ b.text }}</span>@if (b.seen) { <span class="seen">{{ b.seen }}</span> }</div>
+      }
       <div class="ttl">
         <span class="status-badge" [class]="'status-badge ' + st()!.cls">@if (r.status === 'running') { <span class="spin"></span> }{{ st()!.label }}</span>
         @if (titleDraft() !== null) {
@@ -12,32 +16,58 @@
             <button class="btn primary sm" type="submit" [disabled]="renaming() || !titleDraft()!.trim()">Save</button>
             <button class="btn ghost sm" type="button" (click)="cancelTitle()">Cancel</button>
           </form>
+        } @else if (r.remote) {
+          <span class="name">{{ r.label }}</span>
         } @else {
           <span class="name" (dblclick)="editTitle()">{{ r.label }}</span>
           <button class="btn ghost sm rename-btn" type="button" (click)="editTitle()" title="Rename this run" aria-label="Rename this run">✎</button>
         }
       </div>
-      <div class="kv">
-        <span>workspace <b>{{ r.workspace }}</b>@if (workWs(); as w) { @if (w.slug !== r.workspace) { <b title="Started here, then worked in this worktree"> → {{ w.slug }}</b> } }</span>
-        <span>agent <b>{{ agentName(r.agent) }}</b></span>
+      <!-- Small screens show model and updated (status is the badge above); the "x" ones are behind Details.
+           The toggle comes before what it reveals (reading order); CSS order shows it at the end of the line. -->
+      <div class="kv" id="run-kv" [class.open]="detailsOpen()">
+        <button class="linkish kv-more" type="button" aria-controls="run-kv" [attr.aria-expanded]="detailsOpen()" (click)="detailsOpen.set(!detailsOpen())">Details <span aria-hidden="true">{{ detailsOpen() ? '▴' : '▾' }}</span></button>
+        <span class="x">workspace <b>{{ r.workspace }}</b>@if (workWs(); as w) { @if (w.slug !== r.workspace) { <b title="Started here, then worked in this worktree"> → {{ w.slug }}</b> } }</span>
+        <span class="x">agent <b>{{ agentName(r.agent) }}</b></span>
         <span title="The model the CLI actually used">model <b>{{ r.resolvedModel || r.model || 'default' }}</b></span>
-        @if (!r.agent || r.agent === 'claude') { <span title="Where this run's model runs">backend <b>{{ backendOf(r.model) }}</b></span> }
-        @if (!isRouted(r.model)) { <span>effort <b>{{ r.effort || 'default' }}</b></span> }
-        <span>permissions <b>{{ r.planMode ? 'plan (read-only)' : r.permissionMode }}</b>
+        @if (!r.agent || r.agent === 'claude') { <span class="x" title="Where this run's model runs">backend <b>{{ backendOf(r.model) }}</b></span> }
+        @if (!isRouted(r.model)) { <span class="x">effort <b>{{ r.effort || 'default' }}</b></span> }
+        <!-- Not behind Details when the CLI ran in a different mode than requested. -->
+        <span [class.x]="!ranAs()">permissions <b>{{ r.planMode ? 'plan (read-only)' : r.permissionMode }}</b>
           @if (ranAs()) { <span class="tag bad" title="The CLI ran this session in a different mode than requested">ran as {{ ranAs() }}</span> }</span>
-        <span>turns <b>{{ r.turns || 1 }}</b></span>
-        <span>time <b>{{ elapsed() }}</b></span>
+        <span class="x">turns <b>{{ r.turns || 1 }}</b></span>
+        <span class="x">time <b>{{ elapsed() }}</b></span>
         @if ((!r.agent || r.agent === 'claude') && (!isRouted(r.model) || r.costUsd)) {
-          <span title="What this run would cost on the API. On a subscription it draws on your usage limits instead; the cap only stops runaways.">api-equiv <b>{{ money(r.costUsd) }}{{ r.budgetUsd ? ' / ' + money(r.budgetUsd) + ' cap' : '' }}</b></span>
+          <span class="x" title="What this run would cost on the API. On a subscription it draws on your usage limits instead; the cap only stops runaways.">api-equiv <b>{{ money(r.costUsd) }}{{ r.budgetUsd ? ' / ' + money(r.budgetUsd) + ' cap' : '' }}</b></span>
         }
-        <span>tools <b>{{ r.toolCalls || 0 }}</b></span>
-        <span>started <b>{{ started(r) }}</b></span>
+        <span class="x">tools <b>{{ r.toolCalls || 0 }}</b></span>
+        <span class="x">started <b>{{ started(r) }}</b></span>
         <span>updated <b>{{ rel(r.endedAt || r.turnStartedAt || r.startedAt) }}</b></span>
-        @if (r.trigger && r.trigger !== 'manual') { <span>trigger <b>{{ r.trigger }}</b></span> }
+        @if (r.trigger && r.trigger !== 'manual') { <span class="x">trigger <b>{{ r.trigger }}</b></span> }
       </div>
       <div class="prompt-box">{{ r.prompt }}</div>
-      <dash-attachment-list [runId]="r.id" [files]="r.attachments || []" [removed]="!!r.attachmentsRemovedAt" />
-      <dash-run-outputs [runId]="r.id" [files]="outputs()" />
+      @if (!r.remote) {
+        <dash-attachment-list [runId]="r.id" [files]="r.attachments || []" [removed]="!!r.attachmentsRemovedAt" />
+        <dash-run-outputs [runId]="r.id" [files]="outputs()" />
+      }
+      @if (r.remote; as rm) {
+        @if (rm.pending.length) {
+          <ul class="remote-pending" aria-label="Waiting to reach your computer">
+            @for (p of rm.pending; track p.id) {
+              <li>
+                <span class="pt">{{ pendingText(p) }}</span>
+                <span class="pl">{{ pendingLabel(p) }}</span>
+                @if (p.kind === 'queue' && !p.delivered) {
+                  <button class="linkish" type="button" [disabled]="removing() || !canRemovePending(p.id)" [attr.aria-label]="'Remove queued message: ' + pendingText(p)" (click)="removePending(p.id)">Remove</button>
+                }
+              </li>
+            }
+          </ul>
+        }
+        @if (rm.lastError; as le) {
+          <div class="remote-err">Your computer couldn't do that: {{ le.message }}</div>
+        }
+      }
       @if (r.warning) {
         <div class="warn-note"><b>Background work stopped.</b> {{ r.warning }} Headless runs end when Claude's turn ends; for long or ongoing work, continue in a terminal.</div>
       }
@@ -51,7 +81,7 @@
               @if (w.wakes) { Woken {{ w.wakes }}×. }
               @if (w.error) { <span class="watch-err">{{ w.error }}</span> }
             </span>
-            <button class="btn sm" (click)="stopWatch()">Stop watching</button>
+            @if (!r.remote) { <button class="btn sm" (click)="stopWatch()">Stop watching</button> }
           </div>
         } @else if (w.endReason) {
           <div class="hint">PR watch ended {{ rel(w.endedAt) }}: {{ w.endReason }}</div>
@@ -59,8 +89,11 @@
       }
       @if (r.status === 'failed' && r.error) { <div class="err-note">{{ r.error }}</div> }
       <div class="actions">
-        @if (r.status === 'running' || r.status === 'waiting') { <button class="btn danger" (click)="cancel()">{{ r.status === 'waiting' ? 'Cancel run' : 'Cancel turn' }}</button> }
-        @if (!api.hosted()) {
+        @if (r.status === 'running' || r.status === 'waiting') {
+          <button class="btn danger" [disabled]="!!cancelBlocked()" [attr.aria-describedby]="cancelBlocked() ? 'cancel-why' : null" (click)="cancel()">{{ r.status === 'waiting' ? 'Cancel run' : 'Cancel turn' }}</button>
+          @if (cancelBlocked(); as why) { <span class="cancel-why" id="cancel-why">{{ why }}</span> }
+        }
+        @if (!api.hosted() && !r.remote) {
           @if (r.status !== 'handedOff' && !r.handoffPendingAt) {
             <button class="btn" (click)="terminal()" title="Open this conversation in a terminal and keep going interactively. The dashboard stops driving it.">Continue in terminal</button>
           }
@@ -71,9 +104,11 @@
           <button class="btn ghost" (click)="copyResume()" [title]="resumeCmd()">Copy resume cmd</button>
         }
         <span class="grow"></span>
+        @if (!r.remote) {
         <button class="btn" [class.flag-on]="r.flagged" [attr.aria-pressed]="!!r.flagged" (click)="toggleFlag()"
           title="Keep this run in Focus until you clear the flag or rate it">{{ r.flagged ? '⚑ Needs me' : '⚐ Needs me' }}</button>
-        @if (r.status !== 'running' && r.status !== 'waiting') {
+        }
+        @if (!r.remote && r.status !== 'running' && r.status !== 'waiting') {
           <div class="rate" [class.pending]="review()" role="group" aria-label="Rate this run"
             title="Rating clears it from Focus and builds each preset's track record. Click again to undo.">
             <span class="lbl">{{ r.verdict === 'good' ? 'Rated good' : r.verdict === 'needed-fix' ? 'Rated needed fix' : 'Rate this run' }}</span>
@@ -122,8 +157,10 @@
         <button type="button" role="tab" [class.on]="view() === 'issue'" [attr.aria-selected]="view() === 'issue'" (click)="tab.set('issue')">Issue</button>
       }
       <button type="button" role="tab" [class.on]="view() === 'transcript'" [attr.aria-selected]="view() === 'transcript'" (click)="tab.set('transcript')">Transcript</button>
-      <button type="button" role="tab" [class.on]="view() === 'changes'" [attr.aria-selected]="view() === 'changes'" (click)="tab.set('changes')">Changes @if (changedFiles()) { <span class="n">{{ changedFiles() }}</span> }</button>
-      @if (workWs() && !api.hosted()) {
+      @if (!r.remote) {
+        <button type="button" role="tab" [class.on]="view() === 'changes'" [attr.aria-selected]="view() === 'changes'" (click)="tab.set('changes')">Changes @if (changedFiles()) { <span class="n">{{ changedFiles() }}</span> }</button>
+      }
+      @if (workWs() && !api.hosted() && !r.remote) {
         <button type="button" role="tab" [class.on]="view() === 'apps'" [attr.aria-selected]="view() === 'apps'" (click)="tab.set('apps')">Apps @if (appsBadge(); as b) { <span class="n" [class.up]="b.up">{{ b.text }}</span> }</button>
       }
     </div>
@@ -153,8 +190,10 @@
         </div>
       }
     </div>
-    <!-- Always mounted (hidden when not selected) so the tab label can show the file count. -->
-    <dash-run-changes [hidden]="view() !== 'changes'" [runId]="r.id" [running]="r.status === 'running'" [shown]="view() === 'changes'" (count)="changedFiles.set($event)" />
+    <!-- Always mounted (hidden when not selected) so the tab label can show the file count. Not for a mirrored run: its /changes is a 409. -->
+    @if (!r.remote) {
+      <dash-run-changes [hidden]="view() !== 'changes'" [runId]="r.id" [running]="r.status === 'running'" [shown]="view() === 'changes'" (count)="changedFiles.set($event)" />
+    }
 
     <dash-run-composer [run]="r" (changed)="onRunChanged($event)" />
   </div>
@@ -171,7 +210,7 @@
       @case ('divider') { <div class="ev turn-h cont">{{ it.text }}</div> }
       @case ('human') {
         <div class="ev human"><span class="who">You{{ it.from === 'terminal' ? ' · in terminal' : '' }}</span>{{ it.text }}
-          @if (it.attachments.length) { <dash-attachment-list [runId]="run()!.id" [files]="it.attachments" [removed]="!!run()!.attachmentsRemovedAt" [dark]="true" /> }
+          @if (it.attachments.length && !run()!.remote) { <dash-attachment-list [runId]="run()!.id" [files]="it.attachments" [removed]="!!run()!.attachmentsRemovedAt" [dark]="true" /> }
         </div>
       }
       @case ('result') {

@@ -191,3 +191,53 @@ test("subscribe() numbers events and skips the ones before Last-Event-ID", () =>
     fs.rmSync(dir, { recursive: true, force: true });
   }
 });
+
+test("onEvent: each appended event with its index, the same ids subscribe() replays, on a file from before this process", () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "dash-runs-"));
+  try {
+    fs.mkdirSync(path.join(dir, "runs"), { recursive: true });
+    fs.writeFileSync(path.join(dir, "runs", "r1.json"), JSON.stringify({ id: "r1", status: "succeeded", permissionMode: "auto", startedAt: "2026-01-01T00:00:00Z" }));
+    // Written by an earlier process: a blank line and an unreadable one, which subscribe() skips too.
+    fs.writeFileSync(path.join(dir, "runs", "r1.events.jsonl"), [JSON.stringify({ type: "human", uuid: "a" }), "", "{not json", JSON.stringify({ type: "human", uuid: "b" })].join("\n") + "\n");
+    const seen: string[] = [];
+    const runs = new RunManager(dir, { onEvent: (m, ev, i) => seen.push(`${i}:${(ev as any).uuid}:${m.id}`) });
+    const append = (uuid: string) => (runs as any)._append(runs.get("r1"), { type: "human", uuid });
+    append("c");
+    append("d");
+    // A subscriber in between: its count and onEvent's agree.
+    const res = Object.assign(new EventEmitter(), { chunks: [] as string[], write(s: string) { this.chunks.push(s); return true; } });
+    runs.subscribe("r1", res as any);
+    append("e");
+    assert.deepEqual(seen, ["2:c:r1", "3:d:r1", "4:e:r1"]);
+    const ids = res.chunks.filter((c: string) => c.includes("event: event\n")).map((c: string) => [c.match(/^id: (\d+)/)![1], JSON.parse(c.split("\ndata: ")[1]).uuid].join(":"));
+    assert.deepEqual(ids, ["0:a", "1:b", "2:c", "3:d", "4:e"]);
+
+    // A throwing hook doesn't stop the write.
+    const loud = new RunManager(dir, { onEvent: () => { throw new Error("boom"); } });
+    (loud as any)._append(loud.get("r1"), { type: "human", uuid: "f" });
+    assert.equal((loud.events("r1").at(-1) as any).uuid, "f");
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("onEvent: a last line cut short (no newline) stays its own unreadable line, so the next event's index is its subscribe id", () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "dash-runs-"));
+  try {
+    fs.mkdirSync(path.join(dir, "runs"), { recursive: true });
+    fs.writeFileSync(path.join(dir, "runs", "r1.json"), JSON.stringify({ id: "r1", status: "succeeded", permissionMode: "auto", startedAt: "2026-01-01T00:00:00Z" }));
+    // A crash mid-write: the last line is cut off, with no newline after it.
+    fs.writeFileSync(path.join(dir, "runs", "r1.events.jsonl"), [JSON.stringify({ type: "human", uuid: "a" }), JSON.stringify({ type: "human", uuid: "b" }), '{"type":"assis'].join("\n"));
+    const seen: string[] = [];
+    const runs = new RunManager(dir, { onEvent: (_m, ev, i) => seen.push(`${i}:${(ev as any).uuid}`) });
+    (runs as any)._append(runs.get("r1"), { type: "human", uuid: "c" });
+    assert.deepEqual(seen, ["2:c"]);
+    const res = Object.assign(new EventEmitter(), { chunks: [] as string[], write(s: string) { this.chunks.push(s); return true; } });
+    runs.subscribe("r1", res as any);
+    const ids = res.chunks.filter((c: string) => c.includes("event: event\n")).map((c: string) => [c.match(/^id: (\d+)/)![1], JSON.parse(c.split("\ndata: ")[1]).uuid].join(":"));
+    assert.deepEqual(ids, ["0:a", "1:b", "2:c"]);
+    assert.equal(fs.readFileSync(path.join(dir, "runs", "r1.events.jsonl"), "utf-8").split("\n").length, 5, "the cut line, then c on a line of its own");
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
