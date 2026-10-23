@@ -321,6 +321,26 @@ test("state survives a restart: pending commands and the link's state are read b
   assert.deepEqual(b.sync(LAPTOP, sync({ events: [{ runId: "r1", from: 1, events: [ev(1)] }] })).have, { r1: 2 });
 });
 
+test("a last event line cut short by a crash: after a restart the resent event is read back at its acknowledged index", () => {
+  const dir = tmp();
+  const now = () => Date.parse("2026-10-22T10:00:00Z");
+  const a = new RemoteMirror(dir, now);
+  a.sync(LAPTOP, sync({ runs: [meta("r1")], events: [{ runId: "r1", from: 0, events: [ev(0), ev(1)] }] }));
+  // A crash mid-write of the third event: a fragment, with no newline after it.
+  const file = path.join(dir, "remote", LAPTOP.id, "runs", "r1.events.jsonl");
+  fs.appendFileSync(file, JSON.stringify(ev(2)).slice(0, 12));
+  const b = new RemoteMirror(dir, now);
+  // The computer resends from the pod's count, which the fragment isn't part of.
+  assert.deepEqual(b.sync(LAPTOP, sync({ runs: [meta("r1")] })).have, { r1: 2 });
+  assert.deepEqual(b.sync(LAPTOP, sync({ events: [{ runId: "r1", from: 2, events: [ev(2), ev(3)] }] })).have, { r1: 4 });
+  assert.deepEqual(b.events("r1").map((e) => e.uuid), ["u0", "u1", "u2", "u3"]);
+  // And read back the same way after another restart.
+  const c = new RemoteMirror(dir, now);
+  assert.deepEqual(c.events("r1").map((e) => e.uuid), ["u0", "u1", "u2", "u3"]);
+  assert.deepEqual(c.sync(LAPTOP, sync({ events: [{ runId: "r1", from: 4, events: [ev(4)] }] })).have, { r1: 5 });
+  assert.deepEqual(c.events("r1").map((e) => e.uuid), ["u0", "u1", "u2", "u3", "u4"]);
+});
+
 test("drop wins over a sync already in flight: 401 from then on and the mirror stays empty; in memory only", () => {
   const dir = tmp();
   const now = () => Date.parse("2026-10-22T10:00:00Z");

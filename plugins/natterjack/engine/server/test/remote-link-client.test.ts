@@ -387,6 +387,31 @@ test("a stopped client's late callbacks leave the state alone", async () => {
   } finally { c.client.stop(); await hosted.close(); }
 });
 
+test("a meta changed in place while a sync with it waits for its answer still goes up after that answer", async () => {
+  // RunManager hands noteChange its own meta and changes that object in place on the next write.
+  let holdSync = false;
+  const seen = syncBodies();
+  const hosted = await pod(tmp(), 0, (req, body) => {
+    seen.record(req, body);
+    return holdSync && req.url?.startsWith("/api/remote/sync") ? { delayMs: 300 } : null;
+  });
+  const c = computer(hosted.url);
+  try {
+    c.runs.add("r-turn", { status: "succeeded" });
+    c.client.start();
+    await waitFor("synced", () => hosted.mirror.get("r-turn")?.status === "succeeded");
+    holdSync = true;
+    c.runs.set("r-turn", { status: "running" }); // a turn starts: this sync is held
+    await waitFor("the running meta sent", () => seen.bodies.some((b) => b.runs.some((r) => r.id === "r-turn" && r.status === "running")));
+    const live = c.runs.metas.get("r-turn")!;
+    live.status = "succeeded"; // the turn ends: the same object, written again
+    live.endedAt = new Date().toISOString();
+    c.client.noteChange(live);
+    holdSync = false;
+    await waitFor("the finished meta on the mirror", () => hosted.mirror.get("r-turn")?.status === "succeeded" && !!hosted.mirror.get("r-turn")?.endedAt);
+  } finally { c.client.stop(); await hosted.close(); }
+});
+
 test("a command from the hosted dashboard goes to the (stub) executor and is acked; its refusal shows as lastError", async () => {
   const hosted = await pod(tmp());
   const c = computer(hosted.url);

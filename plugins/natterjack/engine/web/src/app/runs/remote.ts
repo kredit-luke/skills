@@ -116,7 +116,8 @@ export function withListRemote<T extends Pick<RunMeta, 'id' | 'remote'>>(run: T 
  * computer (DataService.remoteLive).
  *  - Remote control off there: nothing.
  *  - Online: every command kind (shared/remote.ts REMOTE_COMMAND_KINDS).
- *  - Offline: queue, and queue-edit / queue-remove on a pending queue not yet delivered.
+ *  - Offline: queue, and queue-edit / queue-remove on a pending queue not yet delivered. The run
+ *    page only offers Remove on those (run-detail); the composer's Edit is for the computer's queue.
  *  - Anything else (rename, verdict, flag, terminal, send-to-hosted, changes, …): never.
  */
 export function remoteAllows(

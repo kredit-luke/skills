@@ -284,7 +284,7 @@ export class RemoteLinkClient {
   private solo: string[] | null = null;
 
   // Kept while connected (cleared on disconnect and stop: the next hello reads it all again).
-  /** Metas changed since they were last acknowledged by a sync. */
+  /** Metas changed since they were last acknowledged by a sync (each a copy taken when noted). */
   private dirty = new Map<string, RunMeta>();
   private buffers = new Map<string, Buffered>();
   /** Runs whose next events come from their file (a gap in the buffer, a fresh watch). */
@@ -431,7 +431,10 @@ export class RemoteLinkClient {
       if (this.pod.has(meta.id)) this.needFull = true;
       return;
     }
-    this.dirty.set(meta.id, meta);
+    // A copy, as it is now: RunManager hands over its own meta and changes it in place, so a sync
+    // in flight holding that object would, once acknowledged, clear a newer change not yet sent.
+    // A fresh copy per change means _synced clears only the very one that went up.
+    this.dirty.set(meta.id, structuredClone(meta));
   }
 
   /**

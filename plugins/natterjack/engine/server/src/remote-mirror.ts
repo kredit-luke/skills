@@ -36,6 +36,20 @@ function httpError(status: number, message: string) {
   return Object.assign(new Error(message), { status });
 }
 
+/** The file is missing, empty, or its last byte is a newline (as runs.ts _endsWithNewline). */
+function endsWithNewline(file: string): boolean {
+  let fd: number | undefined;
+  try {
+    fd = fs.openSync(file, "r");
+    const size = fs.fstatSync(fd).size;
+    if (!size) return true;
+    const last = Buffer.alloc(1);
+    fs.readSync(fd, last, 0, 1, size - 1);
+    return last[0] === 0x0a;
+  } catch { return true; }
+  finally { if (fd !== undefined) try { fs.closeSync(fd); } catch {} }
+}
+
 type StoredCommand = RemoteCommand & { delivered: boolean };
 type LastError = NonNullable<RemoteRunInfo["lastError"]>;
 
@@ -549,6 +563,11 @@ export class RemoteMirror {
     let n = this.counts.get(key);
     if (n === undefined) {
       n = this._readEvents(linkId, id).length;
+      // Counted from the file once per process, before any append: a last line cut short (a crash
+      // mid-write) ends here, so the next event starts a line of its own at index n instead of
+      // joining it as one unreadable line (as runs.ts does).
+      const file = this._eventsPath(linkId, id);
+      if (!endsWithNewline(file)) fs.appendFileSync(file, "\n");
       this.counts.set(key, n);
     }
     return n;
