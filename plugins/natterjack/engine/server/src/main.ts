@@ -91,7 +91,7 @@ import { Atlassian } from "./atlassian-auth.ts";
 import { hostedCallbackPath, sendCallbackPage } from "./oauth-signin.ts";
 import { HOSTED_HIDDEN_PAGES, NOT_HOSTED, checkHostedRequest, hostedConfig } from "./hosted.ts";
 import { ClaudeLogin } from "./claude-login.ts";
-import { GithubLogin } from "./github-login.ts";
+import { GithubLogin, shouldSignOutAtStartup } from "./github-login.ts";
 import { saveClient as saveGoogleClient } from "./people/google-login.ts";
 import { Models } from "./models/index.ts";
 import { isRoutedId, routeOf } from "./models/routes.ts";
@@ -537,8 +537,15 @@ reapplyProfile(LEDGER_DIR, MAIN_WORKSPACE_PATH, undefined, ROLE_LOCK, ACCESS_LOC
 // Hosted, someone whose checks no longer offer the GitHub sign-in (their access or role changed) loses the
 // one they had: refusing new sign-ins isn't enough, since the token on /data would still push for their runs.
 // Signing out removes it and their signing key; runs fall back to the read token (GIT_TOKEN).
-if (HOSTED && !resolvedSpecs(MAIN_WORKSPACE_PATH, { hosted: true }).specs.some((s) => s.hostedSignIn === "github")) {
-  githubLogin.logout().then((r) => { if (r.ok) console.log("Signed out of GitHub: this dashboard's access no longer includes it."); }, () => {});
+// Only with gh and git config of its own (the image's): a hosted engine on a laptop mustn't sign the laptop out.
+{
+  const startup = shouldSignOutAtStartup({
+    hosted: !!HOSTED,
+    offersGithubSignIn: !!HOSTED && resolvedSpecs(MAIN_WORKSPACE_PATH, { hosted: true }).specs.some((s) => s.hostedSignIn === "github"),
+    env: process.env,
+  });
+  if (startup.skipped) console.log(startup.skipped);
+  if (startup.signOut) githubLogin.logout().then((r) => { if (r.ok) console.log("Signed out of GitHub: this dashboard's access no longer includes it."); }, () => {});
 }
 
 const isReader = () => readProfile(LEDGER_DIR).profile === "reader";

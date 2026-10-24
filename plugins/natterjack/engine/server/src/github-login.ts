@@ -85,6 +85,20 @@ export function commitIdentity(user: { login: string; id: number; name?: string 
   return { name: (user.name || "").trim() || user.login, email: email || `${user.id}+${user.login}@users.noreply.github.com` };
 }
 
+/**
+ * Whether a hosted dashboard that no longer offers the GitHub sign-in should sign out at startup.
+ * Only when gh and git's global config are this engine's own (GH_CONFIG_DIR, GIT_CONFIG_GLOBAL, as
+ * the hosted image sets them): otherwise `gh auth logout` and `git config --global --unset` would
+ * sign the developer's own computer out of GitHub and turn off its commit signing. `skipped` says
+ * why it didn't, when that's worth a log line (hosted, no sign-in offered, but not its own config).
+ */
+export function shouldSignOutAtStartup(opts: { hosted: boolean; offersGithubSignIn: boolean; env: NodeJS.ProcessEnv }): { signOut: boolean; skipped?: string } {
+  if (!opts.hosted || opts.offersGithubSignIn) return { signOut: false };
+  const missing = ["GH_CONFIG_DIR", "GIT_CONFIG_GLOBAL"].filter((k) => !(opts.env[k] || "").trim());
+  if (missing.length) return { signOut: false, skipped: `Not signing out of GitHub at startup: this engine has no ${missing.join(" or ")} of its own.` };
+  return { signOut: true };
+}
+
 export class GithubLogin {
   /** Sign commits with a key of the dashboard's own (hosted only). */
   private readonly signing: boolean;
