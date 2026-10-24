@@ -23,18 +23,21 @@ async function base64Of(file: File): Promise<string> {
 @Component({
   selector: 'dash-remote-link',
   changeDetection: ChangeDetectionStrategy.OnPush,
+  // Settings' row rules (.panel, .row, .t, .h, .ctl): this sits inside Settings, whose emulated
+  // styles don't reach a child component, so it loads the same sheet (as external-docs does).
+  styleUrl: './settings.component.scss',
   template: `
     @if (api.hosted()) {
       <div class="panel">
         <div class="panel-h"><h2>Linked computers</h2></div>
-        <div class="rows">
+        <div class="rows wide">
           <div class="row">
             <div class="lbl">
               <div class="t">Link your computer</div>
               <div class="h">Lets the dashboard on your own computer reach this one without a browser, so you can follow and answer its runs from here (Remote control). Make a token, then paste it into Settings on your computer's dashboard. It's shown once.</div>
             </div>
             <div class="ctl">
-              <form class="inline" (submit)="$event.preventDefault(); create()">
+              <form class="stack" (submit)="$event.preventDefault(); create()">
                 <label class="vh" for="link-label">Computer name</label>
                 <input id="link-label" placeholder="e.g. Work laptop" [value]="label()" (input)="label.set($any($event.target).value)" maxlength="60">
                 <button class="btn primary" type="submit" [disabled]="busy()">Make a link token</button>
@@ -47,7 +50,7 @@ async function base64Of(file: File): Promise<string> {
                 <div class="t">Your new link token</div>
                 <div class="h">Copy it now: it isn't shown again. Anyone with it (and, where the ingress asks, a client certificate) can reach this dashboard's Remote control API, so treat it like a password.</div>
               </div>
-              <div class="ctl tok">
+              <div class="ctl">
                 <code class="token">{{ t }}</code>
                 <button class="btn" type="button" (click)="copy(t)">Copy</button>
               </div>
@@ -70,7 +73,7 @@ async function base64Of(file: File): Promise<string> {
       @let st = status();
       <div class="panel">
         <div class="panel-h"><h2>Hosted dashboard link</h2><span class="ty">{{ api.boot()?.hostedUrl }}</span></div>
-        <div class="rows">
+        <div class="rows wide">
           <div class="row">
             <div class="lbl">
               <div class="t">Link token</div>
@@ -80,7 +83,7 @@ async function base64Of(file: File): Promise<string> {
               </div>
             </div>
             <div class="ctl">
-              <form class="inline" (submit)="$event.preventDefault(); saveToken()">
+              <form class="pair" (submit)="$event.preventDefault(); saveToken()">
                 <label class="vh" for="link-token">Link token</label>
                 <input id="link-token" type="password" autocomplete="off" spellcheck="false" placeholder="njl1.…" [value]="token()" (input)="token.set($any($event.target).value)">
                 <button class="btn" type="submit" [disabled]="busy() || !token().trim()">Save</button>
@@ -96,12 +99,14 @@ async function base64Of(file: File): Promise<string> {
               </div>
             </div>
             <div class="ctl">
-              <form class="inline" (submit)="$event.preventDefault(); saveCertificate(file.files?.[0] || null)">
+              <form class="group" (submit)="$event.preventDefault(); saveCertificate(file.files?.[0] || null)">
                 <label class="vh" for="link-cert">Certificate file</label>
                 <input #file id="link-cert" type="file" accept=".p12,.pfx">
-                <label class="vh" for="link-pass">Passphrase</label>
-                <input id="link-pass" type="password" autocomplete="off" placeholder="Passphrase" [value]="pass()" (input)="pass.set($any($event.target).value)">
-                <button class="btn" type="submit" [disabled]="busy()">Add</button>
+                <div class="pair">
+                  <label class="vh" for="link-pass">Passphrase</label>
+                  <input id="link-pass" type="password" autocomplete="off" placeholder="Passphrase" [value]="pass()" (input)="pass.set($any($event.target).value)">
+                  <button class="btn" type="submit" [disabled]="busy()">Add</button>
+                </div>
               </form>
             </div>
           </div>
@@ -119,22 +124,25 @@ async function base64Of(file: File): Promise<string> {
               }
             </div>
             <div class="ctl">
-              <button class="btn primary" type="button" [disabled]="busy()" (click)="check()">{{ checking() ? 'Checking…' : 'Check' }}</button>
-              @if (st?.token?.present || st?.certificate?.present) { <button class="btn ghost" type="button" [disabled]="busy()" (click)="forget()">Forget</button> }
+              <div class="btns">
+                <button class="btn primary" type="button" [disabled]="busy()" (click)="check()">{{ checking() ? 'Checking…' : 'Check' }}</button>
+                @if (st?.token?.present || st?.certificate?.present) { <button class="btn ghost" type="button" [disabled]="busy()" (click)="forget()">Forget</button> }
+              </div>
             </div>
           </div>
           <div class="row">
             <div class="lbl">
               <div class="t">Remote control</div>
               <div class="h">Lets you follow and reply to this computer's runs from your hosted dashboard. Your runs' records and recent events are copied there; the work stays on this computer.</div>
+            </div>
+            <!-- The switch, its state line and the hint read as one group in the control column. -->
+            <div class="ctl switch">
+              <label class="chk">
+                <input type="checkbox" [attr.aria-describedby]="rcDescribedBy()" [checked]="!!st?.remoteControl?.on" [disabled]="busy() || rcBlocked()" (change)="setRemoteControl($any($event.target))"> Use Remote control
+              </label>
               <!-- Not a live region: the line's "last sync 12 s ago" changes every 5 s and would be read out each time. -->
               @if (st) { <div id="rc-state" class="h state" [class.on]="st.remoteControl.on && st.remoteControl.state === 'connected'" [class.bad]="st.remoteControl.on && (st.remoteControl.state === 'refused' || st.remoteControl.state === 'error')">{{ controlLine() }}</div> }
               @if (rcBlocked()) { <div id="rc-hint" class="h">Add a link token first.</div> }
-            </div>
-            <div class="ctl">
-              <label class="chk">
-                <input type="checkbox" aria-label="Remote control" [attr.aria-describedby]="rcDescribedBy()" [checked]="!!st?.remoteControl?.on" [disabled]="busy() || rcBlocked()" (change)="setRemoteControl($any($event.target))"> On
-              </label>
             </div>
           </div>
         </div>
@@ -142,10 +150,19 @@ async function base64Of(file: File): Promise<string> {
     }
   `,
   styles: [`
-    .inline { display: flex; gap: 6px; flex-wrap: wrap; align-items: center; justify-content: flex-end; }
-    .inline input:not([type=file]) { min-width: 180px; }
-    .tok { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
-    .token { font-family: var(--font-mono); font-size: 12px; word-break: break-all; max-width: 420px; user-select: all; }
+    /* These rows' forms need more room than Settings' 260 px control column. */
+    @media not (max-width: 700px) { .rows.wide .row { grid-template-columns: 1fr 300px; } }
+    .ctl > * { max-width: 100%; }
+    .ctl form, .ctl .token { align-self: stretch; }
+    .stack { display: flex; flex-direction: column; gap: 6px; align-items: flex-start; }
+    .stack input { width: 100%; }
+    .pair { display: flex; gap: 6px; align-items: center; }
+    .pair input { flex: 1; min-width: 0; }
+    .group { display: flex; flex-direction: column; gap: 8px; padding: 10px; border: 1px solid var(--line-soft); border-radius: var(--r-sm); background: var(--paper-2); }
+    .group input[type=file] { width: 100%; min-width: 0; font-size: 12.5px; }
+    .btns { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
+    .token { display: block; font-family: var(--font-mono); font-size: 12px; word-break: break-all; user-select: all; padding: 8px 10px; border: 1px solid var(--line-soft); border-radius: var(--r-sm); background: var(--paper-2); }
+    .switch .h { margin-top: 0; }
     .steps { margin: 8px 0 0 0; padding: 0; list-style: none; display: flex; flex-direction: column; gap: 4px; font-size: 13px; color: var(--ink-soft); }
     .steps li.bad b { color: var(--bad, #b42318); }
     .state { margin-top: 4px; }
