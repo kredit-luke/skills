@@ -100,7 +100,7 @@ Start it any time with `node natterjack/bin/dashboard.mjs start --open` (default
 
 ## What it runs and connects to
 
-The dashboard is a Node server on your machine (localhost by default). It has no telemetry and sends nothing to the plugin's author. It only reaches services you configure or click, with your own credentials:
+The dashboard is a Node server on your machine (localhost by default). It has no telemetry and sends nothing about you or your workspace to the plugin's author. Apart from the update check below, it only reaches services you configure or click, with your own credentials:
 
 - **Agents**: runs start the `claude`, `copilot` or `codex` CLI you have installed; they talk to their own providers as usual. The Usage page runs `claude -p /usage`. If you route a model through the Models page, requests go to the Anthropic API (or `ANTHROPIC_BASE_URL`), Ollama, or the endpoint you add.
 - **Issue tracker and code host**: Linear (`api.linear.app`), Jira (your `*.atlassian.net` site, `api.atlassian.com`) or GitHub Issues, and GitHub for the Needs-you inbox and sign-in, using the tokens or CLI logins you provide.
@@ -110,12 +110,13 @@ The dashboard is a Node server on your machine (localhost by default). It has no
 - **Machine page**: checks run local commands (`node --version`, `docker info`…); one-click installs run the installer you click (winget, Homebrew, the vendor's install script).
 - **Your apps**: Apps & Workspaces start and stop the commands in your `apps.json`.
 - **Plugin scripts**: `create` reads your repos locally; `upgrade` fetches release tags from this repository on GitHub.
+- **Update check**: a few times a day a local dashboard reads `https://asknatterjack.com/version.json` (a plain GET; nothing about you or your workspace is in it) and the sidebar shows `v<x.y.z> available` when there's a newer release; clicking it starts `/natterjack:upgrade`. Turn it off for the team with `"updateCheck": false` under `dashboard` in `workspace.json`, or on one machine with `NATTERJACK_UPDATE_CHECK=0`. Hosted dashboards never check.
 
 Keys you paste are kept in `.claude/ledger/` in your workspace, which is never committed.
 
 ## Privacy
 
-Natterjack runs entirely on your team's own machines and infrastructure. Its author runs no service for it: nothing is sent to the author, there is no telemetry, and no data is collected or retained outside your systems.
+Natterjack runs entirely on your team's own machines and infrastructure. Its author runs no service for it: there is no telemetry, and no data is collected or retained outside your systems. The one request to the author's site is the update check (see above): it fetches a public file, sends nothing about you or your workspace, and can be turned off.
 
 It does read and store data your team sets up, which can include personal data such as names and emails: the People page roster (committed to your workspace repo), run history and transcripts (in `.claude/ledger/`), and notes synced from your own bucket. That data stays in your workspace, your repos and the storage you configure, and you can delete it at any time. The services it connects to (your issue tracker, code host, storage, agents) handle data under your own agreements with them.
 

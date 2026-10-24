@@ -1,6 +1,7 @@
 import { ChangeDetectionStrategy, Component, HostListener, OnInit, computed, inject, signal } from '@angular/core';
 import { RouterLink, RouterLinkActive, RouterOutlet } from '@angular/router';
 import { ApiService } from './core/api.service';
+import type { UpdateInfo } from '../../../shared/api';
 import { bootStartedAt, waitForRestart } from './core/restart';
 import { DataService } from './core/data.service';
 import { LaunchService } from './core/launch.service';
@@ -71,6 +72,12 @@ interface NavItem { path: string; label: string; icon: string; exact?: boolean; 
               }
             </div>
           }
+          @if (update(); as u) {
+            <div class="txt ver update">
+              <button type="button" class="restart" (click)="upgrade()" [title]="'Natterjack ' + u.latest + ' is out (this dashboard runs ' + u.current + '). Click to run /natterjack:upgrade.'">v{{ u.latest }} available</button>
+              @if (u.notes) { <a class="restart" [href]="u.notes" target="_blank" rel="noopener" title="What's new">notes</a> }
+            </div>
+          }
         </div>
       </aside>
       <main class="content"><div class="wrap"><router-outlet /></div></main>
@@ -131,6 +138,28 @@ export class AppComponent implements OnInit {
   readonly connectionProblems = computed(() => this.data.connections()?.problems || 0);
   readonly knowledgeStale = computed(() => this.data.docSites().reduce((n, s) => n + (s.stale || 0), 0));
 
+  /**
+   * A newer Natterjack release (GET /api/update, from asknatterjack.com/version.json), offered to
+   * people who build on a local dashboard: a hosted one's engine comes with its image.
+   */
+  private readonly updateInfo = signal<UpdateInfo | null>(null);
+  readonly update = computed(() => {
+    const u = this.updateInfo();
+    return u?.available && !this.api.hosted() && this.api.boot()?.profile?.current !== 'reader' ? u : null;
+  });
+
+  upgrade(): void {
+    this.launch.open({ prompt: '/natterjack:upgrade', title: 'Upgrade Natterjack' });
+  }
+
+  /** Asks again after the server's first check, then hourly (the server checks twice a day). */
+  private pollUpdate(delayMs = 30_000): void {
+    setTimeout(async () => {
+      try { this.updateInfo.set(await this.api.get<UpdateInfo>('/api/update')); } catch {}
+      if (this.updateInfo()?.enabled !== false) this.pollUpdate(60 * 60_000);
+    }, delayMs);
+  }
+
   /** The Restart link in the sidebar footer: idle, waiting for the new server, or it didn't come back. */
   readonly restarting = signal<'idle' | 'restarting' | 'failed'>('idle');
 
@@ -165,6 +194,7 @@ export class AppComponent implements OnInit {
       // The team's favicon, and "<page> · <title> · <name>" titles (WorkspaceTitleStrategy).
       if (ws.favicon) document.querySelector<HTMLLinkElement>('link[rel="icon"]')?.setAttribute('href', ws.favicon);
       this.titles.refresh();
+      if (!this.api.hosted()) this.pollUpdate();
     });
     this.data.start();
   }

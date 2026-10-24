@@ -95,6 +95,8 @@ import { GithubLogin, shouldSignOutAtStartup } from "./github-login.ts";
 import { saveClient as saveGoogleClient } from "./people/google-login.ts";
 import { Models } from "./models/index.ts";
 import { isRoutedId, routeOf } from "./models/routes.ts";
+import { UpdateCheck, updateCheckAllowed } from "./update-check.ts";
+import { webManifest } from "./pwa.ts";
 
 const DIST_DIR = path.join(DASHBOARD_DIR, "dist", "browser");
 const VERSION = JSON.parse(fs.readFileSync(path.join(DASHBOARD_DIR, "package.json"), "utf-8")).version;
@@ -455,6 +457,9 @@ const mirror = HOSTED
 /** Remote control, local side: the link to this person's hosted dashboard (hosted-link.ts). */
 const hostedLink = new HostedLink(LEDGER_DIR, () => hostedUrl());
 const live = new LiveHub(); // topics registered once every service exists, below
+/** Is there a newer Natterjack release (update-check.ts)? Never in a hosted container. */
+const updateCheck = new UpdateCheck({ current: VERSION, enabled: () => !HOSTED && updateCheckAllowed() && workspaceConfig().dashboard.updateCheck });
+updateCheck.start();
 const meetingTickets = new MeetingTickets(LEDGER_DIR);
 /**
  * Remote control, local side: mirrors runs up the link and runs the commands typed on the hosted
@@ -1280,6 +1285,13 @@ function serveBrand(res: http.ServerResponse, pathname: string): boolean {
   fs.createReadStream(full).pipe(res);
   return true;
 }
+/** The installable app's manifest (pwa.ts): the team's name, colors and icon. */
+function serveManifest(res: http.ServerResponse) {
+  const ws = workspaceConfig();
+  const manifest = webManifest({ title: ws.dashboard.title, name: ws.name, favicon: ws.brand.favicon, brandDir: BRAND_DIR, defaultsDir: path.join(DIST_DIR, "ds") });
+  res.writeHead(200, { "Content-Type": "application/manifest+json", "Cache-Control": "no-cache", "X-Content-Type-Options": "nosniff" });
+  res.end(JSON.stringify(manifest));
+}
 const STATIC_TYPES: Record<string, string> = {
   ".html": "text/html; charset=utf-8", ".js": "application/javascript; charset=utf-8", ".mjs": "application/javascript; charset=utf-8",
   ".css": "text/css; charset=utf-8", ".json": "application/json", ".png": "image/png", ".svg": "image/svg+xml",
@@ -1553,6 +1565,7 @@ async function handleApi(req: http.IncomingMessage, res: http.ServerResponse, ur
     if (p === "/api/explore/list") return sendJson(res, explore.list(q("path")));
     if (p === "/api/explore/file") return sendJson(res, explore.read(q("path")));
     if (p === "/api/boot") return sendJson(res, bootInfo(user));
+    if (p === "/api/update") return sendJson(res, updateCheck.info());
     if (p === "/api/events") return live.subscribe(res);
     if (p === "/api/status") return sendJson(res, await sharedStatus());
     if (p === "/api/overview") return sendJson(res, await getOverview());
@@ -2321,6 +2334,7 @@ const server = http.createServer(async (req, res) => {
     if (url.pathname.startsWith("/api/")) return await handleApi(req, res, url, user);
     if (url.pathname.startsWith("/screenshots/")) return serveScreenshot(req, res);
     if (url.pathname.startsWith("/ds/") && serveBrand(res, url.pathname)) return;
+    if (url.pathname === "/manifest.webmanifest") return serveManifest(res);
     return serveApp(res, url.pathname);
   } catch (e) {
     const status = e && e.status ? e.status : 400;

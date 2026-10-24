@@ -69,7 +69,8 @@ export interface IssuesConfig {
 
 export interface WorkspaceConfig {
   name: string;
-  dashboard: { title: string; port: number; devPort: number; legacyRedirects: LegacyRedirect[] };
+  /** updateCheck: look for a newer Natterjack release (update-check.ts); false turns it off for the team. */
+  dashboard: { title: string; port: number; devPort: number; legacyRedirects: LegacyRedirect[]; updateCheck: boolean };
   /** ports: allocate worktree port slots in the ports file (null = the team's tooling does). */
   worktrees: { dir: string; portsFile: string; screenshots: string; ports: { base: number; slotSize: number } | null };
   issues: IssuesConfig;
@@ -233,6 +234,7 @@ export function workspaceConfig(): WorkspaceConfig {
       port: Number(dash.port) || DEFAULT_PORT,
       devPort: Number(dash.devPort) || DEFAULT_DEV_PORT,
       legacyRedirects: Array.isArray(dash.legacyRedirects) ? dash.legacyRedirects.filter((r) => Number(r && r.port)) : [],
+      updateCheck: dash.updateCheck !== false,
     },
     worktrees: {
       dir: str(wt.dir, "worktrees"),

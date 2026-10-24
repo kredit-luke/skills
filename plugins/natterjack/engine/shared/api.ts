@@ -57,6 +57,21 @@ export interface Boot {
   hostedUrl?: string | null;
 }
 
+/**
+ * GET /api/update: is a newer Natterjack release out (asknatterjack.com/version.json)?
+ * `enabled` false: the check is off (workspace.json dashboard.updateCheck, NATTERJACK_UPDATE_CHECK,
+ * or a hosted dashboard). `latest` null: not checked yet, or offline.
+ */
+export interface UpdateInfo {
+  enabled: boolean;
+  current: string;
+  latest: string | null;
+  available: boolean;
+  /** Release notes, when version.json links them. */
+  notes: string | null;
+  checkedAt: string | null;
+}
+
 /** The configured issue tracker, as the UI needs it everywhere (badges, links, ticket ids). */
 export interface IssuesBoot {
   /** Adapter: 'linear' | 'jira' | 'github' | 'none' */

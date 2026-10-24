@@ -6,6 +6,11 @@
   <base href="/">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <link rel="icon" href="ds/favicon.svg">
+  <!-- Installable app (server/src/pwa.ts, sw.js). Credentials: a hosted dashboard's sign-in proxy needs its cookie. -->
+  <link rel="manifest" href="manifest.webmanifest" crossorigin="use-credentials">
+  <link rel="apple-touch-icon" href="ds/apple-touch-icon.png">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-capable" content="yes">
   <link rel="stylesheet" data-beasties-skip href="https://cdn.jsdelivr.net/npm/diff2html@3/bundles/css/diff2html.min.css">
   <!-- Brand: the token contract with neutral defaults, then the team's theme
        (.claude/dashboard/brand/theme.css, served at /ds/theme.css) over it. -->
