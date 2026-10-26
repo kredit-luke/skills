@@ -24,6 +24,7 @@ import { editDiff, editStat } from '../../runs/edit-diff';
 import { AttachmentListComponent } from '../../shared/attachment-list.component';
 import { IssueSummaryComponent } from '../../shared/issue-summary.component';
 import { WorkspaceAppsComponent } from '../../shared/workspace-apps.component';
+import { LongTextComponent } from '../../shared/long-text.component';
 
 type Tab = 'issue' | 'transcript' | 'changes' | 'apps';
 /** A tracker lookup: the issue, or why it couldn't be loaded. */
@@ -44,7 +45,7 @@ const eventCache = new RunEventCache();
 @Component({
   selector: 'dash-run-detail',
   imports: [NgTemplateOutlet, RunComposerComponent, RunChangesComponent, RunOutputsComponent, DiffViewComponent, AttachmentListComponent,
-    IssueSummaryComponent, WorkspaceAppsComponent, MdPipe, TrustedHtmlPipe],
+    IssueSummaryComponent, WorkspaceAppsComponent, LongTextComponent, MdPipe, TrustedHtmlPipe],
   changeDetection: ChangeDetectionStrategy.OnPush,
   styleUrl: './run-detail.component.scss',
   templateUrl: './run-detail.component.html',

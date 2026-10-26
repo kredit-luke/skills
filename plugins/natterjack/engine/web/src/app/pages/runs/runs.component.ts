@@ -2,6 +2,7 @@ import { ChangeDetectionStrategy, Component, computed, effect, inject, input, si
 import { ActivatedRoute, Router, RouterLink } from '@angular/router';
 import type { RunMeta } from '../../../../../shared/api';
 import { DataService } from '../../core/data.service';
+import { LaunchService } from '../../core/launch.service';
 import { SmallScreenService } from '../../core/small-screen';
 import { dur, lsGet, lsSet, pct } from '../../core/util';
 import { PageHeaderComponent } from '../../shared/page-header.component';
@@ -34,7 +35,9 @@ const parse = (s: string | null | undefined) => new Set(String(s || '').split(',
   changeDetection: ChangeDetectionStrategy.OnPush,
   styleUrl: './runs.component.scss',
   template: `
-    <dash-page-header eyebrow="Activity" title="Activity" sub="Everything the agents have worked on here: live transcript, subagents, questions it asks you, and replies." />
+    <dash-page-header eyebrow="Activity" title="Activity" sub="Everything the agents have worked on here: live transcript, subagents, questions it asks you, and replies.">
+      <button class="btn primary sm" type="button" (click)="newSession()" title="Start a new run in its own session">New session</button>
+    </dash-page-header>
     <!-- Small screens show one thing at a time: the list, or the open run with "All runs" back to the list. -->
     <div class="runs-layout" [class.has-run]="!!selectedId()">
       <div class="col">
@@ -81,6 +84,7 @@ const parse = (s: string | null | undefined) => new Set(String(s || '').split(',
 })
 export class RunsComponent {
   readonly data = inject(DataService);
+  private readonly launch = inject(LaunchService);
   private readonly router = inject(Router);
   private readonly route = inject(ActivatedRoute);
   /** Phone-sized: the list and the open run take turns (runs.component.scss). */
@@ -132,6 +136,9 @@ export class RunsComponent {
       if (this.selectedId() && untracked(this.small)) untracked(() => window.scrollTo({ top: 0 }));
     });
   }
+
+  /** The run dialog on an empty prompt, as from Home: a new run, not a reply to the open one. */
+  newSession(): void { this.launch.open({ title: 'New session', prompt: '', focusPrompt: true }); }
 
   toggle(key: string): void {
     const s = new Set(this.selected());

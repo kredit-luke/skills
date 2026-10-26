@@ -2,6 +2,7 @@ import { ChangeDetectionStrategy, Component, OnInit, computed, inject, signal } 
 import { NgTemplateOutlet } from '@angular/common';
 import type { Limits, ProfileInfo, ReposResponse, Settings, SettingKey, SnapshotStatus } from '../../../../../shared/api';
 import { ApiService } from '../../core/api.service';
+import { AttentionService } from '../../core/attention.service';
 import { DataService } from '../../core/data.service';
 import { ToastService } from '../../core/toast.service';
 import { bytes } from '../../core/util';
@@ -138,6 +139,37 @@ interface NumberRow { key: LimitKey; label: string; help: string; min: number; m
       </div>
 
       <div class="panel">
+        <div class="panel-h"><h2>Alerts on this device</h2></div>
+        <div class="rows">
+          <div class="row">
+            <div class="lbl">
+              <div class="t">Sound</div>
+              <div class="h">A soft chime when a run starts waiting for your answer while you're not looking at the dashboard. Saved in this browser only.</div>
+            </div>
+            <div class="ctl">
+              <label class="chk"><input type="checkbox" [checked]="attention.sound()" (change)="attention.setSound($any($event.target).checked)"> {{ attention.sound() ? 'On' : 'Off' }}</label>
+              <button class="btn ghost sm" type="button" (click)="attention.chime()">Play it</button>
+            </div>
+          </div>
+          <div class="row">
+            <div class="lbl">
+              <div class="t">Notifications</div>
+              <div class="h">A system notification at the same moment; clicking it opens the run. The installed app's icon and the tab title always show how many runs are waiting.</div>
+            </div>
+            <div class="ctl">
+              @if (attention.permission() === 'unsupported') {
+                <span class="ty">This browser doesn't support notifications.</span>
+              } @else if (attention.permission() === 'denied') {
+                <span class="ty">Blocked for this site: allow notifications in the browser's site settings, then reload.</span>
+              } @else {
+                <label class="chk"><input type="checkbox" [checked]="attention.notify()" (change)="attention.setNotify($any($event.target).checked)"> {{ attention.notify() ? 'On' : 'Off' }}</label>
+              }
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div class="panel">
         <div class="panel-h"><h2>Attachments</h2><span class="ty">{{ size(s.attachments.bytes) }} in {{ s.attachments.runs }} run{{ s.attachments.runs === 1 ? '' : 's' }}</span></div>
         <div class="rows">
           <ng-container *ngTemplateOutlet="num; context: { $implicit: numberRows[3] }" />
@@ -173,6 +205,7 @@ export class SettingsComponent implements OnInit {
   private readonly api = inject(ApiService);
   private readonly data = inject(DataService);
   private readonly toast = inject(ToastService);
+  readonly attention = inject(AttentionService);
 
   readonly s = signal<Settings | null>(null);
   readonly error = signal<string | null>(null);

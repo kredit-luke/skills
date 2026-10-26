@@ -209,7 +209,7 @@
       @case ('turn') { <div class="ev turn-h">Turn {{ it.turn }}{{ it.planMode ? ' · plan mode' : '' }}</div> }
       @case ('divider') { <div class="ev turn-h cont">{{ it.text }}</div> }
       @case ('human') {
-        <div class="ev human"><span class="who">You{{ it.from === 'terminal' ? ' · in terminal' : '' }}</span>{{ it.text }}
+        <div class="ev human"><span class="who">You{{ it.from === 'terminal' ? ' · in terminal' : '' }}</span><dash-long-text [text]="it.text" />
           @if (it.attachments.length && !run()!.remote) { <dash-attachment-list [runId]="run()!.id" [files]="it.attachments" [removed]="!!run()!.attachmentsRemovedAt" [dark]="true" /> }
         </div>
       }

@@ -7,6 +7,7 @@ import { AttachComponent } from '../../shared/attach.component';
 import { agentLabel, isRoutedModel, modelsFor } from '../../core/agents';
 import { DataService } from '../../core/data.service';
 import { SlashInputComponent } from '../../shared/slash-input.component';
+import { LongTextComponent } from '../../shared/long-text.component';
 import { composerAction, composerHint, offlineQueueHint, planModeBlockedReason, remoteAllows, remoteBlockedReason } from '../../runs/remote';
 
 /** Your last auto-send choice (localStorage), the default for the next queue. */
@@ -20,7 +21,7 @@ const AUTO_SEND_KEY = 'dash.queueAutoSend';
  */
 @Component({
   selector: 'dash-run-composer',
-  imports: [AttachComponent, SlashInputComponent],
+  imports: [AttachComponent, SlashInputComponent, LongTextComponent],
   changeDetection: ChangeDetectionStrategy.OnPush,
   styleUrl: './run-composer.component.scss',
   template: `
@@ -105,7 +106,7 @@ const AUTO_SEND_KEY = 'dash.queueAutoSend';
                     <button class="linkish" type="button" (click)="editing.set(null)">Cancel</button>
                   </div>
                 } @else {
-                  <div class="queue-t">{{ q.text }}</div>
+                  <dash-long-text class="queue-t" [text]="q.text" />
                   <div class="queue-acts">
                     <button class="linkish" type="button" [disabled]="busy() || !allows('queue-edit', q.id)" [title]="blocked() || ''" (click)="startEdit(q)">Edit</button>
                     <button class="linkish" type="button" [disabled]="busy() || !allows('queue-remove', q.id)" [title]="blocked() || ''" (click)="removeQueued(q)">Remove</button>

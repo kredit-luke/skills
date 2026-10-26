@@ -8,6 +8,7 @@ import { LaunchService } from './core/launch.service';
 import { SearchService } from './core/search.service';
 import { ToastService } from './core/toast.service';
 import { WorkspaceTitleStrategy } from './core/title.strategy';
+import { AttentionService } from './core/attention.service';
 import { IconComponent } from './shared/icon.component';
 import { LaunchDialogComponent } from './shared/launch-dialog.component';
 import { LogsDialogComponent, LogsService } from './shared/logs-dialog.component';
@@ -97,6 +98,8 @@ export class AppComponent implements OnInit {
   private readonly launch = inject(LaunchService);
   private readonly logs = inject(LogsService);
   private readonly titles = inject(WorkspaceTitleStrategy);
+  /** Started here: the app badge, title count, chime and notifications for runs waiting on you. */
+  private readonly attention = inject(AttentionService);
 
   readonly nav: NavItem[] = [
     { path: '/', label: 'Home', icon: 'home', exact: true },
