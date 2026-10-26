@@ -1,5 +1,11 @@
 .runs-layout { display: grid; grid-template-columns: minmax(300px, 400px) minmax(0, 1fr); gap: 1rem; align-items: start; }
 @media (max-width: 1100px) { .runs-layout { grid-template-columns: 1fr; } }
+/* Two columns: the history column stays in view while the run beside it scrolls the page; it
+   scrolls on its own if it's taller than the window (Track record under History). */
+@media (min-width: 1101px) {
+  .runs-layout > .col { position: sticky; top: 1rem; max-height: calc(100vh - 2rem); overflow-y: auto; }
+  .runs-layout > .col > .panel { flex-shrink: 0; }
+}
 .runs-list { max-height: calc(100vh - 330px); overflow-y: auto; }
 .detail-col { min-width: 0; }
 .back { display: none; }
