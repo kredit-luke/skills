@@ -39,6 +39,19 @@ test("pruneIndex drops only lines for missing files, keeping line endings", () =
   assert.deepEqual(mem.pruneIndex(), { ok: true, removed: 0 });
 });
 
+test("links resolve against the memory folder: ./a.md and sub/b.md are kept, indexed and removed with their file", () => {
+  const mem = setup();
+  fs.mkdirSync(path.join(mem.dir, "sub"));
+  fs.writeFileSync(path.join(mem.dir, "sub", "deep.md"), "x");
+  fs.writeFileSync(path.join(mem.dir, "MEMORY.md"), "- [Ok](./ok.md) — dot\n- [Deep](sub/deep.md) — nested\n- [Un](./unindexed.md) — dot\n");
+  const out = mem.list();
+  assert.equal(out.orphanIndexLines.length, 0);
+  assert.equal(out.memories.find((m) => m.file === "unindexed.md").indexed, true);
+  assert.deepEqual(mem.pruneIndex(), { ok: true, removed: 0 });
+  mem.remove("ok.md");
+  assert.equal(fs.readFileSync(path.join(mem.dir, "MEMORY.md"), "utf-8"), "- [Deep](sub/deep.md) — nested\n- [Un](./unindexed.md) — dot\n");
+});
+
 test("pruneIndex with no MEMORY.md is a no-op", () => {
   const mem = setup();
   fs.unlinkSync(path.join(mem.dir, "MEMORY.md"));

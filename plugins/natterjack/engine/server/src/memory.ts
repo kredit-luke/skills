@@ -49,7 +49,7 @@ class Memory {
         body,
         updatedAt: st.mtime.toISOString(),
         bytes: st.size,
-        indexed: index.some((l) => l.includes(`(${file})`)),
+        indexed: index.some((l) => this._linkTarget(l) === file),
       };
     });
     // Unresolved [[links]] aren't flagged: they're allowed, as notes of memories worth writing later.
@@ -58,10 +58,7 @@ class Memory {
       if (!m.indexed) m.issues.push("Not listed in MEMORY.md, so sessions never see it.");
       for (const ref of this._missingPaths(m.body)) m.issues.push(`Mentions \`${ref}\`, which no longer exists in the workspace.`);
     }
-    const orphanIndexLines = index.filter((l) => {
-      const m = /\]\(([^)]+\.md)\)/.exec(l);
-      return m && !files.includes(m[1]);
-    });
+    const orphanIndexLines = index.filter((l) => this._isOrphan(l));
     memories.sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
     return { dir: this.dir, exists: true, memories, orphanIndexLines };
   }
@@ -75,7 +72,7 @@ class Memory {
     const indexFile = path.join(this.dir, INDEX);
     try {
       const text = fs.readFileSync(indexFile, "utf-8");
-      const kept = text.split("\n").filter((l) => !l.includes(`(${file})`));
+      const kept = text.split("\n").filter((l) => this._linkTarget(l) !== file);
       fs.writeFileSync(indexFile, kept.join("\n"));
     } catch {}
     return { ok: true, file };
@@ -86,16 +83,29 @@ class Memory {
     const indexFile = path.join(this.dir, INDEX);
     let text;
     try { text = fs.readFileSync(indexFile, "utf-8"); } catch { return { ok: true, removed: 0 }; }
-    const files = new Set(fs.readdirSync(this.dir));
     let removed = 0;
     const kept = text.split("\n").filter((l) => {
-      const m = /\]\(([^)]+\.md)\)/.exec(l);
-      if (!l.trim().startsWith("-") || !m || files.has(m[1])) return true;
+      if (!l.trim().startsWith("-") || !this._isOrphan(l)) return true;
       removed++;
       return false;
     });
     if (removed) fs.writeFileSync(indexFile, kept.join("\n"));
     return { ok: true, removed };
+  }
+
+  /** A MEMORY.md line's link target relative to the memory folder ("./a.md" is "a.md"), or null. */
+  _linkTarget(line) {
+    const m = /\]\(([^)]+\.md)\)/.exec(line);
+    if (!m) return null;
+    let target = m[1];
+    try { target = decodeURI(target); } catch {}
+    return path.relative(this.dir, path.resolve(this.dir, target)).split(path.sep).join("/");
+  }
+
+  /** A line that links to a .md file that isn't there. */
+  _isOrphan(line) {
+    const target = this._linkTarget(line);
+    return target !== null && !fs.existsSync(path.join(this.dir, target));
   }
 
   _index() {

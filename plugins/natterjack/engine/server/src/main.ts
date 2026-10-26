@@ -928,7 +928,8 @@ function launchRun(body: LaunchRequest, trigger: string): RunMeta {
   return runs.start({
     docSources: docs.keys,
     extraPrompt: docs.note,
-    addDirs: docs.addDirs,
+    // A memory fix edits Claude's memory folder, outside the workspace: any agent's sandbox may write there.
+    addDirs: body.trigger === "memory" ? [...docs.addDirs, memory.dir] : docs.addDirs,
     presetId: preset ? preset.id : null,
     label: runLabel(preset ? `${preset.label}${argText ? ` · ${argText}` : ""}` : body.label, prompt),
     prompt,
