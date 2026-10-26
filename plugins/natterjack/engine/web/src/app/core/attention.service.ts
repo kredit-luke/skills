@@ -33,6 +33,8 @@ export class AttentionService {
       untracked(() => { this.titles.setWaiting(n); setBadge(n); });
     });
     effect(() => {
+      // Not before the first snapshot: the placeholder empty list would make the runs already waiting look new.
+      if (!this.data.runsLoaded()) return;
       const waiting = this.data.activityRuns().filter((r) => this.data.needsAnswer(r));
       untracked(() => this.onWaiting(waiting));
     });

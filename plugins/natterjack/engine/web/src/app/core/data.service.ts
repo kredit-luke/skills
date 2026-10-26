@@ -66,6 +66,8 @@ export class DataService {
   /** docs.json areas (Knowledge page). */
   readonly docAreas = signal<KnowledgeArea[]>([]);
   readonly docsLoaded = signal(false);
+  /** The first runs snapshot has arrived (stream or GET), even an empty one: until then `runs` is a placeholder. */
+  readonly runsLoaded = signal(false);
 
   readonly runningCount = computed(() => this.runs().filter((r) => r.status === 'running').length);
   readonly waitingCount = computed(() => this.runs().filter((r) => r.status === 'waiting').length);
@@ -178,6 +180,7 @@ export class DataService {
     const remote = (d.remote ?? []).filter((r) => !ids.has(r.id)).map(normaliseRun);
     this.runs.set(local);
     this.remoteRuns.set(remote);
+    this.runsLoaded.set(true);
     this.stats.set(d.stats);
     if (d.remoteLinks) this.applyLinks(d.remoteLinks);
     else this.syncClock();

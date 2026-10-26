@@ -1,4 +1,4 @@
-import { ChangeDetectionStrategy, Component, computed, input, signal } from '@angular/core';
+import { ChangeDetectionStrategy, Component, computed, input, linkedSignal } from '@angular/core';
 import { FOLDED_CHARS, longTextSize } from '../core/long-text';
 
 /**
@@ -23,7 +23,8 @@ import { FOLDED_CHARS, longTextSize } from '../core/long-text';
 })
 export class LongTextComponent {
   readonly text = input('');
-  readonly open = signal(false);
+  /** Folded again whenever the text changes: the component is reused across runs (transcript keys restart per run). */
+  readonly open = linkedSignal({ source: this.text, computation: () => false });
   readonly size = computed(() => longTextSize(this.text()));
   readonly folded = computed(() => !!this.size() && !this.open());
   readonly shown = computed(() => (this.folded() ? this.text().slice(0, FOLDED_CHARS) : this.text()));
