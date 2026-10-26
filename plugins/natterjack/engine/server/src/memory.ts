@@ -3,7 +3,8 @@
  * ~/.claude/projects/<workspace path, non-alphanumerics as "-">/memory/*.md,
  * indexed by MEMORY.md (one line per file, loaded into every session).
  *
- * Read-only apart from delete: memories are written by Claude during sessions.
+ * Read-only apart from delete and pruning the index: memories are written by
+ * Claude during sessions (the page's "Ask Claude to fix" starts one for that).
  * Each file gets a staleness check, since a memory that names a file or folder
  * that's gone is exactly the kind that misleads a future session.
  */
@@ -78,6 +79,23 @@ class Memory {
       fs.writeFileSync(indexFile, kept.join("\n"));
     } catch {}
     return { ok: true, file };
+  }
+
+  /** Drop MEMORY.md lines that point at a memory file that doesn't exist. */
+  pruneIndex() {
+    const indexFile = path.join(this.dir, INDEX);
+    let text;
+    try { text = fs.readFileSync(indexFile, "utf-8"); } catch { return { ok: true, removed: 0 }; }
+    const files = new Set(fs.readdirSync(this.dir));
+    let removed = 0;
+    const kept = text.split("\n").filter((l) => {
+      const m = /\]\(([^)]+\.md)\)/.exec(l);
+      if (!l.trim().startsWith("-") || !m || files.has(m[1])) return true;
+      removed++;
+      return false;
+    });
+    if (removed) fs.writeFileSync(indexFile, kept.join("\n"));
+    return { ok: true, removed };
   }
 
   _index() {
