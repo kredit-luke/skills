@@ -765,7 +765,7 @@ const EFFORTS = ["low", "medium", "high", "xhigh", "max"];
 /** Every effort another agent may take (Codex adds "ultra"); the CLI rejects one its model doesn't. */
 const AGENT_EFFORTS = [...EFFORTS, "ultra", "none"];
 const PERMISSION_MODES = ["auto", "acceptEdits", "dontAsk", "plan"];
-const TRIGGERS = new Set(["manual", "ask", "explain", "search", "issues", "make-changes", "meetings"]);
+const TRIGGERS = new Set(["manual", "ask", "explain", "search", "issues", "make-changes", "meetings", "memory"]);
 const MAX_RUN_BUDGET_USD = 100;
 // A run whose preset sets no cap gets this one while runBudget is on.
 const DEFAULT_RUN_BUDGET_USD = 5;
@@ -928,7 +928,8 @@ function launchRun(body: LaunchRequest, trigger: string): RunMeta {
   return runs.start({
     docSources: docs.keys,
     extraPrompt: docs.note,
-    addDirs: docs.addDirs,
+    // A memory fix edits Claude's memory folder, outside the workspace: any agent's sandbox may write there.
+    addDirs: body.trigger === "memory" ? [...docs.addDirs, memory.dir] : docs.addDirs,
     presetId: preset ? preset.id : null,
     label: runLabel(preset ? `${preset.label}${argText ? ` · ${argText}` : ""}` : body.label, prompt),
     prompt,
@@ -2277,6 +2278,11 @@ async function handleApi(req: http.IncomingMessage, res: http.ServerResponse, ur
   if (p === "/api/connections/allow") return sendJson(res, connections.allow(body.name, body.on !== false));
   if (p === "/api/memory/delete") {
     const out = memory.remove(String(body.file || ""));
+    search.invalidate();
+    return sendJson(res, out);
+  }
+  if (p === "/api/memory/prune-index") {
+    const out = memory.pruneIndex();
     search.invalidate();
     return sendJson(res, out);
   }

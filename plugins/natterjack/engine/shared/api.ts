@@ -856,7 +856,7 @@ export interface SearchStats { docs: number; chunks: number; bySource: Partial<R
 // ---------------------------------------------------------------- memory
 
 export interface MemoryItem { file: string; name: string; description: string; type: string; body: string; updatedAt: string; bytes: number; indexed: boolean; issues: string[] }
-/** GET /api/memory ;  POST /api/memory/delete { file } → { ok, file } */
+/** GET /api/memory ;  POST /api/memory/delete { file } → { ok, file } ;  POST /api/memory/prune-index → { ok, removed } */
 export interface MemoryList { dir: string; exists: boolean; memories: MemoryItem[]; orphanIndexLines: string[] }
 
 // ---------------------------------------------------------------- connections (MCP servers)
