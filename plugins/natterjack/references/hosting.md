@@ -69,7 +69,7 @@ By hand it's one `docker build` per image (`router/Dockerfile` for the router):
 docker build -f plugins/natterjack/templates/hosted/Dockerfile --pull --no-cache -t <registry>/natterjack-dashboard:<tag> plugins/natterjack
 ```
 
-**When to rebuild.** Most engine upgrades don't need it: hosted dashboards run the engine from the published snapshot. Rebuild when:
+**When to rebuild.** Most engine upgrades don't need it: hosted dashboards run the engine from the workspace (the published snapshot, or the workspace repo). Rebuild when:
 - **A release changes the images.** `upgrade` says so (its `hostedImages`).
 - **You want a newer Claude CLI.** Auto-update is off in the image, so everyone runs the version it was built with.
 - **For OS security fixes**, every month or so. Both images upgrade Debian's packages at build time, because the `node:24-trixie-slim` base often doesn't have them yet. Without `--pull --no-cache` Docker reuses the cached upgrade layer and the rebuild changes nothing (the script always passes both).
@@ -83,6 +83,8 @@ On start, `entrypoint.sh` puts the workspace in `/data/workspace` or updates it.
 - **To publish**, run publish from CI or from the Repos page on an engineer's machine, with a key that can write.
 
 **From git:** `WORKSPACE_REPO` is cloned the first time and pulled afterwards. Add `GIT_TOKEN` if the repo is private; it goes through `GIT_ASKPASS`, so it's never written to disk. The first start runs `npm ci` and `ng build` on the volume, which takes a minute or two and about 1.6 GB of memory. Later starts skip the build. The person's app repos come from the Repos page: clones with a token the container can use, or read-only snapshots.
+- **Every start pulls** the workspace's default branch, so an engine upgrade or a config change reaches hosted dashboards when it's merged and they restart: no publish step.
+- **Switching from a snapshot** is a settings change: set `WORKSPACE_REPO` (and `GIT_TOKEN` for a private repo) instead of `SNAPSHOT_CONFIG` (on App Service, `workspaceRepo` and an empty `snapshotConfig` in `hosting.json`, then **Update** on the People page). The next start turns the snapshot install into a clone in place: it checks the default branch out over the snapshot's files, removes files under `.claude/` that were deleted upstream, and keeps everything git ignores (the ledger with the person's runs and keys, the repos, `node_modules`) and `.claude/settings.local.json`. If the clone fails (a token that can't read the repo, say), it logs why and starts the snapshot as it was, and tries again on the next start.
 
 **The latest repos on every start.** In either mode, set `GIT_TOKEN` to a read token for the repos in `repos.json`. On GitHub, use a fine-grained token owned by the organization, with Contents: Read on those repos. Every start then brings each repo to its latest default branch with git (`snapshot.mjs pull-repos`). It runs in the background, so the dashboard is up at once: the first start's clones take a few minutes, and the Repos page shows each repo as it lands.
 - **A snapshot copy, or a missing repo**, becomes a clone. Blobs are fetched as they're needed, so it's quick.

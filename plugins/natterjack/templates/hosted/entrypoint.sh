@@ -54,7 +54,31 @@ if [ -n "${SNAPSHOT_CONFIG:-}" ]; then
     echo "Couldn't update the workspace from its snapshot; starting with what's there." >&2
   fi
 else
-  if [ ! -d "$WORKSPACE_ROOT/.git" ]; then
+  # Installed from a snapshot before the switch to WORKSPACE_REPO: make it a clone in place,
+  # so the switch is a settings change. The stamp goes last, so a conversion cut off midway is
+  # redone on the next start. Checking the default branch out writes over the snapshot's files;
+  # ignored files (the ledger with its runs and keys, the repos, node_modules) stay. Files the
+  # snapshot left behind after they were deleted upstream are cleaned under .claude/ only (old
+  # skills and agents Claude would still load), keeping local state there.
+  if [ -n "${WORKSPACE_REPO:-}" ] && [ -f "$WORKSPACE_ROOT/.snapshot.json" ]; then
+    echo "Turning the snapshot install at $WORKSPACE_ROOT into a clone of $WORKSPACE_REPO..."
+    convert="$WORKSPACE_ROOT/.git-converting"
+    rm -rf "$convert" "$WORKSPACE_ROOT/.git"
+    if git -c credential.helper= clone --quiet --no-checkout "$WORKSPACE_REPO" "$convert" \
+       && mv "$convert/.git" "$WORKSPACE_ROOT/.git" \
+       && git -C "$WORKSPACE_ROOT" reset --quiet --hard \
+       && git -C "$WORKSPACE_ROOT" clean -fdq -e .claude/ledger/ -e .claude/worktrees/ -e .claude/settings.local.json -- .claude; then
+      rm -rf "$convert"
+      rm -f "$WORKSPACE_ROOT/.snapshot.json"
+    else
+      # The snapshot's files are still whole unless the checkout itself failed; start them.
+      rm -rf "$convert" "$WORKSPACE_ROOT/.git"
+      echo "Couldn't turn the snapshot install into a clone (above); starting with what's there." >&2
+    fi
+  fi
+  if [ -f "$WORKSPACE_ROOT/.snapshot.json" ] && [ -n "${WORKSPACE_REPO:-}" ]; then
+    : # still a snapshot install (the conversion above failed): start it as it is
+  elif [ ! -d "$WORKSPACE_ROOT/.git" ]; then
     if [ -z "${WORKSPACE_REPO:-}" ]; then
       echo "Set SNAPSHOT_CONFIG (a published snapshot) or WORKSPACE_REPO (the workspace's git URL), or put a clone at $WORKSPACE_ROOT." >&2
       exit 1
