@@ -24,7 +24,8 @@ export interface MdUrls {
 export function inlineMd(s: string, urls?: MdUrls): string {
   // Links may be written [text](url) or, as Linear does, [text](<url>). Relative links
   // (to another file in the same repo) keep their text and show the path on hover.
-  const re = /!\[([^\]]*)\]\(<?([^)\s>]+)>?(?:\s+"[^"]*")?\)|`([^`]+)`|\*\*([^*]+)\*\*|\[([^\]]+)\]\(<?(https?:[^)\s>]+)>?\)|(!?)\[\[([^\]]+)\]\]|\[([^\]]+)\]\(([^)\s:]+)\)/g;
+  // Bare http(s) URLs and <https://...> autolinks become links too.
+  const re = /!\[([^\]]*)\]\(<?([^)\s>]+)>?(?:\s+"[^"]*")?\)|`([^`]+)`|\*\*([^*]+)\*\*|\[([^\]]+)\]\(<?(https?:[^)\s>]+)>?\)|(!?)\[\[([^\]]+)\]\]|\[([^\]]+)\]\(([^)\s:]+)\)|<(https?:\/\/[^\s>]+)>|\bhttps?:\/\/[^\s<>"'`]+/g;
   let out = '', last = 0, m: RegExpExecArray | null;
   while ((m = re.exec(s))) {
     if (m[2] != null && !urls) { re.lastIndex = m.index + 1; continue; } // no image support: read on as text
@@ -41,7 +42,13 @@ export function inlineMd(s: string, urls?: MdUrls): string {
       out += href ? '<a href="' + esc(href) + '" data-rel="' + esc(m[10]) + '">' + esc(m[9]) + '</a>'
         : '<span class="rl" title="' + esc(m[10]) + '">' + esc(m[9]) + '</span>';
     }
-    else out += wikiLink(m[8], m[7] === '!', urls);
+    else if (m[8] != null) out += wikiLink(m[8], m[7] === '!', urls);
+    else {
+      // A bare URL ends before trailing sentence punctuation: "see http://x/y." links http://x/y.
+      const url = m[11] ?? m[0].replace(/[.,;:!?)\]'"*_]+$/, '');
+      if (m[11] == null) re.lastIndex = m.index + url.length;
+      out += '<a href="' + esc(url) + '" target="_blank" rel="noopener">' + esc(url) + '</a>';
+    }
     last = re.lastIndex;
   }
   return out + esc(s.slice(last));

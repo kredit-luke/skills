@@ -37,9 +37,17 @@ describe('markdown', () => {
   it('renders a run result: paragraph, table, then a list with inline code and bold', () => {
     const html = renderMd('The stack is up:\n\n| Service | URL |\n|---|---|\n| API | https://localhost:7103 |\n\nThings to know:\n- **Nuvei setup:** set `provider` to `nuvei`');
     expect(html).toContain('<p>The stack is up:</p>');
-    expect(html).toContain('<tr><th>Service</th><th>URL</th></tr><tr><td>API</td><td>https://localhost:7103</td></tr>');
+    expect(html).toContain('<tr><th>Service</th><th>URL</th></tr><tr><td>API</td><td><a href="https://localhost:7103" target="_blank" rel="noopener">https://localhost:7103</a></td></tr>');
     expect(html).not.toContain('---');
     expect(html).toContain('<li><b>Nuvei setup:</b> set <code>provider</code> to <code>nuvei</code></li>');
+  });
+  it('links bare URLs and <url> autolinks, leaving trailing punctuation and code alone', () => {
+    const a = (u: string) => `<a href="${u}" target="_blank" rel="noopener">${u}</a>`;
+    expect(renderMd('Open http://localhost:26201/swagger.')).toBe(`<p>Open ${a('http://localhost:26201/swagger')}.</p>`);
+    expect(renderMd('(see https://x.io/a?b=1&c=2), then <https://y.io/z>')).toBe(`<p>(see ${a('https://x.io/a?b=1&amp;c=2')}), then ${a('https://y.io/z')}</p>`);
+    expect(renderMd('run `curl http://localhost:1`')).toBe('<p>run <code>curl http://localhost:1</code></p>');
+    expect(renderMd('[docs](https://x.io/d) and https://x.io/e')).toBe(`<p><a href="https://x.io/d" target="_blank" rel="noopener">docs</a> and ${a('https://x.io/e')}</p>`);
+    expect(renderMd('http://x.io/"><script>')).not.toContain('<script>');
   });
   it('highlights word-start matches only', () => {
     expect(markTerms('postgres and post <x>', ['post'])).toBe('<mark>postgres</mark> and <mark>post</mark> &lt;x&gt;');
