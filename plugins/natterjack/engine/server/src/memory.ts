@@ -132,7 +132,8 @@ class Memory {
       if (!/[\\/]/.test(ref) || /[<>*{}$%|]|^https?:|^\/\/|^-|:\/\/|@|\.\.\./.test(ref)) continue;
       const root = this.root.replace(/\\/g, "/").replace(/\/$/, "") + "/";
       const slashed = ref.replace(/\\/g, "/");
-      const inside = slashed.toLowerCase().startsWith(root.toLowerCase());
+      const fold = (s) => process.platform === "win32" ? s.toLowerCase() : s;
+      const inside = fold(slashed).startsWith(fold(root));
       if (/^[A-Za-z]:\//.test(slashed) && !inside) {
         if (process.platform === "win32" && !fs.existsSync(ref)) out.add(ref);
         continue;
