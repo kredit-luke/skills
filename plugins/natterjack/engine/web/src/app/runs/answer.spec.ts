@@ -49,6 +49,13 @@ describe('markdown', () => {
     expect(renderMd('[docs](https://x.io/d) and https://x.io/e')).toBe(`<p><a href="https://x.io/d" target="_blank" rel="noopener">docs</a> and ${a('https://x.io/e')}</p>`);
     expect(renderMd('http://x.io/"><script>')).not.toContain('<script>');
   });
+  it('keeps balanced brackets and trailing underscores in bare URLs', () => {
+    const a = (u: string) => `<a href="${u}" target="_blank" rel="noopener">${u}</a>`;
+    expect(renderMd('See https://en.wikipedia.org/wiki/Function_(mathematics).')).toBe(`<p>See ${a('https://en.wikipedia.org/wiki/Function_(mathematics)')}.</p>`);
+    expect(renderMd('(https://en.wikipedia.org/wiki/Function_(mathematics))')).toBe(`<p>(${a('https://en.wikipedia.org/wiki/Function_(mathematics)')})</p>`);
+    expect(renderMd('on http://[::1]:8080/ and http://[::1]')).toBe(`<p>on ${a('http://[::1]:8080/')} and ${a('http://[::1]')}</p>`);
+    expect(renderMd('get https://example.com/file_')).toBe(`<p>get ${a('https://example.com/file_')}</p>`);
+  });
   it('highlights word-start matches only', () => {
     expect(markTerms('postgres and post <x>', ['post'])).toBe('<mark>postgres</mark> and <mark>post</mark> &lt;x&gt;');
   });
