@@ -121,20 +121,33 @@ class Memory {
    * `Core.Cli/Program.cs`, `.claude/skills/foo/`) that match no file on
    * disk and no tracked file in any repo (a path may be written relative to a
    * repo's src/ or deeper, so tracked files are matched by suffix).
-   * Skipped: placeholders, URLs, worktrees (transient) and build output.
+   * Skipped: placeholders, URLs, shortened paths (`a/.../b.ts`), version-named
+   * things like branches (`release-1.2.0`), worktrees (transient) and build output.
+   * Absolute Windows paths are checked where they point, on Windows only.
    */
   _missingPaths(body) {
     const out = new Set();
     for (const m of body.matchAll(/`([^`\s]+)`/g)) {
       const ref = m[1].replace(/[),.:;]+$/, "");
-      if (!/[\\/]/.test(ref) || /[<>*{}$%|]|^https?:|^\/\/|^-|:\/\/|@|^\.\.\./.test(ref)) continue;
-      if (!/^[~.\w]/.test(ref)) continue;
+      if (!/[\\/]/.test(ref) || /[<>*{}$%|]|^https?:|^\/\/|^-|:\/\/|@|\.\.\./.test(ref)) continue;
+      const root = this.root.replace(/\\/g, "/").replace(/\/$/, "") + "/";
+      const slashed = ref.replace(/\\/g, "/");
+      const fold = (s) => process.platform === "win32" ? s.toLowerCase() : s;
+      const inside = fold(slashed).startsWith(fold(root));
+      if (/^[A-Za-z]:\//.test(slashed) && !inside) {
+        if (process.platform === "win32" && !fs.existsSync(ref)) out.add(ref);
+        continue;
+      }
+      if (!inside && !/^[~.\w]/.test(ref)) continue;
       // "<workspace>/repo/..." is written from the workspace's parent.
-      const rel = ref.replace(/^\.\//, "").replace(/\\/g, "/").replace(new RegExp(`^${escapeRe(path.basename(this.root))}/`), "");
+      const rel = inside ? slashed.slice(root.length) :
+        slashed.replace(/^\.\//, "").replace(new RegExp(`^${escapeRe(path.basename(this.root))}/`), "");
       if (/^worktrees\/|(^|\/)(obj|bin|node_modules|dist|\.vite|\.angular)(\/|$)/.test(rel)) continue;
-      // Only judge things that look like files or folders, not "A/B testing" or "read/write".
-      const looksLikePath = /\.[a-z0-9]{1,6}\/?$/i.test(rel) || rel.endsWith("/") || rel.startsWith(".") || rel.startsWith("~") ||
-        fs.existsSync(path.join(this.root, rel.split("/")[0]));
+      if (/\d\.\d+\/?$/.test(rel)) continue;
+      // Only judge things that look like files or folders, not "A/B testing", "read/write"
+      // or a bare name like "subagents/" or "nginx.org/".
+      const looksLikePath = /\.[a-z0-9]{1,6}$/i.test(rel) || (rel.endsWith("/") && /.\/./.test(rel.slice(0, -1))) ||
+        rel.startsWith(".") || rel.startsWith("~") || fs.existsSync(path.join(this.root, rel.split("/")[0]));
       if (!looksLikePath) continue;
       if (rel.startsWith("~/")) { if (!fs.existsSync(path.join(os.homedir(), rel.slice(2)))) out.add(ref); continue; }
       if (fs.existsSync(path.join(this.root, rel))) continue;
