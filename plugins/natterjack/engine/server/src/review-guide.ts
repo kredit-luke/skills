@@ -10,6 +10,11 @@
  *
  * A guide made without the repo checked out sees only the diff: "consequences" are what the
  * diff itself shows (changed signatures, contracts, schema), not a search for callers.
+ *
+ * A guide can also be posted on the PR, as a comment by multirepo's review-guide skill (the
+ * factory's guide stage, which can read the repo): a marker naming its commit, the guide, and
+ * the guide as data. One for the PR's current commit, by someone with write access, is shown
+ * instead of writing one here. Its hunk ids are this file's numbering (the skill numbers the same way).
  */
 
 import fs from "node:fs";
@@ -277,6 +282,35 @@ export function parseSecurity(text: string, ids: Set<string>): Omit<SecurityRevi
   })).filter((f: SecurityFinding) => f.title || f.text);
   findings.sort((a, b) => SEVERITIES.indexOf(a.severity) - SEVERITIES.indexOf(b.severity));
   return { summary: str(g?.summary, 500), findings };
+}
+
+// ------------------------------------------------------------------ posted on the PR
+
+export const GUIDE_MARKER = "natterjack:review-guide";
+
+/** A posted guide comment's commit and guide data (unchecked), or null when it isn't one or won't read. */
+export function readGuideComment(body: string): { sha: string; data: string } | null {
+  const s = String(body || "");
+  const head = new RegExp(`^<!-- ${GUIDE_MARKER} sha=([0-9a-f]{7,40}) -->`).exec(s);
+  const data = new RegExp(`<!-- ${GUIDE_MARKER}-data ([A-Za-z0-9+/=]+) -->\\s*$`).exec(s);
+  if (!head || !data) return null;
+  try { return { sha: head[1], data: Buffer.from(data[1], "base64").toString("utf-8") }; } catch { return null; }
+}
+
+/**
+ * The guides posted for `sha`, most recently edited first, each checked like a written one
+ * (unknown hunks dropped, every hunk tagged); `at` is when the comment was last edited. Whether
+ * its poster is trusted is the caller's to check.
+ */
+export function postedGuides(comments: { body: string; url: string; by: string; updatedAt: string }[], sha: string, ids: Set<string>): Omit<ReviewGuide, "ticket">[] {
+  const out: Omit<ReviewGuide, "ticket">[] = [];
+  for (const c of [...comments].reverse()) {
+    const g = readGuideComment(c.body);
+    if (!g || !sha.toLowerCase().startsWith(g.sha.toLowerCase())) continue;
+    try { out.push({ ...parseGuide(g.data, ids), sha, at: String(c.updatedAt || ""), posted: { by: c.by, url: c.url } }); } catch {}
+  }
+  // An older comment edited later is the fresher guide (the sort keeps comment order for ties).
+  return out.sort((a, b) => (Date.parse(b.at) || 0) - (Date.parse(a.at) || 0));
 }
 
 // ------------------------------------------------------------------ saved per commit

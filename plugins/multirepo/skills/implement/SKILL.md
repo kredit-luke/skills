@@ -54,7 +54,7 @@ node "$F" done  --ticket <ID> [--error "<why it stopped>"]
 | Each subagent's implement and review (step 7) | `stage --stage build` and `--stage review`, per `--repo`: `running` when it starts, then `done` or `failed` |
 | After the reviews (step 7) | the security stage (step 7), per `--repo` |
 | QA, second opinion (step 8) | `stage --stage qa`, and `--stage review` for the second opinion |
-| Commit and PRs (step 9) | the pre-PR gate (below), then `pr` per PR, `stage --stage pr --status done`, then the merge gate |
+| Commit and PRs (step 9) | the pre-PR gate (below), then `pr` per PR, `stage --stage pr --status done`, the review guide (`--ticket` records its guide stage), then the merge gate |
 | Wrap-up, or stopping for good | `done` (`--error` when it stopped short) |
 
 ### Following the team's policy
@@ -256,6 +256,7 @@ Each runs only when available; none blocks the run.
    - **The pre-PR gate first**: `decide --gate prePr`. `pass`: commit and open PRs as autonomous does. `ask`: the question below, leading with its reason. `stop`: commit nothing more, stop as the table says (the work stays in WORKROOT). `own-rules`: as follows.
    - **Interactive**: `AskUserQuestion` "Next step": **Commit and open PRs** (recommended) / **Commit only** / **Not yet** (give WORKROOT and the commands for later).
    - **Autonomous**: `/multirepo:commit --auto --root <WORKROOT> --ticket <TICKET>`, then `/multirepo:pr --root <WORKROOT>`: request Copilot where possible, one status check, **never merge**, PR links on the ticket.
+   - **Then the review guide**, once the PRs are open, when `stage-on --stage guide` says `on: true` (no policy on: autonomous runs it, interactive offers it): `/multirepo:review-guide <each PR> --ticket <TICKET> --root <WORKROOT>`, with what review, the security stage and QA found in its risk section. It posts a guide on each PR for its reviewers; a failure is recorded and never blocks the PR.
    - **Then the merge gate**: `decide --gate merge` is always `handoff` (or `skip`/`own-rules`): record it pending and end. Whoever the policy names merges.
    - When this conversation isn't in the worktree, say so and give `cd <WORKROOT>` for a session whose history sits with the code.
 

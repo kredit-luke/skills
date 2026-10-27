@@ -311,8 +311,8 @@ test("a person's gate decision: recorded only where the ticket waits, a rejectio
   fs.writeFileSync(file, JSON.stringify({ ticket: "acme/api#7", startedAt: at, updatedAt: at, stages: [{ id: "plan", status: "done" }],
     gates: [{ id: "spec", decision: "approved", at }, { id: "plan", mode: "human", decision: "pending", rationale: "A person decides the plan gate.", at }] }));
   assert.equal(ticketFile("acme/api#7"), "acme_api_7.json");
-  // Windows file names ignore case: the same file, whichever case the path comes back in.
-  const samePath = (a: string | null, b: string) => (process.platform === "win32" ? a?.toLowerCase() === b.toLowerCase() : a === b);
+  // Case-insensitive file systems (Windows, macOS by default) find it whatever the case: the same file either way.
+  const samePath = (a: string | null, b: string) => !!a && fs.statSync(a).ino === fs.statSync(b).ino && fs.statSync(a).dev === fs.statSync(b).dev;
   assert.ok(samePath(manifestFile("ACME/API#7", dir), file), "found whatever the ticket's case");
   fs.writeFileSync(path.join(dir, "custom-name.json"), JSON.stringify({ ticket: "OPS-3" }));
   assert.equal(manifestFile("OPS-3", dir), path.join(dir, "custom-name.json"), "another writer's file name");

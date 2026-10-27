@@ -7,7 +7,7 @@ import { DataService } from '../../core/data.service';
 import { relTime } from '../../core/util';
 import { PageHeaderComponent } from '../../shared/page-header.component';
 import { FactoryTicketsComponent } from './factory-tickets.component';
-import { specLevel } from './factory.util';
+import { guideLink, specLevel } from './factory.util';
 
 type View = 'tickets' | 'board';
 const VIEW_KEY = 'natterjack.factory.view';
@@ -96,6 +96,7 @@ const STATE: Record<FactoryItem['state'], { label: string; cls: string }> = {
                   <div class="links">
                     @for (p of it.prs; track p.url) {
                       <a [href]="p.url" target="_blank" rel="noopener">{{ p.repo || 'PR' }}{{ p.number ? ' #' + p.number : '' }}{{ p.state === 'merged' ? ' (merged)' : '' }}</a>
+                      @if (guideLink(p); as q) { <a [routerLink]="['/reviews']" [queryParams]="q" title="The PR's guided review on the Reviews page">Guided review</a> }
                     }
                     @if (it.runIds.length) { <a [routerLink]="['/runs', it.runIds[0]]">Latest run</a> }
                   </div>
@@ -179,5 +180,6 @@ export class FactoryComponent implements OnInit {
   state(it: FactoryItem) { return STATE[it.state]; }
   mark(s: FactoryStepStatus): string { return MARK[s]; }
   level = specLevel;
+  guideLink = guideLink;
   rel(t: string): string { return relTime(t); }
 }

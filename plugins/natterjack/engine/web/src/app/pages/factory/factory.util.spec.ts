@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { FactoryConfig, FactoryPresetPatch } from '../../../../../shared/api';
-import { checkMark, duration, matchingPreset, specLevel, numOrNull, pipelineSteps, splitLines, splitList, withPreset } from './factory.util';
+import { checkMark, duration, guideLink, matchingPreset, specLevel, numOrNull, pipelineSteps, splitLines, splitList, withPreset } from './factory.util';
 
 const STAGES = ['align', 'plan', 'build', 'review', 'security', 'qa', 'guide', 'pr', 'approve', 'merge'] as const;
 
@@ -78,5 +78,18 @@ describe('spec readiness', () => {
 describe('splitLines', () => {
   it('keeps commas in commands and globs', () => {
     expect(splitLines('node -e "console.log(1, 2)"\nsrc/{auth,payments}/**\n\n')).toEqual(['node -e "console.log(1, 2)"', 'src/{auth,payments}/**']);
+  });
+});
+
+describe('guideLink', () => {
+  it('opens an open GitHub PR on the Reviews page, guided', () => {
+    expect(guideLink({ url: 'https://github.com/acme/api/pull/42', state: 'open' })).toEqual({ repo: 'acme/api', n: 42, view: 'guide' });
+    expect(guideLink({ url: 'https://github.com/acme/api/pull/42/files', state: null })).toEqual({ repo: 'acme/api', n: 42, view: 'guide' });
+  });
+  it('has none for a merged or closed PR, or another host', () => {
+    expect(guideLink({ url: 'https://github.com/acme/api/pull/42', state: 'merged' })).toBeNull();
+    expect(guideLink({ url: 'https://github.com/acme/api/pull/42', state: 'closed' })).toBeNull();
+    expect(guideLink({ url: 'https://gitlab.com/acme/api/-/merge_requests/4', state: 'open' })).toBeNull();
+    expect(guideLink({ url: 'https://github.com/acme/api/pull/42x', state: 'open' })).toBeNull();
   });
 });

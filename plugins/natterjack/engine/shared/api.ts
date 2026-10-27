@@ -722,6 +722,8 @@ export interface ReviewGuide {
   tags: Record<string, HunkTag>;
   /** About how long a careful review takes. */
   minutes: number;
+  /** Posted on the PR as a comment (multirepo's review-guide skill), rather than written here. */
+  posted?: { by: string; url: string } | null;
 }
 
 export type Severity = 'critical' | 'high' | 'medium' | 'low';

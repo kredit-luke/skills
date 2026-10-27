@@ -25,7 +25,7 @@ import { type AgentReviewRun, agentReviewPrompt, lineOnDiff, parseAgentReview, r
 import { askClaude } from "./claude.ts";
 import { workspaceConfig } from "./config.ts";
 import { gh as ghJson, ghText, ghWithInput, rollupState } from "./inbox.ts";
-import { type GuideInput, GuideStore, guidePrompt, parseDiff, parseGuide, parseSecurity, securityPrompt } from "./review-guide.ts";
+import { GUIDE_MARKER, type GuideInput, GuideStore, guidePrompt, parseDiff, parseGuide, parseSecurity, postedGuides, securityPrompt } from "./review-guide.ts";
 
 const LIST_TTL_MS = 2 * 60 * 1000;
 /** PRs one search returns at most (gh's search caps at 1000). */
@@ -42,6 +42,8 @@ const GUIDE_TIMEOUT_MS = 5 * 60 * 1000;
 const REVIEW_AGENTS: AgentId[] = ["claude", "copilot", "codex"];
 /** How long a repository's merge settings are kept. */
 const REPO_TTL_MS = 10 * 60 * 1000;
+/** How long what the PR's comments say about a posted guide is kept before they're read again. */
+const POSTED_TTL_MS = 60 * 1000;
 /** Diffs kept in memory (by head commit), so the page and a guide don't fetch one twice. */
 const DIFF_CACHE = 20;
 /** What the summary prompt carries at most. */
@@ -129,6 +131,8 @@ export class Reviews {
   store: GuideStore;
   diffs = new Map<string, ReviewDiff>();
   repos = new Map<string, { at: number; methods: MergeMethod[]; deletesBranch: boolean }>();
+  /** PR and commit → the guide posted for it (or null), and when that was read. */
+  postedCache = new Map<string, { at: number; guide: ReviewGuide | null }>();
 
   constructor(deps: Partial<ReviewsDeps> & { ledgerDir: string }) {
     this.deps = {
@@ -348,10 +352,57 @@ export class Reviews {
     return diff;
   }
 
-  /** The saved guide for the PR's current commit, or null. */
+  /**
+   * The guide for the PR's current commit, or null: the newer of the one written here and the one
+   * posted on the PR (so writing it again here, or the skill updating its comment, shows).
+   */
   async savedGuide(repo: string, number: number): Promise<ReviewGuide | null> {
     const d = await this.view(repo, number, "headRefOid");
-    return this.store.get<ReviewGuide>(repo, number, d.headRefOid, "guide");
+    const local = this.store.get<ReviewGuide>(repo, number, d.headRefOid, "guide");
+    const posted = await this.posted(repo, number, d.headRefOid);
+    if (!local || !posted) return local || posted;
+    // Compared as times: GitHub's are to the second, ours to the millisecond.
+    return (Date.parse(posted.at) || 0) > (Date.parse(local.at) || 0) ? posted : local;
+  }
+
+  /**
+   * The newest guide posted on the PR for this commit (the review-guide skill's comment) by
+   * someone with write access to the repo, or null. It isn't saved: the comment can be edited.
+   * Reading it costs gh calls, so the answer is kept for a minute; any failure is "none".
+   *
+   * The PR's author may post it (the factory's guide stage runs as them). That's no more trust
+   * than a guide written here, which reads the author's own description and diff; the page says
+   * who posted it and can write an independent one.
+   */
+  private async posted(repo: string, number: number, sha: string): Promise<ReviewGuide | null> {
+    const key = `${repo}#${number}@${sha}`;
+    const hit = this.postedCache.get(key);
+    if (hit && Date.now() - hit.at < POSTED_TTL_MS) return hit.guide;
+    let guide: ReviewGuide | null = null;
+    try {
+      const out = await this.deps.ghText(["api", `repos/${repo}/issues/${number}/comments?per_page=100`, "--paginate", "--jq",
+        `.[] | select(.body | startswith("<!-- ${GUIDE_MARKER} ")) | {body, url: .html_url, by: .user.login, updatedAt: .updated_at}`]);
+      const comments = out.split("\n").filter(Boolean).flatMap((l) => { try { return [JSON.parse(l)]; } catch { return []; } });
+      if (comments.length) {
+        const diff = await this.diffAt(repo, number, sha);
+        for (const g of postedGuides(comments, sha, new Set(diff.files.flatMap((f) => f.hunks.map((h) => h.id))))) {
+          if (!(await this.canWrite(repo, g.posted!.by))) continue;
+          const d = await this.view(repo, number, "title,headRefName");
+          const t = await this.deps.ticket(`${d.title} ${d.headRefName}`).catch(() => null);
+          guide = { ...g, ticket: t ? { id: t.id, title: t.title, url: t.url } : null };
+          break;
+        }
+      }
+    } catch { guide = null; }
+    this.postedCache.set(key, { at: Date.now(), guide });
+    if (this.postedCache.size > 500) this.postedCache.delete(this.postedCache.keys().next().value!);
+    return guide;
+  }
+
+  /** Whether `login` can push to the repo (GitHub's permission for them: admin, maintain or write). */
+  private async canWrite(repo: string, login: string): Promise<boolean> {
+    const r = await this.deps.gh(["api", `repos/${repo}/collaborators/${encodeURIComponent(login)}/permission`, "--jq", "{permission: .permission}"]).catch(() => null);
+    return !!r && ["admin", "maintain", "write"].includes(r.permission);
   }
 
   /** The saved security review for the PR's current commit, or null. */
@@ -360,9 +411,10 @@ export class Reviews {
     return this.store.get<SecurityReview>(repo, number, d.headRefOid, "security");
   }
 
-  /** The guide for the PR's current commit: the saved one, or a new one (force: a new one anyway). */
+  /** The guide for the PR's current commit: the saved one, one posted on the PR, or a new one (force: a new one anyway). */
   guide(repo: string, number: number, force = false): Promise<ReviewGuide> {
-    return this.once(`guide:${repo}#${number}`, () => this.makeDeep(repo, number, force, "guide", async (input, ids) => ({
+    // savedGuide already read the saved one, so makeDeep needn't (force).
+    return this.once(`guide:${repo}#${number}`, async () => (!force && await this.savedGuide(repo, number)) || this.makeDeep(repo, number, true, "guide", async (input, ids) => ({
       ...parseGuide(await this.deps.askDeep(guidePrompt(input)), ids),
       ticket: input.ticket ? { id: input.ticket.id, title: input.ticket.title, url: input.ticket.url } : null,
     })));

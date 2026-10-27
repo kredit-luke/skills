@@ -5,7 +5,8 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { gitPath, jsonIn, numberedDiff, parseDiff, parseGuide, parseSecurity } from "../src/review-guide.ts";
+import { pathToFileURL } from "node:url";
+import { gitPath, jsonIn, numberedDiff, parseDiff, parseGuide, parseSecurity, postedGuides, readGuideComment } from "../src/review-guide.ts";
 import { Reviews } from "../src/reviews.ts";
 
 const DIFF = [
@@ -144,7 +145,7 @@ test("Reviews.guide and security are made once per head commit and kept in the l
     throw new Error(`unexpected gh ${args.join(" ")}`);
   };
   let diffs = 0;
-  const ghText = async () => { diffs++; return DIFF; };
+  const ghText = async (args: string[]) => { if (args[0] === "api") return ""; diffs++; return DIFF; };
   const prompts: string[] = [];
   const askDeep = async (p: string) => {
     prompts.push(p);
@@ -184,4 +185,91 @@ test("Reviews.guide and security are made once per head commit and kept in the l
   assert.equal((await r2.guide("acme/api", 1)).sha, "bbb");
   assert.equal(prompts.length, 4);
   assert.equal((await r2.diff("acme/api", 1)).sha, "bbb");
+});
+
+// multirepo's review-guide skill posts a guide on the PR; the Reviews page shows it instead of writing one.
+const guideBody = (sha: string, g: object) =>
+  `<!-- natterjack:review-guide sha=${sha} -->\n## Review guide\n\n…\n<!-- natterjack:review-guide-data ${Buffer.from(JSON.stringify(g)).toString("base64")} -->`;
+
+test("posted guides for a commit are read newest first, and checked", () => {
+  const ids = new Set(["h1", "h2", "h3"]);
+  const g = { intent: "Retries.", core: [{ title: "Retry", text: "t", hunks: ["h2", "h9"] }], questions: ["q?"], tags: { h1: "test" }, minutes: 4 };
+  assert.deepEqual(readGuideComment(guideBody("abc1234", g))!.sha, "abc1234");
+  assert.equal(readGuideComment("<!-- natterjack:review-guide sha=abc1234 -->\nno data"), null);
+  const c = (body: string, by = "sam", updatedAt = "2026-10-27T10:00:00Z") => ({ body, url: `https://x/${by}`, by, updatedAt });
+  const [found] = postedGuides([c(guideBody("abc1234", g))], "ABC1234ffff", ids);
+  assert.equal(found.intent, "Retries.");
+  assert.deepEqual(found.core[0].hunks, ["h2"]);
+  assert.deepEqual(found.tags, { h1: "test", h2: "core", h3: "supporting" });
+  assert.deepEqual(found.posted, { by: "sam", url: "https://x/sam" });
+  assert.equal(found.at, "2026-10-27T10:00:00Z");
+  // Another commit's, or data that won't read: none.
+  assert.deepEqual(postedGuides([c(guideBody("0000000", g))], "abc1234ffff", ids), []);
+  assert.deepEqual(postedGuides([c("<!-- natterjack:review-guide sha=abc1234 -->\n<!-- natterjack:review-guide-data bm90IGpzb24= -->")], "abc1234ffff", ids), []);
+  // Newest first; an older comment edited since is the newest.
+  assert.deepEqual(postedGuides([c(guideBody("abc1234", g), "old"), c(guideBody("abc1234", { ...g, intent: "Newer." }), "new")], "abc1234ffff", ids).map((x) => x.posted!.by), ["new", "old"]);
+  assert.deepEqual(postedGuides([c(guideBody("abc1234", g), "edited", "2026-10-27T12:00:00Z"), c(guideBody("abc1234", g), "later", "2026-10-27T11:00:00Z")], "abc1234ffff", ids).map((x) => x.posted!.by), ["edited", "later"]);
+});
+
+test("Reviews shows a guide posted by someone with write access, the newer of it and one written here", async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "review-guide-"));
+  const state = { sha: "abc1234ffff", comments: 0, failDiff: false, updatedAt: "2000-01-01T00:00:00Z", intent: "Posted." };
+  const perms: Record<string, string> = { bot: "write", reader: "read" };
+  const gh = async (args: string[]) => {
+    if (args[0] === "pr" && args[1] === "view") return { title: "PROJ-7 t", body: "b", author: { login: "sam" }, baseRefName: "main", headRefName: "feat/x", headRefOid: state.sha };
+    const perm = /^repos\/acme\/api\/collaborators\/([^/]+)\/permission$/.exec(args[1] || "");
+    if (args[0] === "api" && perm) return { permission: perms[perm[1]] || "none" };
+    throw new Error(`unexpected gh ${args.join(" ")}`);
+  };
+  const comment = (by: string, intent: string) => JSON.stringify({ body: guideBody("abc1234", { intent, core: [{ title: "c", text: "t", hunks: ["h1"] }] }), url: `https://gh/c/${by}`, by, updatedAt: state.updatedAt });
+  const ghText = async (args: string[]) => {
+    if (args[0] !== "api") { if (state.failDiff) throw new Error("diff too large"); return DIFF; }
+    state.comments++;
+    // A newer one by someone who can only read is passed over.
+    return state.sha.startsWith("abc1234") ? `${comment("bot", state.intent)}\n${comment("reader", "Sneaky.")}\n` : "";
+  };
+  let asked = 0;
+  const askDeep = async () => { asked++; return '{"intent":"Written.","core":[],"questions":[],"tags":{},"minutes":1}'; };
+  const ticket = async () => ({ id: "PROJ-7", title: "Retries", url: "https://t/PROJ-7", description: "" });
+  const make = () => new Reviews({ ledgerDir: dir, gh, ghText, askDeep, ticket, ask: async () => "s", codeHost: () => ({ kind: "github", orgs: [] }) });
+  const r = make();
+  const g = (await r.savedGuide("acme/api", 1))!;
+  assert.equal(g.intent, "Posted.");
+  assert.deepEqual(g.posted, { by: "bot", url: "https://gh/c/bot" });
+  assert.deepEqual(g.ticket, { id: "PROJ-7", title: "Retries", url: "https://t/PROJ-7" });
+  assert.equal((await r.guide("acme/api", 1)).intent, "Posted.");
+  assert.equal(asked, 0);
+  assert.equal(state.comments, 1, "kept for a minute");
+  // Written again here, even within the same second as the comment's edit (GitHub's times are to the second): it shows.
+  state.updatedAt = new Date().toISOString().replace(/\.\d+Z$/, "Z");
+  r.postedCache.clear();
+  assert.equal((await r.guide("acme/api", 1, true)).intent, "Written.");
+  assert.equal((await r.savedGuide("acme/api", 1))!.intent, "Written.");
+  // The skill updates its comment later: that's newer, and shows once the minute is up.
+  state.updatedAt = "2999-01-01T00:00:00Z";
+  state.intent = "Posted again.";
+  const r2 = make();
+  assert.equal((await r2.savedGuide("acme/api", 1))!.intent, "Posted again.");
+  // When reading it fails, there's no posted guide (not an error).
+  state.failDiff = true;
+  const r3 = make();
+  assert.equal((await r3.savedGuide("acme/api", 1))!.intent, "Written.");
+  // A new commit with none posted: none.
+  state.sha = "def5678";
+  assert.equal(await make().savedGuide("acme/api", 1), null);
+});
+
+// The skill numbers hunks itself; its ids must mean the same hunks here.
+test("multirepo's review-guide script numbers hunks as the dashboard does", async (t) => {
+  const script = path.join(import.meta.dirname, "..", "..", "..", "..", "multirepo", "scripts", "review-guide.mjs");
+  if (!fs.existsSync(script)) return t.skip("no multirepo plugin next to this engine");
+  const cli = await import(pathToFileURL(script).href);
+  const mine = parseDiff(DIFF);
+  const theirs = cli.parseDiff(DIFF);
+  assert.deepEqual(theirs.map((f: any) => [f.path, f.status, f.hunks.map((h: any) => [h.id, h.header, h.newStart])]),
+    mine.files.map((f) => [f.path, f.status, f.hunks.map((h) => [h.id, h.header, h.newStart])]));
+  // What it posts reads back here.
+  const { guide } = cli.normalizeGuide({ intent: "x", core: [{ title: "c", text: "t", hunks: ["h1"] }] }, new Set(["h1", "h2", "h3"]));
+  const body = cli.guideComment(guide, { sha: "abc1234" });
+  assert.equal(postedGuides([{ body, url: "u", by: "b", updatedAt: "t" }], "abc1234", new Set(["h1", "h2", "h3"]))[0].intent, "x");
 });

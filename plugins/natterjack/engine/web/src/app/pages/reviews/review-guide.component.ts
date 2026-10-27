@@ -25,6 +25,7 @@ type Chapter = typeof CHAPTERS[number];
           <span class="mono">{{ repo() }}#{{ number() }}</span>
           @if (detail(); as d) { · {{ d.author || 'unknown' }} · <span class="add">+{{ d.additions }}</span> <span class="del">−{{ d.deletions }}</span> in {{ d.changedFiles }} {{ d.changedFiles === 1 ? 'file' : 'files' }} }
           @if (guide()?.minutes; as m) { · about {{ m }} min to review }
+          @if (guide()?.posted; as p) { · <a [href]="p.url" target="_blank" rel="noopener" title="Written by the review-guide skill and posted on the PR">guide posted by {{ p.by }}</a> }
           @if (guide()) { · {{ doneCount() }}/{{ chapters.length }} chapters read }
         </div>
       </div>

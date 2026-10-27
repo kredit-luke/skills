@@ -35,6 +35,16 @@ export function pipelineSteps(c: FactoryConfig): ({ kind: 'stage'; id: FactorySt
   return pipelineOrder(c) as ({ kind: 'stage'; id: FactoryStageId } | { kind: 'gate'; id: FactoryGateId })[];
 }
 
+/**
+ * The Reviews page's guided review of a factory PR (its query params), or null: only for an open
+ * GitHub PR, which the Reviews page reads. A guide the review-guide skill posted shows there.
+ */
+export function guideLink(pr: { url: string; state: string | null }): { repo: string; n: number; view: 'guide' } | null {
+  if (pr.state === 'merged' || pr.state === 'closed') return null;
+  const m = /^https:\/\/github\.com\/([A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+)\/pull\/(\d+)(?:[/?#]|$)/.exec(pr.url || '');
+  return m ? { repo: m[1], n: Number(m[2]), view: 'guide' } : null;
+}
+
 /** One per line, commas kept (commands, globs like src/{a,b}/**). */
 export function splitLines(text: string): string[] {
   return [...new Set(String(text || '').split(/\r?\n/).map((s) => s.trim()).filter(Boolean))];
