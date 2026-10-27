@@ -11,10 +11,33 @@ export interface RunTicket { id: string; sure: boolean }
 const EXPLICIT = [/^\/(?:[\w.-]+:)?implement\s+([^\s"']+)/, /^Explain (?:Linear )?issue (\S+?):/];
 const LOOSE = /\b([A-Z][A-Z0-9]{1,5}-\d{1,6})\b/;
 
-/** The ticket an Implement or Explain prompt was started for, or null for any other prompt. */
+/**
+ * A ticket argument as its id: a pasted tracker URL becomes the id in it (multirepo's
+ * implement.mjs does the same): a GitHub issue/pull URL → "owner/repo#n"; any other URL → the
+ * key in Jira's ?selectedIssue=, after /issue/ or /browse/, or any path segment. Not a URL → as given.
+ */
+export function canonicalTicket(arg: string): string {
+  const raw = String(arg || '').trim();
+  if (!/^[a-z][a-z0-9+.-]*:\/\//i.test(raw)) return raw;
+  let url: URL;
+  try { url = new URL(raw); } catch { return raw; }
+  const segs = url.pathname.split('/').filter(Boolean).map((s) => { try { return decodeURIComponent(s); } catch { return s; } });
+  if (/^(www\.)?github\.com$/i.test(url.hostname)) {
+    const [owner, repo, kind, num] = segs;
+    return owner && repo && /^(issues|pull)$/.test(kind ?? '') && /^\d+$/.test(num ?? '') ? `${owner}/${repo}#${num}` : raw;
+  }
+  const after = (key: string) => { const i = segs.findIndex((s) => s.toLowerCase() === key); return i >= 0 ? segs[i + 1] : null; };
+  for (const c of [url.searchParams.get('selectedIssue'), after('issue'), after('browse'), ...segs]) {
+    const m = c && /^([A-Za-z][A-Za-z0-9]{0,9}-\d+)$/.exec(c);
+    if (m) return m[1].toUpperCase();
+  }
+  return raw;
+}
+
+/** The ticket an Implement or Explain prompt was started for (a URL as its id), or null for any other prompt. */
 export function implementTicket(prompt?: string | null): string | null {
   const text = String(prompt || '').trim();
-  for (const re of EXPLICIT) { const m = re.exec(text); if (m) return m[1]; }
+  for (const re of EXPLICIT) { const m = re.exec(text); if (m) return canonicalTicket(m[1]); }
   return null;
 }
 

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { implementTicket, runTicket } from '../../../../shared/run-ticket';
+import { canonicalTicket, implementTicket, runTicket } from '../../../../shared/run-ticket';
 
 describe('runTicket', () => {
   it('prefers the worktree ticket', () => {
@@ -30,5 +30,17 @@ describe('runTicket', () => {
   });
   it('finds nothing in plain text', () => {
     expect(runTicket({ label: 'Tidy the docs', prompt: 'fix the typo' })).toBeNull();
+  });
+});
+
+describe('canonicalTicket', () => {
+  it('reads a tracker URL as its ticket id, as implement does', () => {
+    expect(canonicalTicket('https://linear.app/acme/issue/ENG-12/retry-webhooks')).toBe('ENG-12');
+    expect(canonicalTicket('https://acme.atlassian.net/browse/PROJ-7')).toBe('PROJ-7');
+    expect(canonicalTicket('https://acme.atlassian.net/jira/software/projects/P/boards/1?selectedIssue=P-44')).toBe('P-44');
+    expect(canonicalTicket('https://github.com/acme/api/issues/42')).toBe('acme/api#42');
+    expect(canonicalTicket('ENG-5')).toBe('ENG-5');
+    expect(implementTicket('/multirepo:implement https://linear.app/acme/issue/ENG-12/x --auto')).toBe('ENG-12');
+    expect(runTicket({ prompt: '/implement https://github.com/acme/api/pull/9' })).toEqual({ id: 'acme/api#9', sure: true });
   });
 });

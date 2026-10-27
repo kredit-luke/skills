@@ -35,6 +35,9 @@ When the workspace has a Natterjack dashboard, its **Factory** page shows this t
 ```bash
 F="${CLAUDE_PLUGIN_ROOT}/scripts/factory.mjs"
 node "$F" policy                      # the team's factory.json: { exists: false } when there's none
+node "$F" wip    --ticket <ID>        # other tickets in flight vs the policy's WIP limit: { inFlight, limit, ok }
+node "$F" decide --ticket <ID> --gate spec|plan|prePr|merge --run interactive|autonomous --can-ask yes|no
+node "$F" stage-on --stage security   # { policy, on }: whether the team's policy runs a stage
 node "$F" start --ticket <ID> --title "<title>" --url <ticket url> --mode interactive|autonomous --branch <b> --repos a,b --plan <plan file> --workroot <WORKROOT>
 node "$F" stage --ticket <ID> --stage <stage> --status running|done|failed|skipped [--repo <r>] [--agent <type>] [--note "<as-built, one line>"]
 node "$F" gate  --ticket <ID> --gate spec|plan|prePr|merge --decision pending|approved|rejected --by user|auto [--rationale "<why>"]
@@ -44,16 +47,32 @@ node "$F" done  --ticket <ID> [--error "<why it stopped>"]
 
 | When | Report |
 |---|---|
-| Ticket read (step 1) | `start` with the title, URL and mode, then score the spec (below) |
+| Ticket read (step 1) | `start` with the title, URL and mode, then score the spec and decide the spec gate (below) |
 | WORKROOT is set (step 5) | `start` again with `--workroot`, `--branch` and `--repos` (it merges into what's there) |
 | Plan file written (step 4) | `stage --stage plan --status done` |
-| You ask to proceed (step 4) / the user answers | `gate --gate plan --decision pending`, then `approved` (or `rejected`, then `done --error "plan rejected"`). Autonomous: `approved --by auto` |
+| Before building (step 4) | the plan gate (below) |
 | Each subagent's implement and review (step 7) | `stage --stage build` and `--stage review`, per `--repo`: `running` when it starts, then `done` or `failed` |
+| After the reviews (step 7) | the security stage (step 7), per `--repo` |
 | QA, second opinion (step 8) | `stage --stage qa`, and `--stage review` for the second opinion |
-| Commit and PRs (step 9) | `gate --gate prePr --decision approved`, then `pr` per PR, `stage --stage pr --status done` |
+| Commit and PRs (step 9) | the pre-PR gate (below), then `pr` per PR, `stage --stage pr --status done`, then the merge gate |
 | Wrap-up, or stopping for good | `done` (`--error` when it stopped short) |
 
-`policy` is for reading only, for now. The gates above follow this skill's own rules (interactive asks, autonomous decides). Read `gates` from it to say on the ticket which gates the team expects a person at.
+### Following the team's policy
+
+When the team's Factory policy is on (`factory.json` `enabled`), it decides the gates, not this skill's own rules. Don't read the policy and interpret it yourself: ask `decide` at each gate and do what it says. `--run` is this run's mode (step 0). Pass `--can-ask yes` when `AskUserQuestion` is in your tools (in a dashboard run it becomes a question card someone can answer later), else `no`.
+
+| `action` | Do |
+|---|---|
+| `own-rules` | No policy is on: this skill's own rules (interactive asks, autonomous decides) |
+| `skip` | The gate is off: carry on, record nothing |
+| `pass` | `gate --decision approved --by auto --rationale "<reason>"`, carry on |
+| `ask` | `gate --decision pending`, then ask with `AskUserQuestion`, leading with `reason`; record the answer (`approved` / `rejected` `--by user`) |
+| `stop` | `gate --decision pending --rationale "<reason>"`, comment the reason on the ticket, and end the run: it's waiting for a person. Leave the work and the ticket's state as they are; a later run picks it up. For a spec below the team's minimum, record `rejected` and `done --error "spec not ready"` instead |
+| `handoff` | The merge gate: `gate --gate merge --decision pending`; this run never merges |
+
+A rejection ends the ticket's run: `done --error "<gate> rejected"`.
+
+**Limits.** At the start (step 1), `wip`: when it isn't `ok`, say which tickets are in flight, then interactive: ask whether to start anyway; autonomous: comment on the ticket and stop (no `start`). The dashboard enforces the budgets and agent hours itself: it won't launch a run for a ticket that's over them.
 
 ## Steps at a glance
 
@@ -64,7 +83,7 @@ node "$F" done  --ticket <ID> [--error "<why it stopped>"]
 4. Plan file, affected repos, open questions
 5. Establish the workspace: worktree, branches, paths, ticket "started"
 6. Pre-flight checklist
-7. The subagent pipeline
+7. The subagent pipeline, then the security stage
 8. Optional gates: QA, second-opinion review, stack left running
 9. Wrap up: verify, record, hand off
 
@@ -112,10 +131,10 @@ Then **score the spec**: how ready the ticket is to start on, by what any good s
 node "${CLAUDE_PLUGIN_ROOT}/scripts/spec-check.mjs" <ticket.json> --ticket <ID> [--overrides '<json>']
 ```
 
-`<ticket.json>` is fetch-ticket's output (saved to a file; `-` reads stdin). `--ticket` records the score for the Factory board. Read each check's finding against the ticket: where the text fooled it (criteria that look testable but contradict each other, a "?" that was answered in a comment), re-run with `--overrides '{"criteria":{"score":0.5,"reason":"AC 2 and 3 contradict"}}'`. A score of 0, 0.5 or 1, and always a reason. Then the **spec gate**:
-- **Ready**: carry on (`gate --gate spec --decision approved --by auto`).
-- **Needs work / Not ready, interactive**: say the score and what's missing in a line each, and offer **Align first** (`/multirepo:align`, when installed) / **Proceed anyway** / **Abort**; record the answer as the spec gate's decision.
-- **Autonomous**: below the result's `minScore` (when set), comment on the ticket with the score and what's missing, `gate --gate spec --decision rejected --by auto`, `done --error "spec not ready"`, and stop. Otherwise carry on and put the score and gaps in the Assumptions.
+`<ticket.json>` is fetch-ticket's output (saved to a file; `-` reads stdin). `--ticket` records the score for the Factory board. Read each check's finding against the ticket: where the text fooled it (criteria that look testable but contradict each other, a "?" that was answered in a comment), re-run with `--overrides '{"criteria":{"score":0.5,"reason":"AC 2 and 3 contradict"}}'`. A score of 0, 0.5 or 1, and always a reason. Then the **spec gate**: `decide --gate spec` (above). When it says `ask`, or `own-rules` and the spec isn't Ready:
+- **Ready** (`own-rules`): carry on (`gate --gate spec --decision approved --by auto`).
+- **Ask**: say the score and what's missing in a line each, and offer **Align first** (`/multirepo:align`, when installed) / **Proceed anyway** / **Abort**; record the answer as the spec gate's decision.
+- **Autonomous under `own-rules`**: below the result's `minScore` (when set), comment on the ticket with the score and what's missing, `gate --gate spec --decision rejected --by auto`, `done --error "spec not ready"`, and stop. Otherwise carry on and put the score and gaps in the Assumptions.
 
 Then:
 - **Blocked-by links** (`links[]` with `type: "blocked by"`) whose `state` isn't done → tell the user and ask whether to proceed. Autonomous: stop, comment that it's blocked, leave the state alone.
@@ -158,7 +177,7 @@ When there's no plan or align comment and the ticket is vague (product wording, 
   - **<question>**: <decision>. <one line of reasoning, or "confirmed by user">.
   ```
 
-Interactive: before building, offer **Proceed** / **Proceed and post the plan** (`/multirepo:submit-plan`, so later runs reuse it) / **View the plan** / **Abort**.
+Then the **plan gate**: `decide --gate plan`. On `ask`, or `own-rules` when interactive, offer **Proceed** / **Proceed and post the plan** (`/multirepo:submit-plan`, so later runs reuse it) / **View the plan** / **Abort**. On `pass`, `own-rules` when autonomous, or `skip`, carry on. On `stop`, post the plan (`/multirepo:submit-plan`) so the person who decides can read it, then stop as the table says.
 
 ## 5. Establish the workspace
 
@@ -211,7 +230,11 @@ Read `references/pipeline-example.md` for concrete call shapes and `references/a
 2. **Verify the plan's factual claims** before approving ("nothing else calls this", "this would throw because..."). One grep usually settles it; a confident plan on a false premise is as persuasive as a true one. Approve or correct with `SendMessage` to the agent's **id**.
 3. **Implement**, then **review**: every repo that changed gets a review stage, even frontend-only or config-only work (it's often the only adversarial pass). The reviewer gets the files changed (untracked ones listed explicitly: the ticket is uncommitted, so `git diff` hides new files), the implementer's claims to check, the questions you want answered, severity ranking, and permission to find nothing. Changes requested → forward to the implementer, then resume the **same** reviewer.
 4. **As-built note**: after each approved step, append to the plan file what deviated from the plan and why, decisions made in review, renames, and the build/test numbers. It's what makes a step boundary a safe hand-off.
-5. **Verify where it landed** after the first stage: `git -C <WORKROOT>/<repo> status` shows the change and the main workspace's copy is clean.
+5. **Security stage**, once every changed repo's review has passed, when `stage-on --stage security` says `on: true` (or no policy is on and the change touches auth, input handling, secrets, dependencies or data access). Two halves, then one record per repo:
+   - **Scanners and secrets**: `node "${CLAUDE_PLUGIN_ROOT}/scripts/security-scan.mjs" --root <WORKROOT> --repos a,b --json`. It runs the team's scanners (`npm audit`, `pip-audit`, …) in the repos they apply to, and gitleaks (8.19+) over the changed files when it's installed. A scanner that isn't installed is skipped, not failed: say which. One that times out or can't run fails the repo (a scan that didn't finish isn't a pass).
+   - **Agent security review** (unless `factory.json` `security.agentReview` is false): a reviewer subagent per changed repo reads the diff (untracked files listed) for injection, authentication and authorization mistakes, secrets, unsafe input handling, data exposure, and risky dependency or permission changes. Each finding gets a severity (critical/high/medium/low) and a file and line. No generic advice; nothing found is a fine answer.
+   - **Record**: `stage --stage security --repo <r> --status done|failed --agent security --note "<scanners; agent findings>"`. It fails at the policy's `security.failOn` (default high) or worse, from either half. A failure goes back to the implementer like a review's changes requested (one correction; then stop and escalate).
+6. **Verify where it landed** after the first stage: `git -C <WORKROOT>/<repo> status` shows the change and the main workspace's copy is clean.
 
 **Generated code gates** (only if the workspace has them; read CLAUDE.md). When a generated client or artifact must be regenerated from a running upstream: start the upstream from WORKROOT with the workspace's run tooling (or a Natterjack dashboard's `apps start`), confirm readiness by port/HTTP (not stdout), confirm the **served** contract contains the new symbol (else you're generating against the main workspace's copy), regenerate with the documented command, check the generated diff is non-empty, and stop the upstream if CLAUDE.md says so. **Nobody hand-writes, stubs or edits generated code.** If generation can't run, stop dependent work, report the blocker, fix the cause, resume.
 
@@ -221,7 +244,7 @@ Read `references/pipeline-example.md` for concrete call shapes and `references/a
 
 Each runs only when available; none blocks the run.
 - **QA** for UI changes, when the workspace defines a browser QA agent (or CLAUDE.md describes one): `references/qa-subagent.md`. Interactive: ask first (it's token-heavy).
-- **Second opinion**: when `copilot --version` works, offer `/multirepo:copilot-review --root <WORKROOT>` before PRs (autonomous: run it). Its fixes are uncommitted; if they touch code QA exercised, offer to re-run QA.
+- **Second opinion**: when `copilot --version` works, offer `/multirepo:copilot-review --root <WORKROOT>` before PRs (autonomous: run it). Its fixes are uncommitted; if they touch code QA exercised, offer to re-run QA. Record it as `stage --stage review --repo <r>` per repo it changed, and **run the security stage again** for those repos: a scan older than the last change doesn't pass the pre-PR gate.
 - **Stack for manual testing** (interactive, when the workspace has run tooling): restart (never reuse a stale build), verify by port, then give the URLs and 2-4 things to click from the acceptance criteria.
 
 ## 9. Wrap up
@@ -230,8 +253,10 @@ Each runs only when available; none blocks the run.
 2. **Summarize**: per repo what changed, the review verdicts, QA, the second opinion, anything left undone, and any assumption that turned out wrong.
 3. **Comment on the ticket** with the same.
 4. **Hand off; never end on a list of next steps** (a run that ends "now run commit and pr" reads as done while the work is uncommitted).
+   - **The pre-PR gate first**: `decide --gate prePr`. `pass`: commit and open PRs as autonomous does. `ask`: the question below, leading with its reason. `stop`: commit nothing more, stop as the table says (the work stays in WORKROOT). `own-rules`: as follows.
    - **Interactive**: `AskUserQuestion` "Next step": **Commit and open PRs** (recommended) / **Commit only** / **Not yet** (give WORKROOT and the commands for later).
    - **Autonomous**: `/multirepo:commit --auto --root <WORKROOT> --ticket <TICKET>`, then `/multirepo:pr --root <WORKROOT>`: request Copilot where possible, one status check, **never merge**, PR links on the ticket.
+   - **Then the merge gate**: `decide --gate merge` is always `handoff` (or `skip`/`own-rules`): record it pending and end. Whoever the policy names merges.
    - When this conversation isn't in the worktree, say so and give `cd <WORKROOT>` for a session whose history sits with the code.
 
 ## Errors
@@ -245,4 +270,6 @@ Each runs only when available; none blocks the run.
 | Repo skipped by `--branches` | Report it with the reason; never switch it yourself |
 | Subagent errors or a bad plan | One correction via `SendMessage`; then stop and escalate |
 | Generation blocked | Stop dependent work, report, fix the cause, resume |
+| The policy says `stop` at a gate | Record it pending with the reason, comment on the ticket, end the run; a later run picks it up |
+| `wip` isn't ok | Interactive: ask; autonomous: comment on the ticket and stop |
 | Scope creep | Bugs in this ticket's feature: same branch. Anything else: ask (autonomous: record as a follow-up, don't build it) |

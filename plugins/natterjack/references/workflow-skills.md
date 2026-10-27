@@ -43,7 +43,7 @@ The pipeline behind the Issues page's Implement button. The deck preset is `"/im
 
 ### Reporting to the Factory board
 
-A pipeline that reports its progress gets a card on the **Factory** page. Each work item has one manifest, `<workspace>/.claude/ledger/factory/<ticket>.json` (in the source workspace's ledger even when the work is in a worktree; the ticket id made file-safe, `acme/api#7` → `acme_api_7.json`). The board reads that folder; it never scrapes transcripts. `/multirepo:implement` writes it through `scripts/factory.mjs` (`start`, `stage`, `gate`, `pr`, `done`); a pipeline of your own can call the same script or write the same shape:
+A pipeline that reports its progress gets a card on the **Factory** page. Each work item has one manifest, `<workspace>/.claude/ledger/factory/<ticket>.json` (in the source workspace's ledger even when the work is in a worktree; the ticket id made file-safe, `acme/api#7` → `acme_api_7.json`). The board reads that folder; it never scrapes transcripts. `/multirepo:implement` writes it through `scripts/factory.mjs` (`start`, `stage`, `gate`, `pr`, `done`), asks it what the team's policy says at each gate (`decide`, `wip`, `stage-on`), and runs the security stage's scanners with `scripts/security-scan.mjs`; a pipeline of your own can call the same scripts or write the same shape:
 
 ```json
 {

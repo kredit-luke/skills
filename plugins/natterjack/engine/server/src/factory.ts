@@ -300,14 +300,17 @@ export function normalizeManifest(raw: any): FactoryManifest | null {
 /** Parsed manifests by file, kept until the file's mtime changes (the board reloads every few seconds). */
 const parsed = new Map<string, { mtimeMs: number; manifest: FactoryManifest | null; error: string | null }>();
 
-/** The newest manifests in the folder (by file time, at most MAX_MANIFESTS), newest first, plus the files that couldn't be read. */
-export function readManifests(dir = manifestDir()): { manifests: FactoryManifest[]; errors: string[] } {
+/**
+ * The newest manifests in the folder (by file time, at most `limit`: the board's MAX_MANIFESTS; limits
+ * are checked against all of them), newest first, plus the files that couldn't be read.
+ */
+export function readManifests(dir = manifestDir(), limit = MAX_MANIFESTS): { manifests: FactoryManifest[]; errors: string[] } {
   let files: { f: string; mtimeMs: number }[] = [];
   try {
     files = fs.readdirSync(dir).filter((f) => f.endsWith(".json"))
       .map((f) => { try { return { f, mtimeMs: fs.statSync(path.join(dir, f)).mtimeMs }; } catch { return null; } })
       .filter((x): x is { f: string; mtimeMs: number } => !!x)
-      .sort((a, b) => b.mtimeMs - a.mtimeMs).slice(0, MAX_MANIFESTS);
+      .sort((a, b) => b.mtimeMs - a.mtimeMs).slice(0, limit);
   } catch { return { manifests: [], errors: [] }; }
   const manifests: FactoryManifest[] = [];
   const errors: string[] = [];
@@ -353,7 +356,12 @@ export function boardColumns(c: FactoryConfig): FactoryColumn[] {
 }
 
 /** A run of the item's ticket, as the board needs it. */
-export interface FactoryRun { id: string; ticket: string | null; status: RunStatus; costUsd: number; startedAt: string; agent: string | null; model: string | null }
+export interface FactoryRun {
+  id: string; ticket: string | null; status: RunStatus; costUsd: number; startedAt: string; agent: string | null; model: string | null;
+  durationMs?: number;
+  /** An implement run (counts toward WIP while it's going, before it has reported anything). */
+  implement?: boolean;
+}
 
 const WHO: Record<FactoryGateMode, string> = { human: "you", approver: "the Approver", auto: "its checks", off: "" };
 
@@ -399,6 +407,43 @@ function latestPerRepo<T extends { repo: string | null }>(rows: T[]): T[] {
   const by = new Map<string, T>();
   for (const r of rows) by.set(r.repo ?? "", r);
   return [...by.values()];
+}
+
+const sameTicket = (a: string | null | undefined, b: string | null | undefined) => !!a && !!b && a.toLowerCase() === b.toLowerCase();
+const money = (n: number) => `$${n.toFixed(2)}`;
+
+/**
+ * Why the factory won't start another run for a ticket, or null. Only with the factory on:
+ * the ticket's budget or agent hours are used up, the day's factory budget is spent (runs of
+ * tickets on the board, started today), or the WIP limit is full and this ticket isn't already
+ * in flight (carrying on with one in flight is fine). In flight: a manifest that has started and
+ * isn't done, or an implement run that's going (it may not have reported yet).
+ */
+export function factoryLaunchBlocker(cfg: FactoryConfig, configured: boolean, ticket: string, manifests: FactoryManifest[], runs: FactoryRun[], now = Date.now()): string | null {
+  if (!configured || !cfg.enabled) return null;
+  const mine = runs.filter((r) => sameTicket(r.ticket, ticket));
+  const { itemBudgetUsd, dayBudgetUsd, itemHours, wip } = cfg.limits;
+  const spent = mine.reduce((s, r) => s + (r.costUsd || 0), 0);
+  if (itemBudgetUsd != null && spent >= itemBudgetUsd) return `${ticket} has used ${money(spent)} of its ${money(itemBudgetUsd)} budget (Factory policy). Raise the budget on Factory → Policy to carry on.`;
+  const hours = mine.reduce((s, r) => s + (r.durationMs || 0), 0) / 3_600_000;
+  if (itemHours != null && hours >= itemHours) return `${ticket} has had ${hours.toFixed(1)} of its ${itemHours} agent hours (Factory policy). Raise the limit on Factory → Policy to carry on.`;
+  if (dayBudgetUsd != null) {
+    const day = new Date(now);
+    day.setHours(0, 0, 0, 0);
+    const onBoard = (t: string | null) => manifests.some((m) => sameTicket(m.ticket, t));
+    const today = runs.filter((r) => Date.parse(r.startedAt) >= day.getTime() && onBoard(r.ticket)).reduce((s, r) => s + (r.costUsd || 0), 0);
+    if (today >= dayBudgetUsd) return `The factory has spent ${money(today)} of its ${money(dayBudgetUsd)} budget today (Factory policy).`;
+  }
+  const started = (m: FactoryManifest) => !m.done && (m.stages.length > 0 || m.gates.length > 0);
+  const going = (r: FactoryRun) => !!r.implement && !!r.ticket && (r.status === "running" || r.status === "waiting");
+  const inFlight = new Map<string, string>();
+  for (const m of manifests) if (started(m)) inFlight.set(m.ticket.toLowerCase(), m.ticket);
+  for (const r of runs) if (going(r)) inFlight.set(r.ticket!.toLowerCase(), r.ticket!);
+  if (!inFlight.has(ticket.toLowerCase())) {
+    const others = [...inFlight.values()];
+    if (others.length >= wip) return `${others.length} ${others.length === 1 ? "ticket is" : "tickets are"} already in the factory (WIP limit ${wip}): ${others.slice(0, 5).join(", ")}. Finish one first, or raise the limit on Factory → Policy.`;
+  }
+  return null;
 }
 
 /** Every pipeline step for one item: its state, times, per-repo rows and gate decisions. */

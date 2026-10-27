@@ -7,7 +7,7 @@ import path from "node:path";
 import { pathToFileURL } from "node:url";
 import {
   applyPreset, boardColumns, buildBoard, defaultFactoryConfig, factoryConfigProblems, factoryConfigState, normalizeFactoryConfig,
-  GATE_IDS, SPEC_CHECKS, STAGE_IDS, normalizeManifest, pipeline, placeItem, readManifests, saveFactoryConfig,
+  GATE_IDS, SPEC_CHECKS, STAGE_IDS, factoryLaunchBlocker, normalizeManifest, pipeline, placeItem, readManifests, saveFactoryConfig,
 } from "../src/factory.ts";
 
 const tmp = () => fs.mkdtempSync(path.join(os.tmpdir(), "factory-"));
@@ -249,4 +249,58 @@ test("Copilot on #112: plan gate without planning, retried rows, a deleted polic
   const first = saveFactoryConfig({ config: defaultFactoryConfig(), mtimeMs: null }, dir);
   fs.unlinkSync(path.join(dir, "factory.json"));
   assert.throws(() => saveFactoryConfig({ config: first.config, mtimeMs: first.mtimeMs }, dir), (e: any) => e.status === 409);
+});
+
+test("the factory refuses a launch over the ticket's budget or hours, the day's budget, or the WIP limit", () => {
+  const cfg = { ...defaultFactoryConfig(), enabled: true, limits: { wip: 1, itemBudgetUsd: 10, dayBudgetUsd: 30, itemHours: 2 } };
+  const now = Date.parse("2026-10-27T15:00:00");
+  const run = (id: string, ticket: string, costUsd: number, startedAt = "2026-10-27T09:00:00", durationMs = 0) =>
+    ({ id, ticket, status: "succeeded" as const, costUsd, startedAt: new Date(startedAt).toISOString(), agent: "claude", model: null, durationMs });
+  const started = (t: string) => manifest({ ticket: t, stages: [{ id: "build", status: "running" }] });
+
+  assert.equal(factoryLaunchBlocker(cfg, true, "ENG-1", [], [], now), null);
+  assert.equal(factoryLaunchBlocker({ ...cfg, enabled: false }, true, "ENG-1", [started("ENG-2")], [run("a", "ENG-1", 99)], now), null, "off: no limits");
+  assert.match(factoryLaunchBlocker(cfg, true, "ENG-1", [], [run("a", "eng-1", 6), run("b", "ENG-1", 4.5)], now)!, /ENG-1 has used \$10\.50 of its \$10\.00 budget/);
+  assert.match(factoryLaunchBlocker(cfg, true, "ENG-1", [], [run("a", "ENG-1", 1, undefined, 2.5 * 3_600_000)], now)!, /2\.5 of its 2 agent hours/);
+  // Today's spend counts runs of tickets on the board, started since midnight.
+  const day = [run("a", "ENG-2", 9), run("b", "ENG-3", 9), run("c", "ENG-4", 9), run("d", "ENG-5", 9, "2026-10-26T20:00:00"), run("e", "OTHER-1", 50)];
+  const board = ["ENG-2", "ENG-3", "ENG-4", "ENG-5"].map((t) => manifest({ ticket: t, done: true }));
+  assert.equal(factoryLaunchBlocker(cfg, true, "ENG-1", board, day, now), null);
+  assert.match(factoryLaunchBlocker(cfg, true, "ENG-1", board, [...day, run("f", "ENG-2", 4)], now)!, /spent \$31\.00 of its \$30\.00 budget today/);
+  // WIP: another ticket in flight blocks a new one, but not one that's already in flight.
+  assert.match(factoryLaunchBlocker(cfg, true, "ENG-1", [started("ENG-2")], [], now)!, /1 ticket is already in the factory \(WIP limit 1\): ENG-2/);
+  assert.equal(factoryLaunchBlocker(cfg, true, "ENG-2", [started("ENG-2"), started("ENG-3")], [], now), null);
+});
+
+test("WIP counts implement runs that are going but haven't reported yet", () => {
+  const cfg = { ...defaultFactoryConfig(), enabled: true, limits: { ...defaultFactoryConfig().limits, wip: 1 } };
+  const going = (ticket: string, implement = true, status: "running" | "succeeded" = "running") =>
+    ({ id: ticket, ticket, status, costUsd: 0, startedAt: at, agent: "claude", model: null, implement });
+  assert.match(factoryLaunchBlocker(cfg, true, "ENG-2", [], [going("ENG-1")])!, /WIP limit 1\): ENG-1/);
+  assert.equal(factoryLaunchBlocker(cfg, true, "ENG-2", [], [going("ENG-1", false)]), null, "an Explain run isn't in flight");
+  assert.equal(factoryLaunchBlocker(cfg, true, "ENG-2", [], [going("ENG-1", true, "succeeded")]), null);
+  assert.equal(factoryLaunchBlocker(cfg, true, "ENG-1", [], [going("ENG-1")]), null, "carrying on with its own ticket");
+});
+
+// factory.mjs reads factory.json for the pipeline: it must read it as the dashboard does.
+test("the multirepo scripts read the policy as the dashboard does", async (t) => {
+  const scripts = path.join(import.meta.dirname, "..", "..", "..", "..", "multirepo", "scripts");
+  if (!fs.existsSync(path.join(scripts, "factory.mjs"))) return t.skip("no multirepo plugin next to this engine");
+  const { normalizePolicy } = await import(pathToFileURL(path.join(scripts, "factory.mjs")).href);
+  const inputs = [
+    null, {}, { enabled: true },
+    { enabled: true, limits: { wip: 0 }, gates: { plan: "sometimes", merge: "auto" }, stages: [{ id: "security", on: false }, { id: "qa" }] },
+    { limits: { wip: "7.6" }, security: { failOn: "medium", secretScan: false, agentReview: false, scanners: [{ command: "  osv-scanner -r .  ", when: " go.mod ", failOn: "x" }, { name: "n" }] } },
+    { security: { scanners: [] } },
+  ];
+  for (const raw of inputs) {
+    const d = normalizeFactoryConfig(raw);
+    const cli = normalizePolicy(raw);
+    assert.deepEqual(cli, {
+      enabled: d.enabled, gates: d.gates,
+      stages: STAGE_IDS.map((id) => ({ id, on: d.stages.find((s) => s.id === id)!.on })),
+      limits: { wip: d.limits.wip },
+      security: { agentReview: d.security.agentReview, secretScan: d.security.secretScan, failOn: d.security.failOn, scanners: d.security.scanners },
+    }, JSON.stringify(raw));
+  }
 });
