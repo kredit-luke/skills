@@ -24,7 +24,8 @@ export interface MdUrls {
 export function inlineMd(s: string, urls?: MdUrls): string {
   // Links may be written [text](url) or, as Linear does, [text](<url>). Relative links
   // (to another file in the same repo) keep their text and show the path on hover.
-  const re = /!\[([^\]]*)\]\(<?([^)\s>]+)>?(?:\s+"[^"]*")?\)|`([^`]+)`|\*\*([^*]+)\*\*|\[([^\]]+)\]\(<?(https?:[^)\s>]+)>?\)|(!?)\[\[([^\]]+)\]\]|\[([^\]]+)\]\(([^)\s:]+)\)/g;
+  // Bare http(s) URLs and <https://...> autolinks become links too.
+  const re = /!\[([^\]]*)\]\(<?([^)\s>]+)>?(?:\s+"[^"]*")?\)|`([^`]+)`|\*\*([^*]+)\*\*|\[([^\]]+)\]\(<?(https?:[^)\s>]+)>?\)|(!?)\[\[([^\]]+)\]\]|\[([^\]]+)\]\(([^)\s:]+)\)|<(https?:\/\/[^\s>]+)>|\bhttps?:\/\/[^\s<>"'`]+/g;
   let out = '', last = 0, m: RegExpExecArray | null;
   while ((m = re.exec(s))) {
     if (m[2] != null && !urls) { re.lastIndex = m.index + 1; continue; } // no image support: read on as text
@@ -41,10 +42,30 @@ export function inlineMd(s: string, urls?: MdUrls): string {
       out += href ? '<a href="' + esc(href) + '" data-rel="' + esc(m[10]) + '">' + esc(m[9]) + '</a>'
         : '<span class="rl" title="' + esc(m[10]) + '">' + esc(m[9]) + '</span>';
     }
-    else out += wikiLink(m[8], m[7] === '!', urls);
+    else if (m[8] != null) out += wikiLink(m[8], m[7] === '!', urls);
+    else {
+      // A bare URL ends before trailing sentence punctuation: "see http://x/y." links http://x/y.
+      const url = m[11] ?? trimUrl(m[0]);
+      if (m[11] == null) re.lastIndex = m.index + url.length;
+      out += '<a href="' + esc(url) + '" target="_blank" rel="noopener">' + esc(url) + '</a>';
+    }
     last = re.lastIndex;
   }
   return out + esc(s.slice(last));
+}
+
+/**
+ * Drop sentence punctuation after a bare URL, and a closing ) or ] only when it has no
+ * opening partner in the URL: "(see https://x.io/a)" ends at /a, but
+ * https://en.wikipedia.org/wiki/Function_(mathematics) and http://[::1] stay whole.
+ */
+function trimUrl(url: string): string {
+  const count = (c: string) => url.split(c).length - 1;
+  for (;;) {
+    const c = url.slice(-1);
+    if (/[.,;:!?'"*]/.test(c) || (c === ')' && count(')') > count('(')) || (c === ']' && count(']') > count('['))) url = url.slice(0, -1);
+    else return url;
+  }
 }
 
 /** [[target#heading|alias]] (or ![[file.png]], an embed) as a link, an image, a broken link or plain text. */
