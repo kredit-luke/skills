@@ -636,6 +636,125 @@ export interface InboxItem { kind: string; severity: 'alert' | 'action' | 'info'
 /** GET /api/inbox[?force=1] */
 export interface Inbox { items: InboxItem[]; ciHealth: { repo: string; state: string; url: string; title?: string }[]; errors?: string[] }
 
+// ---------------------------------------------------------------- reviews
+
+/** An open pull request on the Reviews page. requested: a review is requested from you (or a team of yours); mine: you opened it. */
+export interface ReviewPr {
+  repo: string; number: number; title: string; url: string;
+  author: string | null; authorIsBot: boolean; isDraft: boolean;
+  createdAt: string; updatedAt: string; labels: string[]; comments: number;
+  requested: boolean; mine: boolean;
+  /** The last summary made for it (maybe for an older commit); null = none yet. */
+  summary: ReviewSummary | null;
+}
+
+/** A PR's short summary, made for one head commit. */
+export interface ReviewSummary { text: string; sha: string; at: string }
+
+/** GET /api/reviews[?force=1]. orgs: the owners searched; truncated: the search hit its cap. */
+export interface ReviewList {
+  host: string; viewer: string | null; orgs: string[]; prs: ReviewPr[];
+  truncated: boolean; fetchedAt: number; errors: string[];
+}
+
+/** GET /api/reviews/pr?repo=&number= */
+export type MergeMethod = 'squash' | 'merge' | 'rebase';
+
+export interface ReviewPrDetail {
+  repo: string; number: number; title: string; url: string; body: string;
+  author: string | null; isDraft: boolean; createdAt: string; updatedAt: string; labels: string[];
+  base: string; head: string; sha: string;
+  /** OPEN, MERGED or CLOSED. */
+  state: string;
+  additions: number; deletions: number; changedFiles: number;
+  files: { path: string; additions: number; deletions: number }[];
+  checks: 'none' | 'failing' | 'pending' | 'passing';
+  failingChecks: string[];
+  /** GitHub's reviewDecision: APPROVED, CHANGES_REQUESTED, REVIEW_REQUIRED or ''. */
+  decision: string;
+  /** The latest review from each reviewer, with how many line comments they left on the PR. */
+  reviews: { author: string; state: string; at: string; comments: number }[];
+  mergeable: string;
+  /** GitHub's mergeStateStatus: CLEAN, BLOCKED, BEHIND, DIRTY, UNSTABLE, DRAFT, HAS_HOOKS or UNKNOWN. */
+  mergeState: string;
+  /** The merge methods the repository allows, its default first. */
+  mergeMethods: MergeMethod[];
+  /** The repository deletes a PR's branch when it merges. */
+  deletesBranch: boolean;
+  /** The summary for this head commit, if one has been made. */
+  summary: ReviewSummary | null;
+}
+
+/** What a hunk is for, in a guided review: core carries the behaviour; the rest is collapsed by default. */
+export type HunkTag = 'core' | 'supporting' | 'test' | 'generated' | 'formatting';
+
+/** One line of a hunk: t is '+', '-' or ' '; old/new are its line numbers on each side. */
+export interface DiffLine { t: '+' | '-' | ' '; text: string; old: number | null; new: number | null }
+/** id: "h1", "h2"... across the whole PR, in diff order (what a guide points at). */
+export interface DiffHunk { id: string; header: string; oldStart: number; newStart: number; lines: DiffLine[] }
+export interface DiffFile {
+  path: string; oldPath: string | null; status: 'added' | 'deleted' | 'renamed' | 'modified';
+  binary: boolean; additions: number; deletions: number; hunks: DiffHunk[];
+}
+/** GET /api/reviews/diff?repo=&number= (truncated: the diff was too big to show all of). */
+export interface ReviewDiff { sha: string; files: DiffFile[]; truncated: boolean }
+
+/** A point a guide makes, with the hunks it's about. */
+export interface GuidePoint { title: string; text: string; hunks: string[] }
+
+/**
+ * GET /api/reviews/guide?repo=&number= (null: none for this commit yet), POST /api/reviews/guide
+ * { repo, number, force? }: chapters in reading order, for one head commit.
+ */
+export interface ReviewGuide {
+  sha: string; at: string;
+  /** The tracker ticket the PR names (title or branch), when one was found. */
+  ticket: { id: string; title: string; url: string } | null;
+  /** What the PR is for: the ticket's ask and the approach taken. */
+  intent: string;
+  core: GuidePoint[];
+  consequences: GuidePoint[];
+  supporting: GuidePoint[];
+  risk: GuidePoint[];
+  /** 3-5 specific things for the reviewer to check. */
+  questions: string[];
+  /** Hunk id → what it's for. Hunks left out count as supporting. */
+  tags: Record<string, HunkTag>;
+  /** About how long a careful review takes. */
+  minutes: number;
+}
+
+export type Severity = 'critical' | 'high' | 'medium' | 'low';
+export interface SecurityFinding { severity: Severity; title: string; text: string; hunks: string[] }
+/** GET/POST /api/reviews/security: an agent's security review of the diff, for one head commit. */
+export interface SecurityReview { sha: string; at: string; summary: string; findings: SecurityFinding[] }
+
+/** "Ask agent for review": what a coding agent (Claude Code, Copilot, Codex) found in a PR. */
+export type AgentFindingCategory = 'bug' | 'performance' | 'security' | 'nitpick';
+export interface AgentFinding {
+  id: string;
+  category: AgentFindingCategory;
+  severity: 'high' | 'medium' | 'low';
+  title: string;
+  text: string;
+  /** Where it is: a file in the PR, and a line of the new file. */
+  file: string | null;
+  line: number | null;
+  /** The line is in the diff, so it can be a line comment on GitHub (otherwise it goes in the review's text). */
+  onDiff: boolean;
+}
+export interface AgentReview { sha: string; at: string; agent: AgentId; agentLabel: string; summary: string; findings: AgentFinding[] }
+
+/** A review the dashboard posts to the PR as the person: a comment, an approval or a request for changes. */
+export type ReviewEvent = 'COMMENT' | 'APPROVE' | 'REQUEST_CHANGES';
+export interface ReviewSubmit {
+  repo: string; number: number; event: ReviewEvent; body: string;
+  /** The head commit the person reviewed: a PR that has moved on since is refused. */
+  sha: string;
+  comments: { path: string; line: number; body: string }[];
+}
+export interface ReviewSubmitted { url: string | null; state: string; comments: number; movedToBody: number }
+
 // ---------------------------------------------------------------- apps / workspaces
 
 export interface AppStatus {

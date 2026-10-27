@@ -5,6 +5,7 @@
 
 import { execFileSync, spawn, type ChildProcess, type SpawnOptions } from "node:child_process";
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 
 /**
@@ -260,6 +261,34 @@ export function spawnClaude(args: string[], opts: SpawnOptions): ChildProcess {
   if (!shim) return spawn(file, args, opts);
   const line = [file, ...args].map(quoteWin).join(" ");
   return spawn(process.env.ComSpec || "cmd.exe", ["/d", "/s", "/c", `"${line}"`], { ...opts, windowsVerbatimArguments: true });
+}
+
+/**
+ * One question, one text answer, with no tools: for short pieces of writing the dashboard makes
+ * itself (a PR's summary). The prompt goes on stdin (no command-line limits) and the run starts in
+ * the temp folder, so no workspace CLAUDE.md is loaded; nothing is saved as a session.
+ */
+export function askClaude(prompt: string, opts: { model?: string; timeoutMs?: number } = {}): Promise<string> {
+  const args = ["-p", "--tools", "", "--output-format", "json", "--no-session-persistence"];
+  if (opts.model) args.push("--model", opts.model);
+  return new Promise((resolve, reject) => {
+    const child = spawnClaude(args, { cwd: os.tmpdir(), env: claudeEnv(), windowsHide: true, stdio: ["pipe", "pipe", "pipe"] });
+    let out = "";
+    let err = "";
+    const timer = setTimeout(() => { child.kill(); reject(new Error("Claude took too long to answer.")); }, opts.timeoutMs ?? 120_000);
+    child.stdout!.on("data", (d) => (out += d));
+    child.stderr!.on("data", (d) => (err += d));
+    child.on("error", (e) => { clearTimeout(timer); reject(e); });
+    child.on("close", () => {
+      clearTimeout(timer);
+      let data: any = null;
+      try { data = JSON.parse(out.slice(out.indexOf("{"))); } catch {}
+      if (data && !data.is_error && typeof data.result === "string") return resolve(data.result.trim());
+      reject(new Error((data && typeof data.result === "string" && data.result) || err.trim().split("\n")[0] || "Claude didn't answer."));
+    });
+    child.stdin!.on("error", () => {});
+    child.stdin!.end(prompt);
+  });
 }
 
 // ------------------------------------------------------------------ `claude mcp list`

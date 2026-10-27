@@ -74,7 +74,7 @@ export interface WorkspaceConfig {
   /** ports: allocate worktree port slots in the ports file (null = the team's tooling does). */
   worktrees: { dir: string; portsFile: string; screenshots: string; ports: { base: number; slotSize: number } | null };
   issues: IssuesConfig;
-  codeHost: { kind: string; ciRepos: string[]; ciBranch: string };
+  codeHost: { kind: string; ciRepos: string[]; ciBranch: string; orgs: string[] };
   brand: { logo: string | null; logoAlt: string | null; favicon: string | null };
   copy: Record<string, any>;
   /**
@@ -255,6 +255,7 @@ export function workspaceConfig(): WorkspaceConfig {
       kind: str(ch.kind, "github"),
       ciRepos: strList(ch.ciRepos, []),
       ciBranch: str(ch.ciBranch, "main"),
+      orgs: strList(ch.orgs, []),
     },
     brand: { logo: strOrNull(brand.logo), logoAlt: strOrNull(brand.logoAlt) || name, favicon: strOrNull(brand.favicon) },
     copy: raw.copy && typeof raw.copy === "object" ? raw.copy : {},

@@ -13,12 +13,35 @@ import { workspaceConfig } from "./config.ts";
 const INBOX_TTL_MS = 2 * 60 * 1000;
 const MAX_PR_DETAIL_LOOKUPS = 15;
 
-function gh(args: string[]): Promise<any> {
+/** Runs gh and parses its JSON output (the Reviews page shares it). */
+export function gh(args: string[]): Promise<any> {
+  return ghText(args).then((out) => JSON.parse(out || "null"));
+}
+
+/** Runs gh and returns its output as text. */
+export function ghText(args: string[], maxBuffer = 4 * 1024 * 1024): Promise<string> {
   return new Promise((resolve, reject) => {
-    execFile("gh", args, { timeout: 20000, windowsHide: true, maxBuffer: 4 * 1024 * 1024 }, (err, stdout, stderr) => {
+    execFile("gh", args, { timeout: 20000, windowsHide: true, maxBuffer }, (err, stdout, stderr) => {
       if (err) return reject(new Error((stderr || err.message).trim().split("\n")[0]));
-      try { resolve(JSON.parse(stdout || "null")); } catch (e) { reject(e); }
+      resolve(stdout);
     });
+  });
+}
+
+/** Runs gh with `input` on stdin (e.g. `gh api ... --input -`) and parses its JSON output. */
+export function ghWithInput(args: string[], input: string): Promise<any> {
+  return new Promise((resolve, reject) => {
+    const child = execFile("gh", args, { timeout: 30000, windowsHide: true, maxBuffer: 4 * 1024 * 1024 }, (err, stdout, stderr) => {
+      if (err) {
+        // gh api prints GitHub's error body on stdout; its message says what was wrong.
+        let msg = "";
+        try { const b = JSON.parse(stdout); msg = [b.message, ...(Array.isArray(b.errors) ? b.errors.map((e: any) => (typeof e === "string" ? e : e.message)) : [])].filter(Boolean).join(": "); } catch {}
+        return reject(new Error(msg || (stderr || err.message).trim().split("\n")[0]));
+      }
+      try { resolve(JSON.parse(stdout || "null")); } catch { resolve(null); }
+    });
+    child.stdin!.on("error", () => {});
+    child.stdin!.end(input);
   });
 }
 

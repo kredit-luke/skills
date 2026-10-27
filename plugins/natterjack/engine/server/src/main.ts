@@ -41,6 +41,7 @@ for (const key of CLAUDE_SESSION_ENV) delete process.env[key];
 import { RunManager, httpError, runLabel } from "./runs.ts";
 import { Deck, Scheduler } from "./deck.ts";
 import { Inbox } from "./inbox.ts";
+import { Reviews, numberParam, repoParam } from "./reviews.ts";
 import { Watcher } from "./watches.ts";
 import { Usage } from "./usage.ts";
 import { UsageHistory } from "./usage-history.ts";
@@ -63,7 +64,7 @@ import type { SnapshotSource } from "./snapshot-sources/index.ts";
 import { ACCESS_LOCKED, accessInfo, lockedAccess, lockedRole, parseAccess, readProfile, reapplyProfile, refuseAccessChange, refuseRoleChange, setAccess, setRole } from "./profile.ts";
 import { DocSites, docAreas, docSources } from "./docs.ts";
 import { Knowledge } from "./knowledge/index.ts";
-import { agentOf, agentStatuses, isAgentId, type AgentStatus } from "./agents/index.ts";
+import { agentOf, agentStatuses, isAgentId, type AgentId, type AgentStatus } from "./agents/index.ts";
 import { addAgentServer, addArgs, agentServerName, claudeServersToCopy, listAgentServers, needsTerminal, removeAgentServer, signInSupport, terminalCommand, type OtherAgent } from "./agents/mcp.ts";
 import { checkConfig } from "./connections.ts";
 import { KNOWLEDGE_TOOLS, addStoreSource, chosenTools, saveTools } from "./knowledge/tools.ts";
@@ -515,6 +516,17 @@ function cleanupAttachments() {
 cleanupAttachments();
 setInterval(cleanupAttachments, 6 * 3600 * 1000).unref();
 const inbox = new Inbox(runs);
+const reviews = new Reviews({
+  ledgerDir: LEDGER_DIR,
+  // The ticket a PR names (title or branch), read as the person; a guide's Intent starts from it.
+  ticket: async (text) => {
+    const id = text.match(ticketInTextRe())?.[0];
+    const tracker = trackers.get();
+    if (!id || !tracker.status().connected) return null;
+    const t = await tracker.issue(id);
+    return { id, title: t.title || "", url: t.url || tracker.issueUrl(id) || "", description: t.description || "" };
+  },
+});
 // Connect to Atlassian: Jira and Confluence read as the person who signed in. Hosted, sign-in comes back to the dashboard's own address.
 const atlassian = new Atlassian(LEDGER_DIR, { hosted: !!HOSTED, publicOrigin: HOSTED ? HOSTED.publicOrigin : null });
 const atlassianAuth = () => atlassian.get();
@@ -1571,6 +1583,21 @@ async function handleApi(req: http.IncomingMessage, res: http.ServerResponse, ur
     if (p === "/api/status") return sendJson(res, await sharedStatus());
     if (p === "/api/overview") return sendJson(res, await getOverview());
     if (p === "/api/inbox") return sendJson(res, await inbox.get(force));
+    if (p === "/api/reviews") return sendJson(res, await reviews.list(force));
+    if (p === "/api/reviews/pr") {
+      const repo = repoParam(q("repo"));
+      const number = numberParam(q("number"));
+      if (!repo || !number) return sendError(res, 400, "Invalid pull request");
+      return sendJson(res, await reviews.detail(repo, number));
+    }
+    if (p === "/api/reviews/diff" || p === "/api/reviews/guide" || p === "/api/reviews/security" || p === "/api/reviews/agent") {
+      const repo = repoParam(q("repo"));
+      const number = numberParam(q("number"));
+      if (!repo || !number) return sendError(res, 400, "Invalid pull request");
+      if (p === "/api/reviews/diff") return sendJson(res, await reviews.diff(repo, number));
+      if (p === "/api/reviews/agent") return sendJson(res, await reviews.savedAgentReview(repo, number, isAgentId(q("agent")) ? (q("agent") as AgentId) : null));
+      return sendJson(res, p === "/api/reviews/guide" ? await reviews.savedGuide(repo, number) : await reviews.savedSecurity(repo, number));
+    }
     if (p === "/api/usage") return sendJson(res, await usage.get(force));
     if (p === "/api/usage/history") {
       const days = Math.min(Math.max(parseInt(q("days") || "", 10) || 30, 7), 90);
@@ -2022,6 +2049,45 @@ async function handleApi(req: http.IncomingMessage, res: http.ServerResponse, ur
       ...(isAgentId(body.agent) ? { agent: body.agent } : {}),
     }, "explain");
     return sendJson(res, { run }, 201);
+  }
+  if (p === "/api/reviews/summary") {
+    // Spends Claude usage (a small model), like a manual run: no full-access gate.
+    const repo = repoParam(body.repo);
+    const number = numberParam(body.number);
+    if (!repo || !number) return sendError(res, 400, "Invalid pull request");
+    return sendJson(res, await reviews.summary(repo, number, body.force === true));
+  }
+  if (p === "/api/reviews/guide" || p === "/api/reviews/security") {
+    const repo = repoParam(body.repo);
+    const number = numberParam(body.number);
+    if (!repo || !number) return sendError(res, 400, "Invalid pull request");
+    const force = body.force === true;
+    return sendJson(res, p === "/api/reviews/guide" ? await reviews.guide(repo, number, force) : await reviews.security(repo, number, force));
+  }
+  if (p === "/api/reviews/agent") {
+    // One headless turn of the chosen agent; it can only read the PR (agent-review.ts).
+    const repo = repoParam(body.repo);
+    const number = numberParam(body.number);
+    if (!repo || !number) return sendError(res, 400, "Invalid pull request");
+    const id = isAgentId(body.agent) ? body.agent : "claude";
+    const status = (await agentsNow()).find((a) => a.id === id);
+    if (!status || status.problem) return sendError(res, 400, status?.problem || "That agent isn't available.");
+    return sendJson(res, await reviews.agentReview(repo, number, id, status.label, body.force === true));
+  }
+  if (p === "/api/reviews/merge") {
+    // Merges on GitHub as the person: only ever from their click (and confirm) on the Reviews page.
+    const repo = repoParam(body.repo);
+    const number = numberParam(body.number);
+    if (!repo || !number) return sendError(res, 400, "Invalid pull request");
+    if (!["squash", "merge", "rebase"].includes(body.method)) return sendError(res, 400, "Unknown merge method");
+    return sendJson(res, await reviews.merge(repo, number, body.method, String(body.sha ?? "")));
+  }
+  if (p === "/api/reviews/submit") {
+    // Posts to GitHub as the person: only ever from their click on the Reviews page.
+    const repo = repoParam(body.repo);
+    const number = numberParam(body.number);
+    if (!repo || !number) return sendError(res, 400, "Invalid pull request");
+    return sendJson(res, await reviews.submit({ repo, number, event: body.event, body: String(body.body ?? ""), sha: String(body.sha ?? ""), comments: Array.isArray(body.comments) ? body.comments : [] }));
   }
   if (p.startsWith("/api/meetings/")) {
     const what = p.slice("/api/meetings/".length);
