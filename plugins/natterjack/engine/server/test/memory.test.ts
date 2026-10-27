@@ -31,6 +31,25 @@ test("list flags missing paths, unindexed files and orphan index lines", () => {
   assert.equal(out.orphanIndexLines.length, 1);
 });
 
+test("names that aren't workspace paths aren't flagged as missing", () => {
+  const mem = setup();
+  const abs = path.join(path.dirname(mem.dir), "real.md");
+  fs.writeFileSync(abs, "");
+  const write = (f, body) => fs.writeFileSync(path.join(mem.dir, f), `---\nname: ${f}\ndescription: d\n---\n${body}\n`);
+  write("names.md", [
+    "Branches `natterjack/release-0.21.0` and `feature/ABC-1-0.21.1`.",
+    "Bare folder names `subagents/`, `tool-results/` and the annotation `nginx.org/`.",
+    "Shortened `src/.../deep/file.ts`.",
+    process.platform === "win32" ? `Absolute \`${abs}\`.` : "Absolute `C:\\Users\\someone\\plan.md`.",
+    `Inside the workspace \`${path.join(mem.root, "src", "here.ts")}\` and \`${path.join(mem.root, "worktrees", "T-1")}\`.`,
+  ].join("\n"));
+  write("still.md", `Gone: \`src/old/\`, \`lib/x.ts\` and \`${path.join(mem.root, "src", "gone.ts")}\`.` +
+    (process.platform === "win32" ? ` And \`${abs}.gone\`.` : ""));
+  const issues = Object.fromEntries(mem.list().memories.map((m) => [m.file, m.issues.filter((i) => i.startsWith("Mentions"))]));
+  assert.deepEqual(issues["names.md"], []);
+  assert.equal(issues["still.md"].length, process.platform === "win32" ? 4 : 3);
+});
+
 test("pruneIndex drops only lines for missing files, keeping line endings", () => {
   const mem = setup();
   assert.deepEqual(mem.pruneIndex(), { ok: true, removed: 1 });
