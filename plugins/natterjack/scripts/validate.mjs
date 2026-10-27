@@ -382,6 +382,38 @@ export function validate(root) {
     if (deck.issues && deck.issues.implementPreset && !presetIds.includes(deck.issues.implementPreset)) warn("deck.json", `issues.implementPreset "${deck.issues.implementPreset}" isn't a preset, so Implement buttons won't show`);
   }
 
+  // ---- factory.json (the Factory page's policy; optional, edited on the Factory policy page)
+  const fac = load("factory.json");
+  if (fac) {
+    const STAGES = ["align", "plan", "build", "review", "security", "qa", "guide", "pr", "approve", "merge"];
+    const MODES = ["human", "approver", "auto", "off"];
+    const SEV = ["critical", "high", "medium", "low"];
+    if (fac.preset !== undefined && !["supervised", "risk-tiered", "lights-out", "custom"].includes(fac.preset)) warn("factory.json", `preset "${fac.preset}" isn't supervised, risk-tiered, lights-out or custom; read as custom`);
+    if (fac.mode !== undefined && !["interactive", "autonomous"].includes(fac.mode)) err("factory.json", `mode must be "interactive" or "autonomous"`);
+    for (const s of Array.isArray(fac.stages) ? fac.stages : []) {
+      if (!s || !STAGES.includes(s.id)) err("factory.json", `stage "${s && s.id}" isn't one of ${STAGES.join(", ")}`);
+      else if (s.id === "build" && s.on === false) err("factory.json", "the build stage can't be off: it's where the work happens");
+    }
+    for (const [g, m] of Object.entries(fac.gates || {})) {
+      if (!["spec", "plan", "prePr", "merge"].includes(g)) warn("factory.json", `gates.${g} isn't a gate (spec, plan, prePr, merge); ignored`);
+      else if (!MODES.includes(m)) err("factory.json", `gates.${g} must be one of ${MODES.join(", ")}`);
+    }
+    const approverOn = !!(fac.approver && fac.approver.enabled === true);
+    if (Object.values(fac.gates || {}).includes("approver") && !approverOn) err("factory.json", "a gate is set to the Approver, but approver.enabled isn't true");
+    if (fac.approver && fac.approver.mergeAction && fac.approver.mergeAction !== "none" && (fac.gates || {}).merge !== "approver") err("factory.json", "approver.mergeAction needs gates.merge set to \"approver\"");
+    const scanners = fac.security && fac.security.scanners;
+    if (scanners !== undefined && !Array.isArray(scanners)) err("factory.json", "security.scanners must be a list of { name, command, when, failOn }");
+    for (const s of Array.isArray(scanners) ? scanners : []) {
+      if (!s || typeof s.command !== "string" || !s.command.trim()) err("factory.json", "every security.scanners entry needs a command");
+      else if (s.failOn !== undefined && !SEV.includes(s.failOn)) err("factory.json", `scanner "${s.name || s.command}": failOn must be one of ${SEV.join(", ")}`);
+    }
+    const sp = fac.spec || {};
+    for (const k of ["readyAt", "needsWorkAt", "minScore"]) if (sp[k] != null && !(Number.isFinite(sp[k]) && sp[k] >= 0 && sp[k] <= 100)) err("factory.json", `spec.${k} must be a number from 0 to 100`);
+    if (Number.isFinite(sp.readyAt) && Number.isFinite(sp.needsWorkAt) && sp.needsWorkAt >= sp.readyAt) err("factory.json", "spec.needsWorkAt must be below spec.readyAt");
+    for (const k of Object.keys(sp.weights || {})) if (!["problem", "outcome", "criteria", "scope", "constraints", "affected", "questions", "verify"].includes(k)) warn("factory.json", `spec.weights.${k} isn't a spec check; ignored`);
+    if (fac.limits && fac.limits.wip !== undefined && !(Number.isInteger(fac.limits.wip) && fac.limits.wip >= 1)) err("factory.json", "limits.wip must be a whole number, 1 or more");
+  }
+
   // ---- repos.json (workspace root; optional)
   const reposFile = path.join(root, "repos.json");
   const clones = []; // repos.json repos cloned here, for the .gitignore check below

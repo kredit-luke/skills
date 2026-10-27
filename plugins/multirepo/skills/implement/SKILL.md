@@ -28,6 +28,33 @@ node "$I" --branches --branch <b> --repos a,b [--ticket <ID>] [--root <dir>] [--
 - `--freshness` fetches every repo and returns per repo `state`: `up-to-date`, `fast-forwarded`, `behind`, `dirty`, `other-branch`, `diverged`, `ahead`, `fetch-failed`, `no-origin` (a local-only repo: nothing to fetch, not a decision), `missing`, plus `needsDecision[]`. `--pull` fast-forwards **only** repos on their default branch, clean and strictly behind.
 - `--branches` creates or switches to the branch in each repo under `--root`. It refuses (exit 1, `{ refused, reason, error }`) in the main workspace when the ticket's worktree exists, and inside another ticket's worktree; it skips (with a reason) a repo on an unrelated branch, on another branch for this ticket, or with uncommitted changes, and never stashes. New branches start from `origin/<default>`.
 
+### Progress for the Factory board
+
+When the workspace has a Natterjack dashboard, its **Factory** page shows this ticket as a card moving through the pipeline. Report each step with `factory.mjs`, never by editing JSON. It's a no-op (`{ skipped }`) without a dashboard, so call it unconditionally. A failed call never stops the work.
+
+```bash
+F="${CLAUDE_PLUGIN_ROOT}/scripts/factory.mjs"
+node "$F" policy                      # the team's factory.json: { exists: false } when there's none
+node "$F" start --ticket <ID> --title "<title>" --url <ticket url> --mode interactive|autonomous --branch <b> --repos a,b --plan <plan file> --workroot <WORKROOT>
+node "$F" stage --ticket <ID> --stage <stage> --status running|done|failed|skipped [--repo <r>] [--agent <type>] [--note "<as-built, one line>"]
+node "$F" gate  --ticket <ID> --gate spec|plan|prePr|merge --decision pending|approved|rejected --by user|auto [--rationale "<why>"]
+node "$F" pr    --ticket <ID> --url <pr url> --repo <r>
+node "$F" done  --ticket <ID> [--error "<why it stopped>"]
+```
+
+| When | Report |
+|---|---|
+| Ticket read (step 1) | `start` with the title, URL and mode, then score the spec (below) |
+| WORKROOT is set (step 5) | `start` again with `--workroot`, `--branch` and `--repos` (it merges into what's there) |
+| Plan file written (step 4) | `stage --stage plan --status done` |
+| You ask to proceed (step 4) / the user answers | `gate --gate plan --decision pending`, then `approved` (or `rejected`, then `done --error "plan rejected"`). Autonomous: `approved --by auto` |
+| Each subagent's implement and review (step 7) | `stage --stage build` and `--stage review`, per `--repo`: `running` when it starts, then `done` or `failed` |
+| QA, second opinion (step 8) | `stage --stage qa`, and `--stage review` for the second opinion |
+| Commit and PRs (step 9) | `gate --gate prePr --decision approved`, then `pr` per PR, `stage --stage pr --status done` |
+| Wrap-up, or stopping for good | `done` (`--error` when it stopped short) |
+
+`policy` is for reading only, for now. The gates above follow this skill's own rules (interactive asks, autonomous decides). Read `gates` from it to say on the ticket which gates the team expects a person at.
+
 ## Steps at a glance
 
 0. Placement and mode (one script call, one look at your tools)
@@ -78,6 +105,17 @@ Prefer `/multirepo:fetch-ticket <TICKET>`: it normalizes the ticket to JSON, inc
 
 - **Which tracker**: `.claude/dashboard/workspace.json` `issues.kind` (in a worktree it's read from the source workspace), else the id's shape (`owner/repo#N`, `#N` → GitHub Issues), else what's connected (a Linear MCP, an Atlassian/Jira MCP, `gh`). Tool names vary by server; match the suffix (`get_issue`, `getJiraIssue`). Not found → report and stop.
 - Take the title, description, acceptance criteria, type, labels, parent, links and all comments.
+
+Then **score the spec**: how ready the ticket is to start on, by what any good spec has (problem, outcome, testable acceptance criteria, scope, constraints, affected areas, no open questions, how to verify), under whatever headings the team uses. The team's levels and weights come from `factory.json` `spec`.
+
+```bash
+node "${CLAUDE_PLUGIN_ROOT}/scripts/spec-check.mjs" <ticket.json> --ticket <ID> [--overrides '<json>']
+```
+
+`<ticket.json>` is fetch-ticket's output (saved to a file; `-` reads stdin). `--ticket` records the score for the Factory board. Read each check's finding against the ticket: where the text fooled it (criteria that look testable but contradict each other, a "?" that was answered in a comment), re-run with `--overrides '{"criteria":{"score":0.5,"reason":"AC 2 and 3 contradict"}}'`. A score of 0, 0.5 or 1, and always a reason. Then the **spec gate**:
+- **Ready**: carry on (`gate --gate spec --decision approved --by auto`).
+- **Needs work / Not ready, interactive**: say the score and what's missing in a line each, and offer **Align first** (`/multirepo:align`, when installed) / **Proceed anyway** / **Abort**; record the answer as the spec gate's decision.
+- **Autonomous**: below the result's `minScore` (when set), comment on the ticket with the score and what's missing, `gate --gate spec --decision rejected --by auto`, `done --error "spec not ready"`, and stop. Otherwise carry on and put the score and gaps in the Assumptions.
 
 Then:
 - **Blocked-by links** (`links[]` with `type: "blocked by"`) whose `state` isn't done → tell the user and ask whether to proceed. Autonomous: stop, comment that it's blocked, leave the state alone.

@@ -11,6 +11,7 @@
  *   links.json      Links page tiles (+ .claude/ledger/links.local.json, personal)
  *   connections.json  MCP servers the team relies on (Connections page)
  *   deck.json       presets, routines, limits, defaults, issues view
+ *   factory.json    the Factory policy: stages, gates, security scanners, limits, Approver (factory.ts)
  *   hosting.json    hosted dashboards: directory, cluster, profiles (People page; people/config.ts)
  *   people.json     who has a hosted dashboard, written by the People page (people/roster.ts)
  *   meetings.json   the team's meeting tool (Meetings page; meetings/index.ts)

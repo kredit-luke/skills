@@ -1,5 +1,6 @@
 import { ChangeDetectionStrategy, Component, OnInit, computed, inject, signal } from '@angular/core';
 import { NgTemplateOutlet } from '@angular/common';
+import { RouterLink } from '@angular/router';
 import type { Limits, ProfileInfo, ReposResponse, Settings, SettingKey, SnapshotStatus } from '../../../../../shared/api';
 import { ApiService } from '../../core/api.service';
 import { AttentionService } from '../../core/attention.service';
@@ -19,7 +20,7 @@ interface NumberRow { key: LimitKey; label: string; help: string; min: number; m
  */
 @Component({
   selector: 'dash-settings',
-  imports: [PageHeaderComponent, NgTemplateOutlet, RemoteLinkComponent],
+  imports: [PageHeaderComponent, NgTemplateOutlet, RemoteLinkComponent, RouterLink],
   changeDetection: ChangeDetectionStrategy.OnPush,
   styleUrl: './settings.component.scss',
   template: `
@@ -178,6 +179,19 @@ interface NumberRow { key: LimitKey; label: string; help: string; min: number; m
     } @else if (!error()) {
       <div class="empty">Loading…</div>
     }
+
+    <div class="panel">
+      <div class="panel-h"><h2>Factory</h2><span class="ty">the team's</span></div>
+      <div class="rows">
+        <div class="row">
+          <div class="lbl">
+            <div class="t">Factory policy</div>
+            <div class="h">How agent work moves from ticket to merged PR: stages, gates, the security stage, limits and the Approver. It's the team's, in .claude/dashboard/factory.json, not yours alone.</div>
+          </div>
+          <div class="ctl"><a class="btn sm" routerLink="/factory/settings">Edit the policy</a></div>
+        </div>
+      </div>
+    </div>
 
     <dash-remote-link />
 

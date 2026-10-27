@@ -1,6 +1,6 @@
 import { Injectable, computed, inject, signal } from '@angular/core';
 import type {
-  AgentInfo, ConnectionsResponse, DeckResponse, DocSite, DocsResponse, KnowledgeArea, Inbox, Job, JobsResponse, MachineReport, ModelsView, Overview, PresetStats,
+  AgentInfo, ConnectionsResponse, DeckResponse, DocSite, DocsResponse, FactoryBoard, KnowledgeArea, Inbox, Job, JobsResponse, MachineReport, ModelsView, Overview, PresetStats,
   RemoteLinkLive, RunMeta, RunsResponse, Stack, StatusResponse,
 } from '../../../../shared/api';
 import { linkLive, mergeRuns, stampLinks, upsertRunSplit } from '../runs/remote';
@@ -60,6 +60,8 @@ export class DataService {
   readonly agents = signal<AgentInfo[] | null>(null);
   /** Local and team open models (Models page); null until the stream sends it. */
   readonly models = signal<ModelsView | null>(null);
+  /** The Factory board (live topic `factory`); null until it arrives. */
+  readonly factory = signal<FactoryBoard | null>(null);
   /** MCP servers (Connections page and its sidebar count). */
   readonly connections = signal<ConnectionsResponse | null>(null);
   readonly docSites = signal<DocSite[]>([]);
@@ -121,6 +123,7 @@ export class DataService {
     on<DeckResponse>('deck', (d) => { this.deck.set(d); this.deckError.set(null); });
     on<Inbox>('inbox', (d) => { this.inbox.set(d); this.inboxError.set(null); });
     on<ModelsView>('models', (d) => this.applyModels(d));
+    on<FactoryBoard>('factory', (d) => this.factory.set(d));
     es.onopen = () => { if (this.es === es) { this.api.connected.set(true); this.stopPolling(); } };
     es.onerror = () => {
       if (this.es !== es) return;
@@ -144,7 +147,7 @@ export class DataService {
   /** The intervals the dashboard polled on before the stream. */
   private startPolling(): void {
     if (this.polls.length) return;
-    this.loadDeck(); this.loadRuns(); this.loadOverview(); this.loadStatus(); this.loadInbox(false); this.loadJobs();
+    this.loadDeck(); this.loadRuns(); this.loadOverview(); this.loadStatus(); this.loadInbox(false); this.loadJobs(); this.loadFactory();
     this.polls = [
       setInterval(() => this.loadJobs(), 2000),
       setInterval(() => this.loadRuns(), 3000),
@@ -152,12 +155,17 @@ export class DataService {
       setInterval(() => this.loadStatus(), 5000),
       setInterval(() => this.loadDeck(), 30000),
       setInterval(() => this.loadInbox(false), 60000),
+      setInterval(() => this.loadFactory(), 5000),
     ];
   }
 
   private stopPolling(): void {
     for (const t of this.polls) clearInterval(t);
     this.polls = [];
+  }
+
+  async loadFactory(): Promise<void> {
+    try { this.factory.set(await this.api.get<FactoryBoard>('/api/factory')); } catch { /* keep the last board */ }
   }
 
   async loadDeck(): Promise<void> {

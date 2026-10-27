@@ -13,6 +13,7 @@ The same marketplace ships them as a plugin: `multirepo@lhoezee-skills` (`plugin
 | `workspace.json` `issues.progressState`, `reviewState`, `doneStates` | Ticket states for started / PRs open / safe-to-purge (defaults "In Progress", "In Review", ["Done"]). |
 | `workspace.json` `worktrees.dir`, `portsFile`, `ports`, `copy` | Worktree folder, port slots (allocated exactly like the dashboard: same file, lock and offsets), extra files copied in. |
 | `.worktree.json` | A worktree's ticket, branch and repos (the shape below). |
+| `factory.json` | The Factory policy: `/multirepo:implement` reads it (`factory.mjs policy`) and reports each step to the Factory board (below). |
 
 Team conventions (ticket format, branch prefixes, which subagent or reviewer owns which repo, quality gates, commit scopes, merge rules) go in the root CLAUDE.md, where the skills look for them. Enable it at project scope so the whole team and cloud sessions get it: `claude plugin install multirepo@lhoezee-skills --scope project`, plus `extraKnownMarketplaces` for `lhoezee-skills` in `.claude/settings.json`. The Implement preset's prompt is then `/multirepo:implement {ticket}`; the dashboard recognises a namespaced implement prompt for run-to-ticket matching and its terminal button, and lists plugin skills (as `/<plugin>:<skill>`) with the workspace's own.
 
@@ -39,6 +40,30 @@ The pipeline behind the Issues page's Implement button. The deck preset is `"/im
 5. **Implement per repo in dependency order** with Agent-tool subagents (one per repo, foreground; give each the ticket, the decisions, and the repo's CLAUDE.md conventions); regenerate any generated clients between steps rather than hand-writing them.
 6. **Review** (a reviewer subagent over the combined diff) and **test** (the repos' test suites; a browser QA subagent for UI changes if the team has one).
 7. **End with a decision**: commit and open PRs / commit only / stop. Under `--auto`, commit and open PRs, never merge. Post a summary comment on the ticket and move it to the team's "in review" state.
+
+### Reporting to the Factory board
+
+A pipeline that reports its progress gets a card on the **Factory** page. Each work item has one manifest, `<workspace>/.claude/ledger/factory/<ticket>.json` (in the source workspace's ledger even when the work is in a worktree; the ticket id made file-safe, `acme/api#7` → `acme_api_7.json`). The board reads that folder; it never scrapes transcripts. `/multirepo:implement` writes it through `scripts/factory.mjs` (`start`, `stage`, `gate`, `pr`, `done`); a pipeline of your own can call the same script or write the same shape:
+
+```json
+{
+  "version": 1, "ticket": "ENG-123", "title": "Retry failed calls", "url": "https://linear.app/acme/issue/ENG-123",
+  "mode": "interactive", "policy": { "preset": "supervised", "updatedAt": "2026-10-27T10:00:00Z" },
+  "workroot": "/work/acme/worktrees/eng-123", "branch": "feature/ENG-123", "repos": ["api", "web"],
+  "plan": "~/.claude/plans/ENG-123-retries.md",
+  "startedAt": "2026-10-27T10:00:00Z", "updatedAt": "2026-10-27T10:40:00Z",
+  "stages": [{ "id": "build", "repo": "api", "agent": "dotnet-dev", "status": "done", "startedAt": "…", "endedAt": "…", "note": "Added RetryPolicy; 14 tests" }],
+  "gates": [{ "id": "plan", "mode": "human", "decision": "approved", "by": "user", "risk": null, "rationale": null, "sha": null, "at": "…" }],
+  "prs": [{ "repo": "api", "url": "https://github.com/acme/api/pull/42", "number": 42, "state": "open" }],
+  "done": false, "error": null
+}
+```
+
+- **`stages[]`**: one row per stage and repo, `status` `pending` | `running` | `done` | `failed` | `skipped`; the latest status counts (a failed build that's running again is running).
+- **`spec`**: the ticket's spec readiness from `spec-check.mjs --ticket` (`score`, `level`, the team's levels, and each check's `score`, `finding` and any `override` the agent made with its reason), shown on the card and in its details.
+- **`gates[]`**: appended per decision (`pending`, then `approved` or `rejected`); the last one counts, and the history is the audit trail.
+- **Where the card sits**: the first stage or gate (in the policy's order) it hasn't finished. A stage it never reported counts as skipped once a later one has activity. `done: true`, or every PR merged, puts it in Done.
+- The card adds what the dashboard knows: runs whose ticket matches (cost, agent, a question waiting), and the policy's budget.
 
 ## /commit
 

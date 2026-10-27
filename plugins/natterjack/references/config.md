@@ -460,6 +460,42 @@ On Azure App Service instead (one Web App per person, deployed from `templates/h
 
 Presets are the Home page's skill cards: `prompt` (with `{arg}` placeholders), `args` (`pattern` validates), `options` (checkboxes that `append` text), `agent`, `model`/`effort`/`permissionMode` (`auto` | `acceptEdits` | `dontAsk` | `plan`), `budgetUsd` (only used when the per-run cap is on in Settings), `pickWorkspace`, `workspace`. Icons: `sun`, `download`, `eye`, `package`, `shield`, `bolt`, `terminal`, and the nav icons. `issues`: which teams (Linear teams / Jira projects / GitHub repos) and states the board shows (empty = all; states in column order), the preset Implement runs, and which teams get Implement (empty = all). `routines` fire presets on a schedule while the dashboard runs (off by default). Everyone can override limits and defaults for themselves on the Settings page.
 
+## factory.json: the Factory page's policy
+
+The team's rules for agent work, from ticket to merged PR (the **Factory** page, Agents group). Edited on **Factory → Policy** (`/factory/settings`, full access only), which writes this file; commit it so policy changes get reviewed. No file: the factory is off, and the board still shows work reported to it under the Supervised defaults. Every field is optional.
+
+```json
+{
+  "enabled": true,
+  "preset": "risk-tiered",
+  "mode": "interactive",
+  "intake": { "states": ["Ready"], "labels": ["factory"] },
+  "limits": { "wip": 3, "itemBudgetUsd": 25, "dayBudgetUsd": 200, "itemHours": 4 },
+  "stages": [
+    { "id": "plan", "on": true }, { "id": "build", "on": true }, { "id": "review", "on": true, "agent": "codex" },
+    { "id": "security", "on": true }, { "id": "qa", "on": false }, { "id": "pr", "on": true }
+  ],
+  "security": {
+    "agentReview": true, "secretScan": true, "failOn": "high",
+    "scanners": [{ "name": "npm audit", "command": "npm audit --audit-level=high", "when": "package-lock.json", "failOn": "high" }]
+  },
+  "gates": { "spec": "human", "plan": "human", "prePr": "auto", "merge": "approver" },
+  "requiredChecks": ["build", "test"],
+  "reviewers": { "bots": ["copilot-pull-request-reviewer"], "pipeline": true, "noUnresolved": true },
+  "spec": { "readyAt": 80, "needsWorkAt": 50, "minScore": 60, "weights": { "scope": 0 } },
+  "approver": { "enabled": true, "highRiskPaths": ["**/migrations/**", "**/auth/**"], "maxFiles": 20, "maxLines": 400, "maxRepos": 1, "mergeAction": "none", "mergeMethod": "squash", "samplingPct": 0 }
+}
+```
+
+- **`preset`**: `supervised` (every gate a person), `risk-tiered` (people approve the spec and plan, the Approver rates the PR, a person merges), `lights-out` (autonomous; the Approver auto-merges low risk and sends `samplingPct` to a person anyway), or `custom`. A preset sets `gates`, `mode` and the Approver's `enabled`, `mergeAction` and `samplingPct`; anything else is kept.
+- **`stages`**: `align`, `plan`, `build`, `review`, `security`, `qa`, `guide`, `pr`, `approve`, `merge`, in pipeline order. Each has `on`, and optionally `agent` (`claude` | `copilot` | `codex`), `model` and `effort`. Stages left out keep their defaults. `build` can't be off.
+- **`gates`**: `spec` (before planning), `plan` (after it), `prePr` (before the PR) and `merge`, each `human`, `approver`, `auto` (passes when `requiredChecks` pass) or `off`. A gate on the Approver needs `approver.enabled`; `approver.mergeAction` other than `none` needs `gates.merge: "approver"`.
+- **`spec`**: spec readiness, the spec gate's score (0-100) of how ready a ticket is to start on, made when a session reads it (`/multirepo:implement` runs `spec-check.mjs`). It looks for what any good spec has under whatever headings the team uses: problem, outcome, acceptance criteria (testable ones), scope, constraints, affected areas, no open questions, how to verify. `readyAt` / `needsWorkAt` set the levels (Ready, Needs work, below that Not ready); `minScore` stops autonomous runs below it (they comment on the ticket with what's missing); `weights` per check (`problem`, `outcome`, `criteria`, `scope`, `constraints`, `affected`, `questions`, `verify`; defaults 15, 15, 25, 10, 5, 10, 10, 10; 0 turns one off).
+- **`security.scanners`**: commands the security stage runs in each repo; `when` names a file that must be at the repo's root (e.g. `package-lock.json`, `go.mod`), null for every repo. Findings at `failOn` or worse fail the stage.
+- **The board's columns** are the stages that are on, with each gate that isn't off where it guards, between Queued and Done.
+
+Phase 1 of the factory (#103) is the policy, the board and progress reporting. Nothing picks tickets up or enforces gates on its own yet: `/multirepo:implement` reports its progress, reads the policy, and still follows its own interactive/`--auto` rules. The Approver's settings are saved for when it runs, advisory first.
+
 ## repos.json: the Repos page (workspace root)
 
 The repos the workspace is made of, each cloned to `<workspace>/<relativePath>`. It sits at the workspace root, not in `.claude/dashboard/`, because the team's own skills (worktrees, pulls) read it too. Schema: `<engine>/shared/repos.schema.json` (point `$schema` at it for editor checks).

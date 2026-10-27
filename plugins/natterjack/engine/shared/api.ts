@@ -755,6 +755,242 @@ export interface ReviewSubmit {
 }
 export interface ReviewSubmitted { url: string | null; state: string; comments: number; movedToBody: number }
 
+// ------------------------------------------------------------------ the software factory
+
+/** The factory's pipeline stages, in their default order. */
+export type FactoryStageId = 'align' | 'plan' | 'build' | 'review' | 'security' | 'qa' | 'guide' | 'pr' | 'approve' | 'merge';
+/** The gates between stages: before building (the spec), after planning, before the PR, before merging. */
+export type FactoryGateId = 'spec' | 'plan' | 'prePr' | 'merge';
+/** Who decides a gate: a person, the Approver agent, its checks alone, or nobody (no gate). */
+export type FactoryGateMode = 'human' | 'approver' | 'auto' | 'off';
+export type FactoryPreset = 'supervised' | 'risk-tiered' | 'lights-out' | 'custom';
+
+export interface FactoryStageConfig {
+  id: FactoryStageId;
+  on: boolean;
+  /** The agent that runs it (null: the item's agent). */
+  agent: AgentId | null;
+  model: string | null;
+  effort: string | null;
+}
+
+/** A security scanner the security stage runs in each repo, e.g. `npm audit --audit-level=high`. */
+export interface FactoryScanner {
+  name: string;
+  command: string;
+  /** Runs only in repos that have this file at their root (e.g. package-lock.json); null: every repo. */
+  when: string | null;
+  failOn: Severity;
+}
+
+/** .claude/dashboard/factory.json with every default filled in (Settings → Factory). */
+export interface FactoryConfig {
+  enabled: boolean;
+  preset: FactoryPreset;
+  /** How items run: gates ask a person (interactive) or decide and record (autonomous, `--auto`). */
+  mode: 'interactive' | 'autonomous';
+  /** Which tickets the factory takes: tracker states and/or labels (empty: only ones sent by hand). */
+  intake: { states: string[]; labels: string[] };
+  limits: {
+    /** Items in flight at once. */
+    wip: number;
+    itemBudgetUsd: number | null;
+    dayBudgetUsd: number | null;
+    /** Agent wall-clock per item, in hours. */
+    itemHours: number | null;
+  };
+  stages: FactoryStageConfig[];
+  security: {
+    /** An agent reads the diff for security problems. */
+    agentReview: boolean;
+    /** Secret scanning on the diff (gitleaks) when it's installed. */
+    secretScan: boolean;
+    scanners: FactoryScanner[];
+    /** Findings at or above this fail the stage. */
+    failOn: Severity;
+  };
+  gates: Record<FactoryGateId, FactoryGateMode>;
+  /** Commands or CI check names that must be green before a gate can pass. */
+  requiredChecks: string[];
+  reviewers: {
+    /** Review bots or check names that count as a review (e.g. "copilot-pull-request-reviewer"). */
+    bots: string[];
+    /** The pipeline's own reviewer agent counts. */
+    pipeline: boolean;
+    /** A bot review counts only with no unresolved threads. */
+    noUnresolved: boolean;
+  };
+  /** Spec readiness: how ready a ticket is for an agent to start, scored when a session reads it. */
+  spec: {
+    /** Scores at or above this are Ready. */
+    readyAt: number;
+    /** Scores at or above this (and below readyAt) are Needs work; below, Not ready. */
+    needsWorkAt: number;
+    /** Autonomous runs below this stop and say on the ticket what's missing (null: advice only). */
+    minScore: number | null;
+    /** Weight per check (0 turns one off); checks not listed keep their default. */
+    weights: Partial<Record<SpecCheckId, number>>;
+  };
+  /** The Approver agent (advisory until it has a track record; nothing merges on its say yet). */
+  approver: {
+    enabled: boolean;
+    /** Paths that are always high risk (globs). */
+    highRiskPaths: string[];
+    maxFiles: number;
+    maxLines: number;
+    maxRepos: number;
+    mergeAction: 'none' | 'auto-merge' | 'merge';
+    mergeMethod: MergeMethod;
+    /** Share of auto-approvable items sent to a person anyway (0-100). */
+    samplingPct: number;
+  };
+}
+
+export interface FactoryConfigState {
+  config: FactoryConfig;
+  /** factory.json exists (else these are the defaults and the factory is off). */
+  exists: boolean;
+  /** factory.json is there but isn't valid JSON. */
+  error: string | null;
+  /** The person may change it (full access). */
+  canEdit: boolean;
+  /** The file's mtime (epoch ms), sent back on save so a stale edit is refused. */
+  mtimeMs: number | null;
+  /** What each preset sets (the rest of the config is kept). */
+  presets: Record<Exclude<FactoryPreset, 'custom'>, FactoryPresetPatch>;
+  suggestedScanners: FactoryScanner[];
+  stageLabels: Record<FactoryStageId, string>;
+  gateLabels: Record<FactoryGateId, string>;
+  /** The spec checks, with what each looks for and its default weight. */
+  specChecks: { id: SpecCheckId; label: string; help: string; weight: number }[];
+}
+
+export interface FactoryPresetPatch {
+  label: string;
+  description: string;
+  mode: FactoryConfig['mode'] | null;
+  gates: Record<FactoryGateId, FactoryGateMode>;
+  approver: Pick<FactoryConfig['approver'], 'enabled' | 'mergeAction' | 'samplingPct'>;
+  /** The Approver stage is on. */
+  approve: boolean;
+}
+
+export type SpecCheckId = 'problem' | 'outcome' | 'criteria' | 'scope' | 'constraints' | 'affected' | 'questions' | 'verify';
+export type SpecLevel = 'ready' | 'needs-work' | 'not-ready';
+
+/** A ticket's spec readiness, as spec-check.mjs scored it (with the agent's corrections). */
+export interface FactorySpec {
+  score: number;
+  level: SpecLevel;
+  readyAt: number;
+  needsWorkAt: number;
+  minScore: number | null;
+  checks: { id: SpecCheckId; label: string; weight: number; score: number; finding: string; override?: { from: number; reason: string } }[];
+  at: string;
+}
+
+/** What a pipeline step reports in a work item's manifest. */
+export type FactoryStepStatus = 'pending' | 'running' | 'done' | 'failed' | 'skipped';
+
+/**
+ * One work item's progress, written by the pipeline (e.g. /multirepo:implement through its
+ * factory.mjs script) to <workspace>/.claude/ledger/factory/<ticket>.json. Any pipeline that
+ * writes this gets the Factory board. Version 1.
+ */
+export interface FactoryManifest {
+  version: 1;
+  ticket: string;
+  title: string | null;
+  url: string | null;
+  mode: 'interactive' | 'autonomous';
+  /** The policy it ran under: factory.json's preset and when it was last changed. */
+  policy: { preset: FactoryPreset | null; updatedAt: string | null } | null;
+  /** Where the work lives (the worktree, or the workspace itself). */
+  workroot: string | null;
+  branch: string | null;
+  repos: string[];
+  plan: string | null;
+  startedAt: string;
+  updatedAt: string;
+  /** Spec readiness, scored when the pipeline read the ticket. */
+  spec: FactorySpec | null;
+  stages: { id: FactoryStageId; repo: string | null; agent: string | null; status: FactoryStepStatus; startedAt: string | null; endedAt: string | null; note: string | null }[];
+  gates: { id: FactoryGateId; mode: FactoryGateMode | null; decision: 'pending' | 'approved' | 'rejected'; by: string | null; risk: 'low' | 'medium' | 'high' | null; rationale: string | null; sha: string | null; at: string }[];
+  prs: { repo: string | null; url: string; number: number | null; state: 'open' | 'merged' | 'closed' | null }[];
+  /** The pipeline finished (or was abandoned) for this item. */
+  done: boolean;
+  error: string | null;
+}
+
+/** A column on the Factory board: a stage, a gate, or the ends. */
+export interface FactoryColumn { id: string; label: string; kind: 'queued' | 'stage' | 'gate' | 'done' }
+
+export interface FactoryItem {
+  ticket: string;
+  title: string | null;
+  url: string | null;
+  /** The column it's in. */
+  column: string;
+  /** What it needs: nothing (moving), a person, or a fix. */
+  state: 'moving' | 'waiting' | 'failing' | 'idle' | 'done';
+  /** Why it's waiting or failing, in a few words. */
+  reason: string | null;
+  branch: string | null;
+  workroot: string | null;
+  /** Per repo, the furthest step: repo-a ✓ · repo-b ● · repo-c ○. */
+  repos: { repo: string; status: FactoryStepStatus; stage: FactoryStageId | null }[];
+  agent: string | null;
+  model: string | null;
+  startedAt: string;
+  updatedAt: string;
+  costUsd: number;
+  budgetUsd: number | null;
+  prs: FactoryManifest['prs'];
+  /** The newest gate decision with a risk rating, if any. */
+  risk: { level: 'low' | 'medium' | 'high'; rationale: string | null } | null;
+  /** Runs for this ticket, newest first. */
+  runIds: string[];
+  /** Every step of the pipeline for this item, in order (the Tickets view's track and details). */
+  steps: FactoryItemStep[];
+  mode: FactoryManifest['mode'];
+  spec: FactorySpec | null;
+  plan: string | null;
+  /** Why the pipeline stopped short, when it did. */
+  error: string | null;
+}
+
+/** Where one item is on one step: done, under way, failed, waiting on a decision, skipped or not reached. */
+export type FactoryStepState = 'done' | 'running' | 'failed' | 'waiting' | 'skipped' | 'pending';
+
+export interface FactoryItemStep {
+  /** The board column's id: a stage id, or gate:<id>. */
+  id: string;
+  kind: 'stage' | 'gate';
+  label: string;
+  state: FactoryStepState;
+  /** The item's current step. */
+  current: boolean;
+  startedAt: string | null;
+  endedAt: string | null;
+  /** A stage's rows, one per repo (or one with repo null). */
+  repos: { repo: string | null; status: FactoryStepStatus; agent: string | null; note: string | null; startedAt: string | null; endedAt: string | null }[];
+  /** A gate's decisions, oldest first. */
+  decisions: { decision: 'pending' | 'approved' | 'rejected'; mode: FactoryGateMode | null; by: string | null; risk: 'low' | 'medium' | 'high' | null; rationale: string | null; at: string }[];
+}
+
+export interface FactoryBoard {
+  /** factory.json exists and says enabled. */
+  enabled: boolean;
+  configured: boolean;
+  preset: FactoryPreset | null;
+  columns: FactoryColumn[];
+  items: FactoryItem[];
+  /** Items in flight vs the WIP limit. */
+  wip: { inFlight: number; limit: number };
+  /** Manifests that couldn't be read. */
+  errors: string[];
+}
+
 // ---------------------------------------------------------------- apps / workspaces
 
 export interface AppStatus {

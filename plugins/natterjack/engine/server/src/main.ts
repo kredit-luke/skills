@@ -42,6 +42,7 @@ import { RunManager, httpError, runLabel } from "./runs.ts";
 import { Deck, Scheduler } from "./deck.ts";
 import { Inbox } from "./inbox.ts";
 import { Reviews, numberParam, repoParam } from "./reviews.ts";
+import { type FactoryRun, buildBoard, factoryConfigState, readManifests, saveFactoryConfig } from "./factory.ts";
 import { Watcher } from "./watches.ts";
 import { Usage } from "./usage.ts";
 import { UsageHistory } from "./usage-history.ts";
@@ -358,6 +359,19 @@ function mainRepos(): string[] {
   }
   for (const r of listRepos(MAIN_WORKSPACE_PATH)) out.add(path.resolve(MAIN_WORKSPACE_PATH, r));
   return [...out];
+}
+
+/** The Factory board: every work item's manifest in its column, with its ticket's runs. */
+function factoryBoard() {
+  const state = factoryConfigState(!isReader());
+  const { manifests, errors } = readManifests();
+  if (state.error) errors.unshift(state.error);
+  const wsTicket = new Map(listWorkspaces().map((w) => [w.slug, w.ticketId || null]));
+  const factoryRuns: FactoryRun[] = runs.list().slice(0, 500).map((r) => ({
+    id: r.id, ticket: runTicket(r, wsTicket.get(r.workspace))?.id ?? null, status: r.status,
+    costUsd: r.costUsd || 0, startedAt: r.startedAt, agent: r.agent || "claude", model: r.model,
+  }));
+  return buildBoard(state.config, state.exists && !state.error, manifests, factoryRuns, errors);
 }
 
 /** The worktree a run worked in (the run page's rule) and its repos, or null for a run that stayed in main. */
@@ -1021,6 +1035,7 @@ live.register("status", sharedStatus, 5000);
 live.register("deck", deckView, 30000);
 live.register("inbox", () => inbox.get(false), 60000);
 live.register("models", () => models.view(), 30000);
+live.register("factory", factoryBoard, 5000);
 // Hosted: each linked computer's online state (RemoteLinkLive[]). Refreshed by every sync, open and
 // revoke; the cadence catches a link going quiet (offline after ONLINE_MS with nothing to refresh it).
 if (mirror) live.register("remote-links", () => mirror.remoteLinks(), 15000);
@@ -1584,6 +1599,8 @@ async function handleApi(req: http.IncomingMessage, res: http.ServerResponse, ur
     if (p === "/api/overview") return sendJson(res, await getOverview());
     if (p === "/api/inbox") return sendJson(res, await inbox.get(force));
     if (p === "/api/reviews") return sendJson(res, await reviews.list(force));
+    if (p === "/api/factory") return sendJson(res, factoryBoard());
+    if (p === "/api/factory/config") return sendJson(res, factoryConfigState(!isReader()));
     if (p === "/api/reviews/pr") {
       const repo = repoParam(q("repo"));
       const number = numberParam(q("number"));
@@ -2073,6 +2090,13 @@ async function handleApi(req: http.IncomingMessage, res: http.ServerResponse, ur
     const status = (await agentsNow()).find((a) => a.id === id);
     if (!status || status.problem) return sendError(res, 400, status?.problem || "That agent isn't available.");
     return sendJson(res, await reviews.agentReview(repo, number, id, status.label, body.force === true));
+  }
+  if (p === "/api/factory/config") {
+    // factory.json is the team's policy for agent work: full access only.
+    if (isReader()) return sendError(res, 403, "Changing the factory needs full access; yours is read-only (Settings → Access).");
+    const saved = saveFactoryConfig(body);
+    live.refresh("factory");
+    return sendJson(res, saved);
   }
   if (p === "/api/reviews/merge") {
     // Merges on GitHub as the person: only ever from their click (and confirm) on the Reviews page.
