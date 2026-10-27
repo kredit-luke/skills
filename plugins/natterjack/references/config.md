@@ -496,7 +496,7 @@ The team's rules for agent work, from ticket to merged PR (the **Factory** page,
 
 **What the policy does once it's on** (`enabled: true`):
 - **Gates:** `/multirepo:implement` asks `factory.mjs decide` at each gate instead of following its own interactive/`--auto` rules.
-  - `human`: a person decides. An unattended run that can't ask stops at the gate and says so on the ticket. A dashboard run asks through a question card.
+  - `human`: a person decides. An unattended run that can't ask stops at the gate and says so on the ticket; a dashboard run asks through a question card. A ticket waiting at a gate shows **Approve and continue** / **Approve only** / **Reject** on the Factory page (full access), with its plan readable there. The decision is recorded with who made it (the signed-in person on a hosted dashboard, else the workspace's git `user.name`) and an optional note; approving and continuing starts the next implement run, where the gate passes; rejecting ends the ticket. While the ticket's own run is going (asking about the gate itself), it's decided there instead. The merge gate only records a decision: merging happens on the code host. A decision stands as a person's answer to the gate's latest request in the ticket's current round; a pre-PR approval lapses once there's new work to check.
   - `approver`: a person decides for now, until the Approver runs.
   - `auto`: passes on its checks. The spec gate needs the spec to be Ready; the pre-PR gate needs every repo's review and the security stage to pass.
   - `off`: skipped.

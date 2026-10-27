@@ -61,7 +61,7 @@ const STATE: Record<FactoryItem['state'], { label: string; cls: string }> = {
       }
 
       @if (view() === 'tickets') {
-        <dash-factory-tickets [items]="b.items" />
+        <dash-factory-tickets [items]="b.items" [canDecide]="b.canDecide" [focus]="focus()" />
       } @else {
       <div class="board" role="list" aria-label="Pipeline">
         @for (col of b.columns; track col.id) {
@@ -91,6 +91,7 @@ const STATE: Record<FactoryItem['state'], { label: string; cls: string }> = {
                   }
                   @if (it.risk; as r) { <span class="risk" [class]="'risk ' + r.level" [title]="r.rationale || ''">{{ r.level }} risk</span> }
                 </div>
+                @if (it.waitingGate; as g) { <a class="decide-link" [routerLink]="[]" [queryParams]="{ view: 'tickets', ticket: it.ticket }">Decide the {{ g.label.toLowerCase() }}</a> }
                 @if (it.prs.length || it.runIds.length) {
                   <div class="links">
                     @for (p of it.prs; track p.url) {
@@ -138,6 +139,7 @@ const STATE: Record<FactoryItem['state'], { label: string; cls: string }> = {
     .risk.low { color: var(--green); }
     .links { display: flex; flex-wrap: wrap; gap: 8px; font-size: 12px; }
     .spec { align-self: flex-start; font-size: 10.5px; }
+    .decide-link { font-size: 12px; font-weight: 600; }
   `],
 })
 export class FactoryComponent implements OnInit {
@@ -146,6 +148,8 @@ export class FactoryComponent implements OnInit {
   private readonly router = inject(Router);
   private readonly query = toSignal(inject(ActivatedRoute).queryParamMap);
   /** ?view=, else the one picked last in this browser, else Tickets. */
+  /** ?ticket=: open that ticket's row (from a Board card's Decide link). */
+  readonly focus = computed(() => this.query()?.get('ticket') || null);
   readonly view = computed<View>(() => {
     const q = this.query()?.get('view');
     if (q === 'board' || q === 'tickets') return q;

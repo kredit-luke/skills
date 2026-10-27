@@ -65,9 +65,9 @@ When the team's Factory policy is on (`factory.json` `enabled`), it decides the 
 |---|---|
 | `own-rules` | No policy is on: this skill's own rules (interactive asks, autonomous decides) |
 | `skip` | The gate is off: carry on, record nothing |
-| `pass` | `gate --decision approved --by auto --rationale "<reason>"`, carry on |
+| `pass` | `gate --decision approved --by auto --rationale "<reason>"`, carry on. When `decided` is true (a person's approval that stands), record nothing: carry on |
 | `ask` | `gate --decision pending`, then ask with `AskUserQuestion`, leading with `reason`; record the answer (`approved` / `rejected` `--by user`) |
-| `stop` | `gate --decision pending --rationale "<reason>"`, comment the reason on the ticket, and end the run: it's waiting for a person. Leave the work and the ticket's state as they are; a later run picks it up. For a spec below the team's minimum, record `rejected` and `done --error "spec not ready"` instead |
+| `stop` | `gate --decision pending --rationale "<reason>"`, comment the reason on the ticket, and end the run: it's waiting for a person. Leave the work and the ticket's state as they are. They approve or reject it on the dashboard's Factory page (or in a later session); approving starts a new run, where `decide` says `pass` ("Already approved by …") and the work carries on from the plan file and WORKROOT. For a spec below the team's minimum, record `rejected` and `done --error "spec not ready"` instead |
 | `handoff` | The merge gate: `gate --gate merge --decision pending`; this run never merges |
 
 A rejection ends the ticket's run: `done --error "<gate> rejected"`.

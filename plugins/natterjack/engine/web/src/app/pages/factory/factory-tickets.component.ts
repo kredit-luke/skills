@@ -1,6 +1,9 @@
-import { ChangeDetectionStrategy, Component, DestroyRef, inject, input, signal } from '@angular/core';
+import { ChangeDetectionStrategy, Component, DestroyRef, effect, inject, input, signal } from '@angular/core';
 import { RouterLink } from '@angular/router';
-import type { FactoryItem, FactoryItemStep, FactoryStepState, FactoryStepStatus } from '../../../../../shared/api';
+import { FormsModule } from '@angular/forms';
+import type { FactoryGateResult, FactoryItem, FactoryItemStep, FactoryStepState, FactoryStepStatus } from '../../../../../shared/api';
+import { ApiService } from '../../core/api.service';
+import { ToastService } from '../../core/toast.service';
 import { relTime } from '../../core/util';
 import { checkMark, duration, specLevel } from './factory.util';
 
@@ -18,12 +21,12 @@ const STATE: Record<FactoryItem['state'], { label: string; cls: string }> = {
  */
 @Component({
   selector: 'dash-factory-tickets',
-  imports: [RouterLink],
+  imports: [RouterLink, FormsModule],
   changeDetection: ChangeDetectionStrategy.OnPush,
   template: `
     <ul class="items">
       @for (it of items(); track it.ticket) {
-        <li class="item" [class]="'item s-' + it.state">
+        <li class="item" [class]="'item s-' + it.state" [id]="'ticket-' + it.ticket">
           <div class="head">
             <button class="exp" type="button" (click)="toggle(it.ticket)" [attr.aria-expanded]="open().has(it.ticket)" [attr.aria-label]="(open().has(it.ticket) ? 'Hide' : 'Show') + ' details for ' + it.ticket">{{ open().has(it.ticket) ? '▾' : '▸' }}</button>
             @if (it.url) { <a class="tk" [href]="it.url" target="_blank" rel="noopener">{{ it.ticket }}</a> } @else { <span class="tk">{{ it.ticket }}</span> }
@@ -41,7 +44,8 @@ const STATE: Record<FactoryItem['state'], { label: string; cls: string }> = {
             @if (it.costUsd || it.budgetUsd) { <span [class.over]="it.budgetUsd != null && it.costUsd > it.budgetUsd">\${{ it.costUsd.toFixed(2) }}{{ it.budgetUsd != null ? ' of $' + it.budgetUsd : '' }}</span> }
             @if (it.risk; as r) { <span class="risk" [class]="'risk ' + r.level" [title]="r.rationale || ''">{{ r.level }} risk</span> }
             @for (p of it.prs; track p.url) { <a [href]="p.url" target="_blank" rel="noopener">{{ p.repo || 'PR' }}{{ p.number ? ' #' + p.number : '' }}{{ p.state === 'merged' ? ' (merged)' : '' }}</a> }
-            @if (it.runIds.length) { <a [routerLink]="['/runs', it.runIds[0]]">Latest run</a> }
+            @if (it.askingRunId) { <a class="answer" [routerLink]="['/runs', it.askingRunId]">Answer the question</a> }
+            @else if (it.runIds.length) { <a [routerLink]="['/runs', it.runIds[0]]">Latest run</a> }
           </div>
           <ol class="track" [attr.aria-label]="it.ticket + ' pipeline'">
             @for (s of it.steps; track s.id) {
@@ -52,6 +56,33 @@ const STATE: Record<FactoryItem['state'], { label: string; cls: string }> = {
             }
           </ol>
           @if (it.error) { <p class="err-note">Stopped: {{ it.error }}</p> }
+
+          @if (it.waitingGate; as g) {
+            <section class="decide" [attr.aria-label]="'Decide the ' + g.label + ' for ' + it.ticket">
+              <p class="ask"><b>Waiting for a decision at the {{ g.label }}</b><span class="faint">since {{ rel(g.since) }}</span>@if (g.reason) { <span class="faint">{{ g.reason }}</span> }</p>
+              @if (it.plan) {
+                <button class="linkish" type="button" (click)="togglePlan(it.ticket)">{{ plans()[it.ticket] !== undefined ? 'Hide the plan' : 'Read the plan' }}</button>
+                @if (plans()[it.ticket]; as p) { <pre class="plan">{{ p }}</pre> }
+              }
+              @if (it.implementLive) {
+                <p class="faint">Its implement run is still going, so this is decided there@if (it.askingRunId) {: <a [routerLink]="['/runs', it.askingRunId]">answer the question</a>}.</p>
+              } @else if (canDecide()) {
+                <textarea rows="2" [ngModel]="notes()[it.ticket] || ''" (ngModelChange)="setNote(it.ticket, $event)" placeholder="A note for the record (optional; say why when rejecting)" [attr.aria-label]="'Note on the ' + g.label"></textarea>
+                <div class="btns">
+                  @if (g.id === 'merge') {
+                    <button class="btn primary sm" type="button" (click)="decide(it, 'approved', false)" [disabled]="busy() === it.ticket" title="Record the approval; merging happens on the code host">{{ busy() === it.ticket ? 'Saving…' : 'Approve' }}</button>
+                  } @else {
+                    <button class="btn primary sm" type="button" (click)="decide(it, 'approved', true)" [disabled]="busy() === it.ticket">{{ busy() === it.ticket ? 'Saving…' : 'Approve and continue' }}</button>
+                    <button class="btn sm" type="button" (click)="decide(it, 'approved', false)" [disabled]="busy() === it.ticket" title="Record the approval without starting a run now">Approve only</button>
+                  }
+                  <button class="btn danger sm" type="button" (click)="decide(it, 'rejected', false)" [disabled]="busy() === it.ticket">Reject</button>
+                </div>
+                @if (g.id === 'merge') { <p class="faint">Merging happens on the code host (or the Reviews page); this records the decision.</p> }
+              } @else {
+                <p class="faint">Deciding needs full access (Settings → Access).</p>
+              }
+            </section>
+          }
 
           @if (open().has(it.ticket)) {
             <div class="details">
@@ -145,6 +176,14 @@ const STATE: Record<FactoryItem['state'], { label: string; cls: string }> = {
     tr.cur td { background: var(--paper-2); }
     td:first-child { white-space: nowrap; font-weight: 600; }
     .faint { color: var(--ink-faint); }
+    .decide { margin-left: 26px; padding: 10px 12px; border: 1px solid var(--yellow); background: var(--yellow-bg); border-radius: 8px; display: flex; flex-direction: column; gap: 8px; }
+    .decide .ask { margin: 0; font-size: 13px; display: flex; flex-wrap: wrap; gap: 2px 8px; align-items: baseline; }
+    .decide textarea { font: inherit; font-size: 13px; padding: 6px 8px; border: 1px solid var(--line); border-radius: 6px; resize: vertical; background: #fff; }
+    .decide .btns { display: flex; flex-wrap: wrap; gap: 8px; }
+    .decide .linkish { align-self: flex-start; }
+    .plan { margin: 0; max-height: 420px; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; font-size: 12.5px; background: #fff; border: 1px solid var(--line-soft); border-radius: 6px; padding: 10px 12px; }
+    .answer { font-weight: 600; }
+    @media (max-width: 700px) { .decide { margin-left: 0; } }
     .spec.tag { cursor: pointer; border: 0; font: inherit; font-size: 10.5px; }
     .specd h3 { margin: 0 0 6px; font-size: 12.5px; display: flex; flex-wrap: wrap; align-items: center; gap: 6px 10px; }
     .specd h3 .faint { font-weight: 400; font-size: 12px; }
@@ -164,14 +203,62 @@ const STATE: Record<FactoryItem['state'], { label: string; cls: string }> = {
   `],
 })
 export class FactoryTicketsComponent {
+  private readonly api = inject(ApiService);
+  private readonly toast = inject(ToastService);
   readonly items = input.required<FactoryItem[]>();
+  /** The person may decide gates (full access). */
+  readonly canDecide = input(false);
+  /** A ticket to open and scroll to (?ticket=, e.g. from a Board card). */
+  readonly focus = input<string | null>(null);
   readonly open = signal<Set<string>>(new Set());
+  readonly notes = signal<Record<string, string>>({});
+  /** Plans read so far, by ticket (undefined: not shown). */
+  readonly plans = signal<Record<string, string>>({});
+  readonly busy = signal<string | null>(null);
   /** A clock for steps still going (the board only changes when something is reported). */
   private readonly now = signal(Date.now());
 
   constructor() {
     const t = setInterval(() => this.now.set(Date.now()), 15_000);
     inject(DestroyRef).onDestroy(() => clearInterval(t));
+    // Open and scroll to ?ticket= once, when it first shows: not again on every live refresh.
+    let handled: string | null = null;
+    effect(() => {
+      const f = this.focus();
+      if (!f || f === handled || !this.items().some((i) => i.ticket === f)) return;
+      handled = f;
+      this.open.update((s) => new Set([...s, f]));
+      setTimeout(() => document.getElementById('ticket-' + f)?.scrollIntoView({ block: 'start', behavior: 'smooth' }));
+    });
+  }
+
+  setNote(ticket: string, text: string): void { this.notes.update((m) => ({ ...m, [ticket]: text })); }
+
+  async togglePlan(ticket: string): Promise<void> {
+    if (this.plans()[ticket] !== undefined) { this.plans.update((m) => { const { [ticket]: _, ...rest } = m; return rest; }); return; }
+    try {
+      const p = await this.api.get<{ path: string; text: string }>(`/api/factory/plan?ticket=${encodeURIComponent(ticket)}`);
+      this.plans.update((m) => ({ ...m, [ticket]: p.text }));
+    } catch (e) { this.toast.error(`Couldn't read the plan: ${(e as Error).message}`); }
+  }
+
+  /** Records the decision; approving and continuing starts the ticket's next implement run. */
+  async decide(it: FactoryItem, decision: 'approved' | 'rejected', resume: boolean): Promise<void> {
+    const g = it.waitingGate;
+    if (!g) return;
+    this.busy.set(it.ticket);
+    try {
+      const r = await this.api.post<FactoryGateResult>('/api/factory/gate', { ticket: it.ticket, gate: g.id, decision, note: this.notes()[it.ticket] || '', resume });
+      this.setNote(it.ticket, '');
+      if (decision === 'rejected') this.toast.show(`Rejected ${it.ticket} at the ${g.label}.`);
+      else if (r.run) this.toast.show(`Approved ${it.ticket} at the ${g.label}; a run carries it on.`);
+      else if (r.launchError) this.toast.error(`Approved, but no run started: ${r.launchError}`);
+      else this.toast.show(`Approved ${it.ticket} at the ${g.label}.`);
+    } catch (e) {
+      this.toast.error((e as Error).message);
+    } finally {
+      this.busy.set(null);
+    }
   }
 
   toggle(ticket: string): void {

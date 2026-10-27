@@ -61,6 +61,8 @@ A pipeline that reports its progress gets a card on the **Factory** page. Each w
 
 - **`stages[]`**: one row per stage and repo, `status` `pending` | `running` | `done` | `failed` | `skipped`; the latest status counts (a failed build that's running again is running).
 - **`spec`**: the ticket's spec readiness from `spec-check.mjs --ticket` (`score`, `level`, the team's levels, and each check's `score`, `finding` and any `override` the agent made with its reason), shown on the card and in its details.
+- **`roundStartedAt`**: when the current round began; `start` on a finished ticket begins a new one, and gate decisions from earlier rounds stop counting (they stay in the trail).
+- **Writers lock the file**: `<file>.lock`, created exclusively, treated as stale after 10s (`factory.mjs` and the dashboard both take it).
 - **`gates[]`**: appended per decision (`pending`, then `approved` or `rejected`); the last one counts, and the history is the audit trail.
 - **Where the card sits**: the first stage or gate (in the policy's order) it hasn't finished. A stage it never reported counts as skipped once a later one has activity. `done: true`, or every PR merged, puts it in Done.
 - The card adds what the dashboard knows: runs whose ticket matches (cost, agent, a question waiting), and the policy's budget.

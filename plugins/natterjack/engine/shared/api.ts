@@ -912,6 +912,8 @@ export interface FactoryManifest {
   plan: string | null;
   startedAt: string;
   updatedAt: string;
+  /** When the ticket's current round started (picking a finished one up again starts a new round). */
+  roundStartedAt: string | null;
   /** Spec readiness, scored when the pipeline read the ticket. */
   spec: FactorySpec | null;
   stages: { id: FactoryStageId; repo: string | null; agent: string | null; status: FactoryStepStatus; startedAt: string | null; endedAt: string | null; note: string | null }[];
@@ -950,8 +952,14 @@ export interface FactoryItem {
   risk: { level: 'low' | 'medium' | 'high'; rationale: string | null } | null;
   /** Runs for this ticket, newest first. */
   runIds: string[];
+  /** A run of this ticket waiting on an answer (an implement run first), or null. */
+  askingRunId: string | null;
+  /** An implement run of this ticket is going (running or asking): its gates are decided there. */
+  implementLive: boolean;
   /** Every step of the pipeline for this item, in order (the Tickets view's track and details). */
   steps: FactoryItemStep[];
+  /** The gate it's waiting at for a decision (approve or reject on the Factory page), or null. */
+  waitingGate: { id: FactoryGateId; label: string; mode: FactoryGateMode | null; since: string; reason: string | null } | null;
   mode: FactoryManifest['mode'];
   spec: FactorySpec | null;
   plan: string | null;
@@ -978,6 +986,23 @@ export interface FactoryItemStep {
   decisions: { decision: 'pending' | 'approved' | 'rejected'; mode: FactoryGateMode | null; by: string | null; risk: 'low' | 'medium' | 'high' | null; rationale: string | null; at: string }[];
 }
 
+/** POST /api/factory/gate: a person's decision at a gate an item is waiting at. */
+export interface FactoryGateDecision {
+  ticket: string;
+  gate: FactoryGateId;
+  decision: 'approved' | 'rejected';
+  note?: string;
+  /** On approval, start the next implement run for the ticket (default true). */
+  resume?: boolean;
+}
+export interface FactoryGateResult {
+  /** Who it was recorded as. */
+  by: string;
+  /** The run started to carry on, or null (not asked, rejected, or refused: see launchError). */
+  run: RunMeta | null;
+  launchError: string | null;
+}
+
 export interface FactoryBoard {
   /** factory.json exists and says enabled. */
   enabled: boolean;
@@ -989,6 +1014,8 @@ export interface FactoryBoard {
   wip: { inFlight: number; limit: number };
   /** Manifests that couldn't be read. */
   errors: string[];
+  /** The person may decide gates here (full access). */
+  canDecide: boolean;
 }
 
 // ---------------------------------------------------------------- apps / workspaces

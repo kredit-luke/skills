@@ -87,7 +87,7 @@ function fresh(ticket, now, policy) {
     version: 1, ticket, title: null, url: null, mode: "interactive",
     policy: policy ? { preset: policy.preset ?? null, updatedAt: policy.updatedAt } : null,
     workroot: null, branch: null, repos: [], plan: null,
-    startedAt: now, updatedAt: now, spec: null, stages: [], gates: [], prs: [], done: false, error: null,
+    startedAt: now, updatedAt: now, roundStartedAt: now, spec: null, stages: [], gates: [], prs: [], done: false, error: null,
   };
 }
 
@@ -118,6 +118,9 @@ function apply(command, args, m, policy, now) {
     if (str(args.workroot)) m.workroot = path.resolve(args.workroot);
     if (list(args.repos).length) m.repos = [...new Set([...m.repos, ...list(args.repos)])];
     m.policy = policy ? { preset: policy.preset ?? null, updatedAt: policy.updatedAt } : m.policy;
+    // Picking up a finished (or rejected) ticket again starts a new round: earlier gate decisions no longer stand.
+    if (m.done) m.roundStartedAt = now;
+    else if (!m.roundStartedAt) m.roundStartedAt = m.startedAt || now; // written before rounds existed
     m.done = false;
     m.error = null;
   } else if (command === "stage") {
@@ -227,6 +230,26 @@ export function stageOn(policy, id) {
 }
 
 /**
+ * A decision at a gate that still stands, or null: a person's answer to the gate's latest request
+ * (pending, then approved or rejected, not "auto"), made in the ticket's current round. A pre-PR
+ * approval also lapses once a build, review or scan has run since: there's new work to check.
+ * The merge gate's decisions are never this run's to act on.
+ */
+export function standingDecision(manifest, gate) {
+  if (gate === "merge" || !manifest) return null;
+  const rows = (manifest.gates || []).filter((g) => g && g.id === gate);
+  const last = rows.at(-1);
+  const prev = rows.at(-2);
+  if (!last || last.decision === "pending" || !last.by || last.by === "auto" || !prev || prev.decision !== "pending") return null;
+  if (manifest.roundStartedAt && (!last.at || last.at < manifest.roundStartedAt)) return null;
+  if (gate === "prePr") {
+    const since = (manifest.stages || []).some((s) => ["build", "review", "security"].includes(s.id) && (s.status === "running" || (s.endedAt && s.endedAt > last.at)));
+    if (since) return null;
+  }
+  return last;
+}
+
+/**
  * What the pipeline does at a gate, by the team's policy:
  *   own-rules  no policy is on: the skill's own interactive/--auto rules
  *   skip       the gate is off
@@ -235,11 +258,21 @@ export function stageOn(policy, id) {
  *   stop       stop here and say on the ticket why (record it pending, or rejected)
  *   handoff    nothing more for this run (the merge gate: implement never merges)
  * `run` is how this run goes (interactive | autonomous); `canAsk` whether it can ask a person.
+ * A person's decision that still stands at the gate (standingDecision) wins: approved passes,
+ * rejected stops.
  */
 export function decide(policy, manifest, gate, { run = "interactive", canAsk = run === "interactive" } = {}) {
   if (!GATES.includes(gate)) throw usage(`--gate must be one of ${GATES.join(", ")}`);
   const name = GATE_NAMES[gate];
   const p = normalizePolicy(policy);
+  const decided = standingDecision(manifest, gate);
+  if (decided) {
+    const who = decided.by ? ` by ${decided.by}` : "";
+    const why = decided.rationale ? `: ${decided.rationale}` : "";
+    return decided.decision === "approved"
+      ? { gate, mode: decided.mode ?? null, action: "pass", reason: `Already approved${who}${why}.`, decided: true }
+      : { gate, mode: decided.mode ?? null, action: "stop", reason: `Rejected${who}${why}.`, decided: true };
+  }
   if (!p.enabled) return { gate, mode: null, action: "own-rules", reason: "No factory policy is on: follow this skill's own rules." };
   const mode = p.gates[gate];
   const out = (action, reason) => ({ gate, mode, action, reason });
