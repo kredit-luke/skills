@@ -6,7 +6,7 @@ import os from "node:os";
 import path from "node:path";
 import { execFileSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
-import { manifestPath, sourceWorkspace, ticketFile, update } from "../factory.mjs";
+import { intakeCheck, manifestPath, sourceWorkspace, ticketFile, update } from "../factory.mjs";
 
 const SCRIPT = path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "factory.mjs");
 const tmp = () => fs.mkdtempSync(path.join(os.tmpdir(), "factory-mjs-"));
@@ -101,4 +101,31 @@ test("reports made at the same moment (one subagent per repo) are all kept", asy
   const m = JSON.parse(fs.readFileSync(path.join(ws, ".claude", "ledger", "factory", "ENG-1.json"), "utf-8"));
   assert.deepEqual(m.stages.map((s) => s.repo).sort(), repos);
   assert.equal(fs.existsSync(path.join(ws, ".claude", "ledger", "factory", "ENG-1.json.lock")), false);
+});
+
+test("a stage's failures are counted, and a retro is recorded", () => {
+  const { ws } = workspace();
+  const run = (cmd, args) => update(cmd, { ticket: "ENG-9", ...args }, { start: ws });
+  run("stage", { stage: "review", repo: "api", status: "running" });
+  run("stage", { stage: "review", repo: "api", status: "failed" });
+  run("stage", { stage: "review", repo: "api", status: "failed" });
+  run("stage", { stage: "review", repo: "api", status: "running" });
+  const m = run("stage", { stage: "review", repo: "api", status: "done" }).manifest;
+  assert.equal(m.stages[0].failures, 1, "failing twice in a row is one failure");
+  const r = run("retro", { caught: "a race; missing index ", wrong: "the API was paged", approver: "held up", proposals: "" }).manifest.retro;
+  assert.deepEqual({ ...r, at: undefined }, { caught: ["a race", "missing index"], wrong: ["the API was paged"], approver: "held up", proposals: [], at: undefined });
+  assert.ok(run("done", {}).manifest.finishedAt, "done records when it finished");
+  assert.equal(run("start", {}).manifest.finishedAt, null, "picked up again: not finished");
+});
+
+test("intake: a ticket in the factory, or pulled in before (by the dashboard too), isn't taken again", () => {
+  const { ws } = workspace();
+  assert.deepEqual(intakeCheck(ws, "ENG-20"), { ok: true, why: null });
+  assert.deepEqual(intakeCheck(ws, "ENG-20", { record: true, now: "2026-10-27T10:00:00.000Z" }), { ok: true, why: null });
+  assert.match(intakeCheck(ws, "eng-20").why, /pulled in before \(2026-10-27T10:00:00\.000Z\)/);
+  // The dashboard's history is the same file.
+  fs.writeFileSync(path.join(ws, ".claude", "ledger", "factory-intake.json"), JSON.stringify({ "eng-21": "2026-10-27T11:00:00.000Z", "eng-20": "x" }));
+  assert.equal(intakeCheck(ws, "ENG-21").ok, false);
+  update("stage", { ticket: "ENG-22", stage: "plan", status: "done" }, { start: ws });
+  assert.match(intakeCheck(ws, "ENG-22").why, /already in the factory/);
 });

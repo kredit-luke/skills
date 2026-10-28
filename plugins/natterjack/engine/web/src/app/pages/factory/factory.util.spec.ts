@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { FactoryConfig, FactoryPresetPatch } from '../../../../../shared/api';
-import { approverVerdict, checkMark, duration, gateName, guideLink, matchingPreset, specLevel, numOrNull, pipelineSteps, splitLines, splitList, withPreset } from './factory.util';
+import { approverVerdict, checkMark, duration, gateName, guideLink, lineLanes, metricLine, matchingPreset, specLevel, numOrNull, pipelineSteps, splitLines, splitList, withPreset } from './factory.util';
 
 const STAGES = ['align', 'plan', 'build', 'review', 'security', 'qa', 'guide', 'pr', 'approve', 'merge'] as const;
 
@@ -103,5 +103,33 @@ describe('the Approver', () => {
     expect(approverVerdict(a({}))).toEqual({ label: 'Needs a person', cls: 'amber' });
     expect(approverVerdict(a({ enforced: true, wouldApprove: true, action: 'handoff' }))).toEqual({ label: 'Needs a person', cls: 'amber' });
     expect(gateName('prePr')).toBe('pre-PR');
+  });
+});
+
+describe('the Line view and the throughput strip', () => {
+  const item = (ticket: string, column: string, state: string, repos: object[] = []) => ({ ticket, column, state, title: null, reason: state === 'waiting' ? 'Waiting on you' : null, repos, prs: [] }) as any;
+  const cols = [{ id: 'queued', label: 'Queued', kind: 'queued' }, { id: 'build', label: 'Building', kind: 'stage' }, { id: 'gate:prePr', label: 'Pre-PR gate', kind: 'gate' }, { id: 'done', label: 'Done', kind: 'done' }] as any;
+  it('puts each item in its lane by state, and marks where the most waits', () => {
+    const { lanes, bottleneck } = lineLanes(cols, [
+      item('A-1', 'build', 'moving', [{ repo: 'api', status: 'running', stage: 'build' }, { repo: 'web', status: 'done', stage: 'build' }]),
+      item('A-2', 'gate:prePr', 'waiting'), item('A-3', 'gate:prePr', 'idle'), item('A-4', 'build', 'failing'), item('A-5', 'done', 'done'),
+      item('A-6', 'done', 'waiting'), item('A-7', 'done', 'waiting'), item('A-8', 'build', 'idle'), item('A-9', 'build', 'idle'),
+      { ...item('A-10', 'done', 'done'), prs: [{ url: 'u', state: 'open' }] }, { ...item('A-11', 'done', 'done'), prs: [{ url: 'u', state: 'merged' }] },
+    ]);
+    expect(lanes.map((l) => l.id)).toEqual(['build', 'gate:prePr', 'merging']);
+    expect(lanes[2].waiting.map((x) => x.ticket)).toEqual(['A-6', 'A-7', 'A-10']);
+    expect(lanes[0].idle.map((x) => x.ticket)).toEqual(['A-8', 'A-9']);
+    expect(lanes[0].working).toEqual([{ ticket: 'A-1', title: null, repos: ['api'] }]);
+    expect(lanes[0].failing.map((x) => x.ticket)).toEqual(['A-4']);
+    expect(lanes[1].waiting.map((x) => x.ticket)).toEqual(['A-2']);
+    expect(lanes[1].idle.map((x) => x.ticket)).toEqual(['A-3']);
+    expect(bottleneck).toBe('merging', 'idle items are not waiting');
+    expect(lineLanes(cols, []).bottleneck).toBeNull();
+  });
+  it('shows only the figures there is data for', () => {
+    const none = { done7d: 0, leadTimeHours: null, firstPassReview: null, autoApproved: null, costPerMergedUsd: null, merged: 0 };
+    expect(metricLine(none).map((m) => m.label)).toEqual(['done this week']);
+    const all = metricLine({ done7d: 3, leadTimeHours: 60, firstPassReview: { rate: 0.75, n: 4 }, autoApproved: { rate: 0.5, n: 2 }, costPerMergedUsd: 4.5, merged: 2 });
+    expect(all.map((m) => m.value)).toEqual(['3', '3d', '75%', '50%', '$4.50']);
   });
 });

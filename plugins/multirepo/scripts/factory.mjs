@@ -18,6 +18,8 @@
  *                          [--by who] [--mode human|approver|auto] [--risk low|medium|high] [--rationale "..."] [--sha s]
  *   node factory.mjs pr    --ticket <id> --url <pr url> [--repo r] [--number n] [--state open|merged|closed]
  *   node factory.mjs done  --ticket <id> [--error "why it stopped"]
+ *   node factory.mjs retro --ticket <id> [--caught "a;b"] [--wrong "a;b"] [--approver "..."] [--proposals "a;b"]
+ *                          what was learned once its PRs merged (the retro skill)
  *   (the Approver's assessments are recorded by approver.mjs assess --ticket <id>)
  *   (spec readiness is recorded by spec-check.mjs --ticket <id>)
  *   node factory.mjs show  --ticket <id>
@@ -26,6 +28,8 @@
  *                          what to do at a gate by the policy: { action: own-rules|skip|pass|ask|stop|handoff|approver, reason }
  *   node factory.mjs wip   --ticket <id>       other tickets in flight vs the policy's WIP limit: { inFlight, limit, ok }
  *   node factory.mjs stage-on --stage <stage>   whether the policy runs a stage: { policy, on } (on: null with no policy on)
+ *   node factory.mjs intake --ticket <id> [--record]  whether intake may take it: { ok, why } (not in the
+ *                          factory, never pulled before: the dashboard's history too); --record: it's taken
  *
  * Stages: align plan build review security qa guide pr approve merge. A stage is one row per
  * repo (updated in place); a gate decision is appended (the history is the audit log).
@@ -122,7 +126,7 @@ function apply(command, args, m, policy, now) {
     if (list(args.labels).length) m.labels = [...new Set([...(m.labels || []), ...list(args.labels)])];
     m.policy = policy ? { preset: policy.preset ?? null, updatedAt: policy.updatedAt } : m.policy;
     // Picking up a finished (or rejected) ticket again starts a new round: earlier gate decisions no longer stand.
-    if (m.done) m.roundStartedAt = now;
+    if (m.done) { m.roundStartedAt = now; m.finishedAt = null; }
     else if (!m.roundStartedAt) m.roundStartedAt = m.startedAt || now; // written before rounds existed
     m.done = false;
     m.error = null;
@@ -132,6 +136,8 @@ function apply(command, args, m, policy, now) {
     const repo = str(args.repo);
     let row = m.stages.find((s) => s.id === args.stage && (s.repo ?? null) === repo);
     if (!row) { row = { id: args.stage, repo, agent: null, status: "pending", startedAt: null, endedAt: null, note: null }; m.stages.push(row); }
+    // A failure counts, so the board can tell a first-pass review from one that took a correction.
+    if (args.status === "failed" && row.status !== "failed") row.failures = (row.failures || 0) + 1;
     row.status = args.status;
     if (str(args.agent)) row.agent = str(args.agent);
     if (str(args.note)) row.note = str(args.note);
@@ -170,8 +176,12 @@ function apply(command, args, m, policy, now) {
     const a = args.assessment;
     if (!a || typeof a !== "object" || !GATES.includes(a.gate) || !RISKS.includes(a.level)) throw usage("assess needs approver.mjs's assessment");
     (m.assessments ||= []).push({ ...a, at: now });
+  } else if (command === "retro") {
+    const items = (v) => (typeof v === "string" ? v.split(";").map((s) => s.trim()).filter(Boolean) : []);
+    m.retro = { caught: items(args.caught), wrong: items(args.wrong), approver: str(args.approver), proposals: items(args.proposals), at: now };
   } else if (command === "done") {
     m.done = true;
+    m.finishedAt = now;
     m.error = str(args.error);
   } else {
     throw usage(`Unknown command "${command}". Use start, stage, gate, pr, done, show or policy.`);
@@ -197,8 +207,8 @@ export const DEFAULT_SCANNERS = [
 
 /**
  * factory.json as the dashboard reads it (engine factory.ts normalizeFactoryConfig), for the
- * parts the pipeline acts on: enabled, gates, stages, the WIP limit, the security stage, the
- * required checks, the reviewers and the Approver. The engine's tests check the two agree.
+ * parts the pipeline acts on: enabled, gates, stages, intake, the WIP limit, the security stage,
+ * the required checks, the reviewers and the Approver. The engine's tests check the two agree.
  */
 export function normalizePolicy(raw) {
   const r = raw && typeof raw === "object" ? raw : {};
@@ -227,6 +237,11 @@ export function normalizePolicy(raw) {
           failOn: SEVERITIES.includes(s.failOn) ? s.failOn : "high",
         }))
         : DEFAULT_SCANNERS.map((s) => ({ ...s })),
+    },
+    intake: {
+      states: strs(r.intake && r.intake.states) ?? [], labels: strs(r.intake && r.intake.labels) ?? [],
+      auto: !!(r.intake && r.intake.auto === true), everyMinutes: Math.round(num(r.intake && r.intake.everyMinutes, 30, 5, 1440)),
+      unassigned: !!(r.intake && r.intake.unassigned === true),
     },
     requiredChecks: strs(r.requiredChecks) ?? [],
     reviewers: { bots: strs(rev.bots) ?? [], pipeline: rev.pipeline !== false, noUnresolved: rev.noUnresolved !== false },
@@ -360,6 +375,27 @@ export function decide(policy, manifest, gate, { run = "interactive", canAsk = r
 }
 
 /**
+ * Whether intake may take a ticket: not in the factory (any progress file, done or not) and never
+ * pulled in before, by this or the dashboard (one history: <ledger>/factory-intake.json).
+ * `record`: note that it's been taken, when it may be.
+ */
+export function intakeCheck(ws, ticket, { record = false, now = new Date().toISOString() } = {}) {
+  const file = manifestPath(ws, ticket);
+  if (!file) return { ok: false, why: "This workspace has no Natterjack dashboard, so there's no factory to take it into." };
+  if (fs.existsSync(file)) return { ok: false, why: `${ticket} is already in the factory.` };
+  const history = path.join(ws, ".claude", "ledger", "factory-intake.json");
+  const pulled = readJson(history) || {};
+  if (pulled[ticket.toLowerCase()]) return { ok: false, why: `${ticket} was pulled in before (${pulled[ticket.toLowerCase()]}); a person decides whether to try again.` };
+  if (record) {
+    withFileLock(history, () => {
+      const fresh = { ...(readJson(history) || {}), [ticket.toLowerCase()]: now };
+      write(history, fresh);
+    });
+  }
+  return { ok: true, why: null };
+}
+
+/**
  * Tickets in flight (started, not done) other than this one, against the policy's WIP limit.
  * A ticket that's already in flight may always carry on (as the dashboard allows).
  */
@@ -393,6 +429,12 @@ async function main(argv) {
     const policy = readPolicy(sourceWorkspace(start));
     const enabled = normalizePolicy(policy).enabled;
     process.stdout.write(JSON.stringify({ stage: args.stage, policy: enabled, on: enabled ? stageOn(policy, args.stage) : null }, null, 2) + "\n");
+    return;
+  }
+  if (command === "intake") {
+    if (typeof args.ticket !== "string" || !args.ticket.trim()) throw usage("--ticket is required");
+    const ws = sourceWorkspace(start);
+    process.stdout.write(JSON.stringify(intakeCheck(ws, args.ticket.trim(), { record: args.record === true }), null, 2) + "\n");
     return;
   }
   if (command === "decide" || command === "wip") {

@@ -7,7 +7,7 @@ import path from "node:path";
 import { pathToFileURL } from "node:url";
 import {
   applyPreset, boardColumns, buildBoard, defaultFactoryConfig, factoryConfigProblems, factoryConfigState, normalizeFactoryConfig,
-  GATE_IDS, SPEC_CHECKS, STAGE_IDS, approverStats, factoryLaunchBlocker, manifestFile, normalizeManifest, overridableGate, overrideGateDecision, rateAssessment, readPlan, recordGateDecision, ticketFile, pipeline, placeItem, readManifests, saveFactoryConfig,
+  GATE_IDS, SPEC_CHECKS, STAGE_IDS, approverStats, factoryMetrics, intakeCandidates, setPrStates, factoryLaunchBlocker, manifestFile, normalizeManifest, overridableGate, overrideGateDecision, rateAssessment, readPlan, recordGateDecision, ticketFile, pipeline, placeItem, readManifests, saveFactoryConfig,
 } from "../src/factory.ts";
 
 const tmp = () => fs.mkdtempSync(path.join(os.tmpdir(), "factory-"));
@@ -33,7 +33,7 @@ test("normalize keeps good values, drops bad ones and fills the rest", () => {
     approver: { enabled: true, samplingPct: 250, mergeMethod: "rebase" },
   });
   assert.equal(c.preset, "custom");
-  assert.deepEqual(c.intake, { states: ["Ready"], labels: ["factory"] });
+  assert.deepEqual(c.intake, { states: ["Ready"], labels: ["factory"], auto: false, everyMinutes: 30, unassigned: false });
   assert.deepEqual(c.limits, { wip: 1, itemBudgetUsd: 12.5, dayBudgetUsd: null, itemHours: 2 });
   assert.deepEqual(c.stages.slice(0, 3).map((s) => [s.id, s.on, s.agent, s.model]), [["build", true, null, null], ["qa", true, "codex", "gpt-5"], ["align", false, null, null]]);
   assert.equal(c.stages.length, 10);
@@ -295,6 +295,7 @@ test("the multirepo scripts read the policy as the dashboard does", async (t) =>
     { requiredChecks: [" build ", "build", 3], reviewers: { bots: ["copilot"], pipeline: false, noUnresolved: false },
       approver: { enabled: true, enforce: true, identity: " approver-bot ", highRiskPaths: [], highRiskLabels: ["Security", ""], maxFiles: "0", maxLines: 99.6, maxRepos: 500, mergeAction: "merge", mergeMethod: "fast", samplingPct: 101 } },
     { approver: { enforce: "yes", identity: "", highRiskLabels: "security" } },
+    { intake: { states: ["Ready", " ready "], labels: ["factory"], auto: true, everyMinutes: 2 } }, { intake: { auto: "yes", everyMinutes: "45", unassigned: true } },
   ];
   for (const raw of inputs) {
     const d = normalizeFactoryConfig(raw);
@@ -304,7 +305,7 @@ test("the multirepo scripts read the policy as the dashboard does", async (t) =>
       stages: STAGE_IDS.map((id) => ({ id, on: d.stages.find((s) => s.id === id)!.on })),
       limits: { wip: d.limits.wip },
       security: { agentReview: d.security.agentReview, secretScan: d.security.secretScan, failOn: d.security.failOn, scanners: d.security.scanners },
-      requiredChecks: d.requiredChecks, reviewers: d.reviewers, approver: d.approver,
+      intake: d.intake, requiredChecks: d.requiredChecks, reviewers: d.reviewers, approver: d.approver,
     }, JSON.stringify(raw));
   }
 });
@@ -485,4 +486,91 @@ test("readManifests returns as many as asked for (the board's cap is only its de
   for (let i = 0; i < 3; i++) fs.writeFileSync(path.join(dir, `L-${i}.json`), JSON.stringify({ ticket: `L-${i}`, startedAt: at, updatedAt: at }));
   assert.equal(readManifests(dir, 2).manifests.length, 2);
   assert.equal(readManifests(dir, Infinity).manifests.length, 3);
+});
+
+test("the line's metrics: finished items, lead time, first-pass review, the Approver alone, cost per merged item", () => {
+  const now = Date.parse("2026-10-27T12:00:00.000Z");
+  const day = (d: number) => new Date(now - d * 86_400_000).toISOString();
+  const mk = (ticket: string, over: object) => normalizeManifest({ ticket, startedAt: day(3), updatedAt: day(1), ...over })!;
+  const ms = [
+    mk("A-1", { done: true, prs: [{ url: "https://x/1", state: "merged" }], stages: [{ id: "review", repo: "api", status: "done" }],
+      assessments: [{ gate: "merge", level: "low", enforced: true, action: "pass", at: day(1) }, { gate: "plan", level: "low", enforced: false, action: "ask", at: day(2) }] }),
+    mk("A-2", { done: true, startedAt: day(5), updatedAt: day(2), stages: [{ id: "review", repo: "api", status: "done", failures: 1 }],
+      assessments: [{ gate: "merge", level: "medium", enforced: true, action: "handoff", at: day(2) }] }),
+    mk("A-3", { done: true, error: "rejected", stages: [{ id: "review", repo: "web", status: "failed", failures: 1 }] }),
+    mk("A-4", { done: true, updatedAt: day(40), startedAt: day(41) }),
+  ];
+  const runs = [{ id: "r1", ticket: "A-1", status: "succeeded", costUsd: 3.5 }, { id: "r2", ticket: "a-1", status: "succeeded", costUsd: 1.5 }] as any;
+  const m = factoryMetrics(ms, runs, now);
+  assert.equal(m.done7d, 2, "stopped short and older than 30 days don't count");
+  assert.equal(m.leadTimeHours, 60, "median of 48h and 72h");
+  assert.deepEqual(m.firstPassReview, { rate: 0.33, n: 3 });
+  assert.deepEqual(m.autoApproved, { rate: 0.5, n: 2 });
+  assert.equal(m.costPerMergedUsd, 5);
+  assert.equal(m.merged, 1);
+  // A retro or a rating later doesn't move when it finished.
+  const later = factoryMetrics([mk("B-1", { done: true, startedAt: day(10), finishedAt: day(9), updatedAt: day(0) })], [], now);
+  assert.equal(later.leadTimeHours, 24);
+  assert.equal(later.done7d, 0);
+  assert.deepEqual(factoryMetrics([], [], now), { done7d: 0, leadTimeHours: null, firstPassReview: null, autoApproved: null, costPerMergedUsd: null, merged: 0 });
+});
+
+test("intake: tickets in its states with its labels, not in the factory yet, no run going; nothing without either", () => {
+  const cfg = (intake: object) => normalizeFactoryConfig({ intake });
+  // The tracker already narrowed these to this person's (assignee set) and, with intake.unassigned, unassigned ones.
+  const issues = [
+    { id: "ENG-1", title: "a", url: "https://t/1", state: "Ready", labels: [{ name: "Factory" }], assignee: "Sam" },
+    { id: "ENG-2", title: "b", state: "ready", labels: [], assignee: "Sam" },
+    { id: "ENG-3", title: "c", state: "In Progress", labels: ["factory"], assignee: "Sam" },
+    { id: "ENG-4", title: "d", state: "Ready", labels: ["factory"], assignee: "Sam" },
+    { id: "ENG-5", title: "e", state: "Ready", labels: ["factory"], assignee: "Sam" },
+  ];
+  const ms = [normalizeManifest({ ticket: "eng-4", done: true, error: "rejected" })!];
+  const runs = [{ id: "r", ticket: "ENG-5", status: "running" }] as any;
+  assert.deepEqual(intakeCandidates(cfg({ states: ["Ready"] }), issues, ms, runs).map((c) => c.ticket), ["ENG-1", "ENG-2"]);
+  assert.deepEqual(intakeCandidates(cfg({ labels: ["factory"] }), issues, ms, runs).map((c) => c.ticket), ["ENG-1", "ENG-3"]);
+  assert.deepEqual(intakeCandidates(cfg({ states: ["Ready"], labels: ["factory"] }), issues, ms, runs), [{ ticket: "ENG-1", title: "a", url: "https://t/1", state: "Ready", unassigned: false }]);
+  assert.deepEqual(intakeCandidates(cfg({}), issues, [], []), []);
+  // No states: any open one (a finished ticket that kept its label isn't pulled); a ticket pulled before isn't pulled again.
+  const closed = [...issues, { id: "ENG-6", title: "f", state: "Done", labels: ["factory"], assignee: "Sam" }, { id: "ENG-7", title: "g", state: "Canceled", labels: ["factory"], assignee: "Sam" }];
+  assert.deepEqual(intakeCandidates(cfg({ labels: ["factory"] }), closed, ms, runs, new Set(["eng-3"])).map((c) => c.ticket), ["ENG-1"]);
+  // Unassigned ones come in only with intake.unassigned, marked to be claimed first.
+  const pool = [{ id: "ENG-8", title: "h", state: "Ready", labels: [] }];
+  assert.deepEqual(intakeCandidates(cfg({ states: ["Ready"] }), pool, [], []), []);
+  assert.deepEqual(intakeCandidates(cfg({ states: ["Ready"], unassigned: true }), pool, [], []).map((c) => [c.ticket, c.unassigned]), [["ENG-8", true]]);
+});
+
+test("a retro is read and checked, and shows on a merged item", () => {
+  const m = normalizeManifest({ ticket: "R-1", startedAt: at, done: true, prs: [{ url: "https://x/1", state: "merged" }],
+    retro: { caught: ["a race", "", 3], wrong: ["the API was paged"], approver: " held up ", proposals: ["add **/billing/** to high-risk paths"], at } })!;
+  assert.deepEqual(m.retro, { caught: ["a race"], wrong: ["the API was paged"], approver: "held up", proposals: ["add **/billing/** to high-risk paths"], at });
+  const it = buildBoard(defaultFactoryConfig(), true, [m], []).items[0];
+  assert.equal(it.merged, true);
+  assert.equal(it.retro!.approver, "held up");
+  assert.equal(normalizeManifest({ ticket: "R-2" })!.retro, null);
+});
+
+test("metrics count each figure by its own time; a late retro doesn't bring an old ticket back", () => {
+  const now = Date.parse("2026-10-27T12:00:00.000Z");
+  const day = (d: number) => new Date(now - d * 86_400_000).toISOString();
+  const old = normalizeManifest({ ticket: "O-1", startedAt: day(45), finishedAt: day(40), updatedAt: day(0), done: true,
+    prs: [{ url: "https://x/1", state: "merged" }], stages: [{ id: "review", repo: "api", status: "done", endedAt: day(41) }] })!;
+  const m = factoryMetrics([old], [{ id: "r", ticket: "O-1", status: "succeeded", costUsd: 9 } as any], now);
+  assert.deepEqual([m.done7d, m.firstPassReview, m.costPerMergedUsd, m.merged], [0, null, null, 0]);
+});
+
+test("Linear's finished state types aren't intake candidates, whatever the state is called", () => {
+  const cfg = normalizeFactoryConfig({ intake: { labels: ["factory"] } });
+  const issues = [{ id: "L-1", state: "Shipped", stateType: "completed", labels: ["factory"], assignee: "Sam" }, { id: "L-2", state: "Ready", stateType: "unstarted", labels: ["factory"], assignee: "Sam" }];
+  assert.deepEqual(intakeCandidates(cfg, issues, [], []).map((c) => c.ticket), ["L-2"]);
+});
+
+test("setPrStates writes the code host's PR states and when everything merged", async () => {
+  const dir = tmp();
+  fs.writeFileSync(path.join(dir, "P-1.json"), JSON.stringify({ ticket: "P-1", startedAt: at, prs: [{ url: "https://github.com/a/b/pull/1", state: "open" }, { url: "https://github.com/a/c/pull/2", state: "open" }] }));
+  let m = await setPrStates("P-1", { "https://github.com/a/b/pull/1": "merged" }, { dir, now: "2026-10-27T11:00:00.000Z" });
+  assert.deepEqual(m.prs.map((p) => p.state), ["merged", "open"]);
+  assert.equal(m.finishedAt, null);
+  m = await setPrStates("P-1", { "https://github.com/a/c/pull/2": "merged" }, { dir, now: "2026-10-27T12:00:00.000Z" });
+  assert.equal(m.finishedAt, "2026-10-27T12:00:00.000Z");
 });

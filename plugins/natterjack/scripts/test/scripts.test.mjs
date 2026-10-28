@@ -144,6 +144,9 @@ test("scaffold + validate on a scratch workspace", () => {
   fs.writeFileSync(path.join(cfg, "factory.json"), JSON.stringify({ approver: { enabled: true, enforce: true, highRiskLabels: "security" } }));
   assert.match(validate(root).errors.join("\n"), /approver\.enforce needs approver\.identity/);
   assert.match(validate(root).errors.join("\n"), /approver\.highRiskLabels must be a list/);
+  fs.writeFileSync(path.join(cfg, "factory.json"), JSON.stringify({ intake: { auto: true, everyMinutes: 1 } }));
+  assert.match(validate(root).errors.join("\n"), /intake\.everyMinutes must be a whole number from 5 to 1440/);
+  assert.match(validate(root).warnings.join("\n"), /intake\.auto is on, but intake has no states or labels/);
   fs.writeFileSync(path.join(cfg, "factory.json"), JSON.stringify({ enabled: true, preset: "supervised" }));
   assert.doesNotMatch(validate(root).errors.join("\n"), /factory\.json/);
   fs.unlinkSync(path.join(cfg, "factory.json"));

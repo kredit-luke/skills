@@ -469,7 +469,7 @@ The team's rules for agent work, from ticket to merged PR (the **Factory** page,
   "enabled": true,
   "preset": "risk-tiered",
   "mode": "interactive",
-  "intake": { "states": ["Ready"], "labels": ["factory"] },
+  "intake": { "states": ["Ready"], "labels": ["factory"], "auto": false, "everyMinutes": 30, "unassigned": false },
   "limits": { "wip": 3, "itemBudgetUsd": 25, "dayBudgetUsd": 200, "itemHours": 4 },
   "stages": [
     { "id": "plan", "on": true }, { "id": "build", "on": true }, { "id": "review", "on": true, "agent": "codex" },
@@ -512,7 +512,8 @@ The team's rules for agent work, from ticket to merged PR (the **Factory** page,
   - **Budgets:** the dashboard won't start an implement run for a ticket past `itemBudgetUsd` or `itemHours` (summed over its runs), or once the factory's runs today have spent `dayBudgetUsd`.
   - **WIP:** it won't start a new ticket while `wip` others are in flight (started and not done, or an implement run going). Carrying on with a ticket already in flight is fine.
   - `implement` checks WIP itself too, for runs started outside the dashboard.
-- **Not yet:** nothing picks tickets up on its own (`intake` is for the orchestrator to come).
+- **Intake:** the tickets the factory takes are the tracker's in one of `intake.states` (when set) with one of `intake.labels` (when set), **assigned to the person whose dashboard it is** (on the tracker, as they're signed in to it), not in the factory yet (a ticket it stopped isn't retried on its own) and with no run going. So several people's dashboards never take the same ticket: assigning it decides whose it is. `intake.unassigned` takes unassigned ones too, each claimed first (assigned to that person, read back; on GitHub, which allows several assignees, two claims at once settle on the first by name). Neither states nor labels: only tickets sent by hand. **Pull work in** on the Factory page starts an implement run for each, up to the free WIP slots, under every other limit; `intake.auto` does it on its own every `everyMinutes` (5-1440) while the dashboard runs. `/multirepo:factory` does the same from a terminal session, one ticket at a time.
+- **Retro:** once a ticket's PRs merge, **Run the retro** on its row starts `/multirepo:retro`, which records what review caught, which assumptions were wrong and how the Approver's call held up, and proposes small CLAUDE.md, skill or policy changes for a person to accept.
 
 ## repos.json: the Repos page (workspace root)
 

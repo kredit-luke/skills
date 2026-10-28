@@ -11,6 +11,8 @@ test("jira: JQL from projects and states, quoting names safely", () => {
     'project in ("ENG", "Ops \\"Team\\"") AND status in ("To Do", "In Progress") ORDER BY updated DESC');
   // No states configured: everything not done.
   assert.equal(jql({ teams: [], states: [] }, []), "statusCategory != Done ORDER BY updated DESC");
+  assert.equal(jql({ teams: [], states: ["Ready"], assigned: "me" }, []), 'status in ("Ready") AND assignee = currentUser() ORDER BY updated DESC');
+  assert.equal(jql({ teams: [], states: [], assigned: "me-or-none" }, []), "statusCategory != Done AND (assignee = currentUser() OR assignee is EMPTY) ORDER BY updated DESC");
 });
 
 test("jira: Atlassian Document Format descriptions become markdown", () => {

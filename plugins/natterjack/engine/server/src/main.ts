@@ -22,7 +22,7 @@ import path from "node:path";
 import crypto from "node:crypto";
 import { execFile, execFileSync } from "node:child_process";
 import { restartSelf } from "./self-restart.ts";
-import type { Boot, ImportRunJob, LaunchRequest, ProfileInfo, PublishPlanResponse, RunEvent, RunMeta } from "../../shared/api.ts";
+import type { Boot, FactoryIntake, ImportRunJob, LaunchRequest, ProfileInfo, PublishPlanResponse, RunEvent, RunMeta } from "../../shared/api.ts";
 import { implementTicket, runTicket } from "../../shared/run-ticket.ts";
 import { runWorkspace } from "../../shared/run-workspace.ts";
 import { CLAUDE_SESSION_ENV } from "./claude.ts";
@@ -40,9 +40,9 @@ for (const key of CLAUDE_SESSION_ENV) delete process.env[key];
 
 import { RunManager, httpError, runLabel } from "./runs.ts";
 import { Deck, Scheduler } from "./deck.ts";
-import { Inbox } from "./inbox.ts";
+import { Inbox, gh as ghJson } from "./inbox.ts";
 import { Reviews, askChangePrompt, numberParam, repoParam } from "./reviews.ts";
-import { type FactoryRun, buildBoard, factoryConfigState, factoryLaunchBlocker, manifestFile, normalizeManifest, overrideGateDecision, rateAssessment, readManifests, readPlan, recordGateDecision, saveFactoryConfig } from "./factory.ts";
+import { type FactoryRun, setPrStates, buildBoard, factoryConfigState, factoryLaunchBlocker, inFlightTickets, intakeCandidates, manifestFile, normalizeManifest, overrideGateDecision, rateAssessment, readManifests, readPlan, recordGateDecision, saveFactoryConfig } from "./factory.ts";
 import { Watcher } from "./watches.ts";
 import { Usage } from "./usage.ts";
 import { UsageHistory } from "./usage-history.ts";
@@ -379,8 +379,35 @@ function factoryBoard() {
   const state = factoryConfigState(!isReader());
   const { manifests, errors } = readManifests();
   if (state.error) errors.unshift(state.error);
-  return buildBoard(state.config, state.exists && !state.error, manifests, factoryRuns(500), errors, !isReader());
+  // The board shows the newest; its metrics and the Approver's record count every one.
+  return buildBoard(state.config, state.exists && !state.error, manifests, factoryRuns(500), errors, !isReader(),
+    { manifests: readManifests(undefined, Infinity).manifests, runs: factoryRuns() });
 }
+
+/**
+ * Factory PRs' states from GitHub, every few minutes: the pipeline records a PR when it opens it,
+ * and nothing else would notice it merging (or closing). Only open rows are checked.
+ */
+let reconciling = false;
+async function reconcileFactoryPrs(): Promise<void> {
+  if (reconciling || HOSTED || workspaceConfig().codeHost.kind !== "github") return;
+  reconciling = true;
+  try {
+    for (const m of readManifests(undefined, Infinity).manifests) {
+      const open = m.prs.filter((p) => p.state !== "merged" && p.state !== "closed" && /^https:\/\/github\.com\//.test(p.url));
+      if (!open.length) continue;
+      const states: Record<string, "open" | "merged" | "closed"> = {};
+      for (const p of open) {
+        const v = await ghJson(["pr", "view", p.url, "--json", "state"]).catch(() => null);
+        const s = v && String(v.state).toLowerCase();
+        if (s === "merged" || s === "closed") states[p.url] = s;
+      }
+      if (Object.keys(states).length) await setPrStates(m.ticket, states).catch(() => {});
+    }
+    live.refresh("factory");
+  } finally { reconciling = false; }
+}
+setInterval(() => { void reconcileFactoryPrs(); }, 5 * 60_000).unref();
 
 /**
  * Who decides, for the gate audit trail: the signed-in person on a hosted dashboard; else the
@@ -408,6 +435,8 @@ function factoryTicketParam(v: unknown): string | null {
 
 /** Tickets whose gate decision is being recorded (one at a time per ticket). */
 const deciding = new Set<string>();
+/** Tickets whose retro run was started here (lower-cased id → run id): one at a time. */
+const retroRuns = new Map<string, string>();
 
 /** PRs ("owner/name#n") an "Ask agent to change this" is posting for, and the run each last started: one writer per branch. */
 const changing = new Set<string>();
@@ -415,6 +444,96 @@ const changeRuns = new Map<string, string>();
 
 /** `/implement X` or a plugin's `/multirepo:implement X` (not Explain: that only reads). */
 const IMPLEMENT_PROMPT = /^\/(?:[\w.-]+:)?implement\s+\S/;
+
+/**
+ * What the factory would pull in now: the intake's tracker tickets that aren't in it yet, and
+ * how many WIP slots are free. Read from the tracker each time (it's a pull, not the board).
+ */
+async function factoryIntake(): Promise<FactoryIntake> {
+  const state = factoryConfigState(true);
+  const cfg = state.config;
+  const configured = cfg.intake.states.length > 0 || cfg.intake.labels.length > 0;
+  const { manifests } = readManifests(undefined, Infinity);
+  const runs = factoryRuns();
+  const free = Math.max(0, cfg.limits.wip - inFlightTickets(manifests, runs).size);
+  if (!state.exists || state.error || !cfg.enabled) return { configured, free, candidates: [], note: "The factory is off (Factory → Policy).", error: state.error };
+  if (!configured) return { configured, free, candidates: [], note: "Intake has no states or labels: tickets come in only when sent by hand.", error: null };
+  try {
+    const tracker = trackers.get();
+    // This person's tickets (and unassigned ones, when the policy says), asked of the tracker itself.
+    const data = await tracker.issues({ ...deck.config().issues, states: cfg.intake.states, labels: cfg.intake.labels, open: true, query: "", assigned: cfg.intake.unassigned ? "me-or-none" : "me" });
+    if (!data.connected) return { configured, free, candidates: [], note: "The tracker isn't connected (Issues).", error: data.error || null };
+    const candidates = intakeCandidates(cfg, data.issues || [], manifests, runs, new Set(Object.keys(pulledTickets())));
+    return { configured, free, candidates, note: null, error: data.error || null };
+  } catch (e) { return { configured, free, candidates: [], note: null, error: (e as Error).message }; }
+}
+
+/** Tickets intake has pulled in (lower-cased id → when), kept in the ledger: each is pulled once, never again on its own. */
+const PULLED_FILE = path.join(LEDGER_DIR, "factory-intake.json");
+function pulledTickets(): Record<string, string> {
+  try { const d = JSON.parse(fs.readFileSync(PULLED_FILE, "utf-8")); return d && typeof d === "object" ? d : {}; } catch { return {}; }
+}
+function notePulled(ticket: string): void {
+  const all = pulledTickets();
+  all[ticket.toLowerCase()] = new Date().toISOString();
+  // The newest few thousand are plenty: older tickets are long in (or out of) the factory.
+  const kept = Object.entries(all).sort((a, b) => b[1].localeCompare(a[1])).slice(0, 5000);
+  try { fs.mkdirSync(LEDGER_DIR, { recursive: true }); fs.writeFileSync(PULLED_FILE, JSON.stringify(Object.fromEntries(kept))); } catch {}
+}
+
+/**
+ * Pulls tickets in: an implement run for each candidate, in the tracker's order, up to the free
+ * WIP slots (or `max`). The factory's limits still apply to each launch; the first refusal stops it.
+ */
+let pulling = false;
+async function pullIntake(max = Infinity, trigger = "factory"): Promise<{ started: { ticket: string; runId: string }[]; stopped: string | null }> {
+  if (pulling) return { started: [], stopped: "Already pulling work in." };
+  pulling = true;
+  try {
+    const intake = await factoryIntake();
+    const started: { ticket: string; runId: string }[] = [];
+    if (intake.error && !intake.candidates.length) return { started, stopped: intake.error };
+    const cfg = factoryConfigState(true).config;
+    const take = Math.min(intake.free, max);
+    const left = () => intake.candidates.length - started.length;
+    const skipped: string[] = [];
+    const tracker = trackers.get();
+    for (const c of intake.candidates) {
+      if (started.length >= take) break;
+      // An unassigned one is claimed on the tracker first: other people's dashboards see it's taken and leave it be.
+      if (c.unassigned) {
+        const claim = tracker.claim ? await tracker.claim(c.ticket).catch((e) => ({ ok: false, why: (e as Error).message })) : { ok: false, why: "this tracker can't assign tickets" };
+        if (!claim.ok) { skipped.push(`${c.ticket} (${claim.why || "not claimed"})`); notePulled(c.ticket); continue; }
+      }
+      try {
+        const run = launchRun({ presetId: deck.config().issues.implementPreset, args: { ticket: c.ticket }, options: { auto: cfg.mode === "autonomous" } }, trigger);
+        notePulled(c.ticket);
+        started.push({ ticket: c.ticket, runId: run.id });
+      } catch (e) {
+        live.refresh("factory");
+        return { started, stopped: `${(e as Error).message}${left() > 0 ? ` (${left()} still waiting)` : ""}` };
+      }
+    }
+    live.refresh("factory");
+    const also = skipped.length ? ` Not claimed: ${skipped.join(", ")}.` : "";
+    const waiting = left() - skipped.length;
+    if (waiting <= 0) return { started, stopped: also.trim() || null };
+    return { started, stopped: `${waiting} more ${waiting === 1 ? "waits" : "wait"}: ${take < max ? "the WIP limit is full" : `only ${max} asked for`}.${also}` };
+  } finally { pulling = false; }
+}
+
+/** intake.auto: pull work in every intake.everyMinutes while the factory is on (checked each minute). */
+let lastAutoPull = 0;
+setInterval(() => {
+  // A hosted dashboard serves one person and doesn't own the team's line: only a workspace's own dashboard pulls.
+  if (HOSTED) return;
+  const state = factoryConfigState(true);
+  const c = state.config;
+  if (!state.exists || state.error || !c.enabled || !c.intake.auto) return;
+  if (Date.now() - lastAutoPull < c.intake.everyMinutes * 60_000) return;
+  lastAutoPull = Date.now();
+  pullIntake(Infinity, "factory-intake").then((r) => { if (r.started.length) console.log(`Factory intake: started ${r.started.map((s) => s.ticket).join(", ")}`); }).catch(() => {});
+}, 60_000).unref();
 
 /** Why the factory's policy won't start an implement run for this prompt's ticket, or null. */
 function factoryBlocker(prompt: string): string | null {
@@ -1654,6 +1773,7 @@ async function handleApi(req: http.IncomingMessage, res: http.ServerResponse, ur
     if (p === "/api/reviews") return sendJson(res, await reviews.list(force));
     if (p === "/api/factory") return sendJson(res, factoryBoard());
     if (p === "/api/factory/config") return sendJson(res, factoryConfigState(!isReader()));
+    if (p === "/api/factory/intake") return sendJson(res, await factoryIntake());
     if (p === "/api/factory/plan") {
       const ticket = factoryTicketParam(q("ticket"));
       if (!ticket) return sendError(res, 400, "Invalid ticket id");
@@ -2193,6 +2313,29 @@ async function handleApi(req: http.IncomingMessage, res: http.ServerResponse, ur
     } finally {
       deciding.delete(key);
     }
+  }
+  if (p === "/api/factory/intake") {
+    // Pull work in now (Factory page): implement runs for intake tickets, up to the free WIP slots.
+    if (isReader()) return sendError(res, 403, "Pulling work into the factory needs full access; yours is read-only (Settings → Access).");
+    const max = Number(body.max);
+    return sendJson(res, await pullIntake(Number.isInteger(max) && max > 0 ? max : Infinity));
+  }
+  if (p === "/api/factory/retro") {
+    // The retro for a ticket whose PRs merged: multirepo's retro skill, as a run.
+    if (isReader()) return sendError(res, 403, "Starting a retro needs full access; yours is read-only (Settings → Access).");
+    const ticket = factoryTicketParam(body.ticket);
+    if (!ticket) return sendError(res, 400, "Invalid ticket id");
+    const file = manifestFile(ticket);
+    const m = file ? normalizeManifest(JSON.parse(fs.readFileSync(file, "utf-8"))) : null;
+    if (!m) return sendError(res, 404, `${ticket} isn't in the factory.`);
+    if (!m.prs.length || !m.prs.every((x) => x.state === "merged")) return sendError(res, 409, `${ticket}'s PRs haven't all merged yet.`);
+    if (m.retro) return sendError(res, 409, `${ticket} already has a retro.`);
+    const key = ticket.toLowerCase();
+    const earlier = retroRuns.get(key);
+    if (earlier && factoryRuns().some((r) => r.id === earlier && (r.status === "running" || r.status === "waiting"))) return sendError(res, 409, `${ticket}'s retro is already running (Activity).`);
+    const run = launchRun({ prompt: `/multirepo:retro ${ticket}`, label: `Retro: ${ticket}` }, "factory");
+    retroRuns.set(key, run.id);
+    return sendJson(res, { run });
   }
   if (p === "/api/factory/rate") {
     // A person's verdict on one of the Approver's calls: what its override rate is made of.

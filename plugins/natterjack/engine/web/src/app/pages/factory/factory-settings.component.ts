@@ -78,6 +78,10 @@ const GATE_HELP: Record<FactoryGateId, string> = {
             <label class="field">Labels it takes
               <input [ngModel]="c.intake.labels.join(', ')" (ngModelChange)="setList('labels', $event)" [ngModelOptions]="{ updateOn: 'blur' }" placeholder="e.g. factory" />
             </label>
+            <label class="chk"><input type="checkbox" [ngModel]="c.intake.unassigned" (ngModelChange)="setIntake('unassigned', $event)" [disabled]="!c.intake.states.length && !c.intake.labels.length" /> Unassigned tickets too (each is assigned to whoever's dashboard takes it, before it starts)</label>
+            <span class="h">Each person's dashboard takes the tickets assigned to them on the tracker.</span>
+            <label class="chk"><input type="checkbox" [ngModel]="c.intake.auto" (ngModelChange)="setIntake('auto', $event)" [disabled]="!c.intake.states.length && !c.intake.labels.length" /> Pull them in on its own, every
+              <input class="mins" type="number" min="5" max="1440" [ngModel]="c.intake.everyMinutes" (ngModelChange)="setIntake('everyMinutes', +$event)" [disabled]="!c.intake.auto" aria-label="Minutes between pulls" /> minutes, while the dashboard runs</label>
             <label class="field">Items at once (WIP)
               <input type="number" min="1" max="50" [ngModel]="c.limits.wip" (ngModelChange)="setLimit('wip', $event)" />
             </label>
@@ -370,6 +374,7 @@ export class FactorySettingsComponent implements OnInit {
 
   set(key: 'enabled' | 'mode', v: any): void { this.edit((c) => { (c as any)[key] = v; }); }
   setList(key: 'states' | 'labels', text: string): void { this.edit((c) => { c.intake[key] = splitList(text); }); }
+  setIntake(key: 'auto' | 'everyMinutes' | 'unassigned', v: boolean | number): void { this.edit((c) => { (c.intake as any)[key] = v; }); }
   setLimit(key: keyof FactoryConfig['limits'], v: unknown): void {
     this.edit((c) => { if (key === 'wip') c.limits.wip = Math.max(1, Math.round(numOrNull(v) ?? 1)); else c.limits[key] = numOrNull(v); });
   }

@@ -89,6 +89,8 @@ class LinearTracker implements IssueTracker {
   cache: any;
   inflight: any;
   viewer: any;
+  inflightKey = "";
+  cacheKey = "";
 
   constructor(ledgerDir, cfg: IssuesConfig) {
     this.org = cfg.org || null;
@@ -156,19 +158,30 @@ class LinearTracker implements IssueTracker {
     return this.status();
   }
 
-  async issues({ teams, states }, force = false) {
+  async issues({ teams, states, assigned, labels, open }: { teams: string[]; states: string[]; assigned?: "me" | "me-or-none"; labels?: string[]; open?: boolean }, force = false) {
     const key = this._key();
     if (!key) return { connected: false, issues: [] };
-    const fresh = this.cache && Date.now() - this.cache.fetchedAt < CACHE_TTL_MS;
+    // Cached per filter: the Factory's intake asks for other states than the Issues page.
+    const filterKey = JSON.stringify([teams || [], states || [], assigned || "", labels || [], !!open]);
+    // Another filter's fetch may start while waiting for one: wait until none is in flight but ours.
+    while (this.inflight && this.inflightKey !== filterKey) await this.inflight;
+    const fresh = this.cache && this.cacheKey === filterKey && Date.now() - this.cache.fetchedAt < CACHE_TTL_MS;
     if (fresh && !force) return this.cache;
     if (!this.inflight) {
+      this.inflightKey = filterKey;
       // An empty teams/states list means "all" rather than "none".
       const filter: any = {};
       if (teams && teams.length) filter.team = { name: { in: teams } };
       if (states && states.length) filter.state = { name: { in: states } };
+      if (assigned === "me") filter.assignee = { isMe: { eq: true } };
+      if (assigned === "me-or-none") filter.or = [{ assignee: { isMe: { eq: true } } }, { assignee: { null: true } }];
+      if (labels && labels.length) filter.labels = { some: { name: { in: labels } } };
+      // Linear's own idea of finished: whatever the team calls those states.
+      if (open) filter.state = { ...(filter.state || {}), type: { nin: ["completed", "canceled"] } };
       this.inflight = gql(key, ISSUES_QUERY, { filter, first: ISSUE_LIMIT })
         .then((data) => {
           this.viewer = data.viewer ? data.viewer.displayName || data.viewer.name : null;
+          this.cacheKey = filterKey;
           this.cache = {
             connected: true,
             fetchedAt: Date.now(),
@@ -182,6 +195,7 @@ class LinearTracker implements IssueTracker {
               updatedAt: n.updatedAt,
               state: n.state.name,
               stateColor: n.state.color,
+              stateType: n.state.type,
               team: n.team.name,
               teamKey: n.team.key,
               assignee: n.assignee ? n.assignee.displayName || n.assignee.name : null,
@@ -191,13 +205,29 @@ class LinearTracker implements IssueTracker {
           };
         })
         .catch((e) => {
-          // Keep showing the last good list, flagged with the error.
+          // Keep showing the last good list (for this filter), flagged with the error.
+          if (this.cacheKey !== filterKey) { this.cache = null; this.cacheKey = filterKey; }
           this.cache = { ...(this.cache || { issues: [] }), connected: true, fetchedAt: Date.now(), error: e.message };
         })
         .finally(() => { this.inflight = null; });
     }
     await this.inflight;
     return this.cache;
+  }
+
+  /** Assigns the issue to the key's owner unless someone else has it, and reads it back (IssueTracker.claim). */
+  async claim(identifier: string): Promise<{ ok: boolean; why?: string }> {
+    const key = this._key();
+    if (!key) return { ok: false, why: "Linear isn't connected." };
+    const read = () => this.gql(key, "query($id: String!) { viewer { id displayName } issue(id: $id) { id assignee { id displayName } } }", { id: identifier });
+    const before = await read();
+    const me = before && before.viewer;
+    const issue = before && before.issue;
+    if (!me || !issue) return { ok: false, why: `${identifier} wasn't found.` };
+    if (issue.assignee && issue.assignee.id !== me.id) return { ok: false, why: `assigned to ${issue.assignee.displayName}` };
+    if (!issue.assignee) await this.gql(key, "mutation($id: String!, $a: String!) { issueUpdate(id: $id, input: { assigneeId: $a }) { success } }", { id: issue.id, a: me.id });
+    const after = (await read())?.issue?.assignee;
+    return after && after.id === me.id ? { ok: true } : { ok: false, why: `claimed by ${after ? after.displayName : "someone else"} first` };
   }
 
   /** Issues (any state) whose description has one of the markers exactly. Rejects when Linear fails. */

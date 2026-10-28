@@ -35,7 +35,13 @@ export interface ConnectHelp {
 }
 
 /** query: this person's own extra filter in the tracker's language (Jira JQL, GitHub search), if it has one. */
-export interface IssueFilter { teams: string[]; states: string[]; query?: string }
+/**
+ * What to list: `assigned` narrows it to the signed-in person's issues ("me"), or theirs and
+ * unassigned ones ("me-or-none"); `labels` to ones with any of them; `open` to unfinished ones
+ * (by the tracker's own idea of finished). All asked of the tracker itself (the Factory's intake),
+ * so its result cap applies to what's eligible.
+ */
+export interface IssueFilter { teams: string[]; states: string[]; query?: string; assigned?: "me" | "me-or-none"; labels?: string[]; open?: boolean }
 
 /** How the Issues page asks for a personal board query; null = the tracker has no query language. */
 export interface QueryHelp { label: string; placeholder: string; help: string }
@@ -65,6 +71,13 @@ export interface IssueTracker {
    * hit its result cap (LINKED_LIMIT), so issues may be missing.
    */
   linkedIssues?(markers: string[]): Promise<LinkedIssues>;
+  /**
+   * Claims an issue for the signed-in person: assigns it to them unless someone else has it, then
+   * reads it back. { ok: true } only when it's theirs after. The Factory's intake claims a ticket
+   * before starting on it, so dashboards on several machines never take the same one: the tracker
+   * is the one place they all see.
+   */
+  claim?(id: string): Promise<{ ok: boolean; why?: string }>;
 }
 
 /** An issue found by a marker in its description. key is the board's id for it. */

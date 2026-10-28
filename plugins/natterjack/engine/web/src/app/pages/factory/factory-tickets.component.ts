@@ -143,6 +143,21 @@ const STATE: Record<FactoryItem['state'], { label: string; cls: string }> = {
                   </div>
                 </section>
               }
+              @if (it.retro; as r) {
+                <section class="specd retro">
+                  <h3>Retro <span class="faint">{{ rel(r.at) }}</span></h3>
+                  @if (r.caught.length) { <p class="faint">Review caught</p><ul>@for (x of r.caught; track $index) { <li>{{ x }}</li> }</ul> }
+                  @if (r.wrong.length) { <p class="faint">Wrong assumptions</p><ul>@for (x of r.wrong; track $index) { <li>{{ x }}</li> }</ul> }
+                  @if (r.approver) { <p><span class="faint">The Approver's call:</span> {{ r.approver }}</p> }
+                  @if (r.proposals.length) { <p class="faint">Proposed changes (for a person to accept)</p><ul>@for (x of r.proposals; track $index) { <li>{{ x }}</li> }</ul> }
+                </section>
+              } @else if (it.merged && canDecide()) {
+                <section class="specd retro">
+                  <h3>Retro</h3>
+                  <p class="faint">Its PRs merged. A retro records what review caught, which assumptions were wrong and how the Approver's call held up, and proposes small fixes to the process.</p>
+                  <div class="btns"><button class="btn sm" type="button" (click)="retro(it)" [disabled]="busy() === it.ticket">Run the retro</button></div>
+                </section>
+              }
               @if (it.overridable; as o) {
                 @if (canDecide() && !it.implementLive) {
                   <section class="specd ovr">
@@ -236,6 +251,8 @@ const STATE: Record<FactoryItem['state'], { label: string; cls: string }> = {
     .apd .rate { display: flex; flex-wrap: wrap; gap: 4px 12px; align-items: baseline; margin-top: 8px; font-size: 12.5px; }
     .ovr textarea { width: 100%; box-sizing: border-box; font: inherit; font-size: 12.5px; }
     .ovr .btns { margin-top: 6px; }
+    .retro p { margin: 4px 0; font-size: 12.5px; }
+    .retro ul { list-style: disc; padding-left: 18px; }
     .specd ul { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 3px; font-size: 12.5px; }
     .specd li { display: flex; flex-wrap: wrap; gap: 0 6px; align-items: baseline; }
     .line { display: flex; flex-wrap: wrap; align-items: baseline; gap: 0 5px; }
@@ -337,6 +354,16 @@ export class FactoryTicketsComponent {
   }
 
   ratingWord(r: FactoryRatingValue): string { return RATING_WORDS[r]; }
+
+  /** Starts the retro skill for a ticket whose PRs merged. */
+  async retro(it: FactoryItem): Promise<void> {
+    this.busy.set(it.ticket);
+    try {
+      await this.api.post('/api/factory/retro', { ticket: it.ticket });
+      this.toast.show(`A run is doing ${it.ticket}'s retro; it shows here when it's recorded.`);
+    } catch (e) { this.toast.error((e as Error).message); }
+    finally { this.busy.set(null); }
+  }
 
   toggle(ticket: string): void {
     this.open.update((s) => { const n = new Set(s); n.has(ticket) ? n.delete(ticket) : n.add(ticket); return n; });

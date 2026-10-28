@@ -414,6 +414,9 @@ export function validate(root) {
     if (Number.isFinite(sp.readyAt) && Number.isFinite(sp.needsWorkAt) && sp.needsWorkAt >= sp.readyAt) err("factory.json", "spec.needsWorkAt must be below spec.readyAt");
     for (const k of Object.keys(sp.weights || {})) if (!["problem", "outcome", "criteria", "scope", "constraints", "affected", "questions", "verify"].includes(k)) warn("factory.json", `spec.weights.${k} isn't a spec check; ignored`);
     if (fac.limits && fac.limits.wip !== undefined && !(Number.isInteger(fac.limits.wip) && fac.limits.wip >= 1)) err("factory.json", "limits.wip must be a whole number, 1 or more");
+    const intake = fac.intake || {};
+    if (intake.everyMinutes !== undefined && !(Number.isInteger(intake.everyMinutes) && intake.everyMinutes >= 5 && intake.everyMinutes <= 1440)) err("factory.json", "intake.everyMinutes must be a whole number from 5 to 1440");
+    if (intake.auto === true && !(intake.states || []).length && !(intake.labels || []).length) warn("factory.json", "intake.auto is on, but intake has no states or labels: nothing will be pulled in");
   }
 
   // ---- repos.json (workspace root; optional)

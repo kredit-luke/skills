@@ -1,15 +1,16 @@
 import { ChangeDetectionStrategy, Component, OnInit, computed, inject, signal } from '@angular/core';
 import { toSignal } from '@angular/core/rxjs-interop';
 import { ActivatedRoute, Router, RouterLink } from '@angular/router';
-import type { FactoryBoard, FactoryItem, FactoryStepStatus } from '../../../../../shared/api';
+import type { FactoryBoard, FactoryIntake, FactoryItem, FactoryStepStatus } from '../../../../../shared/api';
 import { ApiService } from '../../core/api.service';
 import { DataService } from '../../core/data.service';
+import { ToastService } from '../../core/toast.service';
 import { relTime } from '../../core/util';
 import { PageHeaderComponent } from '../../shared/page-header.component';
 import { FactoryTicketsComponent } from './factory-tickets.component';
-import { guideLink, specLevel } from './factory.util';
+import { guideLink, lineLanes, metricLine, specLevel } from './factory.util';
 
-type View = 'tickets' | 'board';
+type View = 'tickets' | 'board' | 'line';
 const VIEW_KEY = 'natterjack.factory.view';
 
 const MARK: Record<FactoryStepStatus, string> = { done: '✓', running: '●', failed: '✕', pending: '○', skipped: '–' };
@@ -22,11 +23,12 @@ const STATE: Record<FactoryItem['state'], { label: string; cls: string }> = {
 };
 
 /**
- * The Factory: agent work from ticket to merged PR, read-only for now. Two views of the same items
- * (?view=, remembered in this browser): Tickets, a row per item with its whole pipeline and the
- * details of each step; and Board, a card per item in the column of the first stage or gate it
- * hasn't finished, which shows where work piles up. Columns come from the policy (Factory policy
- * page); items from what pipelines report.
+ * The Factory: agent work from ticket to merged PR. Three views of the same items (?view=,
+ * remembered in this browser): Tickets, a row per item with its whole pipeline and the details of
+ * each step; Board, a card per item in the column of the first stage or gate it hasn't finished;
+ * and Line, a lane per stage and gate showing what's being worked on and what waits there, with the
+ * bottleneck marked. Columns come from the policy (Factory policy page); items from what pipelines
+ * report. The throughput strip and Pull work in (the policy's intake, up to the WIP limit) sit on top.
  */
 @Component({
   selector: 'dash-factory',
@@ -38,6 +40,7 @@ const STATE: Record<FactoryItem['state'], { label: string; cls: string }> = {
       <div class="seg" role="group" aria-label="View">
         <button type="button" [class.on]="view() === 'tickets'" [attr.aria-pressed]="view() === 'tickets'" (click)="setView('tickets')">Tickets</button>
         <button type="button" [class.on]="view() === 'board'" [attr.aria-pressed]="view() === 'board'" (click)="setView('board')">Board</button>
+        <button type="button" [class.on]="view() === 'line'" [attr.aria-pressed]="view() === 'line'" (click)="setView('line')">Line</button>
       </div>
       <a class="btn ghost sm" routerLink="/factory/settings">Policy</a>
     </dash-page-header>
@@ -52,6 +55,29 @@ const STATE: Record<FactoryItem['state'], { label: string; cls: string }> = {
         <div class="note">The factory is off, so nothing picks up tickets for it. Work reported to it still shows. <a routerLink="/factory/settings">Turn it on</a></div>
       }
       @for (e of b.errors; track e) { <div class="warn-note">{{ e }}</div> }
+      @if (b.items.length) {
+        <div class="metrics" aria-label="Throughput, last 30 days">
+          @for (m of metrics(); track m.label) { <span [title]="m.title"><b>{{ m.value }}</b> {{ m.label }}</span> }
+        </div>
+      }
+      @if (b.enabled && b.canDecide) {
+        <div class="intake">
+          @if (!intake()) {
+            <button class="btn sm" type="button" (click)="previewIntake()" [disabled]="pulling()">{{ pulling() ? 'Looking…' : 'Pull work in' }}</button>
+            <span class="faint">The policy's intake tickets assigned to you, up to the free WIP slots.</span>
+          } @else {
+            @let i = intake()!;
+            @if (i.error) { <span class="err-note">{{ i.error }}</span> }
+            @if (i.note) { <span class="faint">{{ i.note }}</span> }
+            @else if (!i.candidates.length) { <span class="faint">Nothing waiting to come in.</span> }
+            @else {
+              <span>{{ i.candidates.length }} ready: @for (c of i.candidates.slice(0, 8); track c.ticket) { <span class="mono">{{ c.ticket }}</span>{{ $last ? '' : ', ' }} }{{ i.candidates.length > 8 ? '…' : '' }} · {{ i.free }} free {{ i.free === 1 ? 'slot' : 'slots' }}</span>
+              <button class="btn primary sm" type="button" (click)="pullIn()" [disabled]="pulling() || !i.free">{{ pulling() ? 'Starting…' : 'Start ' + Math.min(i.free, i.candidates.length) }}</button>
+            }
+            <button class="linkish" type="button" (click)="intake.set(null)">Close</button>
+          }
+        </div>
+      }
 
       @if (!b.items.length) {
         <div class="panel empty-board">
@@ -62,6 +88,21 @@ const STATE: Record<FactoryItem['state'], { label: string; cls: string }> = {
 
       @if (view() === 'tickets') {
         <dash-factory-tickets [items]="b.items" [canDecide]="b.canDecide" [focus]="focus()" />
+      } @else if (view() === 'line') {
+        <div class="line" role="list" aria-label="The line">
+          @for (l of lanes().lanes; track l.id) {
+            <section class="lane" [class.gate]="l.kind === 'gate'" [class.neck]="l.id === lanes().bottleneck" role="listitem" [attr.aria-label]="l.label">
+              <h2>{{ l.label }}@if (l.id === lanes().bottleneck) { <span class="tag amber" title="The most work waits here">bottleneck</span> }</h2>
+              <div class="slots">
+                @for (w of l.working; track w.ticket) { <a class="chip work" [routerLink]="[]" [queryParams]="{ view: 'tickets', ticket: w.ticket }" [title]="w.title || ''">● {{ w.ticket }}{{ w.repos.length ? ' · ' + w.repos.join(', ') : '' }}</a> }
+                @for (w of l.waiting; track w.ticket) { <a class="chip wait" [routerLink]="[]" [queryParams]="{ view: 'tickets', ticket: w.ticket }" [title]="w.reason || ''">◷ {{ w.ticket }}</a> }
+                @for (w of l.failing; track w.ticket) { <a class="chip fail" [routerLink]="[]" [queryParams]="{ view: 'tickets', ticket: w.ticket }" [title]="w.reason || ''">✕ {{ w.ticket }}</a> }
+                @for (w of l.idle; track w.ticket) { <a class="chip" [routerLink]="[]" [queryParams]="{ view: 'tickets', ticket: w.ticket }" title="Not started here yet">○ {{ w.ticket }}</a> }
+                @if (!l.working.length && !l.waiting.length && !l.failing.length && !l.idle.length) { <span class="faint">nothing here</span> }
+              </div>
+            </section>
+          }
+        </div>
       } @else {
       <div class="board" role="list" aria-label="Pipeline">
         @for (col of b.columns; track col.id) {
@@ -141,6 +182,20 @@ const STATE: Record<FactoryItem['state'], { label: string; cls: string }> = {
     .links { display: flex; flex-wrap: wrap; gap: 8px; font-size: 12px; }
     .spec { align-self: flex-start; font-size: 10.5px; }
     .decide-link { font-size: 12px; font-weight: 600; }
+    .metrics { display: flex; flex-wrap: wrap; gap: 6px 18px; font-size: 12.5px; color: var(--ink-soft); margin-bottom: 10px; }
+    .metrics b { color: var(--ink); font-family: var(--font-mono); }
+    .intake { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; margin-bottom: 12px; font-size: 12.5px; }
+    .line { display: flex; flex-direction: column; gap: 6px; }
+    .lane { display: grid; grid-template-columns: 160px 1fr; gap: 10px; align-items: center; background: var(--paper-2); border-radius: 8px; padding: 6px 10px; }
+    .lane.gate { background: transparent; border: 1px dashed var(--line); }
+    .lane.neck { box-shadow: inset 3px 0 0 var(--yellow); }
+    .lane h2 { margin: 0; display: flex; gap: 6px; align-items: center; justify-content: flex-start; }
+    .slots { display: flex; flex-wrap: wrap; gap: 6px; min-height: 22px; align-items: center; }
+    .chip { font-family: var(--font-mono); font-size: 11.5px; padding: 2px 8px; border-radius: 999px; background: #fff; border: 1px solid var(--line-soft); text-decoration: none; color: var(--ink); }
+    .chip.work { border-color: var(--green); }
+    .chip.wait { border-color: var(--yellow); }
+    .chip.fail { border-color: var(--red); color: var(--red); }
+    @media (max-width: 640px) { .lane { grid-template-columns: 1fr; } }
   `],
 })
 export class FactoryComponent implements OnInit {
@@ -153,8 +208,8 @@ export class FactoryComponent implements OnInit {
   readonly focus = computed(() => this.query()?.get('ticket') || null);
   readonly view = computed<View>(() => {
     const q = this.query()?.get('view');
-    if (q === 'board' || q === 'tickets') return q;
-    try { return localStorage.getItem(VIEW_KEY) === 'board' ? 'board' : 'tickets'; } catch { return 'tickets'; }
+    if (q === 'board' || q === 'tickets' || q === 'line') return q;
+    try { const v = localStorage.getItem(VIEW_KEY); return v === 'board' || v === 'line' ? v : 'tickets'; } catch { return 'tickets'; }
   });
   private readonly loaded = signal<FactoryBoard | null>(null);
   readonly err = signal<string | null>(null);
@@ -166,6 +221,32 @@ export class FactoryComponent implements OnInit {
     for (const it of this.board()?.items || []) (out[it.column] ||= []).push(it);
     return out;
   });
+
+  readonly lanes = computed(() => lineLanes(this.board()?.columns || [], this.board()?.items || []));
+  readonly metrics = computed(() => { const b = this.board(); return b ? metricLine(b.metrics) : []; });
+  readonly intake = signal<FactoryIntake | null>(null);
+  readonly pulling = signal(false);
+  private readonly toast = inject(ToastService);
+  readonly Math = Math;
+
+  async previewIntake(): Promise<void> {
+    this.pulling.set(true);
+    try { this.intake.set(await this.api.get<FactoryIntake>('/api/factory/intake')); }
+    catch (e) { this.toast.error((e as Error).message); }
+    finally { this.pulling.set(false); }
+  }
+
+  /** Starts implement runs for the intake's tickets, up to the free slots. */
+  async pullIn(): Promise<void> {
+    this.pulling.set(true);
+    try {
+      const r = await this.api.post<{ started: { ticket: string }[]; stopped: string | null }>('/api/factory/intake', {});
+      if (r.started.length) this.toast.show(`Started ${r.started.map((s) => s.ticket).join(', ')}.${r.stopped ? ' ' + r.stopped : ''}`);
+      else this.toast.error(r.stopped || 'Nothing started.');
+      this.intake.set(null);
+    } catch (e) { this.toast.error((e as Error).message); }
+    finally { this.pulling.set(false); }
+  }
 
   async ngOnInit(): Promise<void> {
     try { this.loaded.set(await this.api.get<FactoryBoard>('/api/factory')); }

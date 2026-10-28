@@ -40,6 +40,10 @@ export function jql(filter: IssueFilter, projects: string[]): string {
   if (projects.length) parts.push(`project in (${projects.map(q).join(", ")})`);
   if (filter.states && filter.states.length) parts.push(`status in (${filter.states.map(q).join(", ")})`);
   else parts.push("statusCategory != Done");
+  if (filter.labels && filter.labels.length) parts.push(`labels in (${filter.labels.map(q).join(", ")})`);
+  if (filter.open && filter.states && filter.states.length) parts.push("statusCategory != Done");
+  if (filter.assigned === "me") parts.push("assignee = currentUser()");
+  if (filter.assigned === "me-or-none") parts.push("(assignee = currentUser() OR assignee is EMPTY)");
   const extra = cleanQuery(filter.query);
   if (extra) parts.push(`(${extra})`);
   return `${parts.join(" AND ")} ORDER BY updated DESC`;
@@ -203,7 +207,7 @@ class JiraTracker implements IssueTracker {
     this.cache = null;
   }
 
-  _get(cred: string | AtlassianCred, pathAndQuery: string, body?: object): Promise<any> {
+  _get(cred: string | AtlassianCred, pathAndQuery: string, body?: object, method?: "PUT"): Promise<any> {
     const site = this.site;
     if (!site) return Promise.reject(new Error("Set issues.site in workspace.json (e.g. acme.atlassian.net)."));
     const auth: AtlassianCred = typeof cred === "string" ? { kind: "token", cred } : cred;
@@ -211,7 +215,7 @@ class JiraTracker implements IssueTracker {
     const send = (url: string, authorization: string) => new Promise<any>((resolve, reject) => {
       const data = body ? JSON.stringify(body) : null;
       const req = https.request(url, {
-        method: body ? "POST" : "GET",
+        method: method || (body ? "POST" : "GET"),
         headers: {
           Authorization: authorization,
           Accept: "application/json",
@@ -294,8 +298,9 @@ class JiraTracker implements IssueTracker {
     if (!cred || !this.site) return { connected: false, issues: [] };
     cleanQuery(filter.query); // a bad personal filter is the caller's error, not a Jira outage
     // Cached per filter: a changed personal query is a different board.
-    const key = JSON.stringify([filter.teams || [], filter.states || [], filter.query || ""]);
-    if (this.inflight && this.inflightKey !== key) await this.inflight;
+    const key = JSON.stringify([filter.teams || [], filter.states || [], filter.query || "", filter.assigned || "", filter.labels || [], !!filter.open]);
+    // Another filter's fetch may start while waiting for one: wait until none is in flight but ours.
+    while (this.inflight && this.inflightKey !== key) await this.inflight;
     const fresh = this.cache && this.cacheKey === key && Date.now() - this.cache.fetchedAt < CACHE_TTL_MS;
     if (fresh && !force) return this.cache;
     if (!this.inflight) {
@@ -330,6 +335,19 @@ class JiraTracker implements IssueTracker {
   }
 
   /** Issues (any status, in the configured projects) whose description has one of the markers exactly. Rejects when Jira fails. */
+  /** Assigns the issue to the signed-in person unless someone else has it, and reads it back (IssueTracker.claim). */
+  async claim(id: string): Promise<{ ok: boolean; why?: string }> {
+    const cred = this._auth();
+    if (!cred || !this.site) return { ok: false, why: "Jira isn't connected." };
+    const me = await this._get(cred, "/rest/api/3/myself");
+    const read = async () => (await this._get(cred, `/rest/api/3/issue/${encodeURIComponent(id)}?fields=assignee`))?.fields?.assignee || null;
+    const before = await read();
+    if (before && before.accountId !== me.accountId) return { ok: false, why: `assigned to ${before.displayName}` };
+    if (!before) await this._get(cred, `/rest/api/3/issue/${encodeURIComponent(id)}/assignee`, { accountId: me.accountId }, "PUT");
+    const after = await read();
+    return after && after.accountId === me.accountId ? { ok: true } : { ok: false, why: `claimed by ${after ? after.displayName : "someone else"} first` };
+  }
+
   async linkedIssues(markers: string[]): Promise<LinkedIssues> {
     const cred = this._auth();
     if (!cred || !this.site || !markers.length) return new Map();

@@ -135,8 +135,9 @@ class GitHubTracker implements IssueTracker {
     if (!this.repos.length) return { connected: false, issues: [] };
     searchArgs(filter.query); // a bad personal filter is the caller's error, not a GitHub outage
     // Cached per filter: a changed personal query is a different board.
-    const key = JSON.stringify([filter.teams || [], filter.states || [], filter.query || ""]);
-    if (this.inflight && this.inflightKey !== key) await this.inflight;
+    const key = JSON.stringify([filter.teams || [], filter.states || [], filter.query || "", filter.assigned || "", filter.labels || []]);
+    // Another filter's fetch may start while waiting for one: wait until none is in flight but ours.
+    while (this.inflight && this.inflightKey !== key) await this.inflight;
     const fresh = this.cache && this.cacheKey === key && Date.now() - this.cache.fetchedAt < CACHE_TTL_MS;
     if (fresh && !force) return this.cache;
     if (!this.inflight) {
@@ -154,7 +155,13 @@ class GitHubTracker implements IssueTracker {
         const errors: string[] = [];
         const lists = await Promise.all(repos.map((repo) =>
           gh(["issue", "list", "--repo", repo, "--state", "open", "--limit", String(LIMIT), ...searchArgs(filter.query),
+            ...(filter.assigned === "me" ? ["--assignee", "@me"] : []),
+            // Any of the labels: one label is a filter; several, a search (a comma means "or" there).
+            ...(filter.labels && filter.labels.length === 1 && !filter.query ? ["--label", filter.labels[0]] : []),
+            ...(filter.labels && filter.labels.length > 1 && !filter.query ? ["--search", `label:${filter.labels.map((l) => JSON.stringify(l)).join(",")}`] : []),
             "--json", "number,title,url,labels,assignees,updatedAt,milestone"])
+            // gh has no "mine or nobody's": the open ones, then by login (exact on GitHub).
+            .then((rows) => rows.filter((n) => filter.assigned !== "me-or-none" || !(n.assignees || []).length || (n.assignees || []).some((a) => String(a.login).toLowerCase() === String(this.viewer).toLowerCase())))
             .then((rows) => rows.map((n) => this.toIssue(repo, n)))
             .catch((e) => { errors.push(`${repo}: ${e.message}`); return []; })));
         const all = lists.flat().filter((i) => !filter.states || !filter.states.length || filter.states.includes(i.state));
@@ -200,6 +207,31 @@ class GitHubTracker implements IssueTracker {
       project: n.milestone ? n.milestone.title : null,
       labels,
     };
+  }
+
+  /**
+   * Assigns the issue to the gh account unless someone else has it, and reads it back
+   * (IssueTracker.claim). GitHub allows several assignees, so two claims at the same moment both
+   * land: the one first by name keeps it, the other takes itself off.
+   */
+  async claim(id: string): Promise<{ ok: boolean; why?: string }> {
+    const m = /^([\w.-]+)#(\d+)$/.exec(id);
+    const repo = m ? this.repos.find((r) => r.split("/")[1] === m[1]) : null;
+    if (!m || !repo) return { ok: false, why: `${id} isn't an issue in the configured repos.` };
+    if (!this.viewer) this.viewer = await gh(["api", "user", "--jq", "{login: .login}"]).then((u) => u.login);
+    const me = String(this.viewer);
+    const same = (a: string) => a.toLowerCase() === me.toLowerCase();
+    const read = async (): Promise<string[]> => ((await gh(["api", `repos/${repo}/issues/${m[2]}`, "--jq", "{a: [.assignees[].login]}"]))?.a || []);
+    const before = await read();
+    const others = before.filter((l) => !same(l));
+    if (others.length) return { ok: false, why: `assigned to ${others.join(", ")}` };
+    if (!before.length) await gh(["api", `repos/${repo}/issues/${m[2]}/assignees`, "--method", "POST", "-f", `assignees[]=${me}`]);
+    const after = await read();
+    if (!after.some(same)) return { ok: false, why: "the claim didn't stick" };
+    const first = [...after].sort((a, b) => a.toLowerCase().localeCompare(b.toLowerCase()))[0];
+    if (same(first)) return { ok: true };
+    await gh(["api", `repos/${repo}/issues/${m[2]}/assignees`, "--method", "DELETE", "-f", `assignees[]=${me}`]).catch(() => {});
+    return { ok: false, why: `claimed by ${first} at the same time` };
   }
 
   async issue(id: string) {

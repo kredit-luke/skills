@@ -792,7 +792,13 @@ export interface FactoryConfig {
   /** How items run: gates ask a person (interactive) or decide and record (autonomous, `--auto`). */
   mode: 'interactive' | 'autonomous';
   /** Which tickets the factory takes: tracker states and/or labels (empty: only ones sent by hand). */
-  intake: { states: string[]; labels: string[] };
+  /**
+   * Which tracker tickets the factory pulls in (by state and/or label; neither: only by hand), and
+   * whether the dashboard pulls them in on its own every `everyMinutes`, up to the WIP limit. Each
+   * person's dashboard takes the ones assigned to them on the tracker; `unassigned`: unassigned ones
+   * too, each claimed (assigned to them) before it starts, so two dashboards never take the same one.
+   */
+  intake: { states: string[]; labels: string[]; auto: boolean; everyMinutes: number; unassigned: boolean };
   limits: {
     /** Items in flight at once. */
     wip: number;
@@ -960,15 +966,49 @@ export interface FactoryManifest {
   roundStartedAt: string | null;
   /** Spec readiness, scored when the pipeline read the ticket. */
   spec: FactorySpec | null;
-  stages: { id: FactoryStageId; repo: string | null; agent: string | null; status: FactoryStepStatus; startedAt: string | null; endedAt: string | null; note: string | null }[];
+  stages: { id: FactoryStageId; repo: string | null; agent: string | null; status: FactoryStepStatus; startedAt: string | null; endedAt: string | null; note: string | null; failures?: number }[];
   gates: { id: FactoryGateId; mode: FactoryGateMode | null; decision: 'pending' | 'approved' | 'rejected'; by: string | null; risk: 'low' | 'medium' | 'high' | null; rationale: string | null; sha: string | null; at: string; override?: boolean }[];
   prs: { repo: string | null; url: string; number: number | null; state: 'open' | 'merged' | 'closed' | null }[];
   /** The Approver's assessments, oldest first (part of the audit log). */
   assessments: FactoryAssessment[];
   /** People's ratings of the Approver's assessments, oldest first. */
   ratings: FactoryRating[];
+  /** When it finished (done, rejected or overridden): the metrics' end time. */
+  finishedAt: string | null;
+  /** What was learned once its PRs merged (multirepo's retro skill), if it's been done. */
+  retro: FactoryRetro | null;
   /** The pipeline finished (or was abandoned) for this item. */
   done: boolean;
+  error: string | null;
+}
+
+/** A merged ticket's retro: what review caught, which assumptions were wrong, how the Approver's call held up, and tweaks to propose. */
+export interface FactoryRetro { caught: string[]; wrong: string[]; approver: string | null; proposals: string[]; at: string }
+
+/** The line's throughput (Factory page): the last 30 days unless said otherwise. */
+export interface FactoryMetrics {
+  /** Items finished (done, not stopped short) in the last 7 days. */
+  done7d: number;
+  /** Median hours from start to finished. */
+  leadTimeHours: number | null;
+  /** Share of repos whose review passed without failing first. */
+  firstPassReview: { rate: number; n: number } | null;
+  /** Share of the Approver's assessments that approved without a person. */
+  autoApproved: { rate: number; n: number } | null;
+  /** Agent cost per item whose PRs all merged. */
+  costPerMergedUsd: number | null;
+  merged: number;
+}
+
+/** GET /api/factory/intake: what the factory would pull in now. POST takes them (up to `free`). */
+export interface FactoryIntake {
+  /** Intake has states or labels to go by. */
+  configured: boolean;
+  /** Free WIP slots. */
+  free: number;
+  /** unassigned: it's claimed (assigned to this person) before it starts. */
+  candidates: { ticket: string; title: string; url: string | null; state: string | null; unassigned: boolean }[];
+  note: string | null;
   error: string | null;
 }
 
@@ -1018,6 +1058,9 @@ export interface FactoryItem {
   plan: string | null;
   /** Why the pipeline stopped short, when it did. */
   error: string | null;
+  /** Every PR it opened has merged. */
+  merged: boolean;
+  retro: FactoryRetro | null;
 }
 
 /** Where one item is on one step: done, under way, failed, waiting on a decision, skipped or not reached. */
@@ -1074,6 +1117,7 @@ export interface FactoryBoard {
    * person (rated, or an automatic approval overridden), and of those, too lenient or too strict.
    */
   approverStats: { assessed: number; judged: number; tooLenient: number; tooStrict: number };
+  metrics: FactoryMetrics;
 }
 
 // ---------------------------------------------------------------- apps / workspaces
