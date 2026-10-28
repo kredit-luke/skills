@@ -30,6 +30,8 @@ import { GUIDE_MARKER, type GuideInput, GuideStore, guidePrompt, parseDiff, pars
 const LIST_TTL_MS = 2 * 60 * 1000;
 /** PRs one search returns at most (gh's search caps at 1000). */
 export const SEARCH_LIMIT = 300;
+/** PRs one approvals query asks about (GraphQL's nodes() takes at most 100 ids). */
+const APPROVAL_BATCH = 100;
 /** Summaries kept in the ledger (the newest). */
 const MAX_SUMMARIES = 1000;
 /** Summaries made at once; more wait their turn. */
@@ -208,7 +210,7 @@ export class Reviews {
     const { viewer, orgs } = await this.owners(errors);
     if (!orgs.length) return { host: "github", viewer, orgs, prs: [], truncated: false, fetchedAt: Date.now(), errors };
     const owners = orgs.flatMap((o) => ["--owner", o]);
-    const fields = "number,title,repository,url,updatedAt,createdAt,author,isDraft,labels,commentsCount";
+    const fields = "id,number,title,repository,url,updatedAt,createdAt,author,isDraft,labels,commentsCount";
     const [open, requested] = await Promise.all([
       this.deps.gh(["search", "prs", "--state=open", ...owners, "--limit", String(SEARCH_LIMIT), "--json", fields])
         .catch((e) => { errors.push(`open PRs: ${e.message}`); return []; }),
@@ -216,6 +218,7 @@ export class Reviews {
         .catch((e) => { errors.push(`review requests: ${e.message}`); return []; }),
     ]);
     const want = new Set((requested || []).map((r: any) => `${r.repository.nameWithOwner}#${r.number}`));
+    const approvals = await this.approvals((open || []).map((r: any) => r.id).filter(Boolean), errors);
     const prs: ReviewPr[] = (open || []).map((r: any) => {
       const repo = r.repository.nameWithOwner;
       const key = `${repo}#${r.number}`;
@@ -228,11 +231,35 @@ export class Reviews {
         labels: (r.labels || []).map((l: any) => l.name).filter(Boolean),
         comments: r.commentsCount || 0,
         requested: want.has(key), mine: !!viewer && login === viewer,
+        approvedBy: approvals.get(r.id) || [],
         summary: s ? { text: s.text, sha: s.sha, at: s.at } : null,
       };
     });
     prs.sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
     return { host: "github", viewer, orgs, prs, truncated: (open || []).length >= SEARCH_LIMIT, fetchedAt: Date.now(), errors };
+  }
+
+  /** Who approved each PR, by node id. gh search can't return reviews, so this asks GraphQL, APPROVAL_BATCH PRs a call.
+   *  Up to 100 reviewers a PR (one page); a PR with more than that is too rare to page through. */
+  private async approvals(ids: string[], errors: string[]): Promise<Map<string, string[]>> {
+    const out = new Map<string, string[]>();
+    const query = "query($ids:[ID!]!){nodes(ids:$ids){... on PullRequest{id latestOpinionatedReviews(first:100){nodes{state author{login}}}}}}";
+    const batches: string[][] = [];
+    for (let i = 0; i < ids.length; i += APPROVAL_BATCH) batches.push(ids.slice(i, i + APPROVAL_BATCH));
+    const failed: string[] = [];
+    await Promise.all(batches.map((b) =>
+      this.deps.gh(["api", "graphql", "-f", `query=${query}`, ...b.flatMap((id) => ["-f", `ids[]=${id}`])])
+        .then((res: any) => {
+          for (const n of (res && res.data && res.data.nodes) || []) {
+            if (!n || !n.id) continue;
+            out.set(n.id, ((n.latestOpinionatedReviews && n.latestOpinionatedReviews.nodes) || [])
+              .filter((r: any) => r && r.state === "APPROVED" && r.author && r.author.login)
+              .map((r: any) => r.author.login as string));
+          }
+        })
+        .catch((e) => { failed.push(e.message); })));
+    if (failed.length) errors.push(`approvals: ${failed[0]}`);
+    return out;
   }
 
   /** Open PRs across the owners, newest activity first. Serves the cached list while a new one loads. */

@@ -6,7 +6,7 @@ function pr(over: Partial<ReviewPr> = {}): ReviewPr {
   return {
     repo: 'acme/api', number: 1, title: 'Add retries', url: 'https://github.com/acme/api/pull/1',
     author: 'sam', authorIsBot: false, isDraft: false, createdAt: '2026-10-01T00:00:00Z', updatedAt: '2026-10-02T00:00:00Z',
-    labels: [], comments: 0, requested: false, mine: false, summary: null, ...over,
+    labels: [], comments: 0, requested: false, mine: false, approvedBy: [], summary: null, ...over,
   };
 }
 
