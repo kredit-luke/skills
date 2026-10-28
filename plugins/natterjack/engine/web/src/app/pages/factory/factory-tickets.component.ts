@@ -7,6 +7,8 @@ const RATING_WORDS: Record<FactoryRatingValue, string> = { right: 'right', 'shou
 import { ApiService } from '../../core/api.service';
 import { ToastService } from '../../core/toast.service';
 import { relTime } from '../../core/util';
+import { MdPipe } from '../../core/md.pipe';
+import { TrustedHtmlPipe } from '../../core/trusted-html.pipe';
 import { approverVerdict, checkMark, duration, gateName, guideLink, specLevel } from './factory.util';
 
 const STEP_MARK: Record<FactoryStepState, string> = { done: '✓', running: '●', failed: '✕', waiting: '!', skipped: '–', pending: '○' };
@@ -23,7 +25,7 @@ const STATE: Record<FactoryItem['state'], { label: string; cls: string }> = {
  */
 @Component({
   selector: 'dash-factory-tickets',
-  imports: [RouterLink, FormsModule],
+  imports: [RouterLink, FormsModule, MdPipe, TrustedHtmlPipe],
   changeDetection: ChangeDetectionStrategy.OnPush,
   template: `
     <ul class="items">
@@ -66,8 +68,19 @@ const STATE: Record<FactoryItem['state'], { label: string; cls: string }> = {
             <section class="decide" [attr.aria-label]="'Decide the ' + g.label + ' for ' + it.ticket">
               <p class="ask"><b>Waiting for a decision at the {{ g.label }}</b><span class="faint">since {{ rel(g.since) }}</span>@if (g.reason) { <span class="faint">{{ g.reason }}</span> }</p>
               @if (it.plan) {
-                <button class="linkish" type="button" (click)="togglePlan(it.ticket)">{{ plans()[it.ticket] !== undefined ? 'Hide the plan' : 'Read the plan' }}</button>
-                @if (plans()[it.ticket]; as p) { <pre class="plan">{{ p }}</pre> }
+                <div class="plan-bar">
+                  <button class="linkish" type="button" (click)="togglePlan(it.ticket)">{{ plans()[it.ticket] !== undefined ? 'Hide the plan' : 'Read the plan' }}</button>
+                  @if (plans()[it.ticket]) {
+                    <span class="seg" role="group" aria-label="Show the plan as">
+                      <button type="button" [class.on]="!rawPlans().has(it.ticket)" [attr.aria-pressed]="!rawPlans().has(it.ticket)" (click)="setRaw(it.ticket, false)">Preview</button>
+                      <button type="button" [class.on]="rawPlans().has(it.ticket)" [attr.aria-pressed]="rawPlans().has(it.ticket)" (click)="setRaw(it.ticket, true)">Markdown</button>
+                    </span>
+                  }
+                </div>
+                @if (plans()[it.ticket]; as p) {
+                  @if (rawPlans().has(it.ticket)) { <pre class="plan">{{ p }}</pre> }
+                  @else { <div class="plan md tight" [innerHTML]="p | md | trustedHtml"></div> }
+                }
               }
               @if (it.implementLive) {
                 <p class="faint">Its implement run is still going, so this is decided there@if (it.askingRunId) {: <a [routerLink]="['/runs', it.askingRunId]">answer the question</a>}.</p>
@@ -240,8 +253,11 @@ const STATE: Record<FactoryItem['state'], { label: string; cls: string }> = {
     .decide .ask { margin: 0; font-size: 13px; display: flex; flex-wrap: wrap; gap: 2px 8px; align-items: baseline; }
     .decide textarea { font: inherit; font-size: 13px; padding: 6px 8px; border: 1px solid var(--line); border-radius: 6px; resize: vertical; background: #fff; }
     .decide .btns { display: flex; flex-wrap: wrap; gap: 8px; }
-    .decide .linkish { align-self: flex-start; }
-    .plan { margin: 0; max-height: 420px; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; font-size: 12.5px; background: #fff; border: 1px solid var(--line-soft); border-radius: 6px; padding: 10px 12px; }
+    .plan-bar { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 12px; }
+    .plan-bar .seg { padding: 2px; }
+    .plan-bar .seg button { padding: 2px 10px; font-size: 11.5px; }
+    .plan { margin: 0; max-height: 420px; overflow: auto; overflow-wrap: anywhere; font-size: 12.5px; background: #fff; border: 1px solid var(--line-soft); border-radius: 6px; padding: 10px 12px; }
+    pre.plan { white-space: pre-wrap; }
     .answer { font-weight: 600; }
     @media (max-width: 700px) { .decide { margin-left: 0; } }
     .spec.tag { cursor: pointer; border: 0; font: inherit; font-size: 10.5px; }
@@ -282,6 +298,8 @@ export class FactoryTicketsComponent {
   readonly notes = signal<Record<string, string>>({});
   /** Plans read so far, by ticket (undefined: not shown). */
   readonly plans = signal<Record<string, string>>({});
+  /** Plans shown as their markdown source rather than rendered. */
+  readonly rawPlans = signal<Set<string>>(new Set());
   readonly busy = signal<string | null>(null);
   /** A clock for steps still going (the board only changes when something is reported). */
   private readonly now = signal(Date.now());
@@ -308,6 +326,10 @@ export class FactoryTicketsComponent {
       const p = await this.api.get<{ path: string; text: string }>(`/api/factory/plan?ticket=${encodeURIComponent(ticket)}`);
       this.plans.update((m) => ({ ...m, [ticket]: p.text }));
     } catch (e) { this.toast.error(`Couldn't read the plan: ${(e as Error).message}`); }
+  }
+
+  setRaw(ticket: string, raw: boolean): void {
+    this.rawPlans.update((s) => { const n = new Set(s); raw ? n.add(ticket) : n.delete(ticket); return n; });
   }
 
   /** Records the decision; approving and continuing starts the ticket's next implement run. */
