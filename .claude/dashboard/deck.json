@@ -20,11 +20,22 @@
       "description": "Open PRs, CI on main, open issues. Read-only.",
       "prompt": "Give me a short brief on lhoezee/skills using gh: open PRs and their checks, the latest CI run on main, and open issues. End with the 3 things to do first. Don't change anything.",
       "permissionMode": "auto"
+    },
+    {
+      "id": "implement",
+      "label": "Implement ticket",
+      "icon": "bolt",
+      "description": "Implement a ticket end to end through the factory.",
+      "prompt": "/multirepo:implement {ticket}",
+      "args": [{ "name": "ticket", "label": "Ticket", "placeholder": "skills#123" }],
+      "options": [{ "name": "auto", "label": "Decide open questions on its own (--auto)", "append": " --auto", "default": false }],
+      "permissionMode": "auto"
     }
   ],
   "issues": {
     "teams": [
       "lhoezee/skills"
-    ]
+    ],
+    "implementPreset": "implement"
   }
 }

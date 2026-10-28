@@ -1,0 +1,146 @@
+{
+  "enabled": true,
+  "preset": "custom",
+  "mode": "autonomous",
+  "intake": {
+    "states": [],
+    "labels": [],
+    "auto": false,
+    "everyMinutes": 30,
+    "unassigned": false
+  },
+  "limits": {
+    "wip": 3,
+    "itemBudgetUsd": null,
+    "dayBudgetUsd": null,
+    "itemHours": null
+  },
+  "stages": [
+    {
+      "id": "align",
+      "on": false,
+      "agent": null,
+      "model": null,
+      "effort": null
+    },
+    {
+      "id": "plan",
+      "on": true,
+      "agent": null,
+      "model": null,
+      "effort": null
+    },
+    {
+      "id": "build",
+      "on": true,
+      "agent": null,
+      "model": null,
+      "effort": null
+    },
+    {
+      "id": "review",
+      "on": true,
+      "agent": null,
+      "model": null,
+      "effort": null
+    },
+    {
+      "id": "security",
+      "on": true,
+      "agent": null,
+      "model": null,
+      "effort": null
+    },
+    {
+      "id": "qa",
+      "on": false,
+      "agent": null,
+      "model": null,
+      "effort": null
+    },
+    {
+      "id": "guide",
+      "on": true,
+      "agent": null,
+      "model": null,
+      "effort": null
+    },
+    {
+      "id": "pr",
+      "on": true,
+      "agent": null,
+      "model": null,
+      "effort": null
+    },
+    {
+      "id": "approve",
+      "on": true,
+      "agent": null,
+      "model": null,
+      "effort": null
+    },
+    {
+      "id": "merge",
+      "on": true,
+      "agent": null,
+      "model": null,
+      "effort": null
+    }
+  ],
+  "security": {
+    "agentReview": true,
+    "secretScan": true,
+    "scanners": [
+      {
+        "name": "npm audit",
+        "command": "npm audit --audit-level=high",
+        "when": "package-lock.json",
+        "failOn": "high"
+      }
+    ],
+    "failOn": "high"
+  },
+  "gates": {
+    "spec": "auto",
+    "plan": "approver",
+    "prePr": "approver",
+    "merge": "approver"
+  },
+  "requiredChecks": [],
+  "reviewers": {
+    "bots": [],
+    "pipeline": true,
+    "noUnresolved": true
+  },
+  "spec": {
+    "readyAt": 80,
+    "needsWorkAt": 50,
+    "minScore": null,
+    "weights": {}
+  },
+  "notifications": {
+    "inbox": true,
+    "webhooks": []
+  },
+  "approver": {
+    "enabled": true,
+    "enforce": false,
+    "identity": null,
+    "highRiskPaths": [
+      "**/migrations/**",
+      "**/auth/**",
+      "infra/**",
+      ".github/workflows/**",
+      "**/*.lock"
+    ],
+    "highRiskLabels": [
+      "security"
+    ],
+    "maxFiles": 20,
+    "maxLines": 400,
+    "maxRepos": 1,
+    "mergeAction": "auto-merge",
+    "mergeMethod": "squash",
+    "samplingPct": 10
+  }
+}
