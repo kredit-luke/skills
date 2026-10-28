@@ -147,6 +147,9 @@ class JiraTracker implements IssueTracker {
   cacheKey = "";
   viewer: string | null = null;
 
+  /** The "Flagged" custom field's id (customfield_10021 on most sites; looked up by name), or null when the site has none. */
+  flagField: string | null | undefined = undefined;
+
   confluenceKeyFile: string;
   /** docs.json sources (a field so tests can supply their own). */
   docsSources = (): unknown => readConfigFile("docs.json").data?.sources;
@@ -258,6 +261,19 @@ class JiraTracker implements IssueTracker {
     return atlassianCall("jira", site, auth, pathAndQuery, send);
   }
 
+  /**
+   * The id of the field Jira's "Add flag" sets, read once from the site's field list. A failed
+   * lookup isn't kept, so the next refresh tries again; meanwhile no card shows as flagged.
+   */
+  async _flagField(cred: AtlassianCred): Promise<string | null> {
+    if (this.flagField !== undefined) return this.flagField;
+    try {
+      const fields = await this._get(cred, "/rest/api/3/field");
+      const f = Array.isArray(fields) ? fields.find((x) => x && x.custom && String(x.name).toLowerCase() === "flagged") : null;
+      return (this.flagField = f ? String(f.id) : null);
+    } catch { return null; }
+  }
+
   status(): TrackerStatus {
     const auth = this._auth();
     if (auth?.kind === "signin") return { connected: true, source: "signin", viewer: this.viewer || auth.auth.current()?.viewer || null };
@@ -332,7 +348,8 @@ class JiraTracker implements IssueTracker {
           }
           // teams (project names) narrow the configured projects; project keys and names both work in JQL.
           const projects = filter.teams && filter.teams.length ? filter.teams : this.projects;
-          const res = await this._get(cred, "/rest/api/3/search/jql", { jql: jql({ ...filter, teams: [] }, projects), fields: FIELDS, maxResults: LIMIT });
+          const flag = await this._flagField(cred);
+          const res = await this._get(cred, "/rest/api/3/search/jql", { jql: jql({ ...filter, teams: [] }, projects), fields: flag ? [...FIELDS, flag] : FIELDS, maxResults: LIMIT });
           // Read as someone else (the credential changed meanwhile): don't put it back.
           if (this.credKey !== asKey) return;
           this.cache = { connected: true, fetchedAt: Date.now(), error: null, issues: (res.issues || []).map((n) => this.toIssue(n)) };
@@ -441,6 +458,8 @@ class JiraTracker implements IssueTracker {
       assignee: f.assignee ? f.assignee.displayName : null,
       project: f.fixVersions && f.fixVersions[0] ? f.fixVersions[0].name : null,
       labels: (f.labels || []).map((l) => ({ name: l, color: "#8993a4" })),
+      // Flagged is a checkbox field: set means one option ("Impediment") is ticked.
+      flagged: !!this.flagField && Array.isArray(f[this.flagField]) && f[this.flagField].length > 0,
     };
   }
 

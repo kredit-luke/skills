@@ -122,6 +122,45 @@ test("jira key lookup: its own env vars, then its pasted key, then Confluence's 
   finally { delete process.env.CONFLUENCE_EMAIL; delete process.env.CONFLUENCE_API_TOKEN; }
 });
 
+test("jira: the Flagged field is found by name, asked for on the board, and marks its issues flagged", async () => {
+  const ledger = fs.mkdtempSync(path.join(os.tmpdir(), "dash-jira-"));
+  after(() => fs.rmSync(ledger, { recursive: true, force: true }));
+  for (const k of ["CONFLUENCE_EMAIL", "CONFLUENCE_API_TOKEN", "JIRA_EMAIL", "JIRA_API_TOKEN"]) delete process.env[k];
+  fs.writeFileSync(path.join(ledger, "jira-api-token"), "me@acme.com:jira-token-123");
+  const t = new JiraTracker(ledger, { kind: "jira", site: "acme.atlassian.net", projects: ["ENG"] } as any);
+  t.docsSources = () => undefined;
+  const ALL = { teams: [], states: [] };
+  let fieldList: () => any = () => { throw new Error("Jira returned HTTP 500"); };
+  const asked: string[][] = [];
+  (t as any)._get = async (_c: any, p: string, body?: any) => {
+    if (p === "/rest/api/3/myself") return { displayName: "Me" };
+    if (p === "/rest/api/3/field") return fieldList();
+    asked.push(body.fields);
+    return { issues: [
+      { key: "ENG-1", fields: { summary: "a", customfield_10021: [{ value: "Impediment", id: "10019" }] } },
+      { key: "ENG-2", fields: { summary: "b", customfield_10021: null } },
+    ] };
+  };
+
+  // The field list failed: nothing is flagged, and the next refresh looks again.
+  let r = await t.issues(ALL, true);
+  assert.deepEqual(r.issues.map((i: any) => i.flagged), [false, false]);
+  assert.ok(!asked[0].includes("customfield_10021"));
+
+  fieldList = () => [{ id: "flagged", name: "Flagged", custom: false }, { id: "customfield_10021", name: "Flagged", custom: true }];
+  r = await t.issues(ALL, true);
+  assert.ok(asked[1].includes("customfield_10021"));
+  assert.deepEqual(r.issues.map((i: any) => i.flagged), [true, false]);
+
+  // A site without the field: looked up once, never flagged.
+  const none = new JiraTracker(ledger, { kind: "jira", site: "acme.atlassian.net", projects: [] } as any);
+  let lookups = 0;
+  (none as any)._get = async (_c: any, p: string) => (p === "/rest/api/3/field" ? (lookups++, []) : p === "/rest/api/3/myself" ? {} : { issues: [{ key: "ENG-3", fields: {} }] });
+  await none.issues(ALL, true);
+  assert.equal((await none.issues(ALL, true)).issues[0].flagged, false);
+  assert.equal(lookups, 1);
+});
+
 test("atlassian: a classic key stays on the site; a key the site refuses goes through the gateway and stays there", async () => {
   const { atlassianRequest } = await import("../src/atlassian.ts");
   const cloudId = async () => "abc-123";

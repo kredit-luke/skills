@@ -68,8 +68,9 @@
       <div class="col-lane">
         <div class="lane-h"><span class="lane-dot" [style.background]="lane.color"></span><span class="nm">{{ lane.state }}</span><span class="ct">{{ lane.items.length }}</span></div>
         @for (i of lane.items; track i.id) {
-          <div class="issue" [class.sel]="detailId() === i.id">
+          <div class="issue" [class.sel]="detailId() === i.id" [class.flagged]="i.flagged">
             <div class="top"><a class="idl" [href]="i.url" target="_blank" rel="noopener">{{ i.id }}</a><span class="team">{{ i.team }}</span>
+              @if (i.flagged) { <span class="flag" title="Flagged in {{ api.trackerLabel() }}">⚑ Flagged</span> }
               @if (i.hasWorktree) { <span class="tag routine" title="A worktree for this ticket exists">worktree</span> }
               @if (i.priority) { <span [class]="priCls(i)" title="Priority">{{ i.priorityLabel }}</span> }</div>
             <a class="ttl" href="#" (click)="openDetail(i, $event)">{{ i.title }}</a>
