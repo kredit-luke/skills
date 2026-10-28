@@ -1477,6 +1477,10 @@ export interface Issue {
   labels: IssueLabel[]; updatedAt: string; branchName?: string | null;
   canImplement: boolean; hasWorktree: boolean;
   lastRun: { id: string; status: RunStatus; startedAt: string } | null;
+  /** Flagged in the tracker (Jira's Add flag, usually an impediment); the card is shown in yellow. */
+  flagged?: boolean;
+  /** The epic the issue belongs to (Jira), or null. */
+  epic?: { id: string; title: string; url: string | null } | null;
 }
 /**
  * How to connect the tracker when it needs a personal key (steps are markdown). signIn 'atlassian':

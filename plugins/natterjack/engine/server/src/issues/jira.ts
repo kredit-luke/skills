@@ -32,7 +32,7 @@ const CACHE_TTL_MS = 60 * 1000;
 const LIMIT = 200;
 /** Issues whose long changelog is read again for its newest page (one request each). */
 const MAX_CHANGELOG_LOOKUPS = 10;
-const FIELDS = ["summary", "status", "priority", "assignee", "labels", "updated", "project", "issuetype", "sprint", "fixVersions"];
+const FIELDS = ["summary", "status", "priority", "assignee", "labels", "updated", "project", "issuetype", "sprint", "fixVersions", "parent"];
 // Jira status categories carry a color name, not a hex.
 const CATEGORY_COLOR: Record<string, string> = { "blue-gray": "#8993a4", yellow: "#f5a623", green: "#36b37e", "medium-gray": "#8993a4" };
 const PRIORITY_RANK: Record<string, number> = { highest: 1, high: 2, medium: 3, low: 4, lowest: 4 };
@@ -147,6 +147,9 @@ class JiraTracker implements IssueTracker {
   cacheKey = "";
   viewer: string | null = null;
 
+  /** The "Flagged" custom field's id (customfield_10021 on most sites; looked up by name), or null when the site has none. */
+  flagField: string | null | undefined = undefined;
+
   confluenceKeyFile: string;
   /** docs.json sources (a field so tests can supply their own). */
   docsSources = (): unknown => readConfigFile("docs.json").data?.sources;
@@ -223,6 +226,8 @@ class JiraTracker implements IssueTracker {
     this.credKey = key;
     this.viewer = null;
     this.cache = null;
+    // The field list depends on the caller's permissions, so the next person looks it up again.
+    this.flagField = undefined;
   }
 
   _get(cred: string | AtlassianCred, pathAndQuery: string, body?: object, method?: "PUT"): Promise<any> {
@@ -256,6 +261,23 @@ class JiraTracker implements IssueTracker {
       req.end(data || undefined);
     });
     return atlassianCall("jira", site, auth, pathAndQuery, send);
+  }
+
+  /**
+   * The id of the field Jira's "Add flag" sets, read once per credential from the field list. A
+   * failed lookup isn't kept, so the next refresh tries again; meanwhile no card shows as flagged.
+   */
+  async _flagField(cred: AtlassianCred): Promise<string | null> {
+    if (this.flagField !== undefined) return this.flagField;
+    const asKey = this.credKey;
+    try {
+      const fields = await this._get(cred, "/rest/api/3/field");
+      const f = Array.isArray(fields) ? fields.find((x) => x && x.custom && String(x.name).toLowerCase() === "flagged") : null;
+      const id = f ? String(f.id) : null;
+      // Read as someone else (the credential changed meanwhile): don't keep it for the new one.
+      if (this.credKey === asKey) this.flagField = id;
+      return id;
+    } catch { return null; }
   }
 
   status(): TrackerStatus {
@@ -332,7 +354,8 @@ class JiraTracker implements IssueTracker {
           }
           // teams (project names) narrow the configured projects; project keys and names both work in JQL.
           const projects = filter.teams && filter.teams.length ? filter.teams : this.projects;
-          const res = await this._get(cred, "/rest/api/3/search/jql", { jql: jql({ ...filter, teams: [] }, projects), fields: FIELDS, maxResults: LIMIT });
+          const flag = await this._flagField(cred);
+          const res = await this._get(cred, "/rest/api/3/search/jql", { jql: jql({ ...filter, teams: [] }, projects), fields: flag ? [...FIELDS, flag] : FIELDS, maxResults: LIMIT });
           // Read as someone else (the credential changed meanwhile): don't put it back.
           if (this.credKey !== asKey) return;
           this.cache = { connected: true, fetchedAt: Date.now(), error: null, issues: (res.issues || []).map((n) => this.toIssue(n)) };
@@ -427,6 +450,9 @@ class JiraTracker implements IssueTracker {
   toIssue(n: any) {
     const f = n.fields || {};
     const pri = f.priority ? String(f.priority.name || "") : "";
+    // An epic sits one level above a story (hierarchyLevel 1); a sub-task's parent is a story, not an epic.
+    const up = f.parent && f.parent.key ? f.parent : null;
+    const epic = up && up.fields?.issuetype?.hierarchyLevel === 1 ? { id: String(up.key), title: up.fields.summary || "", url: this.issueUrl(up.key) } : null;
     return {
       id: n.key,
       title: f.summary || "",
@@ -441,6 +467,9 @@ class JiraTracker implements IssueTracker {
       assignee: f.assignee ? f.assignee.displayName : null,
       project: f.fixVersions && f.fixVersions[0] ? f.fixVersions[0].name : null,
       labels: (f.labels || []).map((l) => ({ name: l, color: "#8993a4" })),
+      // Flagged is a checkbox field: set means one option ("Impediment") is ticked.
+      flagged: !!this.flagField && Array.isArray(f[this.flagField]) && f[this.flagField].length > 0,
+      epic,
     };
   }
 
