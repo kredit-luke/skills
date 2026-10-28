@@ -54,7 +54,7 @@ export class IssuesComponent implements OnInit, OnDestroy {
       if (this.team() !== 'All' && i.team !== this.team()) return false;
       if (this.mine() && (!d.viewer || i.assignee !== d.viewer)) return false;
       if (!q) return true;
-      return [i.id, i.title, i.assignee || '', i.project || '', ...i.labels.map((l) => l.name)].join(' ').toLowerCase().includes(q);
+      return [i.id, i.title, i.assignee || '', i.project || '', i.epic?.id || '', i.epic?.title || '', ...i.labels.map((l) => l.name)].join(' ').toLowerCase().includes(q);
     });
   });
   readonly lanes = computed(() => (this.resp()?.states || []).map((s) => {

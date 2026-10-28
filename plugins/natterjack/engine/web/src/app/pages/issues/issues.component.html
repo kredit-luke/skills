@@ -74,6 +74,7 @@
               @if (i.hasWorktree) { <span class="tag routine" title="A worktree for this ticket exists">worktree</span> }
               @if (i.priority) { <span [class]="priCls(i)" title="Priority">{{ i.priorityLabel }}</span> }</div>
             <a class="ttl" href="#" (click)="openDetail(i, $event)">{{ i.title }}</a>
+            @if (i.epic; as e) { <a class="epic" [href]="e.url" target="_blank" rel="noopener" title="Epic {{ e.id }}: {{ e.title }}">{{ e.title || e.id }}</a> }
             @if (i.labels.length) {
               <div class="labels">@for (l of i.labels; track l.name) { <span class="lbl"><i [style.background]="l.color"></i>{{ l.name }}</span> }</div>
             }

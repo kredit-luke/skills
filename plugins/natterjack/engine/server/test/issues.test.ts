@@ -161,6 +161,14 @@ test("jira: the Flagged field is found by name, asked for on the board, and mark
   assert.equal(lookups, 1);
 });
 
+test("jira: an issue's epic is its parent one level up; a sub-task's story parent isn't an epic", () => {
+  const t = new JiraTracker(os.tmpdir(), { kind: "jira", site: "acme.atlassian.net", projects: [] } as any);
+  const parent = (level: number) => ({ key: "ENG-9", fields: { summary: "Big thing", issuetype: { name: "Epic", hierarchyLevel: level } } });
+  assert.deepEqual(t.toIssue({ key: "ENG-1", fields: { parent: parent(1) } }).epic, { id: "ENG-9", title: "Big thing", url: "https://acme.atlassian.net/browse/ENG-9" });
+  assert.equal(t.toIssue({ key: "ENG-2", fields: { parent: parent(0) } }).epic, null);
+  assert.equal(t.toIssue({ key: "ENG-3", fields: {} }).epic, null);
+});
+
 test("atlassian: a classic key stays on the site; a key the site refuses goes through the gateway and stays there", async () => {
   const { atlassianRequest } = await import("../src/atlassian.ts");
   const cloudId = async () => "abc-123";

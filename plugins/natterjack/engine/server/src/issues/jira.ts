@@ -32,7 +32,7 @@ const CACHE_TTL_MS = 60 * 1000;
 const LIMIT = 200;
 /** Issues whose long changelog is read again for its newest page (one request each). */
 const MAX_CHANGELOG_LOOKUPS = 10;
-const FIELDS = ["summary", "status", "priority", "assignee", "labels", "updated", "project", "issuetype", "sprint", "fixVersions"];
+const FIELDS = ["summary", "status", "priority", "assignee", "labels", "updated", "project", "issuetype", "sprint", "fixVersions", "parent"];
 // Jira status categories carry a color name, not a hex.
 const CATEGORY_COLOR: Record<string, string> = { "blue-gray": "#8993a4", yellow: "#f5a623", green: "#36b37e", "medium-gray": "#8993a4" };
 const PRIORITY_RANK: Record<string, number> = { highest: 1, high: 2, medium: 3, low: 4, lowest: 4 };
@@ -444,6 +444,9 @@ class JiraTracker implements IssueTracker {
   toIssue(n: any) {
     const f = n.fields || {};
     const pri = f.priority ? String(f.priority.name || "") : "";
+    // An epic sits one level above a story (hierarchyLevel 1); a sub-task's parent is a story, not an epic.
+    const up = f.parent && f.parent.key ? f.parent : null;
+    const epic = up && up.fields?.issuetype?.hierarchyLevel === 1 ? { id: String(up.key), title: up.fields.summary || "", url: this.issueUrl(up.key) } : null;
     return {
       id: n.key,
       title: f.summary || "",
@@ -460,6 +463,7 @@ class JiraTracker implements IssueTracker {
       labels: (f.labels || []).map((l) => ({ name: l, color: "#8993a4" })),
       // Flagged is a checkbox field: set means one option ("Impediment") is ticked.
       flagged: !!this.flagField && Array.isArray(f[this.flagField]) && f[this.flagField].length > 0,
+      epic,
     };
   }
 
