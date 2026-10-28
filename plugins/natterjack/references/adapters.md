@@ -47,6 +47,7 @@ Azure Boards (WIQL + work items API, PAT with Basic auth), Shortcut (REST, `Shor
 4. The id people use in branches and commits; its regex for `ticketPattern`. `issueUrl` also receives keys an Ask run reported — return null for anything that isn't one of your ids (Jira and Linear use `isIssueKey` in `issues/markers.ts`; GitHub matches `<repo>#<n>` against its configured repos). If a link is the id dropped into a fixed URL, also implement optional `issueUrlTemplate()`, returning that URL with an `{id}` placeholder: the page builds issue links from it (Jira and Linear do; GitHub doesn't, so the page has no template).
 5. Tests for the pure parts (query building, mapping, description conversion) in `server/test/issues.test.ts`; then connect for real on the Issues page, and try Explain.
 6. Optional: `linkedIssues(markers)`, so the Meetings page finds tickets made from a meeting (below).
+7. Optional: `activity(since)`, so the My updates page shows what the person did in the tracker (below).
 
 ### Tickets made from a meeting (`linkedIssues`, optional)
 
@@ -55,6 +56,16 @@ linkedIssues?(markers: string[]): Promise<Map<string, LinkedIssue[]> & { truncat
 ```
 
 An Ask agent run puts a marker such as `roam-meeting-<id>` in each ticket's description. `linkedIssues` gets one list page's markers: run one text search for all of them (Jira JQL `text ~`, Linear `description contains`, `gh search issues --match body`), then keep only issues whose description holds a marker exactly, as a whole token (`hasMarker` in `issues/markers.ts`; a longer id that starts with it doesn't count). Return an empty map when the tracker isn't connected, **reject** when the search fails (the caller caches results, and a failure must not be cached as "no tickets"), and set `truncated` when a search hit its result cap. Without it, the page shows only the tickets this dashboard's runs reported.
+
+### The viewer's own activity (`activity`, optional)
+
+```ts
+activity?(since: string /* ISO time */): Promise<{ changed: IssueChange[]; assigned: AssignedIssue[] }>;
+// IssueChange: { id, title, url, state, what: string[] /* "moved To Do → In Progress", "commented", "created" */, at }
+// AssignedIssue: { id, title, url, state, priority, priorityLabel, blocked, updatedAt }
+```
+
+For the My updates (Standup) page: the issues the viewer changed since `since` (state moves, closes, comments, issues they created) and their open assigned issues, highest priority first. Helpers in `issues/activity.ts` (`noteChange`, `changesOf`, `isBlocked`, `byPriority`). Linear reads each issue's history and the viewer's comments (`isMe` filters); Jira uses relative JQL (`updatedBy(currentUser(), "-<n>m")`, so the site's time zone doesn't matter) with the changelog; GitHub reads each repo's issue events and comments. **Reject** when the tracker fails (the page shows the error over that section). Without it, the page leaves the tracker out.
 
 ## Meeting tools (the Meetings page)
 
@@ -82,7 +93,7 @@ Unlike trackers, a meeting tool may sign in with OAuth: each team registers its 
 
 ## Code hosts (the Needs-you inbox)
 
-`server/src/inbox.ts` reads the code host for "my open PRs (checks, reviews, conflicts)", "reviews requested from me" and "CI on the default branch" of `codeHost.ciRepos`. `github` uses the `gh` CLI. Another host is a branch in `get()` keyed on `workspaceConfig().codeHost.kind` returning the same `{ items, ciHealth, errors }` shape (e.g. `glab mr list --author=@me`, `glab ci status`).
+`server/src/inbox.ts` reads the code host for "my open PRs (checks, reviews, conflicts)", "reviews requested from me" and "CI on the default branch" of `codeHost.ciRepos`. `github` uses the `gh` CLI. Another host is a branch in `get()` keyed on `workspaceConfig().codeHost.kind` returning the same `{ items, ciHealth, errors }` shape (e.g. `glab mr list --author=@me`, `glab ci status`). The My updates page (`server/src/standup.ts`) shows the inbox's PR items under Today, and searches for the PRs the person opened, merged, updated or reviewed since their last workday (`gh search prs`); another host needs a branch there too.
 
 ## Docs providers (searchable external docs)
 

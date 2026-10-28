@@ -13,6 +13,7 @@
 
 import type { AtlassianAuth } from "../atlassian-auth.ts";
 import { workspaceConfig, type IssuesConfig } from "../config.ts";
+import type { TrackerActivity } from "./activity.ts";
 import { GitHubTracker } from "./github.ts";
 import { JiraTracker } from "./jira.ts";
 import { LinearTracker } from "./linear.ts";
@@ -78,6 +79,12 @@ export interface IssueTracker {
    * is the one place they all see.
    */
   claim?(id: string): Promise<{ ok: boolean; why?: string }>;
+  /**
+   * The viewer's own, for the Standup page: the issues they changed since `since` (an ISO time;
+   * moved, closed, commented on, created) and the open ones assigned to them. Leave it out when
+   * the tracker can't say: the page then leaves the tracker out. Rejects when the tracker fails.
+   */
+  activity?(since: string): Promise<TrackerActivity>;
 }
 
 /** An issue found by a marker in its description. key is the board's id for it. */
@@ -85,6 +92,8 @@ export interface LinkedIssue { key: string; url: string; title: string; state: s
 
 /** linkedIssues' answer: issues by marker, and whether a search hit its cap (some may be missing). */
 export type LinkedIssues = Map<string, LinkedIssue[]> & { truncated?: boolean };
+
+export type { AssignedIssue, IssueChange, TrackerActivity } from "./activity.ts";
 
 /** No tracker configured: the Issues page explains how to set one up. */
 class NoTracker implements IssueTracker {

@@ -757,6 +757,30 @@ export interface ReviewSubmit {
 }
 export interface ReviewSubmitted { url: string | null; state: string; comments: number; movedToBody: number }
 
+// ---------------------------------------------------------------- standup ("My updates")
+
+/** One line on the Standup page. url: where it lives (tracker, code host); runId / meetingId: a run or meeting on this dashboard. */
+export interface StandupItem { title: string; detail: string; url?: string | null; runId?: string | null; meetingId?: string | null; at?: string | null }
+export type StandupSourceId = 'tracker' | 'code' | 'runs' | 'meetings';
+/**
+ * What one source says. done: since `since`; next: assigned to you, waiting on you or still going;
+ * blockers: what's stuck. error: it couldn't be read, or isn't connected (the other sources still show).
+ */
+export interface StandupSource { id: StandupSourceId; label: string; done: StandupItem[]; next: StandupItem[]; blockers: StandupItem[]; error: string | null }
+/**
+ * GET /api/standup?since=<ISO time>[&force=1]: the sources this workspace has, in order; one it
+ * doesn't have (no tracker, no code host, no meetings.json) is left out. since: the browser's
+ * start of the window (its last workday, in its own time zone), as the server read it.
+ */
+export interface StandupResponse { since: string; sources: StandupSource[]; fetchedAt: number }
+/**
+ * A standup draft (Yesterday / Today / Blockers), written by a small model from the page's items and
+ * kept per day (the browser's date) and window. Nothing is posted anywhere: it's for copying.
+ * GET /api/standup/draft?since=&day= → StandupDraft | null (the saved one)
+ * POST /api/standup/draft { since, day, force? } → StandupDraft (the saved one, or a new one)
+ */
+export interface StandupDraft { text: string; day: string; since: string; at: string }
+
 // ------------------------------------------------------------------ the software factory
 
 /** The factory's pipeline stages, in their default order. */

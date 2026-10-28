@@ -26,9 +26,12 @@ const REFUSED = "Jira rejected the email/API token. A scoped token needs at leas
 const SIGNIN_REFUSED = "Jira turned your Atlassian sign-in down. The team's Atlassian app needs the read:jira-work and read:jira-user scopes; if it has them, disconnect Atlassian and connect again.";
 import type { ConnectHelp, IssueFilter, IssueTracker, LinkedIssue, LinkedIssues, TrackerStatus } from "./index.ts";
 import { LINKED_LIMIT, byMarker, chunks, isIssueKey } from "./markers.ts";
+import { ACTIVITY_LIMIT, type AssignedIssue, type IssueChange, type TrackerActivity, byPriority, changesOf, isBlocked, isSince, minutesAgo, noteChange } from "./activity.ts";
 
 const CACHE_TTL_MS = 60 * 1000;
 const LIMIT = 200;
+/** Issues whose long changelog is read again for its newest page (one request each). */
+const MAX_CHANGELOG_LOOKUPS = 10;
 const FIELDS = ["summary", "status", "priority", "assignee", "labels", "updated", "project", "issuetype", "sprint", "fixVersions"];
 // Jira status categories carry a color name, not a hex.
 const CATEGORY_COLOR: Record<string, string> = { "blue-gray": "#8993a4", yellow: "#f5a623", green: "#36b37e", "medium-gray": "#8993a4" };
@@ -58,6 +61,21 @@ export function linkedJql(markers: string[], projects: string[]): string {
   // text ~ "\"a-b\"": a phrase, so the marker's hyphenated parts match in order.
   const terms = markers.map((m) => `text ~ ${q(`"${m}"`)}`).join(" OR ");
   return `${projects.length ? `project in (${projects.map(q).join(", ")}) AND ` : ""}(${terms}) ORDER BY updated DESC`;
+}
+
+/**
+ * The Standup page's JQL, in the configured projects: issues the viewer changed in the last
+ * `minutes` (updatedBy counts edits, transitions and comments) or created then; and their open
+ * issues, highest priority first. Relative dates, so the site's time zone doesn't matter.
+ */
+export function activityJql(minutes: number, projects: string[]): { changed: string; assigned: string } {
+  const q = (s: string) => `"${String(s).replace(/(["\\])/g, "\\$1")}"`;
+  const scope = projects.length ? `project in (${projects.map(q).join(", ")}) AND ` : "";
+  const ago = `"-${Math.max(1, Math.floor(minutes))}m"`;
+  return {
+    changed: `${scope}(issue in updatedBy(currentUser(), ${ago}) OR (reporter = currentUser() AND created >= ${ago})) ORDER BY updated DESC`,
+    assigned: `${scope}assignee = currentUser() AND statusCategory != Done ORDER BY priority DESC, updated DESC`,
+  };
 }
 
 /** Atlassian Document Format as plain text (every text node, blocks on their own lines). */
@@ -362,6 +380,48 @@ class JiraTracker implements IssueTracker {
       }
     }
     return byMarker(markers, found, truncated);
+  }
+
+  /** What the viewer changed since `since` (from each issue's changelog and comments) and their open assigned issues. */
+  async activity(since: string): Promise<TrackerActivity> {
+    const cred = this._auth();
+    if (!cred || !this.site) throw new Error("Jira isn't connected.");
+    const me = await this._get(cred, "/rest/api/3/myself");
+    const accountId = me && me.accountId;
+    const q = activityJql(minutesAgo(since), this.projects);
+    const [changed, assigned] = await Promise.all([
+      this._get(cred, "/rest/api/3/search/jql", { jql: q.changed, fields: ["summary", "status", "created", "reporter", "comment"], expand: "changelog", maxResults: ACTIVITY_LIMIT }),
+      this._get(cred, "/rest/api/3/search/jql", { jql: q.assigned, fields: FIELDS, maxResults: ACTIVITY_LIMIT }),
+    ]);
+    // Search embeds at most a page of each issue's changelog, oldest first: a long one's newest page is read on its own.
+    const cut = (changed.issues || []).filter((n) => n.changelog && n.changelog.total > (n.changelog.histories || []).length).slice(0, MAX_CHANGELOG_LOOKUPS);
+    await Promise.all(cut.map(async (n) => {
+      const start = Math.max(0, n.changelog.total - 100);
+      const page = await this._get(cred, `/rest/api/3/issue/${encodeURIComponent(n.key)}/changelog?startAt=${start}&maxResults=100`).catch(() => null);
+      if (page && Array.isArray(page.values)) n.changelog.histories = page.values;
+    }));
+    const mine = (u: any) => !!u && !!accountId && u.accountId === accountId;
+    const changes = new Map<string, IssueChange>();
+    for (const n of changed.issues || []) {
+      const f = n.fields || {};
+      const base = { id: n.key, title: f.summary || "", url: this.issueUrl(n.key) || "", state: f.status ? f.status.name : "" };
+      if (mine(f.reporter) && isSince(f.created, since)) noteChange(changes, base, "created", f.created);
+      for (const h of (n.changelog && n.changelog.histories) || []) {
+        if (!mine(h.author) || !isSince(h.created, since)) continue;
+        for (const it of h.items || []) {
+          if (it.field === "status") noteChange(changes, base, `moved ${it.fromString || "?"} → ${it.toString || "?"}`, h.created);
+          else if (it.field === "assignee" && it.to === accountId) noteChange(changes, base, "took it", h.created);
+        }
+      }
+      for (const c of (f.comment && f.comment.comments) || []) {
+        if (mine(c.author) && isSince(c.created, since)) noteChange(changes, base, "commented", c.created);
+      }
+    }
+    const open: AssignedIssue[] = (assigned.issues || []).map((n) => {
+      const i = this.toIssue(n);
+      return { id: i.id, title: i.title, url: i.url || "", state: i.state, priority: i.priority, priorityLabel: i.priorityLabel, blocked: isBlocked(i.state, i.labels.map((l) => l.name)), updatedAt: i.updatedAt };
+    });
+    return { changed: changesOf(changes), assigned: open.sort(byPriority) };
   }
 
   toIssue(n: any) {

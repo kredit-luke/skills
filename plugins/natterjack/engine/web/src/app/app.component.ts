@@ -103,6 +103,7 @@ export class AppComponent implements OnInit {
 
   readonly nav: NavItem[] = [
     { path: '/', label: 'Home', icon: 'home', exact: true },
+    { path: '/standup', label: 'My updates', icon: 'standup' },
     { path: '/links', label: 'Links', icon: 'links', group: 'Company' },
     { path: '/knowledge', label: 'Knowledge', icon: 'docs' },
     { path: '/infrastructure', label: 'Infrastructure', icon: 'infrastructure' },

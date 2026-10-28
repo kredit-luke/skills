@@ -13,6 +13,7 @@ import https from "node:https";
 import type { IssuesConfig } from "../config.ts";
 import type { ConnectHelp, IssueTracker, LinkedIssue, LinkedIssues, TrackerStatus } from "./index.ts";
 import { LINKED_LIMIT, byMarker, chunks, isIssueKey } from "./markers.ts";
+import { ACTIVITY_LIMIT, type AssignedIssue, type IssueChange, type TrackerActivity, byPriority, changesOf, isBlocked, isSince, noteChange } from "./activity.ts";
 
 const ENDPOINT = "https://api.linear.app/graphql";
 const CACHE_TTL_MS = 60 * 1000;
@@ -77,6 +78,36 @@ query DashboardLinkedIssues($filter: IssueFilter, $first: Int!) {
 /** The filter for issues whose description contains any of `markers` (Linear checks; the exact match is ours). */
 export function linkedFilter(markers: string[]) {
   return { or: markers.map((m) => ({ description: { contains: m } })) };
+}
+
+const ACTIVITY_QUERY = `
+query StandupActivity($changed: IssueFilter, $assigned: IssueFilter, $comments: CommentFilter, $first: Int!) {
+  changed: issues(first: $first, orderBy: updatedAt, filter: $changed) {
+    nodes {
+      identifier title url createdAt
+      state { name }
+      creator { isMe }
+      history(first: 50) { nodes { createdAt actor { isMe } fromState { name } toState { name } } }
+      comments(first: 20, filter: $comments) { nodes { createdAt } }
+    }
+  }
+  assigned: issues(first: $first, orderBy: updatedAt, filter: $assigned) {
+    nodes { identifier title url priority priorityLabel updatedAt state { name } labels { nodes { name } } }
+  }
+}`;
+
+/**
+ * The Standup query's filters: issues assigned to, created by, subscribed to or commented on by
+ * the viewer (moving an issue subscribes you) and updated since `since`; their own comments since then; and their open issues that are started or up next
+ * (Linear's "started" and "unstarted" state types, so not the backlog or triage).
+ */
+export function activityFilters(since: string) {
+  const me = { isMe: { eq: true } };
+  return {
+    changed: { updatedAt: { gte: since }, or: [{ assignee: me }, { creator: me }, { subscribers: { some: me } }, { comments: { some: { user: me } } }] },
+    comments: { createdAt: { gte: since }, user: me },
+    assigned: { assignee: me, state: { type: { in: ["started", "unstarted"] } } },
+  };
 }
 
 class LinearTracker implements IssueTracker {
@@ -245,6 +276,29 @@ class LinearTracker implements IssueTracker {
       }
     }
     return byMarker(markers, found, truncated);
+  }
+
+  /** What the viewer changed since `since` (state moves, comments, issues they created) and their open assigned issues. */
+  async activity(since: string): Promise<TrackerActivity> {
+    const key = this._key();
+    if (!key) throw new Error("Linear isn't connected.");
+    const data = await this.gql(key, ACTIVITY_QUERY, { ...activityFilters(since), first: ACTIVITY_LIMIT });
+    const changes = new Map<string, IssueChange>();
+    for (const n of (data && data.changed && data.changed.nodes) || []) {
+      const base = { id: n.identifier, title: n.title || "", url: n.url || this.issueUrl(n.identifier) || "", state: n.state ? n.state.name : "" };
+      if (n.creator && n.creator.isMe && isSince(n.createdAt, since)) noteChange(changes, base, "created", n.createdAt);
+      for (const h of (n.history && n.history.nodes) || []) {
+        if (!h.actor || !h.actor.isMe || !isSince(h.createdAt, since) || !h.toState) continue;
+        noteChange(changes, base, h.fromState ? `moved ${h.fromState.name} → ${h.toState.name}` : `moved to ${h.toState.name}`, h.createdAt);
+      }
+      for (const c of (n.comments && n.comments.nodes) || []) noteChange(changes, base, "commented", c.createdAt);
+    }
+    const assigned: AssignedIssue[] = ((data && data.assigned && data.assigned.nodes) || []).map((n) => {
+      const labels = ((n.labels && n.labels.nodes) || []).map((l) => l.name);
+      const state = n.state ? n.state.name : "";
+      return { id: n.identifier, title: n.title || "", url: n.url || this.issueUrl(n.identifier) || "", state, priority: n.priority || 0, priorityLabel: n.priority ? n.priorityLabel || "" : "", blocked: isBlocked(state, labels), updatedAt: n.updatedAt || "" };
+    });
+    return { changed: changesOf(changes), assigned: assigned.sort(byPriority) };
   }
 
   /** One issue with its description (markdown), for the detail panel and Explain. */

@@ -4,6 +4,7 @@ import { DomSanitizer } from '@angular/platform-browser';
 // 24x24 stroke icons (our own paths; no icon font).
 const PATHS: Record<string, string> = {
   home: '<path d="M3 11l9-7 9 7v9a1 1 0 01-1 1h-5v-6H9v6H4a1 1 0 01-1-1z"/>',
+  standup: '<path d="M4 6h11M4 12h8M4 18h11"/><path d="M17 15l2 2 3-4"/><path d="M17 5l2 2 3-4"/>',
   ask: '<path d="M21 12a8 8 0 01-11.6 7.1L4 20l1-4.3A8 8 0 1121 12z"/><path d="M9.5 9.5a2.5 2.5 0 114 2c-.9.6-1.5 1.1-1.5 2M12 16.5h.01"/>',
   runs: '<path d="M5 4l14 8-14 8z"/>',
   factory: '<path d="M3 21V10l5 3V10l5 3V6l8 4v11z"/><path d="M7 17h2M12 17h2M17 17h2"/>',

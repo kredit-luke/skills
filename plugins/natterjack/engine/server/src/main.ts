@@ -42,6 +42,7 @@ import { RunManager, httpError, runLabel } from "./runs.ts";
 import { Deck, Scheduler } from "./deck.ts";
 import { Inbox, gh as ghJson } from "./inbox.ts";
 import { Reviews, askChangePrompt, numberParam, repoParam } from "./reviews.ts";
+import { Standup, dayParam, sinceParam } from "./standup.ts";
 import { type FactoryRun, webhookTarget, auditCsv, auditRows, buildBoard, factoryConfigState, factoryLaunchBlocker, factoryNotices, inFlightTickets, intakeCandidates, manifestFile, normalizeManifest, overrideGateDecision, rateAssessment, readManifests, readPlan, recordGateDecision, relatedPrs, saveFactoryConfig, setPrStates } from "./factory.ts";
 import { Watcher } from "./watches.ts";
 import { Usage } from "./usage.ts";
@@ -797,6 +798,16 @@ const atlassianAuth = () => atlassian.get();
 const trackers = new Trackers(LEDGER_DIR, atlassianAuth);
 const meetings = new Meetings(undefined, { ledgerDir: LEDGER_DIR, hosted: !!HOSTED, publicOrigin: HOSTED ? HOSTED.publicOrigin : null });
 const meetingLinks = new MeetingTicketLinks(meetingTickets);
+// The Standup page: the tracker, the code host (sharing the inbox's PR items), the ledger and the meeting tool, as the person.
+const standup = new Standup({
+  ledgerDir: LEDGER_DIR,
+  tracker: () => { const c = trackers.config(); return c.configured && c.supported ? { tracker: trackers.get(), label: c.label } : null; },
+  codeHost: () => workspaceConfig().codeHost,
+  inbox: (force) => inbox.get(force),
+  gh: ghJson,
+  runs: () => runs.list(),
+  meetings: () => meetings.get(),
+});
 const machine = new Machine(MAIN_WORKSPACE_PATH, { hosted: !!HOSTED });
 const claudeLogin = new ClaudeLogin();
 const githubLogin = new GithubLogin({ signing: !!HOSTED });
@@ -1849,6 +1860,14 @@ async function handleApi(req: http.IncomingMessage, res: http.ServerResponse, ur
     if (p === "/api/overview") return sendJson(res, await getOverview());
     if (p === "/api/inbox") return sendJson(res, await inbox.get(force));
     if (p === "/api/reviews") return sendJson(res, await reviews.list(force));
+    if (p === "/api/standup" || p === "/api/standup/draft") {
+      const since = sinceParam(q("since"));
+      if (!since) return sendError(res, 400, "Invalid since (an ISO time within the last month)");
+      if (p === "/api/standup") return sendJson(res, await standup.get(since, force));
+      const day = dayParam(q("day"));
+      if (!day) return sendError(res, 400, "Invalid day (YYYY-MM-DD)");
+      return sendJson(res, standup.savedDraft(since, day));
+    }
     if (p === "/api/factory") return sendJson(res, factoryBoard());
     if (p === "/api/factory/config") return sendJson(res, factoryConfigState(!isReader()));
     if (p === "/api/factory/intake") return sendJson(res, await factoryIntake());
@@ -2344,6 +2363,13 @@ async function handleApi(req: http.IncomingMessage, res: http.ServerResponse, ur
       ...(isAgentId(body.agent) ? { agent: body.agent } : {}),
     }, "explain");
     return sendJson(res, { run }, 201);
+  }
+  if (p === "/api/standup/draft") {
+    // Spends Claude usage (a small model), like a PR summary: no full-access gate. Nothing is posted.
+    const since = sinceParam(body.since);
+    const day = dayParam(body.day);
+    if (!since || !day) return sendError(res, 400, "Invalid since or day");
+    return sendJson(res, await standup.draft(since, day, body.force === true));
   }
   if (p === "/api/reviews/summary") {
     // Spends Claude usage (a small model), like a manual run: no full-access gate.
