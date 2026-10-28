@@ -8,7 +8,7 @@ import { MdPipe } from '../../core/md.pipe';
 import { SmallScreenService } from '../../core/small-screen';
 import { ToastService } from '../../core/toast.service';
 import { TrustedHtmlPipe } from '../../core/trusted-html.pipe';
-import { copyText, dur, relTime, tokens, usd } from '../../core/util';
+import { copyText, dur, lsGet, lsSet, relTime, tokens, usd } from '../../core/util';
 import { buildThread, countSteps, isOpenModel, openModelSummary, stripAgents, stripSummary, type AgentCard, type ThreadItem } from '../../runs/thread';
 import { RunEventCache, type RunEvents } from '../../runs/event-cache';
 import { cancelBlockedReason, pendingLabel, pendingText, remoteAllows, remoteBanner, withListRemote } from '../../runs/remote';
@@ -34,6 +34,8 @@ const STICK_PX = 80;
 /** run-detail.component.scss: the feed's min-height, and what --feed-max-h leaves below the composer. */
 const FEED_MIN_PX = 220;
 const FEED_SLACK_PX = 64;
+/** The top block collapsed to its title line (localStorage), the same on every run. */
+const HEADER_COLLAPSED_KEY = 'dash.run.headerCollapsed';
 /** Statuses a run can be sent to the hosted dashboard from: between turns (as the server checks). */
 const SENDABLE = new Set(BETWEEN_TURNS);
 /** Shared by every run page, so it outlives leaving Activity. */
@@ -125,6 +127,8 @@ export class RunDetailComponent implements OnDestroy {
   });
   /** Small screens: the meta line shows status, model and updated; the rest is behind Details. */
   readonly detailsOpen = signal(false);
+  /** The top block shows only the title line and the tabs, so the feed gets the room (a big question in the composer). */
+  readonly headerCollapsed = signal(lsGet(HEADER_COLLAPSED_KEY) === '1');
   readonly pendingText = pendingText;
   readonly pendingLabel = pendingLabel;
   /** A pending command being removed from the pod. */
@@ -583,6 +587,12 @@ export class RunDetailComponent implements OnDestroy {
     if (await copyText(cmd)) this.toast.show('Copied: ' + cmd); else this.toast.error('Couldn\'t copy; the command is ' + cmd);
   }
   resumeCmd(): string { const r = this.run(); return r ? resumeCommand(r) : ''; }
+
+  toggleHeader(): void {
+    const v = !this.headerCollapsed();
+    this.headerCollapsed.set(v);
+    lsSet(HEADER_COLLAPSED_KEY, v ? '1' : '0');
+  }
 
   editTitle(): void {
     const r = this.run();

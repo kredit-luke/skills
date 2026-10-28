@@ -15,6 +15,11 @@
 .detail-h .name { font-family: var(--font-display); font-size: 20px; font-weight: 800; letter-spacing: var(--ls-display); }
 .rename-btn { opacity: .55; padding: 2px 7px; }
 .ttl:hover .rename-btn, .rename-btn:focus-visible { opacity: 1; }
+/* Collapsed (the title line's toggle): the title line only, and the template drops the subagent and
+   ticket strips; the ResizeObserver in run-detail.component.ts hands the freed height to the feed. */
+.collapsed > :not(.ttl) { display: none; }
+.collapsed .ttl { flex-wrap: nowrap; }
+.collapsed .name { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
 .rename { display: flex; gap: 6px; align-items: center; flex: 1; min-width: 240px; }
 .rename input { flex: 1; font-family: var(--font-display); font-size: 17px; font-weight: 700; padding: 4px 8px; }
 .kv { display: flex; flex-wrap: wrap; gap: 0.3rem 1.1rem; font-size: 0.72rem; color: var(--text-muted); }
