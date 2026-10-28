@@ -379,6 +379,21 @@ export function validate(root) {
   if (deck) {
     const presetIds = (deck.presets || []).map((p) => p.id);
     for (const r of deck.routines || []) if (!presetIds.includes(r.preset)) err("deck.json", `routine "${r.id}" uses preset "${r.preset}", which doesn't exist`);
+    // GitHub teams are the configured repos, so a typo is checkable here. Same rules as the engine
+    // (issues/github.ts repoList, repoForTeam): owner/name repos only; a team is one repo's owner/name,
+    // or a short name only one repo has, trimmed, in any case.
+    const ghRepos = ws && ws.issues && ws.issues.kind === "github"
+      ? [].concat(ws.issues.repos || ws.issues.repo || []).filter((r) => typeof r === "string" && /^[\w.-]+\/[\w.-]+$/.test(r)).map((r) => r.toLowerCase())
+      : null;
+    if (ghRepos && ghRepos.length) for (const key of ["teams", "implementTeams"]) {
+      for (const t of (deck.issues && deck.issues[key]) || []) {
+        const name = String(t).trim().toLowerCase();
+        const short = ghRepos.filter((r) => r.split("/")[1] === name).length;
+        if (ghRepos.includes(name) || short === 1) continue;
+        const why = short > 1 ? `is the name of ${short} repos in workspace.json issues.repos: write it as owner/name` : `isn't one of workspace.json issues.repos (${ghRepos.join(", ")})`;
+        warn("deck.json", `issues.${key} "${t}" ${why}, so ${key === "teams" ? "the board shows nothing from it" : "it gets no Implement button"}`);
+      }
+    }
     if (deck.issues && deck.issues.implementPreset && !presetIds.includes(deck.issues.implementPreset)) warn("deck.json", `issues.implementPreset "${deck.issues.implementPreset}" isn't a preset, so Implement buttons won't show`);
   }
 

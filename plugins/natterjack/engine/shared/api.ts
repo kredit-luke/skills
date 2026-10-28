@@ -1502,6 +1502,8 @@ export interface IssuesResponse {
    * write it; null when the tracker has none (Linear). Saved with POST /api/settings { issues: { query } }.
    */
   query?: { value: string; label: string; placeholder: string; help: string } | null;
+  /** Set when deck.json issues.teams names a team the tracker doesn't have (so it shows nothing). */
+  teamsWarning?: string | null;
 }
 /** GET /api/issues/issue?id=ENG-123 → IssueDetail (description is markdown) */
 export interface IssueDetail { id: string; title: string; url: string; team: string; state: string; priorityLabel: string; assignee: string | null; project: string | null; cycle: string | null; labels: IssueLabel[]; description: string; branchName: string | null; updatedAt: string }

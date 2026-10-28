@@ -66,6 +66,12 @@ export interface IssueTracker {
   issueUrlTemplate?(): string | null;
   queryHelp(): QueryHelp | null;
   /**
+   * The team name issues carry for a configured one (deck.json issues.teams / implementTeams), or
+   * null when no team goes by that name (the board says so). Leave it out when the names are the
+   * tracker's own and can't be checked without asking it.
+   */
+  teamName?(team: string): string | null;
+  /**
    * Issues whose description holds one of `markers` (exact, as a whole token), by marker: one text
    * search, then the exact check. An empty map when it isn't connected; rejects when the search
    * fails (so the caller doesn't cache a failure as "no tickets"). Sets `truncated` when a search

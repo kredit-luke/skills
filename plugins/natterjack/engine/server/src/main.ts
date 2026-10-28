@@ -1026,6 +1026,7 @@ function jobsView() {
 function deckView() {
   return {
     ...deck.config(),
+    issues: issuesConfig().issues, // team names as issues carry them (the search palette's Implement)
     stats: runs.stats(),
     // A role's hidden skills are off in Claude too (profile.ts); don't offer them here.
     skills: ((hidden) => deck.skills().filter((s) => !hidden.includes(s.name)))(readProfile(LEDGER_DIR).hiddenSkills),
@@ -1367,9 +1368,26 @@ function runsByDay(days: number) {
   return [...out.values()];
 }
 
+/**
+ * deck.json issues with teams and implementTeams as issues name them (a GitHub repo may be written
+ * owner/name, in any case), and the entries that name no team the tracker reads. Those stay as
+ * written, so they match nothing rather than reading as "all".
+ */
+function issuesConfig() {
+  const cfg = deck.config().issues;
+  const tracker = trackers.get();
+  const unknown: { key: string; team: string }[] = [];
+  const named = (key: "teams" | "implementTeams") => [...new Set(((cfg[key] || []) as string[]).map((team) => {
+    const name = tracker.teamName ? tracker.teamName(team) : team;
+    if (name === null) unknown.push({ key, team });
+    return name ?? team;
+  }))];
+  return { issues: { ...cfg, teams: named("teams"), implementTeams: named("implementTeams") }, unknown };
+}
+
 /** Issues plus local context: an existing worktree, and any dashboard implement/explain run. */
 async function getIssues(force: boolean) {
-  const cfg = deck.config().issues;
+  const { issues: cfg, unknown } = issuesConfig();
   const tracker = trackers.get();
   const tcfg = trackers.config();
   const reader = isReader();
@@ -1388,13 +1406,15 @@ async function getIssues(force: boolean) {
   }
   // No states/teams configured: show whatever the tracker returned, in the order first seen.
   const seen = (key: string) => [...new Set(list.map((i) => i[key]).filter(Boolean))] as string[];
-  const implementTeams: string[] = cfg.implementTeams || [];
+  const implementTeams: string[] = cfg.implementTeams;
   return {
     ...data,
+    teamsWarning: unknown.length ? `deck.json ${unknown.map((u) => `issues.${u.key} "${u.team}"`).join(", ")} ${unknown.length === 1 ? "doesn't" : "don't"} name one ${tcfg.label} team this workspace reads, so ${unknown.length === 1 ? "it matches" : "they match"} no issues. Check the spelling${tcfg.kind === "github" ? " (a repo in workspace.json issues.repos, as owner/name or name)" : ""}.` : null,
     tracker: { kind: tcfg.kind, label: tcfg.label, configured: tcfg.configured, supported: tcfg.supported },
     connect: data.connected ? null : tracker.connectHelp(),
     states: cfg.states && cfg.states.length ? cfg.states : seen("state"),
-    teams: cfg.teams && cfg.teams.length ? cfg.teams : seen("team"),
+    // An unknown team gets the note above, not a chip that filters to nothing.
+    teams: cfg.teams.length ? cfg.teams.filter((t) => !unknown.some((u) => u.key === "teams" && u.team === t)) : seen("team"),
     viewer: tracker.status().viewer,
     keySource: tracker.status().source,
     query: queryHelp ? { value: query, ...queryHelp } : null,
@@ -2336,7 +2356,7 @@ async function handleApi(req: http.IncomingMessage, res: http.ServerResponse, ur
     // Only implement-state issues of issues.implementTeams do code work; refuse the rest.
     const known = ((await getIssues(false)).issues || []).find((i) => i.id === ticket);
     if (known && !known.canImplement) {
-      const teams = deck.config().issues.implementTeams || [];
+      const teams = issuesConfig().issues.implementTeams;
       return sendError(res, 400, teams.length && !teams.includes(known.team)
         ? `${ticket} is a ${known.team} issue; Implement is only for ${teams.join(", ")}.`
         : `${ticket} is ${known.state}; Implement is for ${trackers.config().implementStates.join(" / ")} issues.`);

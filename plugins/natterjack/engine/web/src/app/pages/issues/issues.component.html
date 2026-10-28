@@ -62,6 +62,7 @@
       @if (qh.value) { <button class="btn ghost sm" type="button" (click)="queryDraft.set(''); saveQuery()">Clear</button> }
     </form>
   }
+  @if (resp()!.teamsWarning) { <div class="warn-note" style="margin-bottom:12px">{{ resp()!.teamsWarning }}</div> }
   @if (resp()!.error) { <div class="warn-note" style="margin-bottom:12px">{{ resp()!.tracker.label }}: {{ resp()!.error }}{{ resp()!.error!.startsWith('Your filter') ? '' : ' (showing the last list that loaded)' }}</div> }
   <div class="board" [style.--cols]="lanes().length">
     @for (lane of lanes(); track lane.state) {

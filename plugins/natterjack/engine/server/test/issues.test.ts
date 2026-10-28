@@ -4,7 +4,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { JiraTracker, adfToMarkdown, cleanQuery, jql } from "../src/issues/jira.ts";
-import { repoList, searchArgs, stateOf } from "../src/issues/github.ts";
+import { GitHubTracker, repoForTeam, repoList, teamOfRepo, searchArgs, stateOf } from "../src/issues/github.ts";
 
 test("jira: JQL from projects and states, quoting names safely", () => {
   assert.equal(jql({ teams: [], states: ["To Do", "In Progress"] }, ["ENG", "Ops \"Team\""]),
@@ -41,6 +41,51 @@ test("github: repos from config, only owner/name shapes", () => {
   assert.deepEqual(repoList({ repos: ["acme/api", "bad", "acme/web.site"] }), ["acme/api", "acme/web.site"]);
   assert.deepEqual(repoList({ repo: "acme/api" }), ["acme/api"]);
   assert.deepEqual(repoList({}), []);
+});
+
+test("github: a team names a repo by owner/name or short name, in any case", () => {
+  const repos = ["lhoezee/skills", "acme/api"];
+  assert.equal(repoForTeam(repos, "lhoezee/skills"), "lhoezee/skills");
+  assert.equal(repoForTeam(repos, "skills"), "lhoezee/skills");
+  assert.equal(repoForTeam(repos, "ACME/Api"), "acme/api");
+  assert.equal(repoForTeam(repos, "other/skills"), undefined, "a different owner isn't the same repo");
+  assert.equal(repoForTeam(repos, "web"), undefined);
+  assert.equal(repoForTeam(repos, " skills "), "lhoezee/skills", "trimmed");
+});
+
+test("github: two repos with one short name: the short name names neither, and their issues' team is owner/name", async () => {
+  const repos = ["acme/api", "other/api", "acme/web"];
+  assert.equal(repoForTeam(repos, "api"), undefined);
+  assert.equal(repoForTeam(repos, "other/api"), "other/api");
+  assert.equal(teamOfRepo(repos, "acme/api"), "acme/api");
+  assert.equal(teamOfRepo(repos, "acme/web"), "web");
+  const gh = new GitHubTracker({ kind: "github", repos } as any);
+  assert.equal(gh.teamName("api"), null);
+  assert.equal(gh.teamName("acme/api"), "acme/api");
+  const listed: string[] = [];
+  gh.gh = async (args) => {
+    if (args[0] === "api") return { login: "me" };
+    listed.push(args[args.indexOf("--repo") + 1]);
+    return [{ number: 1, title: "A", url: "", labels: [], assignees: [], updatedAt: "2026-10-01T00:00:00Z" }];
+  };
+  const res = await gh.issues({ teams: ["api", "acme/api"], states: [] });
+  assert.deepEqual(listed, ["acme/api"], "the ambiguous short name reads no repo");
+  assert.deepEqual(res.issues.map((i) => i.team), ["acme/api"]);
+});
+
+test("github: issues.teams as owner/name still reads that repo, and teamName gives the short name", async () => {
+  const gh = new GitHubTracker({ kind: "github", repos: ["lhoezee/skills", "acme/api"] } as any);
+  const listed: string[] = [];
+  gh.gh = async (args) => {
+    if (args[0] === "api") return { login: "me" };
+    listed.push(args[args.indexOf("--repo") + 1]);
+    return [{ number: 103, title: "A", url: "https://github.com/lhoezee/skills/issues/103", labels: [], assignees: [], updatedAt: "2026-10-01T00:00:00Z" }];
+  };
+  const res = await gh.issues({ teams: ["lhoezee/skills"], states: [] });
+  assert.deepEqual(listed, ["lhoezee/skills"]);
+  assert.deepEqual(res.issues.map((i) => [i.id, i.team]), [["skills#103", "skills"]]);
+  assert.equal(gh.teamName("LHOEZEE/skills"), "skills");
+  assert.equal(gh.teamName("nope/skills"), null);
 });
 
 test("github: board column from labels (first match wins), else Open/Closed", () => {
