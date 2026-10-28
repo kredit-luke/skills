@@ -41,6 +41,15 @@ export function hunkLabel(files: DiffFile[], id: string): string {
   return id;
 }
 
+/** A line comment not posted yet (the PR's new side), with the commit whose diff it was written on. */
+export interface DraftComment { path: string; line: number; body: string; sha?: string }
+
+/** Where a PR's draft line comments are kept in this browser. */
+export function draftsKey(repo: string, n: number): string { return `natterjack.review-drafts.${repo}#${n}`; }
+
+/** A diff line's key: the file and its new-side line. */
+export function lineKey(path: string, line: number): string { return `${path}:${line}`; }
+
 /** The localStorage key for a reviewer's chapter checklist on one commit of one PR. */
 export function progressKey(repo: string, number: number, sha: string): string {
   return `natterjack.review.${repo}#${number}@${sha}`;

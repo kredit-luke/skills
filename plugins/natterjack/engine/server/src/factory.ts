@@ -14,7 +14,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import type {
-  AgentId, FactoryAssessment, FactoryBoard, FactoryColumn, FactoryConfig, FactoryConfigState, FactoryGateId, FactoryGateMode, FactoryItem,
+  AgentId, FactoryAssessment, FactoryBoard, FactoryRating, FactoryRatingValue, FactoryColumn, FactoryConfig, FactoryConfigState, FactoryGateId, FactoryGateMode, FactoryItem,
   FactoryItemStep, FactoryManifest, FactoryPreset, FactoryPresetPatch, FactoryRiskRule, FactoryScanner, FactorySpec, FactoryStageConfig, FactoryStageId, FactoryStepStatus, MergeMethod, RunStatus, Severity, SpecCheckId,
 } from "../../shared/api.ts";
 import { pipelineOrder, withPresetPatch } from "../../shared/factory-rules.ts";
@@ -293,18 +293,26 @@ export function normalizeManifest(raw: any): FactoryManifest | null {
       by: optStr(g.by), risk: pick(g.risk, ["low", "medium", "high", null] as const, null),
       rationale: typeof g.rationale === "string" ? g.rationale.slice(0, 4000) : null,
       sha: optStr(g.sha), at: iso(g.at) || started,
+      ...(g.override === true ? { override: true } : {}),
     })),
     prs: (Array.isArray(raw.prs) ? raw.prs : []).filter((p: any) => p && typeof p.url === "string" && /^https?:\/\//.test(p.url)).slice(0, 50).map((p: any) => ({
       repo: optStr(p.repo), url: p.url, number: Number.isInteger(p.number) ? p.number : null,
       state: pick(p.state, ["open", "merged", "closed", null] as const, null),
     })),
     assessments: (Array.isArray(raw.assessments) ? raw.assessments : []).filter((a: any) => a && GATE_IDS.includes(a.gate) && RISK_LEVELS.includes(a.level)).slice(-100).map(normalizeAssessment),
+    ratings: (Array.isArray(raw.ratings) ? raw.ratings : []).filter((r: any) => r && iso(r.assessmentAt) && GATE_IDS.includes(r.gate) && RATINGS.includes(r.rating)).slice(-200).map((r: any): FactoryRating => ({
+      assessmentAt: iso(r.assessmentAt)!, gate: r.gate, level: pick(r.level, RISK_LEVELS, "medium"), wouldApprove: r.wouldApprove === true,
+      rating: r.rating, by: optStr(r.by) || "someone", note: typeof r.note === "string" ? r.note.slice(0, 1000) : null, at: iso(r.at) || started,
+    })),
     done: raw.done === true,
     error: optStr(raw.error),
   };
 }
 
 const RISK_LEVELS = ["low", "medium", "high"] as const;
+const RATINGS: FactoryRatingValue[] = ["right", "should-have-asked", "could-have-approved"];
+/** Who approves without a person: a gate's checks ("auto") or the Approver. */
+const AUTOMATIC = ["auto", "approver"];
 const RULE_IDS: FactoryRiskRule["id"][] = ["path", "label", "security", "unknown", "files", "lines", "repos", "dependency"];
 const texts = (v: unknown, n: number, max = 1000) => (Array.isArray(v) ? v.filter((x) => typeof x === "string" && x.trim()).slice(0, n).map((x: string) => x.trim().slice(0, max)) : []);
 
@@ -358,7 +366,7 @@ export function readManifests(dir = manifestDir(), limit = MAX_MANIFESTS): { man
     if (hit.error) errors.push(hit.error);
   }
   manifests.sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
-  return { manifests: manifests.slice(0, MAX_MANIFESTS), errors };
+  return { manifests: manifests.slice(0, limit), errors };
 }
 
 // ------------------------------------------------------------------ decisions from the dashboard
@@ -408,6 +416,28 @@ export function roundGates(m: FactoryManifest): FactoryManifest["gates"] {
   return m.roundStartedAt ? m.gates.filter((g) => g.at >= m.roundStartedAt!) : m.gates;
 }
 
+const httpErr = (status: number, message: string) => Object.assign(new Error(message), { status });
+
+/**
+ * Changes a ticket's manifest under its lock: `change` gets the file's JSON (and it read as a
+ * manifest), changes the JSON or throws to refuse; the file is written back with updatedAt.
+ */
+async function updateManifest(ticket: string, dir: string, now: string, change: (raw: any, m: FactoryManifest) => void): Promise<FactoryManifest> {
+  const file = manifestFile(ticket, dir);
+  if (!file) throw httpErr(404, `${ticket} isn't in the factory.`);
+  return withLock(file, () => {
+    const raw = JSON.parse(fs.readFileSync(file, "utf-8"));
+    const m = normalizeManifest(raw);
+    if (!m) throw httpErr(404, `${ticket} isn't in the factory.`);
+    change(raw, m);
+    raw.updatedAt = now;
+    writeConfigFile(path.basename(file), raw, path.dirname(file));
+    return normalizeManifest(raw)!;
+  });
+}
+
+const appendGate = (raw: any, row: object) => { raw.gates = [...(Array.isArray(raw.gates) ? raw.gates : []), row]; };
+
 /**
  * Records a person's decision at the gate a ticket is waiting at: appended to its gates (the audit
  * trail). A rejection ends the item (done, with why). Refused when the ticket isn't waiting there;
@@ -415,28 +445,69 @@ export function roundGates(m: FactoryManifest): FactoryManifest["gates"] {
  */
 export async function recordGateDecision(ticket: string, gate: FactoryGateId, decision: "approved" | "rejected", by: string, note: string | null,
   { dir = manifestDir(), now = new Date().toISOString(), guard }: { dir?: string; now?: string; guard?: () => void } = {}): Promise<FactoryManifest> {
-  const bad = (status: number, message: string) => Object.assign(new Error(message), { status });
-  if (!GATE_IDS.includes(gate)) throw bad(400, "Unknown gate.");
-  if (decision !== "approved" && decision !== "rejected") throw bad(400, "Decide approved or rejected.");
-  const file = manifestFile(ticket, dir);
-  if (!file) throw bad(404, `${ticket} isn't in the factory.`);
-  return withLock(file, () => {
-    const raw = JSON.parse(fs.readFileSync(file, "utf-8"));
+  if (!GATE_IDS.includes(gate)) throw httpErr(400, "Unknown gate.");
+  if (decision !== "approved" && decision !== "rejected") throw httpErr(400, "Decide approved or rejected.");
+  return updateManifest(ticket, dir, now, (raw) => {
     const gates = Array.isArray(raw.gates) ? raw.gates : [];
     const last = [...gates].reverse().find((g: any) => g && g.id === gate);
-    if (raw.done) throw bad(409, `${ticket} is finished.`);
+    if (raw.done) throw httpErr(409, `${ticket} is finished.`);
     // Only the gate's latest request, in the ticket's current round, can be answered.
     const round = typeof raw.roundStartedAt === "string" ? raw.roundStartedAt : null;
-    if (!last || last.decision !== "pending" || (round && !(typeof last.at === "string" && last.at >= round))) throw bad(409, `${ticket} isn't waiting at the ${GATE_LABELS[gate].toLowerCase()}.`);
+    if (!last || last.decision !== "pending" || (round && !(typeof last.at === "string" && last.at >= round))) throw httpErr(409, `${ticket} isn't waiting at the ${GATE_LABELS[gate].toLowerCase()}.`);
     guard?.();
     const why = note && note.trim() ? note.trim().slice(0, 2000) : null;
-    gates.push({ id: gate, mode: last.mode ?? null, decision, by, risk: null, rationale: why, sha: null, at: now });
-    raw.gates = gates;
+    appendGate(raw, { id: gate, mode: last.mode ?? null, decision, by, risk: null, rationale: why, sha: null, at: now });
     if (decision === "rejected") { raw.done = true; raw.error = `${GATE_LABELS[gate]} rejected by ${by}${why ? `: ${why}` : ""}`; }
-    raw.updatedAt = now;
-    writeConfigFile(path.basename(file), raw, path.dirname(file));
-    return normalizeManifest(raw)!;
   });
+}
+
+/**
+ * The automatic approval (by the gate's checks or the Approver) a person may override: a gate
+ * whose latest row this round, pending ones included, is one. The newest such gate, or null.
+ */
+export function overridableGate(m: FactoryManifest): FactoryManifest["gates"][number] | null {
+  if (m.done) return null;
+  const last = new Map<FactoryGateId, FactoryManifest["gates"][number]>();
+  for (const g of roundGates(m)) last.set(g.id, g);
+  return [...last.values()].filter((g) => g.decision === "approved" && AUTOMATIC.includes(g.by || "")).sort((a, b) => b.at.localeCompare(a.at))[0] || null;
+}
+
+/**
+ * A person overrides an automatic approval at a gate (see overridableGate): it's recorded as their
+ * rejection, marked as an override, and the ticket stops, as any rejection does.
+ */
+export async function overrideGateDecision(ticket: string, gate: FactoryGateId, by: string, note: string | null,
+  { dir = manifestDir(), now = new Date().toISOString(), guard }: { dir?: string; now?: string; guard?: () => void } = {}): Promise<FactoryManifest> {
+  if (!GATE_IDS.includes(gate)) throw httpErr(400, "Unknown gate.");
+  const why = note && note.trim() ? note.trim().slice(0, 2000) : null;
+  if (!why) throw httpErr(400, "Say why you're overriding it: it goes in the audit log.");
+  return updateManifest(ticket, dir, now, (raw, m) => {
+    if (m.done) throw httpErr(409, `${ticket} is finished: rate the Approver's call instead.`);
+    const last = roundGates(m).filter((g) => g.id === gate).at(-1);
+    if (!last || last.decision !== "approved" || !AUTOMATIC.includes(last.by || "")) throw httpErr(409, `The ${GATE_LABELS[gate].toLowerCase()}'s latest decision isn't an automatic approval.`);
+    guard?.();
+    const what = last.by === "auto" ? "its checks'" : "the Approver's";
+    appendGate(raw, { id: gate, mode: "human", decision: "rejected", by, risk: last.risk, rationale: `Overrode ${what} approval: ${why}`, sha: last.sha, at: now, override: true });
+    raw.done = true;
+    raw.error = `${GATE_LABELS[gate]}: ${by} overrode ${what} approval: ${why}`;
+  });
+}
+
+/** A person's rating of one of the Approver's assessments (found by when it was made), appended. */
+export async function rateAssessment(ticket: string, assessmentAt: string, rating: FactoryRatingValue, by: string, note: string | null,
+  { dir = manifestDir(), now = new Date().toISOString() }: { dir?: string; now?: string } = {}): Promise<FactoryManifest> {
+  if (!RATINGS.includes(rating)) throw httpErr(400, "Rate it right, should-have-asked or could-have-approved.");
+  return updateManifest(ticket, dir, now, (raw, m) => {
+    const a = m.assessments.find((x) => x.at === assessmentAt);
+    if (!a) throw httpErr(404, "That assessment isn't there any more.");
+    raw.ratings = [...(Array.isArray(raw.ratings) ? raw.ratings : []),
+      { assessmentAt, gate: a.gate, level: a.level, wouldApprove: a.wouldApprove, rating, by, note: note && note.trim() ? note.trim().slice(0, 1000) : null, at: now }];
+  });
+}
+
+/** The newest rating of an assessment (each person's newest counts; the newest of those wins). */
+export function ratingOf(m: FactoryManifest, a: FactoryAssessment | null): FactoryRating | null {
+  return a ? m.ratings.filter((r) => r.assessmentAt === a.at).at(-1) || null : null;
 }
 
 /**
@@ -636,6 +707,7 @@ export function buildBoard(cfg: FactoryConfig, configured: boolean, manifests: F
     const gateRisk = m.gates.filter((g) => g.risk).at(-1);
     const risk = assessed ? { risk: assessed.level, rationale: assessed.rationale || assessed.reason } : gateRisk;
     const itemStepList = itemSteps(m, steps, column);
+    const overridable = overridableGate(m);
     return {
       ticket: m.ticket, title: m.title, url: m.url, column, state, reason,
       branch: m.branch, workroot: m.workroot, repos,
@@ -647,6 +719,8 @@ export function buildBoard(cfg: FactoryConfig, configured: boolean, manifests: F
       prs: m.prs,
       risk: risk ? { level: risk.risk!, rationale: risk.rationale } : null,
       approver: assessed,
+      approverRating: ratingOf(m, assessed),
+      overridable: overridable ? { gate: overridable.id, by: overridable.by!, at: overridable.at } : null,
       runIds: mine.map((r) => r.id),
       askingRunId: (mine.find((r) => r.status === "waiting" && r.implement) || mine.find((r) => r.status === "waiting"))?.id ?? null,
       implementLive: mine.some((r) => r.implement && (r.status === "running" || r.status === "waiting")),
@@ -664,5 +738,28 @@ export function buildBoard(cfg: FactoryConfig, configured: boolean, manifests: F
     wip: { inFlight: items.filter((i) => i.column !== "done" && i.column !== "queued").length, limit: cfg.limits.wip },
     errors,
     canDecide,
+    approverStats: approverStats(manifests),
   };
+}
+
+/**
+ * How the Approver's calls have held up: per ticket and round, its newest assessment, judged by
+ * the newest rating of it, or by a person overriding an automatic approval after it (too lenient).
+ */
+export function approverStats(manifests: FactoryManifest[]): FactoryBoard["approverStats"] {
+  let assessed = 0, judged = 0, tooLenient = 0, tooStrict = 0;
+  for (const m of manifests) {
+    const a = m.assessments.filter((x) => !m.roundStartedAt || x.at >= m.roundStartedAt).at(-1);
+    if (!a) continue;
+    assessed++;
+    const r = ratingOf(m, a);
+    // An override counts against it only when it reversed this gate's Approver approval.
+    const overridden = m.gates.some((g, i) => g.override && g.id === a.gate && g.at >= a.at
+      && m.gates.slice(0, i).filter((x) => x.id === g.id).at(-1)?.by === "approver");
+    if (!r && !overridden) continue;
+    judged++;
+    if (r ? r.rating === "should-have-asked" : overridden) tooLenient++;
+    else if (r && r.rating === "could-have-approved") tooStrict++;
+  }
+  return { assessed, judged, tooLenient, tooStrict };
 }

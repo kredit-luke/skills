@@ -110,6 +110,27 @@ export function summaryPrompt(pr: { repo: string; title: string; body: string; f
   ].join("\n");
 }
 
+/**
+ * The prompt for "Ask agent to change this": the reviewer's comment is the request (theirs, from
+ * the page), on one line of the PR; the run makes it on the PR's branch, pushes, and replies.
+ */
+export function askChangePrompt(c: { url: string; branch: string; sha: string; path: string; line: number; body: string; commentUrl: string | null; onLine?: boolean; workroot: string | null; ticket: string | null }): string {
+  const where = c.onLine === false
+    ? `in the review${c.commentUrl ? ` (${c.commentUrl})` : ""}: that line isn't in the diff, so the request is in the review's text`
+    : `on the review comment${c.commentUrl ? ` (in ${c.commentUrl})` : ""}`;
+  return [
+    `A reviewer asked for a change on ${c.url} (branch ${c.branch}), at ${c.path}:${c.line} as of commit ${c.sha.slice(0, 7)}:`,
+    "",
+    ...c.body.split("\n").map((l) => `> ${l}`),
+    "",
+    c.workroot
+      ? `It's factory ticket ${c.ticket}'s PR; its work is in ${c.workroot}. Make the change there, on ${c.branch}.`
+      : `Make the change on ${c.branch}: in its worktree if there is one, else check it out in a new one (/multirepo:worktree), never in the main checkout.`,
+    "Pull the branch first (it may have moved). Change only what was asked, and what it needs to stay correct; run the repo's tests.",
+    `Then commit, push, and reply ${where}, saying what changed, with the commit. If the request is unclear or would be wrong to make, don't change anything: reply there explaining why, and stop.`,
+  ].join("\n");
+}
+
 /** The model's answer as a one-paragraph summary (whitespace folded, quotes and labels it may add dropped). */
 export function cleanSummary(text: string): string {
   let s = String(text || "").replace(/\s+/g, " ").trim();
@@ -333,6 +354,12 @@ export class Reviews {
     this.summaries.set(key, entry);
     this.save();
     return { text, sha: entry.sha, at: entry.at };
+  }
+
+  /** The PR's address and branch. */
+  async head(repo: string, number: number): Promise<{ url: string; branch: string; sha: string }> {
+    const d = await this.view(repo, number, "url,headRefName,headRefOid");
+    return { url: d.url, branch: d.headRefName, sha: d.headRefOid };
   }
 
   /** The PR's diff as files and numbered hunks, for its current head commit. */

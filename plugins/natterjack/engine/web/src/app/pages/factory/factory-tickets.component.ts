@@ -1,7 +1,9 @@
 import { ChangeDetectionStrategy, Component, DestroyRef, effect, inject, input, signal } from '@angular/core';
 import { RouterLink } from '@angular/router';
 import { FormsModule } from '@angular/forms';
-import type { FactoryGateResult, FactoryItem, FactoryItemStep, FactoryStepState, FactoryStepStatus } from '../../../../../shared/api';
+import type { FactoryGateResult, FactoryItem, FactoryItemStep, FactoryRatingValue, FactoryStepState, FactoryStepStatus } from '../../../../../shared/api';
+
+const RATING_WORDS: Record<FactoryRatingValue, string> = { right: 'right', 'should-have-asked': 'should have asked a person', 'could-have-approved': 'could have approved' };
 import { ApiService } from '../../core/api.service';
 import { ToastService } from '../../core/toast.service';
 import { relTime } from '../../core/util';
@@ -129,7 +131,27 @@ const STATE: Record<FactoryItem['state'], { label: string; cls: string }> = {
                     <p class="faint">Not approved without a person because</p>
                     <ul>@for (b of a.blockers; track $index) { <li>{{ b }}</li> }</ul>
                   } @else if (a.sampled) { <p class="faint">Every condition was met; it was sampled for a person anyway.</p> }
+                  <div class="rate">
+                    @if (it.approverRating; as r) {
+                      <span class="faint">Rated by {{ r.by }}: <b>{{ ratingWord(r.rating) }}</b>{{ r.note ? ' (' + r.note + ')' : '' }}</span>
+                    } @else { <span class="faint">Was this call right?</span> }
+                    @if (canDecide()) {
+                      <button class="linkish" type="button" (click)="rate(it, 'right')" [disabled]="busy() === it.ticket">Right</button>
+                      <button class="linkish" type="button" (click)="rate(it, 'should-have-asked')" [disabled]="busy() === it.ticket" title="It let through something a person should have seen">Should have asked a person</button>
+                      <button class="linkish" type="button" (click)="rate(it, 'could-have-approved')" [disabled]="busy() === it.ticket" title="It sent something safe to a person">Could have approved</button>
+                    }
+                  </div>
                 </section>
+              }
+              @if (it.overridable; as o) {
+                @if (canDecide() && !it.implementLive) {
+                  <section class="specd ovr">
+                    <h3>Override</h3>
+                    <p class="faint">The {{ gateName(o.gate) }} gate was approved by {{ o.by === 'auto' ? 'its checks' : 'the Approver' }} {{ rel(o.at) }}. Overriding it records your rejection in its history and stops the ticket.</p>
+                    <textarea rows="2" [ngModel]="notes()[it.ticket] || ''" (ngModelChange)="setNote(it.ticket, $event)" placeholder="Why (required: it goes in the audit log)" aria-label="Why you're overriding it"></textarea>
+                    <div class="btns"><button class="btn danger sm" type="button" (click)="override(it)" [disabled]="busy() === it.ticket || !(notes()[it.ticket] || '').trim()">Override and stop</button></div>
+                  </section>
+                }
               }
               <table>
                 <thead><tr><th>Step</th><th>State</th><th>Started</th><th>Took</th><th>What happened</th></tr></thead>
@@ -211,6 +233,9 @@ const STATE: Record<FactoryItem['state'], { label: string; cls: string }> = {
     .specd h3 .faint { font-weight: 400; font-size: 12px; }
     .apd p { margin: 4px 0; font-size: 12.5px; }
     .apd ul + p { margin-top: 8px; }
+    .apd .rate { display: flex; flex-wrap: wrap; gap: 4px 12px; align-items: baseline; margin-top: 8px; font-size: 12.5px; }
+    .ovr textarea { width: 100%; box-sizing: border-box; font: inherit; font-size: 12.5px; }
+    .ovr .btns { margin-top: 6px; }
     .specd ul { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 3px; font-size: 12.5px; }
     .specd li { display: flex; flex-wrap: wrap; gap: 0 6px; align-items: baseline; }
     .line { display: flex; flex-wrap: wrap; align-items: baseline; gap: 0 5px; }
@@ -284,6 +309,34 @@ export class FactoryTicketsComponent {
       this.busy.set(null);
     }
   }
+
+  /** A person's verdict on the Approver's latest call (what its override rate is made of). */
+  async rate(it: FactoryItem, rating: FactoryRatingValue): Promise<void> {
+    const a = it.approver;
+    if (!a) return;
+    this.busy.set(it.ticket);
+    try {
+      await this.api.post('/api/factory/rate', { ticket: it.ticket, assessmentAt: a.at, rating });
+      this.toast.show(`Thanks: rated the Approver's call on ${it.ticket}.`);
+    } catch (e) { this.toast.error((e as Error).message); }
+    finally { this.busy.set(null); }
+  }
+
+  /** Overrides an automatic approval: recorded as this person's rejection, with why; the ticket stops. */
+  async override(it: FactoryItem): Promise<void> {
+    const o = it.overridable;
+    const note = (this.notes()[it.ticket] || '').trim();
+    if (!o || !note) return;
+    this.busy.set(it.ticket);
+    try {
+      await this.api.post<FactoryGateResult>('/api/factory/gate', { ticket: it.ticket, gate: o.gate, override: true, note });
+      this.setNote(it.ticket, '');
+      this.toast.show(`Overrode the ${gateName(o.gate)} gate on ${it.ticket}; it's stopped.`);
+    } catch (e) { this.toast.error((e as Error).message); }
+    finally { this.busy.set(null); }
+  }
+
+  ratingWord(r: FactoryRatingValue): string { return RATING_WORDS[r]; }
 
   toggle(ticket: string): void {
     this.open.update((s) => { const n = new Set(s); n.has(ticket) ? n.delete(ticket) : n.add(ticket); return n; });

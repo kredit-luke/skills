@@ -41,8 +41,8 @@ for (const key of CLAUDE_SESSION_ENV) delete process.env[key];
 import { RunManager, httpError, runLabel } from "./runs.ts";
 import { Deck, Scheduler } from "./deck.ts";
 import { Inbox } from "./inbox.ts";
-import { Reviews, numberParam, repoParam } from "./reviews.ts";
-import { type FactoryRun, buildBoard, factoryConfigState, factoryLaunchBlocker, manifestFile, normalizeManifest, readManifests, readPlan, recordGateDecision, saveFactoryConfig } from "./factory.ts";
+import { Reviews, askChangePrompt, numberParam, repoParam } from "./reviews.ts";
+import { type FactoryRun, buildBoard, factoryConfigState, factoryLaunchBlocker, manifestFile, normalizeManifest, overrideGateDecision, rateAssessment, readManifests, readPlan, recordGateDecision, saveFactoryConfig } from "./factory.ts";
 import { Watcher } from "./watches.ts";
 import { Usage } from "./usage.ts";
 import { UsageHistory } from "./usage-history.ts";
@@ -408,6 +408,10 @@ function factoryTicketParam(v: unknown): string | null {
 
 /** Tickets whose gate decision is being recorded (one at a time per ticket). */
 const deciding = new Set<string>();
+
+/** PRs ("owner/name#n") an "Ask agent to change this" is posting for, and the run each last started: one writer per branch. */
+const changing = new Set<string>();
+const changeRuns = new Map<string, string>();
 
 /** `/implement X` or a plugin's `/multirepo:implement X` (not Explain: that only reads). */
 const IMPLEMENT_PROMPT = /^\/(?:[\w.-]+:)?implement\s+\S/;
@@ -1664,10 +1668,12 @@ async function handleApi(req: http.IncomingMessage, res: http.ServerResponse, ur
       if (!repo || !number) return sendError(res, 400, "Invalid pull request");
       return sendJson(res, await reviews.detail(repo, number));
     }
-    if (p === "/api/reviews/diff" || p === "/api/reviews/guide" || p === "/api/reviews/security" || p === "/api/reviews/agent") {
+    if (p === "/api/reviews/diff" || p === "/api/reviews/guide" || p === "/api/reviews/security" || p === "/api/reviews/agent" || p === "/api/reviews/head") {
       const repo = repoParam(q("repo"));
       const number = numberParam(q("number"));
       if (!repo || !number) return sendError(res, 400, "Invalid pull request");
+      // The guided review's check for new commits: one small read.
+      if (p === "/api/reviews/head") return sendJson(res, await reviews.head(repo, number));
       if (p === "/api/reviews/diff") return sendJson(res, await reviews.diff(repo, number));
       if (p === "/api/reviews/agent") return sendJson(res, await reviews.savedAgentReview(repo, number, isAgentId(q("agent")) ? (q("agent") as AgentId) : null));
       return sendJson(res, p === "/api/reviews/guide" ? await reviews.savedGuide(repo, number) : await reviews.savedSecurity(repo, number));
@@ -2166,7 +2172,14 @@ async function handleApi(req: http.IncomingMessage, res: http.ServerResponse, ur
     try {
       refuseIfGoing();
       const by = person(user);
-      const m = await recordGateDecision(ticket, body.gate, body.decision, by, typeof body.note === "string" ? body.note : null, { guard: refuseIfGoing });
+      const note = typeof body.note === "string" ? body.note : null;
+      // Overriding an automatic approval: recorded as this person's rejection; nothing carries on.
+      if (body.override === true) {
+        await overrideGateDecision(ticket, body.gate, by, note, { guard: refuseIfGoing });
+        live.refresh("factory");
+        return sendJson(res, { by, run: null, launchError: null });
+      }
+      const m = await recordGateDecision(ticket, body.gate, body.decision, by, note, { guard: refuseIfGoing });
       let run = null, launchError = null;
       // The merge gate is decided on the code host: approving records it, it never starts a run.
       if (body.decision === "approved" && body.resume !== false && body.gate !== "merge") {
@@ -2180,6 +2193,16 @@ async function handleApi(req: http.IncomingMessage, res: http.ServerResponse, ur
     } finally {
       deciding.delete(key);
     }
+  }
+  if (p === "/api/factory/rate") {
+    // A person's verdict on one of the Approver's calls: what its override rate is made of.
+    if (isReader()) return sendError(res, 403, "Rating the Approver needs full access; yours is read-only (Settings → Access).");
+    const ticket = factoryTicketParam(body.ticket);
+    if (!ticket) return sendError(res, 400, "Invalid ticket id");
+    if (typeof body.assessmentAt !== "string") return sendError(res, 400, "Which assessment is missing.");
+    await rateAssessment(ticket, body.assessmentAt, body.rating, person(user), typeof body.note === "string" ? body.note : null);
+    live.refresh("factory");
+    return sendJson(res, { ok: true });
   }
   if (p === "/api/factory/config") {
     // factory.json is the team's policy for agent work: full access only.
@@ -2195,6 +2218,51 @@ async function handleApi(req: http.IncomingMessage, res: http.ServerResponse, ur
     if (!repo || !number) return sendError(res, 400, "Invalid pull request");
     if (!["squash", "merge", "rebase"].includes(body.method)) return sendError(res, 400, "Unknown merge method");
     return sendJson(res, await reviews.merge(repo, number, body.method, String(body.sha ?? "")));
+  }
+  if (p === "/api/reviews/ask-change") {
+    // "Ask agent to change this": the comment goes on the PR as the person, then a run makes the change on its branch.
+    if (isReader()) return sendError(res, 403, "Asking an agent for a change needs full access; yours is read-only (Settings → Access).");
+    const repo = repoParam(body.repo);
+    const number = numberParam(body.number);
+    if (!repo || !number) return sendError(res, 400, "Invalid pull request");
+    const text = String(body.body ?? "").trim();
+    const line = Number(body.line);
+    if (!text) return sendError(res, 400, "Say what to change.");
+    if (typeof body.path !== "string" || !body.path || !Number.isInteger(line) || line < 1) return sendError(res, 400, "Which line is missing.");
+    // Everything that could refuse comes before posting, so a refusal never leaves a comment without its run.
+    // One writer per PR: an earlier change run for it that's still going, or a request in flight, refuses this one.
+    const key = `${repo}#${number}`.toLowerCase();
+    const earlier = changeRuns.get(key);
+    const earlierRun = earlier ? factoryRuns().find((r) => r.id === earlier) : null;
+    if (changing.has(key) || (earlierRun && (earlierRun.status === "running" || earlierRun.status === "waiting")))
+      return sendError(res, 409, `An agent is already making a change on ${repo}#${number}: wait for it (Activity), then ask again.`);
+    const agentId = deck.config().defaults.agent ?? "claude";
+    const blocked = launchBlocker(agentId, agentId === "claude" ? deck.config().defaults.model : null);
+    if (blocked) return sendError(res, 429, blocked);
+    changing.add(key);
+    try {
+      const head = await reviews.head(repo, number);
+      const same = (u: string) => u.replace(/\/+$/, "").toLowerCase();
+      // A factory ticket's PR (any ticket, not only the newest): its work folder and ticket, so the change lands where the work is.
+      const item = readManifests(undefined, Infinity).manifests.find((m) => m.prs.some((x) => same(x.url) === same(head.url)));
+      if (item) {
+        // Its own run may be pushing to the same branch right now: two agents on one branch collide.
+        const going = factoryRuns().find((r) => r.implement && r.ticket && r.ticket.toLowerCase() === item.ticket.toLowerCase() && (r.status === "running" || r.status === "waiting"));
+        if (going) return sendError(res, 409, `${item.ticket}'s implement run is still going on this branch: ask it there (Activity), or wait for it to finish.`);
+      }
+      const posted = await reviews.submit({ repo, number, event: "COMMENT", body: "", sha: String(body.sha ?? ""), comments: [{ path: body.path, line, body: text }] });
+      // A line that isn't in the diff went into the review's text instead: the run is told so.
+      const onLine = posted.comments === 1;
+      let run = null, launchError = null;
+      try {
+        run = launchRun({
+          prompt: askChangePrompt({ url: head.url, branch: head.branch, sha: String(body.sha), path: body.path, line, body: text, commentUrl: posted.url, onLine, workroot: item?.workroot ?? null, ticket: item?.ticket ?? null }),
+          label: `Change on ${repo}#${number}`,
+        }, "review");
+      } catch (e) { launchError = (e as Error).message; }
+      if (run) changeRuns.set(key, run.id);
+      return sendJson(res, { posted, run, launchError });
+    } finally { changing.delete(key); }
   }
   if (p === "/api/reviews/submit") {
     // Posts to GitHub as the person: only ever from their click on the Reviews page.

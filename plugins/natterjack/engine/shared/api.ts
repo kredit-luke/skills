@@ -882,6 +882,14 @@ export interface FactoryAssessment {
   at: string;
 }
 
+/**
+ * A person's verdict on an assessment: right, should have asked (it let through something a person
+ * should see), or could have approved (it sent something safe to a person).
+ * POST /api/factory/rate { ticket, assessmentAt, rating, note? }.
+ */
+export type FactoryRatingValue = 'right' | 'should-have-asked' | 'could-have-approved';
+export interface FactoryRating { assessmentAt: string; gate: FactoryGateId; level: 'low' | 'medium' | 'high'; wouldApprove: boolean; rating: FactoryRatingValue; by: string; note: string | null; at: string }
+
 export interface FactoryConfigState {
   config: FactoryConfig;
   /** factory.json exists (else these are the defaults and the factory is off). */
@@ -953,10 +961,12 @@ export interface FactoryManifest {
   /** Spec readiness, scored when the pipeline read the ticket. */
   spec: FactorySpec | null;
   stages: { id: FactoryStageId; repo: string | null; agent: string | null; status: FactoryStepStatus; startedAt: string | null; endedAt: string | null; note: string | null }[];
-  gates: { id: FactoryGateId; mode: FactoryGateMode | null; decision: 'pending' | 'approved' | 'rejected'; by: string | null; risk: 'low' | 'medium' | 'high' | null; rationale: string | null; sha: string | null; at: string }[];
+  gates: { id: FactoryGateId; mode: FactoryGateMode | null; decision: 'pending' | 'approved' | 'rejected'; by: string | null; risk: 'low' | 'medium' | 'high' | null; rationale: string | null; sha: string | null; at: string; override?: boolean }[];
   prs: { repo: string | null; url: string; number: number | null; state: 'open' | 'merged' | 'closed' | null }[];
   /** The Approver's assessments, oldest first (part of the audit log). */
   assessments: FactoryAssessment[];
+  /** People's ratings of the Approver's assessments, oldest first. */
+  ratings: FactoryRating[];
   /** The pipeline finished (or was abandoned) for this item. */
   done: boolean;
   error: string | null;
@@ -988,8 +998,11 @@ export interface FactoryItem {
   prs: FactoryManifest['prs'];
   /** The newest risk rating (the Approver's, else a gate decision's), if any. */
   risk: { level: 'low' | 'medium' | 'high'; rationale: string | null } | null;
-  /** The Approver's newest assessment this round, if any. */
+  /** The Approver's newest assessment this round, if any, with the newest rating of it. */
   approver: FactoryAssessment | null;
+  approverRating: FactoryRating | null;
+  /** An automatic approval this round (by its checks or the Approver) a person may override, if any. */
+  overridable: { gate: FactoryGateId; by: string; at: string } | null;
   /** Runs for this ticket, newest first. */
   runIds: string[];
   /** A run of this ticket waiting on an answer (an implement run first), or null. */
@@ -1056,6 +1069,11 @@ export interface FactoryBoard {
   errors: string[];
   /** The person may decide gates here (full access). */
   canDecide: boolean;
+  /**
+   * How the Approver's calls have held up (its newest assessment per ticket and round): judged by a
+   * person (rated, or an automatic approval overridden), and of those, too lenient or too strict.
+   */
+  approverStats: { assessed: number; judged: number; tooLenient: number; tooStrict: number };
 }
 
 // ---------------------------------------------------------------- apps / workspaces

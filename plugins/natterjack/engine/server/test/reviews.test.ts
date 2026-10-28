@@ -5,7 +5,7 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { CAPS, Reviews, cleanSummary, numberParam, repoParam, summaryPrompt } from "../src/reviews.ts";
+import { CAPS, Reviews, askChangePrompt, cleanSummary, numberParam, repoParam, summaryPrompt } from "../src/reviews.ts";
 
 const TMP = fs.mkdtempSync(path.join(os.tmpdir(), "reviews-"));
 let n = 0;
@@ -179,4 +179,16 @@ test("merge uses an allowed method and only merges the reviewed commit", async (
   await assert.rejects(r.merge("acme/api", 1, "squash", "abc1234"), (e: any) => e.status === 409 && /Merge queued/.test(e.message));
   await assert.rejects(r.merge("acme/api", 1, "merge", "abc1234"), /doesn't allow merge commits/);
   await assert.rejects(r.merge("acme/api", 1, "squash", "; rm -rf"), /Which commit/);
+});
+
+test("askChangePrompt: the reviewer's request on its line, where to make it, and what to do when it's wrong", () => {
+  const base = { url: "https://github.com/acme/api/pull/7", branch: "feat/x", sha: "abcdef123456", path: "src/a.ts", line: 12, body: "Rename this\nand add a test", commentUrl: "https://github.com/acme/api/pull/7#discussion_r1" };
+  const p = askChangePrompt({ ...base, workroot: "/w/worktrees/eng-7", ticket: "ENG-7" });
+  assert.match(p, /at src\/a\.ts:12 as of commit abcdef1/);
+  assert.match(p, /> Rename this\n> and add a test/);
+  assert.match(p, /factory ticket ENG-7's PR; its work is in \/w\/worktrees\/eng-7/);
+  assert.match(p, /reply on the review comment \(in https:\/\/github\.com\/acme\/api\/pull\/7#discussion_r1\)/);
+  assert.match(p, /don't change anything: reply there explaining why/);
+  assert.match(askChangePrompt({ ...base, onLine: false, workroot: null, ticket: null }), /reply in the review \(https:[^)]*\): that line isn't in the diff/);
+  assert.match(askChangePrompt({ ...base, workroot: null, ticket: null, commentUrl: null }), /never in the main checkout/);
 });

@@ -34,7 +34,7 @@ const STATE: Record<FactoryItem['state'], { label: string; cls: string }> = {
   changeDetection: ChangeDetectionStrategy.OnPush,
   template: `
     <dash-page-header eyebrow="Agents" title="Factory" [sub]="api.copy('factorySub', 'Agent work from ticket to merged PR, one card per ticket.')">
-      @if (board(); as b) { <span class="ty">{{ b.wip.inFlight }} of {{ b.wip.limit }} in flight{{ b.preset ? ' · ' + b.preset : '' }}</span> }
+      @if (board(); as b) { <span class="ty">{{ b.wip.inFlight }} of {{ b.wip.limit }} in flight{{ b.preset ? ' · ' + b.preset : '' }}@if (b.approverStats.judged) { · <span [title]="b.approverStats.judged + ' of ' + b.approverStats.assessed + ' Approver calls judged by a person: ' + b.approverStats.tooLenient + ' too lenient, ' + b.approverStats.tooStrict + ' too strict'">Approver wrong {{ wrongRate(b.approverStats) }}</span> }</span> }
       <div class="seg" role="group" aria-label="View">
         <button type="button" [class.on]="view() === 'tickets'" [attr.aria-pressed]="view() === 'tickets'" (click)="setView('tickets')">Tickets</button>
         <button type="button" [class.on]="view() === 'board'" [attr.aria-pressed]="view() === 'board'" (click)="setView('board')">Board</button>
@@ -181,5 +181,10 @@ export class FactoryComponent implements OnInit {
   mark(s: FactoryStepStatus): string { return MARK[s]; }
   level = specLevel;
   guideLink = guideLink;
+  /** Of the Approver's calls a person judged, the share they said were wrong (too lenient matters most). */
+  wrongRate(s: { judged: number; tooLenient: number; tooStrict: number }): string {
+    const wrong = s.tooLenient + s.tooStrict;
+    return `${Math.round((wrong / s.judged) * 100)}% (${wrong}/${s.judged}${s.tooLenient ? `, ${s.tooLenient} too lenient` : ''})`;
+  }
   rel(t: string): string { return relTime(t); }
 }
