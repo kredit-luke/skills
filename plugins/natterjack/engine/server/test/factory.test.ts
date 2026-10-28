@@ -639,8 +639,10 @@ test("a read-only viewer sees only a webhook's host; a stage that failed twice a
 });
 
 // validate.mjs keeps its own copy of the notice events (it runs without the engine): they must agree.
-test("validate.mjs knows every notice event", () => {
-  const src = fs.readFileSync(path.join(import.meta.dirname, "..", "..", "..", "scripts", "validate.mjs"), "utf-8");
+test("validate.mjs knows every notice event", (t) => {
+  const script = path.join(import.meta.dirname, "..", "..", "..", "scripts", "validate.mjs");
+  if (!fs.existsSync(script)) return t.skip("no plugin scripts next to this engine");
+  const src = fs.readFileSync(script, "utf-8");
   const list = /const NOTICE_EVENTS = (\[[^\]]*\])/.exec(src);
   assert.ok(list, "validate.mjs has its NOTICE_EVENTS");
   assert.deepEqual(JSON.parse(list![1]), NOTICE_EVENTS);
