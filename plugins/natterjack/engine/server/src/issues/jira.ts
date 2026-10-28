@@ -226,6 +226,8 @@ class JiraTracker implements IssueTracker {
     this.credKey = key;
     this.viewer = null;
     this.cache = null;
+    // The field list depends on the caller's permissions, so the next person looks it up again.
+    this.flagField = undefined;
   }
 
   _get(cred: string | AtlassianCred, pathAndQuery: string, body?: object, method?: "PUT"): Promise<any> {
@@ -262,15 +264,19 @@ class JiraTracker implements IssueTracker {
   }
 
   /**
-   * The id of the field Jira's "Add flag" sets, read once from the site's field list. A failed
-   * lookup isn't kept, so the next refresh tries again; meanwhile no card shows as flagged.
+   * The id of the field Jira's "Add flag" sets, read once per credential from the field list. A
+   * failed lookup isn't kept, so the next refresh tries again; meanwhile no card shows as flagged.
    */
   async _flagField(cred: AtlassianCred): Promise<string | null> {
     if (this.flagField !== undefined) return this.flagField;
+    const asKey = this.credKey;
     try {
       const fields = await this._get(cred, "/rest/api/3/field");
       const f = Array.isArray(fields) ? fields.find((x) => x && x.custom && String(x.name).toLowerCase() === "flagged") : null;
-      return (this.flagField = f ? String(f.id) : null);
+      const id = f ? String(f.id) : null;
+      // Read as someone else (the credential changed meanwhile): don't keep it for the new one.
+      if (this.credKey === asKey) this.flagField = id;
+      return id;
     } catch { return null; }
   }
 

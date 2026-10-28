@@ -159,6 +159,23 @@ test("jira: the Flagged field is found by name, asked for on the board, and mark
   await none.issues(ALL, true);
   assert.equal((await none.issues(ALL, true)).issues[0].flagged, false);
   assert.equal(lookups, 1);
+
+  // Another person's key: the field list depends on their permissions, so it's read again.
+  fs.writeFileSync(path.join(ledger, "jira-api-token"), "you@acme.com:jira-token-456");
+  await none.issues(ALL, true);
+  assert.equal(lookups, 2);
+
+  // A lookup that finishes after the key changed isn't kept for the new key.
+  const racing = new JiraTracker(ledger, { kind: "jira", site: "acme.atlassian.net", projects: [] } as any);
+  racing.docsSources = () => undefined;
+  const cred = racing._auth()!;
+  (racing as any)._get = async () => {
+    fs.writeFileSync(path.join(ledger, "jira-api-token"), "them@acme.com:jira-token-789");
+    racing._auth();
+    return [{ id: "customfield_10021", name: "Flagged", custom: true }];
+  };
+  assert.equal(await racing._flagField(cred), "customfield_10021");
+  assert.equal(racing.flagField, undefined);
 });
 
 test("jira: an issue's epic is its parent one level up; a sub-task's story parent isn't an epic", () => {
