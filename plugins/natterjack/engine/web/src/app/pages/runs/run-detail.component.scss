@@ -1,5 +1,16 @@
-.detail { overflow: visible; display: flex; flex-direction: column; }
-.detail-h { padding: 1rem 1.1rem; border-bottom: 1px solid var(--border-strong); display: flex; flex-direction: column; gap: 0.6rem; }
+.detail { overflow: visible; display: flex; flex-direction: column;
+  /* The feed (transcript or tab) fills the window between the sticky top block and the composer, so
+     once the page has scrolled the run into view nothing sits under the top block. The heights come
+     from run-detail.component.ts (a ResizeObserver; the fallbacks are typical ones), and 64px is the
+     page's bottom padding (.wrap) plus the panel's borders (FEED_SLACK_PX there). dvh: the window as it
+     is now, with a tablet's toolbar showing. */
+  --feed-max-h: calc(100dvh - var(--run-top-h, 380px) - var(--composer-h, 200px) - 64px); }
+/* Header, subagents, ticket and tabs stay at the top of the window as the page scrolls, like the
+   History column beside them, when the window has room for it (.fits, run-detail.component.ts); .detail
+   is its containing block (overflow: visible above). Each part has its own background, so the feed
+   doesn't show through as it scrolls under. */
+.fits > .run-top { position: sticky; top: 0; z-index: 3; }
+.detail-h { padding: 1rem 1.1rem; border-bottom: 1px solid var(--border-strong); display: flex; flex-direction: column; gap: 0.6rem; background: var(--surface); border-radius: calc(var(--radius) - 1px) calc(var(--radius) - 1px) 0 0; }
 .detail-h .ttl { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
 .detail-h .name { font-family: var(--font-display); font-size: 20px; font-weight: 800; letter-spacing: var(--ls-display); }
 .rename-btn { opacity: .55; padding: 2px 7px; }
@@ -35,7 +46,7 @@
 .strip-more { border: 1px dashed var(--border-strong); background: transparent; border-radius: var(--r-pill); padding: 2px 9px; font-size: 11.5px; color: var(--brand-700); cursor: pointer; }
 .strip-more:hover { border-color: var(--brand-700); background: #fff; }
 
-.transcript { background: var(--paper); padding: 1rem 1.1rem 1.1rem; display: flex; flex-direction: column; gap: 0.45rem; max-height: calc(100vh - 420px); min-height: 220px; overflow-y: auto; }
+.transcript { background: var(--paper); padding: 1rem 1.1rem 1.1rem; display: flex; flex-direction: column; gap: 0.45rem; max-height: var(--feed-max-h); min-height: 220px; overflow-y: auto; }
 .ev { font-size: 0.78rem; line-height: 1.5; }
 .ev.text { color: var(--text); padding: 0.1rem 0; overflow-wrap: anywhere; }
 .ev.sys { font-size: 0.68rem; color: var(--text-faint); font-family: var(--mono); }
@@ -84,7 +95,7 @@
 .tabs button.on { color: var(--brand-800); font-weight: 600; border-bottom-color: var(--ok); }
 .tabs .n { font-family: var(--font-mono); font-size: 10.5px; background: var(--purple-bg); color: var(--brand-800); border-radius: 99px; padding: 0 6px; }
 .tabs .n.up { background: var(--green-bg); color: var(--green); }
-.tab-body { display: block; background: var(--paper); max-height: calc(100vh - 420px); min-height: 220px; overflow-y: auto; }
+.tab-body { display: block; background: var(--paper); max-height: var(--feed-max-h); min-height: 220px; overflow-y: auto; }
 .issue-tab { padding: 1rem 1.1rem; display: flex; flex-direction: column; gap: 12px; }
 
 .ticket-strip { display: flex; align-items: center; gap: 10px; padding: 10px 1.1rem 4px; background: #fff; font-size: 13px; min-width: 0; }
@@ -131,10 +142,9 @@
    600px = SMALL_SCREEN in core/small-screen.ts. */
 @media (max-width: 600px) {
   /* The composer's children sit directly in .detail here (run-composer.component.scss): paper behind
-     them as on desktop, with the header kept white (its corners rounded like the panel's) and a rule
-     where the feed ends. */
+     them as on desktop, with the header kept white (as on desktop) and a rule where the feed ends. */
   .detail { background: var(--paper); }
-  .detail-h { padding: 0.8rem 0.8rem; background: var(--surface); border-radius: calc(var(--radius) - 1px) calc(var(--radius) - 1px) 0 0; }
+  .detail-h { padding: 0.8rem 0.8rem; }
   .transcript, .tab-body, dash-run-changes { border-bottom: 1px solid var(--border); }
   dash-run-changes { display: block; } /* an inline host would draw the rule under its last line box only */
   .detail-h .name { font-size: 17px; overflow-wrap: anywhere; min-width: 0; }

@@ -31,6 +31,9 @@ type Tab = 'issue' | 'transcript' | 'changes' | 'apps';
 type IssueLookup = { detail: IssueDetail } | { error: string };
 
 const STICK_PX = 80;
+/** run-detail.component.scss: the feed's min-height, and what --feed-max-h leaves below the composer. */
+const FEED_MIN_PX = 220;
+const FEED_SLACK_PX = 64;
 /** Statuses a run can be sent to the hosted dashboard from: between turns (as the server checks). */
 const SENDABLE = new Set(BETWEEN_TURNS);
 /** Shared by every run page, so it outlives leaving Activity. */
@@ -78,6 +81,8 @@ export class RunDetailComponent implements OnDestroy {
   readonly renaming = signal(false);
 
   private readonly box = viewChild<ElementRef<HTMLElement>>('transcript');
+  private readonly top = viewChild<ElementRef<HTMLElement>>('top');
+  private readonly composer = viewChild(RunComposerComponent, { read: ElementRef });
   private readonly titleInput = viewChild<ElementRef<HTMLInputElement>>('titleInput');
   private es: EventSource | null = null;
   /** This run's stream has connected at least once (its replay carries the events). */
@@ -232,6 +237,31 @@ export class RunDetailComponent implements OnDestroy {
     effect(() => {
       const t = this.ticket();
       if (t) untracked(() => this.loadIssue(t.id));
+    });
+    // The sticky top block and the composer change height (prompt, notes, questions, an open strip):
+    // their heights go to CSS, so the transcript box fits between them and nothing hides under the top.
+    // The top only sticks (.fits) when that leaves the feed its minimum: in a short window, or on a
+    // phone (the page scrolls the whole run), a stuck header would cover the transcript or the composer.
+    effect((onCleanup) => {
+      const top = this.top()?.nativeElement;
+      const composer = this.composer()?.nativeElement as HTMLElement | undefined;
+      const detail = top?.parentElement;
+      if (!top || !detail) return;
+      const set = () => {
+        const topH = top.offsetHeight, composerH = composer?.offsetHeight ?? 0;
+        detail.style.setProperty('--run-top-h', topH + 'px');
+        detail.style.setProperty('--composer-h', composerH + 'px');
+        detail.classList.toggle('fits', !this.small() && topH + composerH + FEED_SLACK_PX + FEED_MIN_PX <= window.innerHeight);
+        // A shrinking box keeps its scrollTop and fires no scroll event: stay on the newest output.
+        const box = this.box()?.nativeElement;
+        if (box && this.stick && getComputedStyle(box).overflowY !== 'visible') box.scrollTop = box.scrollHeight;
+      };
+      set();
+      const ro = new ResizeObserver(set);
+      ro.observe(top);
+      if (composer) ro.observe(composer);
+      window.addEventListener('resize', set);
+      onCleanup(() => { ro.disconnect(); window.removeEventListener('resize', set); });
     });
   }
 
