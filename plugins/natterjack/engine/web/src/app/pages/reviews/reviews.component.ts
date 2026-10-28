@@ -79,6 +79,7 @@ const SUMMARY_ROWS = 40;
                       @if (p.mine) { <span class="tag">Yours</span> }
                       @if (p.isDraft) { <span class="tag">Draft</span> }
                       @if (p.authorIsBot) { <span class="tag agent">Bot</span> }
+                      @if (p.approvedBy.length) { <span class="tag good">Approved</span> <span>by {{ p.approvedBy.join(', ') }}</span> }
                     </span>
                     <span class="sum" [class.wait]="!summaryOf(p)">
                       @if (summaryOf(p); as s) { {{ s.text }} }

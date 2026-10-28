@@ -644,6 +644,8 @@ export interface ReviewPr {
   author: string | null; authorIsBot: boolean; isDraft: boolean;
   createdAt: string; updatedAt: string; labels: string[]; comments: number;
   requested: boolean; mine: boolean;
+  /** Who approved it, by each reviewer's latest review (a dismissed or superseded approval doesn't count). */
+  approvedBy: string[];
   /** The last summary made for it (maybe for an older commit); null = none yet. */
   summary: ReviewSummary | null;
 }

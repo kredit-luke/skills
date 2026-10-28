@@ -12,9 +12,9 @@ let n = 0;
 const ledger = () => path.join(TMP, `ledger-${++n}`);
 
 const SEARCH = [
-  { number: 1, title: "Add retries", repository: { nameWithOwner: "acme/api" }, url: "u1", updatedAt: "2026-10-02T00:00:00Z", createdAt: "2026-10-01T00:00:00Z", author: { login: "sam" }, isDraft: false, labels: [{ name: "bug" }], commentsCount: 2 },
-  { number: 9, title: "Bump deps", repository: { nameWithOwner: "acme/web" }, url: "u9", updatedAt: "2026-10-03T00:00:00Z", createdAt: "2026-10-01T00:00:00Z", author: { login: "dependabot", is_bot: true }, isDraft: false, labels: [], commentsCount: 0 },
-  { number: 4, title: "My change", repository: { nameWithOwner: "me/tools" }, url: "u4", updatedAt: "2026-10-01T00:00:00Z", createdAt: "2026-10-01T00:00:00Z", author: { login: "me" }, isDraft: true, labels: [], commentsCount: 0 },
+  { id: "PR_1", number: 1, title: "Add retries", repository: { nameWithOwner: "acme/api" }, url: "u1", updatedAt: "2026-10-02T00:00:00Z", createdAt: "2026-10-01T00:00:00Z", author: { login: "sam" }, isDraft: false, labels: [{ name: "bug" }], commentsCount: 2 },
+  { id: "PR_9", number: 9, title: "Bump deps", repository: { nameWithOwner: "acme/web" }, url: "u9", updatedAt: "2026-10-03T00:00:00Z", createdAt: "2026-10-01T00:00:00Z", author: { login: "dependabot", is_bot: true }, isDraft: false, labels: [], commentsCount: 0 },
+  { id: "PR_4", number: 4, title: "My change", repository: { nameWithOwner: "me/tools" }, url: "u4", updatedAt: "2026-10-01T00:00:00Z", createdAt: "2026-10-01T00:00:00Z", author: { login: "me" }, isDraft: true, labels: [], commentsCount: 0 },
 ];
 
 /** A fake gh: answers by the command, and records every call. */
@@ -27,6 +27,15 @@ function fakeGh(opts: { orgs?: string[]; sha?: string } = {}) {
     if (args[0] === "api" && args[1] === "repos/acme/api") return { squash: true, merge: false, rebase: true, del: true };
     if (args[0] === "search" && args.includes("--review-requested=@me")) return [{ number: 1, repository: { nameWithOwner: "acme/api" } }];
     if (args[0] === "search") return SEARCH;
+    // Approvals: PR_1 approved by kim (lee asked for changes, ann's approval was dismissed); PR_4 can't be read.
+    if (args[0] === "api" && args[1] === "graphql") {
+      const reviews: Record<string, any[]> = {
+        PR_1: [{ state: "APPROVED", author: { login: "kim" } }, { state: "CHANGES_REQUESTED", author: { login: "lee" } }, { state: "DISMISSED", author: { login: "ann" } }],
+        PR_9: [],
+      };
+      const ids = args.filter((a) => a.startsWith("ids[]=")).map((a) => a.slice(6));
+      return { data: { nodes: ids.map((id) => reviews[id] ? { id, latestOpinionatedReviews: { nodes: reviews[id] } } : null) } };
+    }
     if (args[0] === "pr" && args[1] === "view") {
       return { title: "Add retries", body: "Retries failed calls.", headRefOid: state.sha, files: [{ path: "src/http.ts", additions: 10, deletions: 2 }],
         number: 1, url: "u1", author: { login: "sam" }, statusCheckRollup: [{ name: "build", conclusion: "FAILURE", status: "COMPLETED" }],
@@ -59,7 +68,23 @@ test("searches every org plus your own account, and marks requested, yours and b
   assert.deepEqual(byN[1].labels, ["bug"]);
   assert.equal(byN[4].mine, true);
   assert.equal(byN[9].authorIsBot, true);
+  assert.deepEqual(byN[1].approvedBy, ["kim"], "only standing approvals");
+  assert.deepEqual(byN[9].approvedBy, []);
+  assert.deepEqual(byN[4].approvedBy, [], "a PR the query couldn't read has none");
   assert.deepEqual(l.errors, []);
+});
+
+test("the list still loads when approvals can't be read, and says why", async () => {
+  const f = fakeGh();
+  const gh = async (args: string[]) => {
+    if (args[0] === "api" && args[1] === "graphql") throw new Error("rate limited");
+    return f.gh(args);
+  };
+  const r = new Reviews({ ledgerDir: ledger(), gh, ghText: f.ghText, ask: async () => "x", codeHost: () => ({ kind: "github", orgs: ["acme"] }) });
+  const l = await r.list();
+  assert.equal(l.prs.length, 3);
+  assert.ok(l.prs.every((p) => p.approvedBy.length === 0));
+  assert.deepEqual(l.errors, ["approvals: rate limited"]);
 });
 
 test("codeHost.orgs replaces the org lookup", async () => {
