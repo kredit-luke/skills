@@ -63,8 +63,12 @@ class Inbox {
   cache: any;
   inflight: any;
 
-  constructor(runs) {
+  /** More items from elsewhere in the dashboard (the Factory's notices), read on each get. */
+  extra: () => any[];
+
+  constructor(runs, extra: () => any[] = () => []) {
     this.runs = runs;
+    this.extra = extra;
     this.cache = null;
     this.inflight = null;
   }
@@ -186,7 +190,9 @@ class Inbox {
       if (!this.cache || force) await this.inflight;
     }
     const rank = { alert: 0, action: 1, info: 2 };
-    const items = [...this._ledgerItems(), ...this.cache.items].sort(
+    let extra: any[] = [];
+    try { extra = this.extra(); } catch {}
+    const items = [...this._ledgerItems(), ...extra, ...this.cache.items].sort(
       (a, b) => rank[a.severity] - rank[b.severity] || (b.at || "").localeCompare(a.at || "")
     );
     return { items, ciHealth: this.cache.ciHealth, errors: this.cache.errors, fetchedAt: this.cache.fetchedAt };

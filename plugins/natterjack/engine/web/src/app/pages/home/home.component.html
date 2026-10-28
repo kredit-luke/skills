@@ -96,6 +96,9 @@
           @if (i.url) {
             <a class="inbox-item" [class]="'inbox-item ' + i.severity" [href]="i.url" target="_blank" rel="noopener">
               <span class="bar"></span><div><div class="t">{{ i.title }}</div><div class="d">{{ i.detail }}{{ i.at ? ' · ' + rel(i.at) : '' }}</div></div></a>
+          } @else if (i.route) {
+            <a class="inbox-item" [class]="'inbox-item ' + i.severity" [routerLink]="[i.route]" [queryParams]="i.query || {}">
+              <span class="bar"></span><div><div class="t">{{ i.title }}</div><div class="d">{{ i.detail }}{{ i.at ? ' · ' + rel(i.at) : '' }}</div></div></a>
           } @else {
             <a class="inbox-item" [class]="'inbox-item ' + i.severity" [routerLink]="['/runs', i.runId]">
               <span class="bar"></span><div><div class="t">{{ i.title }}</div><div class="d">{{ i.detail }}{{ i.at ? ' · ' + rel(i.at) : '' }}</div></div></a>

@@ -14,8 +14,8 @@
 import fs from "node:fs";
 import path from "node:path";
 import type {
-  AgentId, FactoryAssessment, FactoryBoard, FactoryIntake, FactoryMetrics, FactoryRating, FactoryRatingValue, FactoryColumn, FactoryConfig, FactoryConfigState, FactoryGateId, FactoryGateMode, FactoryItem,
-  FactoryItemStep, FactoryManifest, FactoryPreset, FactoryPresetPatch, FactoryRiskRule, FactoryScanner, FactorySpec, FactoryStageConfig, FactoryStageId, FactoryStepStatus, MergeMethod, RunStatus, Severity, SpecCheckId,
+  AgentId, FactoryAssessment, FactoryAuditRow, FactoryBoard, FactoryNotice, FactoryNoticeEvent, FactoryWebhook, FactoryIntake, FactoryMetrics, FactoryRating, FactoryRatingValue, FactoryColumn, FactoryConfig, FactoryConfigState, FactoryGateId, FactoryGateMode, FactoryItem,
+  FactoryItemStep, FactoryManifest, FactoryPreset, FactoryPresetPatch, FactoryRiskRule, FactoryScanner, FactorySpec, FactoryStageConfig, FactoryStageId, FactoryStepStatus, MergeMethod, ReviewRelated, RunStatus, Severity, SpecCheckId,
 } from "../../shared/api.ts";
 import { pipelineOrder, withPresetPatch } from "../../shared/factory-rules.ts";
 import { CONFIG_DIR, LEDGER_DIR, readConfigFile, writeConfigFile } from "./config.ts";
@@ -74,6 +74,7 @@ export function defaultFactoryConfig(): FactoryConfig {
     requiredChecks: [],
     reviewers: { bots: [], pipeline: true, noUnresolved: true },
     spec: { readyAt: 80, needsWorkAt: 50, minScore: null, weights: {} },
+    notifications: { inbox: true, webhooks: [] },
     approver: {
       enabled: false, enforce: false, identity: null,
       highRiskPaths: ["**/migrations/**", "**/auth/**", "infra/**", ".github/workflows/**", "**/*.lock"],
@@ -188,6 +189,16 @@ export function normalizeFactoryConfig(raw: any): FactoryConfig {
       minScore: numOrNull(sp.minScore, 0, 100) == null ? null : Math.round(numOrNull(sp.minScore, 0, 100)!),
       weights,
     },
+    notifications: {
+      inbox: raw.notifications?.inbox !== false,
+      webhooks: (Array.isArray(raw.notifications?.webhooks) ? raw.notifications.webhooks : [])
+        .filter((w: any) => w && (webhookUrl(w.url) || ENV_NAME.test(String(w.env || "")))).slice(0, 10)
+        .map((w: any): FactoryWebhook => ({
+          url: webhookUrl(w.url), env: ENV_NAME.test(String(w.env || "")) ? String(w.env) : null,
+          // No events listed: the ones that need someone. An empty list: muted.
+          events: Array.isArray(w.events) ? [...new Set(w.events.filter((e: any) => NOTICE_EVENTS.includes(e)))] as FactoryNoticeEvent[] : [...DEFAULT_NOTICE_EVENTS],
+        })),
+    },
     approver: {
       enabled: ap.enabled === true,
       enforce: ap.enforce === true,
@@ -203,6 +214,22 @@ export function normalizeFactoryConfig(raw: any): FactoryConfig {
     },
   };
 }
+
+export const NOTICE_EVENTS: FactoryNoticeEvent[] = ["gate-waiting", "stage-failed", "budget", "stopped", "merged"];
+const ENV_NAME = /^[A-Za-z_][A-Za-z0-9_]{0,99}$/;
+
+/** An http(s) address that parses, trimmed; else null. */
+export function webhookUrl(v: unknown): string | null {
+  if (typeof v !== "string" || !/^https?:\/\//i.test(v.trim())) return null;
+  try { new URL(v.trim()); return v.trim(); } catch { return null; }
+}
+
+/** Where a webhook posts: its address, or its env variable's (when that's set to one); null when neither. */
+export function webhookTarget(w: FactoryWebhook, env: Record<string, string | undefined> = process.env): string | null {
+  return w.env ? webhookUrl(env[w.env]) : w.url;
+}
+/** A webhook that names no events gets these: the ones that need someone. */
+const DEFAULT_NOTICE_EVENTS: FactoryNoticeEvent[] = ["gate-waiting", "stage-failed", "budget", "stopped"];
 
 /** Problems with a config that normalizing can't fix by itself (shown on save). */
 export function factoryConfigProblems(c: FactoryConfig): string[] {
@@ -221,8 +248,11 @@ export function factoryConfigState(canEdit: boolean, dir = CONFIG_DIR): FactoryC
   const f = readConfigFile(FACTORY_FILE, dir);
   let mtimeMs: number | null = null;
   try { mtimeMs = fs.statSync(f.file).mtimeMs; } catch {}
+  const config = normalizeFactoryConfig(f.data);
+  // A webhook address is a secret: a read-only viewer sees only its host.
+  if (!canEdit) config.notifications.webhooks = config.notifications.webhooks.map((w) => ({ ...w, url: w.url ? `${new URL(w.url).origin}/…` : null }));
   return {
-    config: normalizeFactoryConfig(f.data), exists: f.data != null || !!f.error, error: f.error, canEdit, mtimeMs,
+    config, exists: f.data != null || !!f.error, error: f.error, canEdit, mtimeMs,
     presets: PRESET_PATCHES, suggestedScanners: SUGGESTED_SCANNERS, stageLabels: STAGE_LABELS, gateLabels: GATE_LABELS, specChecks: SPEC_CHECKS,
   };
 }
@@ -773,6 +803,86 @@ export function buildBoard(cfg: FactoryConfig, configured: boolean, manifests: F
     approverStats: approverStats(all.manifests),
     metrics: factoryMetrics(all.manifests, all.runs),
   };
+}
+
+/**
+ * What's worth telling someone about the board's items now, one notice per occurrence (its key
+ * changes when it happens again): a gate waiting on a person, a stage that failed twice, a ticket
+ * over its budget or hours, a ticket stopped short, every PR merged.
+ */
+export function factoryNotices(cfg: FactoryConfig, manifests: FactoryManifest[], items: FactoryItem[], runs: FactoryRun[], now = Date.now()): FactoryNotice[] {
+  const out: FactoryNotice[] = [];
+  const byTicket = new Map(manifests.map((m) => [m.ticket, m]));
+  for (const it of items) {
+    const m = byTicket.get(it.ticket);
+    if (!m) continue;
+    const base = { ticket: it.ticket, title: it.title, url: it.url };
+    const name = `${it.ticket}${it.title ? ` (${it.title})` : ""}`;
+    const g = it.waitingGate;
+    if (g && g.mode !== "approver" && g.mode !== "auto" && !it.implementLive) {
+      out.push({ ...base, key: `${it.ticket}|gate-waiting|${g.id}|${g.since}`, event: "gate-waiting", severity: "action", at: g.since,
+        text: `${name} waits for a person at the ${g.label.toLowerCase()}${g.reason ? `: ${g.reason}` : ""}.` });
+    }
+    if (!m.done) {
+      // Each stage's newest row per repo: one that failed twice and has passed since is fine.
+      for (const s of STAGE_IDS.flatMap((id) => latestPerRepo(m.stages.filter((x) => x.id === id)))) {
+        if (s.status === "failed" && (s.failures || 0) >= 2) {
+          out.push({ ...base, key: `${it.ticket}|stage-failed|${s.id}|${s.repo || ""}|${s.failures}`, event: "stage-failed", severity: "alert", at: s.endedAt || m.updatedAt,
+            text: `${name}: ${STAGE_LABELS[s.id]}${s.repo ? ` (${s.repo})` : ""} has failed ${s.failures} times${s.note ? `: ${s.note.slice(0, 200)}` : ""}.` });
+        }
+      }
+      const blocked = factoryLaunchBlocker(cfg, true, it.ticket, manifests, runs, now);
+      // The day's budget is the factory's, not the ticket's: one notice a day. A ticket's budget or hours: once each.
+      if (blocked && /today/.test(blocked)) {
+        // The local day, as the day's budget counts it.
+        const day = new Date(now);
+        day.setHours(0, 0, 0, 0);
+        const dayKey = `${day.getFullYear()}-${String(day.getMonth() + 1).padStart(2, "0")}-${String(day.getDate()).padStart(2, "0")}`;
+        out.push({ ticket: "factory", title: null, url: null, key: `factory|budget|${dayKey}`, event: "budget", severity: "alert", at: day.toISOString(), text: blocked });
+      } else if (blocked && !/WIP limit/.test(blocked)) {
+        out.push({ ...base, key: `${it.ticket}|budget|${/hours/.test(blocked) ? "hours" : "usd"}`, event: "budget", severity: "alert", at: m.updatedAt, text: blocked });
+      }
+    }
+    if (m.done && m.error) {
+      out.push({ ...base, key: `${it.ticket}|stopped|${m.finishedAt || m.updatedAt}`, event: "stopped", severity: "alert", at: m.finishedAt || m.updatedAt, text: `${name} stopped: ${m.error}` });
+    }
+    if (it.merged) {
+      out.push({ ...base, key: `${it.ticket}|merged|${m.prs.map((p) => p.url).join(",")}`, event: "merged", severity: "info", at: m.finishedAt || m.updatedAt, text: `${name}: every PR merged.` });
+    }
+  }
+  return [...new Map(out.map((n) => [n.key, n])).values()];
+}
+
+/** The gate audit log: every gate decision, Approver assessment and rating, oldest first (one ticket's, or all). */
+export function auditRows(manifests: FactoryManifest[], ticket: string | null = null): FactoryAuditRow[] {
+  const rows: FactoryAuditRow[] = [];
+  for (const m of manifests) {
+    if (ticket && !sameTicket(m.ticket, ticket)) continue;
+    for (const g of m.gates) rows.push({ ticket: m.ticket, at: g.at, kind: "gate", gate: g.id, decision: g.decision, by: g.by, mode: g.mode, risk: g.risk, rationale: g.rationale, sha: g.sha, override: !!g.override });
+    for (const a of m.assessments) rows.push({ ticket: m.ticket, at: a.at, kind: "assessment", gate: a.gate, decision: a.action, by: a.by, mode: "approver", risk: a.level,
+      rationale: [a.rationale, a.blockers.length ? `Blockers: ${a.blockers.join("; ")}` : "", a.rules.length ? `Rules: ${a.rules.map((r) => r.detail).join("; ")}` : ""].filter(Boolean).join(" | ") || a.reason, sha: a.sha, override: false });
+    for (const r of m.ratings) rows.push({ ticket: m.ticket, at: r.at, kind: "rating", gate: r.gate, decision: r.rating, by: r.by, mode: null, risk: r.level, rationale: r.note, sha: null, override: false });
+  }
+  return rows.sort((a, b) => a.at.localeCompare(b.at) || a.ticket.localeCompare(b.ticket));
+}
+
+/** The audit log as CSV (RFC 4180; a cell a spreadsheet would run as a formula is quoted as text). */
+export function auditCsv(rows: FactoryAuditRow[]): string {
+  const cols: (keyof FactoryAuditRow)[] = ["at", "ticket", "kind", "gate", "decision", "by", "mode", "risk", "override", "sha", "rationale"];
+  const cell = (v: unknown) => {
+    let s = v == null ? "" : String(v);
+    if (/^[=+\-@\t\r]/.test(s)) s = `'${s}`;
+    return /[",\r\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
+  };
+  return [cols.join(","), ...rows.map((r) => cols.map((c) => cell(r[c])).join(","))].join("\r\n") + "\r\n";
+}
+
+/** The factory ticket a PR belongs to and its PRs (this one marked), or null. */
+export function relatedPrs(manifests: FactoryManifest[], url: string): ReviewRelated | null {
+  const same = (u: string) => u.replace(/\/+$/, "").toLowerCase();
+  const m = manifests.find((x) => x.prs.some((p) => same(p.url) === same(url)));
+  if (!m) return null;
+  return { ticket: m.ticket, title: m.title, prs: m.prs.map((p) => ({ repo: p.repo, number: p.number, url: p.url, state: p.state, current: same(p.url) === same(url) })) };
 }
 
 const median = (xs: number[]) => { if (!xs.length) return null; const s = [...xs].sort((a, b) => a - b); const m = Math.floor(s.length / 2); return s.length % 2 ? s[m] : (s[m - 1] + s[m]) / 2; };

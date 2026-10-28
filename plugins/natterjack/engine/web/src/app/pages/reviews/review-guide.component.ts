@@ -1,6 +1,8 @@
 import { ChangeDetectionStrategy, Component, DestroyRef, computed, effect, inject, input, output, signal } from '@angular/core';
 import { FormsModule } from '@angular/forms';
-import type { GuidePoint, ReviewDiff, ReviewGuide, ReviewPrDetail, ReviewSubmitted, RunMeta, SecurityReview } from '../../../../../shared/api';
+import type { GuidePoint, ReviewDiff, ReviewGuide, ReviewPrDetail, ReviewRelated, ReviewSubmitted, RunMeta, SecurityReview } from '../../../../../shared/api';
+import { RouterLink } from '@angular/router';
+import { guideLink } from '../factory/factory.util';
 import { ApiService } from '../../core/api.service';
 import { ToastService } from '../../core/toast.service';
 import { type DraftComment, type HunkGroup, draftsKey, groupHunks, hunkLabel, lineKey, noHunkLabel, progressKey } from './review-guide.util';
@@ -24,7 +26,7 @@ type Chapter = typeof CHAPTERS[number];
  */
 @Component({
   selector: 'dash-review-guide',
-  imports: [FormsModule],
+  imports: [FormsModule, RouterLink],
   changeDetection: ChangeDetectionStrategy.OnPush,
   template: `
     <div class="head">
@@ -39,6 +41,18 @@ type Chapter = typeof CHAPTERS[number];
           @if (guide()) { · {{ doneCount() }}/{{ chapters.length }} chapters read }
           @if (moved(); as m) { · <span class="moved">updated to {{ m }}</span> }
         </div>
+        @if (related(); as r) {
+          @if (r.prs.length > 1) {
+            <div class="related">Part of {{ r.ticket }}{{ r.title ? ': ' + r.title : '' }}, one change across {{ r.prs.length }} PRs (in the order they were opened):
+              @for (p of r.prs; track p.url) {
+                @if (p.current) { <b class="mono">{{ p.repo || 'this' }}{{ p.number ? '#' + p.number : '' }}</b> }
+                @else if (relLink(p); as q) { <a class="mono" [routerLink]="[]" [queryParams]="q">{{ p.repo || 'PR' }}{{ p.number ? '#' + p.number : '' }}</a> }
+                @else { <a class="mono" [href]="p.url" target="_blank" rel="noopener">{{ p.repo || 'PR' }}{{ p.number ? '#' + p.number : '' }}</a> }
+                {{ $last ? '' : ' → ' }}
+              }
+            </div>
+          }
+        }
       </div>
       @if (detail(); as d) { <a class="btn sm" [href]="d.url" target="_blank" rel="noopener">Open on GitHub</a> }
     </div>
@@ -218,6 +232,7 @@ type Chapter = typeof CHAPTERS[number];
     .draft { font-size: 12.5px; }
     .drafts { display: flex; gap: 12px; align-items: center; padding: 8px 12px; margin-bottom: 12px; position: sticky; top: 0; z-index: 2; }
     .moved { color: var(--green); }
+    .related { margin-top: 6px; font-size: 12.5px; color: var(--ink-soft); }
     .drafts .warn { color: var(--yellow); font-size: 12.5px; }
   `],
 })
@@ -256,6 +271,8 @@ export class ReviewGuideComponent {
   readonly asking = signal(false);
   /** The short commit the page reloaded to when the PR got new commits, for a moment. */
   readonly moved = signal<string | null>(null);
+  /** The factory ticket this PR belongs to and its other PRs, when it's one change across several repos. */
+  readonly related = signal<ReviewRelated | null>(null);
   /** Drafts written on another commit than the diff shown: their line numbers may point elsewhere now. */
   readonly staleDrafts = computed(() => { const sha = this.diff()?.sha; return sha ? this.drafts().filter((d) => d.sha !== sha).length : 0; });
   private movedTimer: ReturnType<typeof setTimeout> | null = null;
@@ -275,6 +292,8 @@ export class ReviewGuideComponent {
   }
 
   key = lineKey;
+  /** Another PR of the ticket, as this page's own query (repo, n, guided). */
+  relLink(p: { url: string; state: string | null }) { return guideLink({ url: p.url, state: null }); }
   draftsAt(path: string, line: number): DraftComment[] { return this.drafts().filter((d) => d.path === path && d.line === line); }
 
   compose(path: string, line: number): void {
@@ -369,6 +388,8 @@ export class ReviewGuideComponent {
     const gen = ++this.gen;
     // A refresh keeps what's on screen until the new commit's arrives (no flash of "Loading").
     if (!refresh) {
+      this.related.set(null);
+      this.api.get<ReviewRelated | null>(`/api/reviews/related?repo=${encodeURIComponent(repo)}&number=${n}`).then((r) => { if (gen === this.gen) this.related.set(r); }).catch(() => {});
       for (const s of [this.detail, this.diff, this.guide, this.security]) (s as any).set(null);
       this.done.set({});
       this.loadDrafts();

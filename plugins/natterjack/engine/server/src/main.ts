@@ -22,7 +22,7 @@ import path from "node:path";
 import crypto from "node:crypto";
 import { execFile, execFileSync } from "node:child_process";
 import { restartSelf } from "./self-restart.ts";
-import type { Boot, FactoryIntake, ImportRunJob, LaunchRequest, ProfileInfo, PublishPlanResponse, RunEvent, RunMeta } from "../../shared/api.ts";
+import type { Boot, FactoryIntake, FactoryNotice, ImportRunJob, LaunchRequest, ProfileInfo, PublishPlanResponse, RunEvent, RunMeta } from "../../shared/api.ts";
 import { implementTicket, runTicket } from "../../shared/run-ticket.ts";
 import { runWorkspace } from "../../shared/run-workspace.ts";
 import { CLAUDE_SESSION_ENV } from "./claude.ts";
@@ -42,7 +42,7 @@ import { RunManager, httpError, runLabel } from "./runs.ts";
 import { Deck, Scheduler } from "./deck.ts";
 import { Inbox, gh as ghJson } from "./inbox.ts";
 import { Reviews, askChangePrompt, numberParam, repoParam } from "./reviews.ts";
-import { type FactoryRun, setPrStates, buildBoard, factoryConfigState, factoryLaunchBlocker, inFlightTickets, intakeCandidates, manifestFile, normalizeManifest, overrideGateDecision, rateAssessment, readManifests, readPlan, recordGateDecision, saveFactoryConfig } from "./factory.ts";
+import { type FactoryRun, webhookTarget, auditCsv, auditRows, buildBoard, factoryConfigState, factoryLaunchBlocker, factoryNotices, inFlightTickets, intakeCandidates, manifestFile, normalizeManifest, overrideGateDecision, rateAssessment, readManifests, readPlan, recordGateDecision, relatedPrs, saveFactoryConfig, setPrStates } from "./factory.ts";
 import { Watcher } from "./watches.ts";
 import { Usage } from "./usage.ts";
 import { UsageHistory } from "./usage-history.ts";
@@ -522,6 +522,76 @@ async function pullIntake(max = Infinity, trigger = "factory"): Promise<{ starte
   } finally { pulling = false; }
 }
 
+/** The Factory's notices now (factoryNotices), from the board as it stands. */
+let noticesCache: { at: number; notices: FactoryNotice[] } | null = null;
+function currentNotices(): FactoryNotice[] {
+  // The Inbox and the webhooks both ask: one computation every few seconds serves both.
+  if (noticesCache && Date.now() - noticesCache.at < 10_000) return noticesCache.notices;
+  const state = factoryConfigState(true);
+  const { manifests } = readManifests(undefined, Infinity);
+  const runs = factoryRuns();
+  const board = buildBoard(state.config, state.exists && !state.error, manifests, runs);
+  noticesCache = { at: Date.now(), notices: factoryNotices(state.config, manifests, board.items, runs) };
+  return noticesCache.notices;
+}
+
+/**
+ * Webhooks (factory.json notifications.webhooks): each new notice, once, to each webhook that
+ * wants its event, as JSON with a Slack-style `text`. The ledger keeps what's been dealt with:
+ * sent (every webhook took it), given up on (5 failed tries), or there already when webhooks
+ * weren't on (the factory off, none set, or the first run): what happened then isn't sent later.
+ */
+const NOTIFIED_FILE = path.join(LEDGER_DIR, "factory-notified.json");
+const WEBHOOK_TRIES = 5;
+let notifying = false;
+async function sendFactoryWebhooks(): Promise<void> {
+  if (notifying || HOSTED) return;
+  notifying = true;
+  try {
+    const state = factoryConfigState(true);
+    const on = state.exists && !state.error && state.config.enabled;
+    const hooks = on ? state.config.notifications.webhooks : [];
+    type Seen = { at: string; tries?: number; done?: boolean };
+    let seen: Record<string, Seen> | null = null;
+    try { seen = JSON.parse(fs.readFileSync(NOTIFIED_FILE, "utf-8")); } catch {}
+    const notices = on ? currentNotices() : [];
+    const known: Record<string, Seen> = {};
+    for (const [k, v] of Object.entries(seen || {})) known[k] = typeof v === "string" ? { at: v, done: true } : v;
+    const now = new Date().toISOString();
+    const pending = notices.filter((n) => !known[n.key]?.done);
+    if (!seen || !hooks.length) {
+      // Nobody to tell (or the first run): what's there now is the baseline.
+      for (const n of pending) known[n.key] = { at: now, done: true };
+    } else {
+      const base = hostedUrl() || `http://localhost:${workspaceConfig().dashboard.port}`;
+      const host = (u: string) => { try { return new URL(u).host; } catch { return "webhook"; } };
+      for (const n of pending) {
+        const link = `${base}/factory${n.ticket === "factory" ? "" : `?view=tickets&ticket=${encodeURIComponent(n.ticket)}`}`;
+        const payload = JSON.stringify({ text: `${n.text} ${link}`, event: n.event, ticket: n.ticket, title: n.title, ticketUrl: n.url, severity: n.severity, at: n.at, link });
+        let ok = true;
+        for (const h of hooks.filter((x) => x.events.includes(n.event))) {
+          const url = webhookTarget(h);
+          if (!url) { console.warn(`Factory webhook: ${h.env ? `$${h.env} isn't set to an http(s) address` : "no address"}`); continue; }
+          const sent = await fetch(url, { method: "POST", headers: { "Content-Type": "application/json" }, body: payload, signal: AbortSignal.timeout(10_000) })
+            .then((r) => { if (!r.ok) console.warn(`Factory webhook ${host(url)}: HTTP ${r.status}`); return r.ok; })
+            .catch((e) => { console.warn(`Factory webhook ${host(url)}: ${(e as Error).message}`); return false; });
+          ok &&= sent;
+        }
+        // A failure is tried again next time, a few times; then it's given up on (still in the log above).
+        const tries = (known[n.key]?.tries || 0) + 1;
+        known[n.key] = { at: now, tries, done: ok || tries >= WEBHOOK_TRIES };
+      }
+    }
+    // Keep everything still current, and the newest of the rest.
+    const current = new Set(notices.map((n) => n.key));
+    const kept = Object.entries(known).sort((a, b) => Number(current.has(b[0])) - Number(current.has(a[0])) || b[1].at.localeCompare(a[1].at)).slice(0, Math.max(5000, current.size));
+    fs.mkdirSync(LEDGER_DIR, { recursive: true });
+    fs.writeFileSync(NOTIFIED_FILE, JSON.stringify(Object.fromEntries(kept)));
+  } catch (e) { console.warn(`Factory webhooks: ${(e as Error).message}`); }
+  finally { notifying = false; }
+}
+setInterval(() => { void sendFactoryWebhooks(); }, 30_000).unref();
+
 /** intake.auto: pull work in every intake.everyMinutes while the factory is on (checked each minute). */
 let lastAutoPull = 0;
 setInterval(() => {
@@ -701,7 +771,15 @@ function cleanupAttachments() {
 }
 cleanupAttachments();
 setInterval(cleanupAttachments, 6 * 3600 * 1000).unref();
-const inbox = new Inbox(runs);
+// The Factory's notices join the Inbox (Home → Needs you), unless the policy turns that off.
+const inbox = new Inbox(runs, () => {
+  const state = factoryConfigState(true);
+  if (!state.exists || state.error || !state.config.enabled || !state.config.notifications.inbox) return [];
+  return currentNotices().filter((n) => n.event !== "merged").map((n) => ({
+    kind: `factory-${n.event}`, severity: n.severity, title: n.text, detail: n.ticket === "factory" ? "Factory" : `Factory · ${n.ticket}`, at: n.at,
+    route: "/factory", query: n.ticket === "factory" ? {} : { view: "tickets", ticket: n.ticket },
+  }));
+});
 const reviews = new Reviews({
   ledgerDir: LEDGER_DIR,
   // The ticket a PR names (title or branch), read as the person; a guide's Intent starts from it.
@@ -1774,6 +1852,16 @@ async function handleApi(req: http.IncomingMessage, res: http.ServerResponse, ur
     if (p === "/api/factory") return sendJson(res, factoryBoard());
     if (p === "/api/factory/config") return sendJson(res, factoryConfigState(!isReader()));
     if (p === "/api/factory/intake") return sendJson(res, await factoryIntake());
+    if (p === "/api/factory/audit") {
+      // The gate audit log: every decision, assessment and rating (one ticket's with ?ticket=), as JSON or CSV.
+      const one = q("ticket") ? factoryTicketParam(q("ticket")) : null;
+      if (q("ticket") && !one) return sendError(res, 400, "Invalid ticket id");
+      const rows = auditRows(readManifests(undefined, Infinity).manifests, one);
+      if (q("format") !== "csv") return sendJson(res, rows);
+      const name = `factory-audit${one ? `-${one.replace(/[^\w.-]+/g, "_")}` : ""}-${new Date().toISOString().slice(0, 10)}.csv`;
+      res.writeHead(200, { "Content-Type": "text/csv; charset=utf-8", "Content-Disposition": `attachment; filename="${name}"`, "Cache-Control": "no-store" });
+      return res.end(auditCsv(rows));
+    }
     if (p === "/api/factory/plan") {
       const ticket = factoryTicketParam(q("ticket"));
       if (!ticket) return sendError(res, 400, "Invalid ticket id");
@@ -1787,6 +1875,13 @@ async function handleApi(req: http.IncomingMessage, res: http.ServerResponse, ur
       const number = numberParam(q("number"));
       if (!repo || !number) return sendError(res, 400, "Invalid pull request");
       return sendJson(res, await reviews.detail(repo, number));
+    }
+    if (p === "/api/reviews/related") {
+      // The factory ticket a PR belongs to, with its other PRs: one change across several repos.
+      const repo = repoParam(q("repo"));
+      const number = numberParam(q("number"));
+      if (!repo || !number) return sendError(res, 400, "Invalid pull request");
+      return sendJson(res, relatedPrs(readManifests(undefined, Infinity).manifests, `https://github.com/${repo}/pull/${number}`));
     }
     if (p === "/api/reviews/diff" || p === "/api/reviews/guide" || p === "/api/reviews/security" || p === "/api/reviews/agent" || p === "/api/reviews/head") {
       const repo = repoParam(q("repo"));

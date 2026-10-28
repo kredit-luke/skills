@@ -143,6 +143,7 @@ const STATE: Record<FactoryItem['state'], { label: string; cls: string }> = {
                   </div>
                 </section>
               }
+              <p class="audit"><a [href]="'/api/factory/audit?format=csv&ticket=' + encode(it.ticket)" download>Export {{ it.ticket }}'s audit log</a></p>
               @if (it.retro; as r) {
                 <section class="specd retro">
                   <h3>Retro <span class="faint">{{ rel(r.at) }}</span></h3>
@@ -252,6 +253,7 @@ const STATE: Record<FactoryItem['state'], { label: string; cls: string }> = {
     .ovr textarea { width: 100%; box-sizing: border-box; font: inherit; font-size: 12.5px; }
     .ovr .btns { margin-top: 6px; }
     .retro p { margin: 4px 0; font-size: 12.5px; }
+    .audit { margin: 6px 0; font-size: 12px; }
     .retro ul { list-style: disc; padding-left: 18px; }
     .specd ul { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 3px; font-size: 12.5px; }
     .specd li { display: flex; flex-wrap: wrap; gap: 0 6px; align-items: baseline; }
@@ -354,6 +356,7 @@ export class FactoryTicketsComponent {
   }
 
   ratingWord(r: FactoryRatingValue): string { return RATING_WORDS[r]; }
+  encode(s: string): string { return encodeURIComponent(s); }
 
   /** Starts the retro skill for a ticket whose PRs merged. */
   async retro(it: FactoryItem): Promise<void> {

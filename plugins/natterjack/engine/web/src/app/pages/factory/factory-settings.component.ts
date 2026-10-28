@@ -2,7 +2,7 @@ import { ChangeDetectionStrategy, Component, OnInit, computed, inject, signal } 
 import { FormsModule } from '@angular/forms';
 import { RouterLink } from '@angular/router';
 import type {
-  AgentId, FactoryConfig, FactoryConfigState, FactoryGateId, FactoryGateMode, FactoryPreset, FactoryScanner, FactoryStageId, MergeMethod, Severity, SpecCheckId,
+  AgentId, FactoryConfig, FactoryConfigState, FactoryGateId, FactoryGateMode, FactoryNoticeEvent, FactoryPreset, FactoryScanner, FactoryStageId, MergeMethod, Severity, SpecCheckId,
 } from '../../../../../shared/api';
 import { ApiService } from '../../core/api.service';
 import { ToastService } from '../../core/toast.service';
@@ -249,6 +249,27 @@ const GATE_HELP: Record<FactoryGateId, string> = {
             </div>
           </div>
         </div>
+
+        <div class="panel">
+          <div class="panel-h"><h2>Notifications</h2></div>
+          <div class="body">
+            <p class="h">When a ticket needs someone: a gate waiting on a person, a stage that failed twice, a budget reached, a ticket stopped (and, if you ask, PRs merged).</p>
+            <label class="chk"><input type="checkbox" [ngModel]="c.notifications.inbox" (ngModelChange)="setInboxNotices($event)" /> On Home → Needs you</label>
+            @for (w of c.notifications.webhooks; track $index; let i = $index) {
+              <div class="hook">
+                <input type="text" class="mono" placeholder="$FACTORY_WEBHOOK (an env variable on each machine), or https://…" [ngModel]="w.env ? '$' + w.env : (w.url || '')" (ngModelChange)="setHook(i, $event)" [ngModelOptions]="{ updateOn: 'blur' }" aria-label="Webhook address, or an environment variable that holds it" />
+                <div class="evs">
+                  @for (e of noticeEvents; track e.id) {
+                    <label class="chk"><input type="checkbox" [ngModel]="w.events.includes(e.id)" (ngModelChange)="toggleHookEvent(i, e.id, $event)" /> {{ e.label }}</label>
+                  }
+                  <button class="linkish" type="button" (click)="removeHook(i)">Remove</button>
+                </div>
+              </div>
+            }
+            <button class="btn sm" type="button" (click)="addHook()" [disabled]="c.notifications.webhooks.length >= 10">Add a webhook</button>
+            <span class="h">Each new one is posted as JSON with a <code>text</code> (Slack-compatible), once, from the dashboard of whoever's machine runs it. A webhook's address is a secret and this policy is committed: name an environment variable (<code>$NAME</code>) set on each machine instead.</span>
+          </div>
+        </div>
       </fieldset>
 
       <div class="savebar">
@@ -390,6 +411,21 @@ export class FactorySettingsComponent implements OnInit {
   setBots(text: string): void { this.edit((c) => { c.reviewers.bots = splitList(text); }); }
   setReviewers(key: 'pipeline' | 'noUnresolved', v: boolean): void { this.edit((c) => { c.reviewers[key] = v; }); }
   setRiskPaths(text: string): void { this.edit((c) => { c.approver.highRiskPaths = splitLines(text); }); }
+  readonly noticeEvents: { id: FactoryNoticeEvent; label: string }[] = [
+    { id: 'gate-waiting', label: 'Gate waiting' }, { id: 'stage-failed', label: 'Stage failed twice' }, { id: 'budget', label: 'Budget reached' },
+    { id: 'stopped', label: 'Stopped' }, { id: 'merged', label: 'Merged' },
+  ];
+  setInboxNotices(on: boolean): void { this.edit((c) => { c.notifications.inbox = on; }); }
+  addHook(): void { this.edit((c) => { c.notifications.webhooks.push({ url: null, env: 'FACTORY_WEBHOOK', events: ['gate-waiting', 'stage-failed', 'budget', 'stopped'] }); }); }
+  removeHook(i: number): void { this.edit((c) => { c.notifications.webhooks.splice(i, 1); }); }
+  /** "$NAME": the address is in that environment variable on each machine; else the address itself. */
+  setHook(i: number, v: string): void {
+    const t = v.trim();
+    this.edit((c) => { const w = c.notifications.webhooks[i]; if (t.startsWith('$')) { w.env = t.slice(1); w.url = null; } else { w.url = t; w.env = null; } });
+  }
+  toggleHookEvent(i: number, e: FactoryNoticeEvent, on: boolean): void {
+    this.edit((c) => { const w = c.notifications.webhooks[i]; w.events = on ? [...new Set([...w.events, e])] : w.events.filter((x) => x !== e); });
+  }
   setRiskLabels(text: string): void { this.edit((c) => { c.approver.highRiskLabels = splitLines(text); }); }
   setApprover(key: keyof FactoryConfig['approver'], v: any): void {
     this.edit((c) => { (c.approver as any)[key] = key === 'mergeMethod' ? (v as MergeMethod) : v; });

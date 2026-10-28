@@ -7,7 +7,7 @@ import path from "node:path";
 import { pathToFileURL } from "node:url";
 import {
   applyPreset, boardColumns, buildBoard, defaultFactoryConfig, factoryConfigProblems, factoryConfigState, normalizeFactoryConfig,
-  GATE_IDS, SPEC_CHECKS, STAGE_IDS, approverStats, factoryMetrics, intakeCandidates, setPrStates, factoryLaunchBlocker, manifestFile, normalizeManifest, overridableGate, overrideGateDecision, rateAssessment, readPlan, recordGateDecision, ticketFile, pipeline, placeItem, readManifests, saveFactoryConfig,
+  GATE_IDS, SPEC_CHECKS, STAGE_IDS, approverStats, auditCsv, auditRows, factoryMetrics, factoryNotices, intakeCandidates, relatedPrs, setPrStates, webhookTarget, NOTICE_EVENTS, factoryLaunchBlocker, manifestFile, normalizeManifest, overridableGate, overrideGateDecision, rateAssessment, readPlan, recordGateDecision, ticketFile, pipeline, placeItem, readManifests, saveFactoryConfig,
 } from "../src/factory.ts";
 
 const tmp = () => fs.mkdtempSync(path.join(os.tmpdir(), "factory-"));
@@ -573,4 +573,75 @@ test("setPrStates writes the code host's PR states and when everything merged", 
   assert.equal(m.finishedAt, null);
   m = await setPrStates("P-1", { "https://github.com/a/c/pull/2": "merged" }, { dir, now: "2026-10-27T12:00:00.000Z" });
   assert.equal(m.finishedAt, "2026-10-27T12:00:00.000Z");
+});
+
+test("notices: a gate waiting on a person, a stage failed twice, a budget reached, a ticket stopped, PRs merged; one key per occurrence", () => {
+  const cfg = normalizeFactoryConfig({ enabled: true, limits: { itemBudgetUsd: 5 } });
+  const ms = [
+    normalizeManifest({ ticket: "N-1", title: "Plan me", startedAt: at, gates: [{ id: "spec", decision: "approved", by: "sam", at }, { id: "plan", mode: "human", decision: "pending", rationale: "A person decides.", at }], stages: [{ id: "plan", status: "done" }] })!,
+    normalizeManifest({ ticket: "N-2", startedAt: at, stages: [{ id: "review", repo: "api", status: "failed", failures: 2, note: "tests fail" }] })!,
+    normalizeManifest({ ticket: "N-3", startedAt: at, done: true, error: "Plan rejected by sam", finishedAt: at })!,
+    normalizeManifest({ ticket: "N-4", startedAt: at, done: true, finishedAt: at, prs: [{ url: "https://x/4", state: "merged" }] })!,
+    normalizeManifest({ ticket: "N-5", startedAt: at, stages: [{ id: "build", status: "running" }] })!,
+  ];
+  const runs = [{ id: "r", ticket: "N-5", status: "succeeded", costUsd: 6, startedAt: at }] as any;
+  const board = buildBoard(cfg, true, ms, runs);
+  const notices = factoryNotices(cfg, ms, board.items, runs, Date.parse(at));
+  assert.deepEqual(notices.map((n) => [n.ticket, n.event]).sort(), [["N-1", "gate-waiting"], ["N-2", "stage-failed"], ["N-3", "stopped"], ["N-4", "merged"], ["N-5", "budget"]]);
+  assert.match(notices.find((n) => n.event === "gate-waiting")!.text, /N-1 \(Plan me\) waits for a person at the plan gate/);
+  assert.match(notices.find((n) => n.event === "stage-failed")!.text, /Reviewing \(api\) has failed 2 times: tests fail/);
+  // The same state again is the same notice; another failure is a new one.
+  assert.deepEqual(factoryNotices(cfg, ms, board.items, runs, Date.parse(at)).map((n) => n.key), notices.map((n) => n.key));
+});
+
+test("the audit log: gate decisions, assessments and ratings in time order, and as CSV that a spreadsheet won't run", () => {
+  const m = normalizeManifest({ ticket: "A-1", startedAt: at,
+    gates: [{ id: "plan", mode: "human", decision: "approved", by: "sam", rationale: '=HYPERLINK("x"), "quoted"', at: "2026-10-27T10:02:00.000Z" }],
+    assessments: [{ gate: "plan", level: "low", rules: [], concerns: [], blockers: ["No judgement"], action: "ask", reason: "r", at: "2026-10-27T10:01:00.000Z" }],
+    ratings: [{ assessmentAt: "2026-10-27T10:01:00.000Z", gate: "plan", level: "low", rating: "right", by: "ann", at: "2026-10-27T10:03:00.000Z" }] })!;
+  const rows = auditRows([m, normalizeManifest({ ticket: "B-1", startedAt: at, gates: [{ id: "spec", decision: "approved", by: "auto", at }] })!], "a-1");
+  assert.deepEqual(rows.map((r) => [r.kind, r.decision, r.by]), [["assessment", "ask", null], ["gate", "approved", "sam"], ["rating", "right", "ann"]]);
+  assert.match(rows[0].rationale!, /Blockers: No judgement/);
+  const csv = auditCsv(rows);
+  assert.ok(csv.startsWith("at,ticket,kind,gate,decision,by,mode,risk,override,sha,rationale\r\n"));
+  assert.ok(csv.includes(`"'=HYPERLINK(""x""), ""quoted"""`), "formula neutralised and quotes doubled");
+});
+
+test("relatedPrs: a PR's factory ticket and its other PRs, this one marked", () => {
+  const m = normalizeManifest({ ticket: "R-9", title: "Retries", startedAt: at, prs: [{ url: "https://github.com/a/api/pull/1", repo: "api", number: 1 }, { url: "https://github.com/a/web/pull/2", repo: "web", number: 2 }] })!;
+  const r = relatedPrs([m], "https://github.com/A/Web/pull/2/")!;
+  assert.equal(r.ticket, "R-9");
+  assert.deepEqual(r.prs.map((p) => [p.repo, p.current]), [["api", false], ["web", true]]);
+  assert.equal(relatedPrs([m], "https://github.com/a/other/pull/3"), null);
+});
+
+test("notifications are read and checked: an http(s) address or an env variable; no events listed means the ones that need someone, an empty list mutes", () => {
+  const c = normalizeFactoryConfig({ notifications: { inbox: false, webhooks: [
+    { url: " https://hooks.example/x " }, { url: "ftp://nope" }, { url: "http://host:badport" }, { url: "https://h/y", events: ["merged", "nope", "merged"] },
+    { env: "FACTORY_SLACK", events: [] }, { env: "not a name" }] } });
+  assert.deepEqual(c.notifications, { inbox: false, webhooks: [
+    { url: "https://hooks.example/x", env: null, events: ["gate-waiting", "stage-failed", "budget", "stopped"] },
+    { url: "https://h/y", env: null, events: ["merged"] },
+    { url: null, env: "FACTORY_SLACK", events: [] }] });
+  assert.equal(normalizeFactoryConfig({}).notifications.inbox, true);
+  assert.equal(webhookTarget(c.notifications.webhooks[2], { FACTORY_SLACK: "https://hooks.slack.com/services/T/B/x" }), "https://hooks.slack.com/services/T/B/x");
+  assert.equal(webhookTarget(c.notifications.webhooks[2], {}), null);
+});
+
+test("a read-only viewer sees only a webhook's host; a stage that failed twice and passed since isn't a notice", () => {
+  const dir = tmp();
+  fs.writeFileSync(path.join(dir, "factory.json"), JSON.stringify({ notifications: { webhooks: [{ url: "https://hooks.slack.com/services/T0/B0/secret" }] } }));
+  assert.equal(factoryConfigState(false, dir).config.notifications.webhooks[0].url, "https://hooks.slack.com/…");
+  assert.equal(factoryConfigState(true, dir).config.notifications.webhooks[0].url, "https://hooks.slack.com/services/T0/B0/secret");
+  const cfg = normalizeFactoryConfig({ enabled: true });
+  const ms = [normalizeManifest({ ticket: "F-1", startedAt: at, stages: [{ id: "build", repo: "api", status: "failed", failures: 2 }, { id: "build", repo: "api", status: "done", failures: 2 }] })!];
+  assert.deepEqual(factoryNotices(cfg, ms, buildBoard(cfg, true, ms, []).items, []), []);
+});
+
+// validate.mjs keeps its own copy of the notice events (it runs without the engine): they must agree.
+test("validate.mjs knows every notice event", () => {
+  const src = fs.readFileSync(path.join(import.meta.dirname, "..", "..", "..", "scripts", "validate.mjs"), "utf-8");
+  const list = /const NOTICE_EVENTS = (\[[^\]]*\])/.exec(src);
+  assert.ok(list, "validate.mjs has its NOTICE_EVENTS");
+  assert.deepEqual(JSON.parse(list![1]), NOTICE_EVENTS);
 });

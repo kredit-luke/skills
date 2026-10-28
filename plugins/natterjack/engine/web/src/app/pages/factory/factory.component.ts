@@ -42,6 +42,7 @@ const STATE: Record<FactoryItem['state'], { label: string; cls: string }> = {
         <button type="button" [class.on]="view() === 'board'" [attr.aria-pressed]="view() === 'board'" (click)="setView('board')">Board</button>
         <button type="button" [class.on]="view() === 'line'" [attr.aria-pressed]="view() === 'line'" (click)="setView('line')">Line</button>
       </div>
+      <a class="btn ghost sm" href="/api/factory/audit?format=csv" download title="Every gate decision, Approver assessment and rating, as CSV">Audit log</a>
       <a class="btn ghost sm" routerLink="/factory/settings">Policy</a>
     </dash-page-header>
 

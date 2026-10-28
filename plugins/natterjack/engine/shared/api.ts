@@ -632,7 +632,7 @@ export interface UsageHistoryResponse {
 }
 
 /** kind: 'review-requested' | 'my-pr' | 'pr-failing' | 'pr-ready' | 'main-ci-failing' | 'run-failed' | 'run-waiting' | 'run-warning' */
-export interface InboxItem { kind: string; severity: 'alert' | 'action' | 'info'; title: string; detail: string; url?: string; runId?: string; at?: string }
+export interface InboxItem { kind: string; severity: 'alert' | 'action' | 'info'; title: string; detail: string; url?: string; runId?: string; at?: string; route?: string; query?: Record<string, string> }
 /** GET /api/inbox[?force=1] */
 export interface Inbox { items: InboxItem[]; ciHealth: { repo: string; state: string; url: string; title?: string }[]; errors?: string[] }
 
@@ -839,6 +839,12 @@ export interface FactoryConfig {
     /** Weight per check (0 turns one off); checks not listed keep their default. */
     weights: Partial<Record<SpecCheckId, number>>;
   };
+  /**
+   * When a ticket needs someone (a gate waiting on a person, a stage that failed twice, a budget
+   * reached, a ticket stopped, PRs merged): on the dashboard's Inbox (Home → Needs you), and posted
+   * as JSON to each webhook for the events it names (Slack-compatible: it has `text`).
+   */
+  notifications: { inbox: boolean; webhooks: FactoryWebhook[] };
   /** The Approver agent: rates each change's risk; acts on it only when `enforce` is on. */
   approver: {
     enabled: boolean;
@@ -895,6 +901,29 @@ export interface FactoryAssessment {
  */
 export type FactoryRatingValue = 'right' | 'should-have-asked' | 'could-have-approved';
 export interface FactoryRating { assessmentAt: string; gate: FactoryGateId; level: 'low' | 'medium' | 'high'; wouldApprove: boolean; rating: FactoryRatingValue; by: string; note: string | null; at: string }
+
+export type FactoryNoticeEvent = 'gate-waiting' | 'stage-failed' | 'budget' | 'stopped' | 'merged';
+
+/**
+ * A webhook: its address, or (better: a webhook address is a secret, and factory.json is committed)
+ * `env`, the environment variable on each dashboard's machine that holds it. Read-only viewers see
+ * only the address's host. `events`: which notices it gets (none: muted).
+ */
+export interface FactoryWebhook { url: string | null; env: string | null; events: FactoryNoticeEvent[] }
+
+/** Something about a ticket worth telling someone (FactoryConfig.notifications). `key` is unique per occurrence. */
+export interface FactoryNotice { key: string; event: FactoryNoticeEvent; ticket: string; title: string | null; url: string | null; text: string; severity: 'alert' | 'action' | 'info'; at: string }
+
+/** One row of the gate audit log (GET /api/factory/audit?format=csv|json[&ticket=]). */
+export interface FactoryAuditRow {
+  ticket: string; at: string; kind: 'gate' | 'assessment' | 'rating'; gate: FactoryGateId;
+  /** gate: pending/approved/rejected; assessment: its action; rating: its verdict. */
+  decision: string; by: string | null; mode: FactoryGateMode | null; risk: string | null;
+  rationale: string | null; sha: string | null; override: boolean;
+}
+
+/** A PR's factory ticket and its other PRs (GET /api/reviews/related): one change across several repos. */
+export interface ReviewRelated { ticket: string; title: string | null; prs: { repo: string | null; number: number | null; url: string; state: string | null; current: boolean }[] }
 
 export interface FactoryConfigState {
   config: FactoryConfig;

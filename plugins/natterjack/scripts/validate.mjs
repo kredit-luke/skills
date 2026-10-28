@@ -414,6 +414,17 @@ export function validate(root) {
     if (Number.isFinite(sp.readyAt) && Number.isFinite(sp.needsWorkAt) && sp.needsWorkAt >= sp.readyAt) err("factory.json", "spec.needsWorkAt must be below spec.readyAt");
     for (const k of Object.keys(sp.weights || {})) if (!["problem", "outcome", "criteria", "scope", "constraints", "affected", "questions", "verify"].includes(k)) warn("factory.json", `spec.weights.${k} isn't a spec check; ignored`);
     if (fac.limits && fac.limits.wip !== undefined && !(Number.isInteger(fac.limits.wip) && fac.limits.wip >= 1)) err("factory.json", "limits.wip must be a whole number, 1 or more");
+    const notes = fac.notifications || {};
+    if (notes.webhooks !== undefined && !Array.isArray(notes.webhooks)) err("factory.json", "notifications.webhooks must be a list of { url, events }");
+    // The engine's NOTICE_EVENTS (server/src/factory.ts); its tests check the two agree.
+    const NOTICE_EVENTS = ["gate-waiting", "stage-failed", "budget", "stopped", "merged"];
+    const httpUrl = (v) => { try { return typeof v === "string" && /^https?:\/\//i.test(v.trim()) && !!new URL(v.trim()); } catch { return false; } };
+    for (const w of Array.isArray(notes.webhooks) ? notes.webhooks : []) {
+      if (w && typeof w.env === "string" && /^[A-Za-z_][A-Za-z0-9_]*$/.test(w.env)) { /* the address is on each machine */ }
+      else if (!w || !httpUrl(w.url)) err("factory.json", `notifications.webhooks: "${w && w.url}" isn't an http(s) address (or name an "env" variable that holds it)`);
+      else warn("factory.json", `notifications.webhooks: ${new URL(w.url.trim()).host}'s address is in the committed factory.json; it's a secret: prefer "env": "<VARIABLE>" set on each machine`);
+      for (const e of (w && Array.isArray(w.events) ? w.events : [])) if (!NOTICE_EVENTS.includes(e)) warn("factory.json", `notifications.webhooks: event "${e}" isn't one of ${NOTICE_EVENTS.join(", ")}; ignored`);
+    }
     const intake = fac.intake || {};
     if (intake.everyMinutes !== undefined && !(Number.isInteger(intake.everyMinutes) && intake.everyMinutes >= 5 && intake.everyMinutes <= 1440)) err("factory.json", "intake.everyMinutes must be a whole number from 5 to 1440");
     if (intake.auto === true && !(intake.states || []).length && !(intake.labels || []).length) warn("factory.json", "intake.auto is on, but intake has no states or labels: nothing will be pulled in");
