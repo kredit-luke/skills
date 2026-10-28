@@ -206,6 +206,7 @@ What it shows and offers:
 - **Left:** their account is suspended or gone, or they've left the OU. **Remove** them.
 - **Not in roster:** a dashboard someone made by hand. **Adopt** adds it to the roster without changing it; **Update** then brings it in line with the template.
 - **Missing:** in the roster, but its StatefulSet or Web App is gone. **Set up again**, or **Forget** it.
+- **Unknown:** in the roster, but the platform couldn't be asked (usually a lapsed `kubectl` or `az` sign-in); hover it for the error. Sign in again and **Refresh**.
 
 Every change is checked first: the page shows the platform's own preview (`kubectl apply --dry-run=server`, or `az deployment group what-if`) and only applies after you confirm. Deleting someone's volume or file share asks you to type their email.
 

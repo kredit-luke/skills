@@ -1858,12 +1858,15 @@ export interface ExploreSaveResponse { path: string; mtimeMs: number; size: numb
 
 // ---------------------------------------------------------------- people (local dashboard only)
 
-export type PersonState = 'not-set-up' | 'running' | 'starting' | 'stopped' | 'left' | 'missing' | 'unmanaged';
+export type PersonState = 'not-set-up' | 'running' | 'starting' | 'stopped' | 'left' | 'missing' | 'unmanaged' | 'unknown';
 export interface PersonRow {
   email: string; name: string;
   /** In the directory and active; null when the directory couldn't be read or is "manual". */
   active: boolean | null;
-  state: PersonState; slug: string | null; profile: string | null; needsUpdate: boolean;
+  state: PersonState;
+  /** Why the state is 'unknown': the platform's error, e.g. a lapsed az or kubectl sign-in (null otherwise). */
+  stateError: string | null;
+  slug: string | null; profile: string | null; needsUpdate: boolean;
   /** The workspace role assigned to them (DASHBOARD_ROLE); null: they pick their own. */
   role: string | null;
   /** Their access over their role's default (DASHBOARD_ACCESS); null: the role's. */

@@ -134,3 +134,23 @@ test("Kubernetes: an unreadable namespace fails with how to get credentials", as
   assert.equal(c.kubernetes.status, "fail");
   assert.match(c.kubernetes.fix, /get-credentials/);
 });
+
+test("App Service: a site az can't read isn't taken for no router", async () => {
+  const root = workspace({ hosting: APP_SERVICE });
+  const az = fakeAz({ "webapp config": { error: "AADSTS700082: The refresh token has expired due to inactivity." } });
+  const c = byWhat(await hostedChecks(root, { cli: az.cli, http: okHttp }));
+  assert.equal(c.router.status, "warn");
+  assert.match(c.router.detail, /couldn't tell which Web App.*acme-router: AADSTS700082/);
+  assert.doesNotMatch(c.router.detail, /no Web App/);
+});
+
+test("Kubernetes: deployments it can't list aren't taken for no router", async () => {
+  const hosting = { directory: { type: "manual" }, platform: { type: "kubernetes", context: "gke_x", namespace: "dashboards", template: "hosting/person.yaml" }, profiles: { m: { name: "M" } } };
+  const root = workspace({ hosting, template: null });
+  fs.mkdirSync(path.join(root, "hosting"), { recursive: true });
+  fs.writeFileSync(path.join(root, "hosting", "person.yaml"), "image: europe-docker.pkg.dev/acme/natterjack-dashboard:0.16.0-1\n");
+  const cli = (cmd, a) => (a.includes("namespace") ? { data: {} } : { error: 'deployments.apps is forbidden: User "eng@acme.com" cannot list resource "deployments"' });
+  const c = byWhat(await hostedChecks(root, { cli, http: okHttp }));
+  assert.equal(c.router.status, "warn");
+  assert.match(c.router.detail, /couldn't list the deployments in dashboards: deployments\.apps is forbidden/);
+});

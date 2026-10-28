@@ -6,6 +6,8 @@
  *
  * and the actions that bring them in line: provision, update, change profile or role, start,
  * stop, remove (keeping the volume or not), adopt one made by hand, forget a missing one.
+ * When the platform can't be asked (a lapsed az or kubectl sign-in), a roster row is "unknown",
+ * never "missing": no answer isn't "not there".
  * Every write can be previewed first (dryRun). Nothing here runs on a hosted dashboard.
  */
 
@@ -18,7 +20,7 @@ import { makePlatform, type Dashboard, type Platform } from "./platform.ts";
 import { Roster, type RosterDoc, type RosterPerson, type RosterStatus } from "./roster.ts";
 import { Roles, type RoleEdit, type RoleRow, type RolesStatus } from "./roles.ts";
 
-export type PersonState = "not-set-up" | "running" | "starting" | "stopped" | "left" | "missing" | "unmanaged";
+export type PersonState = "not-set-up" | "running" | "starting" | "stopped" | "left" | "missing" | "unmanaged" | "unknown";
 
 export interface PersonRow {
   email: string;
@@ -26,6 +28,8 @@ export interface PersonRow {
   /** In the directory and active; null when the directory couldn't be read or isn't used. */
   active: boolean | null;
   state: PersonState;
+  /** Why the state is "unknown": the platform's error (null otherwise). */
+  stateError: string | null;
   slug: string | null;
   profile: string | null;
   needsUpdate: boolean;
@@ -155,6 +159,9 @@ export class People {
     const directory = dir.status === "fulfilled" ? dir.value : null;
     const doc = ros.status === "fulfilled" ? ros.value.doc : null;
     const cluster = clu.status === "fulfilled" ? clu.value : null;
+    // A roster row the platform didn't answer for shows this, the fix carried in it (the page shows only the message).
+    const ce = cluster ? null : errors.find((e) => e.source === "cluster")!;
+    const clusterError = ce && (ce.fix && !ce.message.includes(ce.fix) ? `${ce.message} (${ce.fix})` : ce.message);
 
     const byEmail = new Map((directory || []).map((p) => [p.email, p]));
     const emails = new Set<string>([...byEmail.keys(), ...Object.keys(doc?.people || {}), ...(cluster?.keys() || [])]);
@@ -170,9 +177,9 @@ export class People {
       if (!r && !c) state = "not-set-up";
       else if (active === false && (r || c)) state = "left";
       else if (c && !r && doc) state = "unmanaged";
-      else if (r && !c && cluster) state = "missing";
       else if (c) state = c.running ? (c.ready ? "running" : "starting") : "stopped";
-      else state = "missing";
+      else if (cluster) state = "missing";
+      else state = "unknown"; // in the roster, but the platform didn't answer
       let needsUpdate = false;
       if (c && r && !templateError) {
         const profile = this.profile(cfg, r.profile);
@@ -181,6 +188,7 @@ export class People {
       }
       rows.push({
         email, name: d?.name || r?.name || email, active, state,
+        stateError: state === "unknown" ? clusterError : null,
         slug: r?.slug || c?.slug || null, profile: r?.profile || c?.profile || null, needsUpdate, role: r?.role || null, access: r?.access || null,
         provisionedAt: r?.provisionedAt || null, provisionedBy: r?.provisionedBy || null,
       });

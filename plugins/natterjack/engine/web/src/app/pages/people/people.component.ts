@@ -11,10 +11,10 @@ const SETUP_PROMPT = `Set up the dashboard's People page for our hosted dashboar
 
 const LABELS: Record<PersonState, string> = {
   'not-set-up': 'Not set up', running: 'Running', starting: 'Starting', stopped: 'Stopped',
-  left: 'Left', missing: 'Missing', unmanaged: 'Not in roster',
+  left: 'Left', missing: 'Missing', unmanaged: 'Not in roster', unknown: 'Unknown',
 };
 const TAG: Record<PersonState, string> = {
-  'not-set-up': '', running: 'good', starting: 'amber', stopped: '', left: 'bad', missing: 'amber', unmanaged: 'amber',
+  'not-set-up': '', running: 'good', starting: 'amber', stopped: '', left: 'bad', missing: 'amber', unmanaged: 'amber', unknown: 'amber',
 };
 type Filter = 'set-up' | 'not-set-up' | 'attention' | 'all';
 
@@ -116,11 +116,11 @@ interface RoleDraft { id: string | null; label: string; description: string; acc
               <tr [class.dim]="r.state === 'not-set-up'">
                 <td><div class="nm">{{ r.name }}</div><div class="em">{{ r.email }}</div></td>
                 <td>
-                  <span [class]="'tag ' + tag(r.state)">{{ label(r.state) }}</span>
+                  <span [class]="'tag ' + tag(r.state)" [attr.title]="r.stateError">{{ label(r.state) }}</span>
                   @if (r.needsUpdate) { <span class="tag amber" title="The template, its profile or the image changed since it was applied">Needs update</span> }
                 </td>
                 <td>
-                  @if (r.state === 'not-set-up' || r.state === 'unmanaged' || r.state === 'missing') {
+                  @if (r.state === 'not-set-up' || r.state === 'unmanaged' || r.state === 'missing' || r.state === 'unknown') {
                     <span class="muted">{{ profileName(r.profile) || '—' }}</span>
                   } @else {
                     <select (change)="ask(r, 'profile', $any($event.target).value); $any($event.target).value = r.profile || ''">
@@ -131,7 +131,7 @@ interface RoleDraft { id: string | null; label: string; description: string; acc
                 </td>
                 @if (hasRoles()) {
                   <td>
-                    @if (r.state === 'not-set-up' || r.state === 'unmanaged' || r.state === 'missing') {
+                    @if (r.state === 'not-set-up' || r.state === 'unmanaged' || r.state === 'missing' || r.state === 'unknown') {
                       <span class="muted">{{ r.role ? roleLabel(r.role) : '—' }}</span>
                     } @else {
                       <select (change)="ask(r, 'role', undefined, $any($event.target).value); $any($event.target).value = r.role || ''">
@@ -143,7 +143,7 @@ interface RoleDraft { id: string | null; label: string; description: string; acc
                   </td>
                 }
                 <td>
-                  @if (r.state === 'not-set-up' || r.state === 'unmanaged' || r.state === 'missing') {
+                  @if (r.state === 'not-set-up' || r.state === 'unmanaged' || r.state === 'missing' || r.state === 'unknown') {
                     <span class="muted">{{ r.access ? accessLabel(r.access) : '—' }}</span>
                   } @else {
                     <select (change)="ask(r, 'access', undefined, undefined, $any($event.target).value); $any($event.target).value = r.access || ''">
@@ -159,6 +159,8 @@ interface RoleDraft { id: string | null; label: string; description: string; acc
                     @case ('not-set-up') { <button class="btn sm primary" (click)="ask(r, 'provision')">Set up…</button> }
                     @case ('unmanaged') { <button class="btn sm" (click)="ask(r, 'adopt')">Adopt</button> <button class="btn sm danger" (click)="ask(r, 'remove')">Remove…</button> }
                     @case ('missing') { <button class="btn sm" (click)="ask(r, 'provision')">Set up again</button> <button class="btn sm ghost" (click)="ask(r, 'forget')">Forget</button> }
+                    <!-- The platform didn't answer (the error is on the tag): nothing to do until it does. Refresh asks again. -->
+                    @case ('unknown') {}
                     @default {
                       @if (r.needsUpdate) { <button class="btn sm" (click)="ask(r, 'update')">Update</button> }
                       @if (r.state === 'stopped') { <button class="btn sm ghost" (click)="ask(r, 'start')">Start</button> }
@@ -319,7 +321,7 @@ export class PeopleComponent implements OnInit {
   private matches(r: PersonRow, f: Filter): boolean {
     if (f === 'all') return true;
     if (f === 'not-set-up') return r.state === 'not-set-up';
-    if (f === 'attention') return r.needsUpdate || r.state === 'left' || r.state === 'missing' || r.state === 'unmanaged';
+    if (f === 'attention') return r.needsUpdate || r.state === 'left' || r.state === 'missing' || r.state === 'unmanaged' || r.state === 'unknown';
     return r.state !== 'not-set-up';
   }
   readonly counts = computed(() => {
@@ -365,7 +367,7 @@ export class PeopleComponent implements OnInit {
   addByEmail(email: string): void {
     const e = email.trim().toLowerCase();
     if (!e) return;
-    const row = this.view()?.rows.find((r) => r.email === e) || { email: e, name: e, active: null, state: 'not-set-up' as const, slug: null, profile: null, needsUpdate: false, role: null, access: null, provisionedAt: null, provisionedBy: null };
+    const row = this.view()?.rows.find((r) => r.email === e) || { email: e, name: e, active: null, state: 'not-set-up' as const, stateError: null, slug: null, profile: null, needsUpdate: false, role: null, access: null, provisionedAt: null, provisionedBy: null };
     this.ask(row, 'provision');
   }
 

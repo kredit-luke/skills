@@ -173,13 +173,16 @@ export async function hostedChecks(root, o = {}) {
     // The router: a site in the group that isn't a person's dashboard and runs the router image.
     const sites = (res.data || []).filter((r) => String(r.type).toLowerCase() === "microsoft.web/sites");
     const owned = (t) => Object.keys(t || {}).some((k) => k.toLowerCase() === "natterjack-owner") || (t && String(t.purpose || "").toLowerCase() === "hosted-workspace-dashboard" && t.owner);
-    let router = null;
+    let router = null, unread = null;
     for (const s of sites.filter((x) => !owned(x.tags))) {
       const c = cli("az", ["webapp", "config", "show", "-g", rg, "-n", s.name, ...sub, "-o", "json", "--only-show-errors"]);
+      if (c.error) { unread ||= `${s.name}: ${c.error}`; continue; }
       const fx = c.data && c.data.linuxFxVersion;
       if (fx && /natterjack-router|agentic-router/.test(fx)) { router = { name: s.name, image: parseImage(fx) }; break; }
     }
-    if (!router) add("warn", "router", `no Web App in ${rg} runs the router image`, "Hosted dashboards need the router at the shared address (hosting.md, \"Azure App Service\").");
+    // A site az couldn't read may be the router: no answer isn't "not there".
+    if (!router && unread) add("warn", "router", `couldn't tell which Web App in ${rg} runs the router image (${unread})`, "Check that your account can read the group's Web Apps (az login), then run this again.");
+    else if (!router) add("warn", "router", `no Web App in ${rg} runs the router image`, "Hosted dashboards need the router at the shared address (hosting.md, \"Azure App Service\").");
     else {
       const behind = img.version && (!router.image.version || cmpVer(router.image.version, img.version) < 0);
       add(behind ? "warn" : "ok", "router", `${router.name} runs ${router.image.repo.split("/").pop()}:${router.image.tag}${behind ? `, older than the dashboards' ${img.version}` : ""}`,
@@ -203,6 +206,7 @@ export async function hostedChecks(root, o = {}) {
     const ns = cli("kubectl", [...ctx, "get", "namespace", platform.namespace, "-o", "json"]);
     if (ns.error) { add("fail", "kubernetes", `can't read namespace ${platform.namespace}${platform.context ? ` in ${platform.context}` : ""}: ${ns.error}`, "Get credentials for the cluster (gcloud container clusters get-credentials / az aks get-credentials / aws eks update-kubeconfig)."); return out; }
     const deps = cli("kubectl", [...ctx, "-n", platform.namespace, "get", "deployments", "-o", "json"]);
+    if (deps.error) { add("warn", "router", `couldn't list the deployments in ${platform.namespace}: ${deps.error}`, "Check that your account can read deployments there, then run this again."); return out; }
     const images = (deps.data?.items || []).flatMap((d) => (d.spec?.template?.spec?.containers || []).map((c) => c.image));
     const router = images.find((i) => /natterjack-router|agentic-router/.test(i));
     const dashImg = tplText && (/image:\s*["']?([^\s"']*natterjack-dashboard[^\s"']*)/.exec(tplText) || [])[1];

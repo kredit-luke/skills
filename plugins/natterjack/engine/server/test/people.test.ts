@@ -446,6 +446,29 @@ test("People: a directory that can't be read still shows the roster and the clus
   assert.deepEqual(view.rows.map((r) => [r.email, r.state, r.active]), [["bo@acme.com", "stopped", null]]);
 });
 
+test("People: a cluster that can't be asked (a lapsed sign-in) shows roster rows as unknown, with the error, never missing", async () => {
+  const { root, cfg } = workspace();
+  const { run: base, fetcher } = world(cfg);
+  let signedIn = true;
+  const run: Runner = async (name, args, opts) => (name === "kubectl" && !signedIn
+    ? bad("error: You must be logged in to the server (Unauthorized)")
+    : base(name, args, opts));
+  const people = new People(root, { run, fetcher, configDir: cfg });
+  await people.act({ action: "provision", email: "bo@acme.com" });
+  signedIn = false;
+  const view = await people.view(true);
+  assert.deepEqual(view.errors.map((e) => e.source), ["cluster"]);
+  const bo = view.rows.find((r) => r.email === "bo@acme.com")!;
+  assert.equal(bo.state, "unknown");
+  assert.match(bo.stateError!, /Listing dashboards: error: You must be logged in to the server \(Unauthorized\)/);
+  assert.match(bo.stateError!, /sign in to the cluster again/);
+  assert.equal(view.rows.find((r) => r.email === "ana@acme.com")!.state, "not-set-up", "not in the roster: nothing to know");
+  assert.equal(view.rows.find((r) => r.email === "ana@acme.com")!.stateError, null);
+  // Signed in again, Refresh tells them apart again.
+  signedIn = true;
+  assert.equal((await people.view(true)).rows.find((r) => r.email === "bo@acme.com")!.state, "stopped");
+});
+
 // ------------------------------------------------------------------ Azure App Service
 
 const APP_SERVICE = {
@@ -560,6 +583,24 @@ test("People (App Service): a hand-made Web App can be adopted; provision previe
   await people.act({ action: "update", email: "luke@acme.com" });
   assert.equal(az.deployments.at(-1)!.params.appName, "dash-luke");
   assert.equal((await people.view()).rows.find((r) => r.email === "luke@acme.com")!.needsUpdate, false);
+});
+
+test("People (App Service): az signed out shows roster rows as unknown, with the error and az login, never missing", async () => {
+  const { root, cfg } = appServiceWorkspace();
+  const az = azWorld(cfg);
+  let signedIn = true;
+  const run: Runner = async (name, args, opts) => (name === "az" && args[0] === "webapp" && args[1] === "list" && !signedIn
+    ? bad("ERROR: AADSTS700082: The refresh token has expired due to inactivity. Please run 'az login' to setup account.")
+    : az.run(name, args, opts));
+  const people = new People(root, { run, fetcher: az.fetcher, configDir: cfg });
+  await people.act({ action: "provision", email: "bo@acme.com" });
+  signedIn = false;
+  const view = await people.view(true);
+  assert.equal(view.errors[0].source, "cluster");
+  const bo = view.rows.find((r) => r.email === "bo@acme.com")!;
+  assert.equal(bo.state, "unknown");
+  assert.match(bo.stateError!, /Listing Web Apps: .*AADSTS700082/);
+  assert.match(bo.stateError!, /az login/);
 });
 
 test("People (App Service): stop, start, and remove keeping or deleting the file share", async () => {
