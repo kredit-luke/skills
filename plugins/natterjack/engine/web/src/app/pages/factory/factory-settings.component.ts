@@ -206,13 +206,21 @@ const GATE_HELP: Record<FactoryGateId, string> = {
         </div>
 
         <div class="panel">
-          <div class="panel-h"><h2>Approver</h2><span class="ty">advisory for now</span></div>
+          <div class="panel-h"><h2>Approver</h2><span class="ty">{{ c.approver.enabled && c.approver.enforce ? 'decides its gates' : 'advisory' }}</span></div>
           <div class="body">
-            <p class="h">An agent that rates each change's risk so people spend time on the risky ones. Until it has a track record it only advises: nothing merges on its say yet.</p>
+            <p class="h">An agent that rates each change's risk so people spend time on the risky ones. The risk rules below come first (any match means not low risk); then it judges the rest, conservatively. Leave it advisory until its calls match yours: each ticket shows what it would have done.</p>
             <label class="chk"><input type="checkbox" [ngModel]="c.approver.enabled" (ngModelChange)="setApprover('enabled', $event)" /> On</label>
+            <label class="chk"><input type="checkbox" [ngModel]="c.approver.enforce" (ngModelChange)="setApprover('enforce', $event)" [disabled]="!c.approver.enabled" /> Let it decide the gates set to the Approver (approve, and merge as below)</label>
             <div class="grid">
+              <label class="field">Acts as (code-host account)
+                <input type="text" placeholder="e.g. acme-approver-bot" [ngModel]="c.approver.identity || ''" (ngModelChange)="setApprover('identity', $event.trim() || null)" [ngModelOptions]="{ updateOn: 'blur' }" />
+                <span class="faint">It refuses to act as anyone else, and never approves a PR this account wrote.</span>
+              </label>
               <label class="field">Always high risk (paths)
                 <textarea rows="3" class="mono" [ngModel]="c.approver.highRiskPaths.join('\\n')" (ngModelChange)="setRiskPaths($event)" [ngModelOptions]="{ updateOn: 'blur' }"></textarea>
+              </label>
+              <label class="field">Always high risk (ticket labels)
+                <textarea rows="2" [ngModel]="c.approver.highRiskLabels.join('\\n')" (ngModelChange)="setRiskLabels($event)" [ngModelOptions]="{ updateOn: 'blur' }"></textarea>
               </label>
               <div class="grid3">
                 <label class="field">Max files <input type="number" min="1" [ngModel]="c.approver.maxFiles" (ngModelChange)="setApprover('maxFiles', +$event)" /></label>
@@ -377,6 +385,7 @@ export class FactorySettingsComponent implements OnInit {
   setBots(text: string): void { this.edit((c) => { c.reviewers.bots = splitList(text); }); }
   setReviewers(key: 'pipeline' | 'noUnresolved', v: boolean): void { this.edit((c) => { c.reviewers[key] = v; }); }
   setRiskPaths(text: string): void { this.edit((c) => { c.approver.highRiskPaths = splitLines(text); }); }
+  setRiskLabels(text: string): void { this.edit((c) => { c.approver.highRiskLabels = splitLines(text); }); }
   setApprover(key: keyof FactoryConfig['approver'], v: any): void {
     this.edit((c) => { (c.approver as any)[key] = key === 'mergeMethod' ? (v as MergeMethod) : v; });
   }

@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { FactoryConfig, FactoryPresetPatch } from '../../../../../shared/api';
-import { checkMark, duration, guideLink, matchingPreset, specLevel, numOrNull, pipelineSteps, splitLines, splitList, withPreset } from './factory.util';
+import { approverVerdict, checkMark, duration, gateName, guideLink, matchingPreset, specLevel, numOrNull, pipelineSteps, splitLines, splitList, withPreset } from './factory.util';
 
 const STAGES = ['align', 'plan', 'build', 'review', 'security', 'qa', 'guide', 'pr', 'approve', 'merge'] as const;
 
@@ -91,5 +91,17 @@ describe('guideLink', () => {
     expect(guideLink({ url: 'https://github.com/acme/api/pull/42', state: 'closed' })).toBeNull();
     expect(guideLink({ url: 'https://gitlab.com/acme/api/-/merge_requests/4', state: 'open' })).toBeNull();
     expect(guideLink({ url: 'https://github.com/acme/api/pull/42x', state: 'open' })).toBeNull();
+  });
+});
+
+describe('the Approver', () => {
+  const a = (over: object) => ({ enforced: false, action: 'handoff', wouldApprove: false, sampled: false, ...over }) as any;
+  it('says what its assessment came to', () => {
+    expect(approverVerdict(a({ enforced: true, action: 'pass', wouldApprove: true }))).toEqual({ label: 'Approved', cls: 'good' });
+    expect(approverVerdict(a({ wouldApprove: true }))).toEqual({ label: 'Would have approved', cls: 'good' });
+    expect(approverVerdict(a({ wouldApprove: true, sampled: true }))).toEqual({ label: 'Sampled for a person', cls: 'amber' });
+    expect(approverVerdict(a({}))).toEqual({ label: 'Needs a person', cls: 'amber' });
+    expect(approverVerdict(a({ enforced: true, wouldApprove: true, action: 'handoff' }))).toEqual({ label: 'Needs a person', cls: 'amber' });
+    expect(gateName('prePr')).toBe('pre-PR');
   });
 });

@@ -141,6 +141,9 @@ test("scaffold + validate on a scratch workspace", () => {
   assert.match(validate(root).warnings.join("\n"), /spec\.weights\.vibes isn't a spec check/);
   fs.writeFileSync(path.join(cfg, "factory.json"), JSON.stringify({ security: { scanners: { npm: { command: "npm audit" } } } }));
   assert.match(validate(root).errors.join("\n"), /security\.scanners must be a list/);
+  fs.writeFileSync(path.join(cfg, "factory.json"), JSON.stringify({ approver: { enabled: true, enforce: true, highRiskLabels: "security" } }));
+  assert.match(validate(root).errors.join("\n"), /approver\.enforce needs approver\.identity/);
+  assert.match(validate(root).errors.join("\n"), /approver\.highRiskLabels must be a list/);
   fs.writeFileSync(path.join(cfg, "factory.json"), JSON.stringify({ enabled: true, preset: "supervised" }));
   assert.doesNotMatch(validate(root).errors.join("\n"), /factory\.json/);
   fs.unlinkSync(path.join(cfg, "factory.json"));

@@ -483,7 +483,7 @@ The team's rules for agent work, from ticket to merged PR (the **Factory** page,
   "requiredChecks": ["build", "test"],
   "reviewers": { "bots": ["copilot-pull-request-reviewer"], "pipeline": true, "noUnresolved": true },
   "spec": { "readyAt": 80, "needsWorkAt": 50, "minScore": 60, "weights": { "scope": 0 } },
-  "approver": { "enabled": true, "highRiskPaths": ["**/migrations/**", "**/auth/**"], "maxFiles": 20, "maxLines": 400, "maxRepos": 1, "mergeAction": "none", "mergeMethod": "squash", "samplingPct": 0 }
+  "approver": { "enabled": true, "enforce": false, "identity": null, "highRiskPaths": ["**/migrations/**", "**/auth/**"], "highRiskLabels": ["security"], "maxFiles": 20, "maxLines": 400, "maxRepos": 1, "mergeAction": "none", "mergeMethod": "squash", "samplingPct": 0 }
 }
 ```
 
@@ -491,22 +491,26 @@ The team's rules for agent work, from ticket to merged PR (the **Factory** page,
 - **`stages`**: `align`, `plan`, `build`, `review`, `security`, `qa`, `guide`, `pr`, `approve`, `merge`, in pipeline order. Each has `on`, and optionally `agent` (`claude` | `copilot` | `codex`), `model` and `effort`. Stages left out keep their defaults. `build` can't be off. `guide` runs once the PRs are open (`/multirepo:review-guide` posts a guided review on each PR, which the Reviews page shows and a Factory card links to); it never blocks a PR.
 - **`gates`**: `spec` (before planning), `plan` (after it), `prePr` (before the PR) and `merge`, each `human`, `approver`, `auto` (passes when `requiredChecks` pass) or `off`. A gate on the Approver needs `approver.enabled`; `approver.mergeAction` other than `none` needs `gates.merge: "approver"`.
 - **`spec`**: spec readiness, the spec gate's score (0-100) of how ready a ticket is to start on, made when a session reads it (`/multirepo:implement` runs `spec-check.mjs`). It looks for what any good spec has under whatever headings the team uses: problem, outcome, acceptance criteria (testable ones), scope, constraints, affected areas, no open questions, how to verify. `readyAt` / `needsWorkAt` set the levels (Ready, Needs work, below that Not ready); `minScore` stops autonomous runs below it (they comment on the ticket with what's missing); `weights` per check (`problem`, `outcome`, `criteria`, `scope`, `constraints`, `affected`, `questions`, `verify`; defaults 15, 15, 25, 10, 5, 10, 10, 10; 0 turns one off).
+- **`approver`**: the Approver (`/multirepo:approve`), which rates each change `low`, `medium` or `high` risk.
+  - **Risk rules** come first, and any match means not low: a changed path matching `highRiskPaths` (globs), a ticket label in `highRiskLabels`, or a failed security stage (high); more than `maxFiles` files, `maxLines` lines or `maxRepos` repos, or a new dependency in `package.json`, `requirements*.txt`, `go.mod` or a `.csproj` (medium). With none tripped, the agent judges the ticket, plan, diff and review results, conservatively.
+  - **Approving without a person** needs low risk and, at the merge gate, each PR's `requiredChecks` green (every check when none are named), the `reviewers.bots` reviewed with nothing blocking, no unresolved threads when `reviewers.noUnresolved`, not a draft, and the pipeline's own review passed. `samplingPct` of those still go to a person.
+  - **`enforce`** (default off): only then does it decide its gates, approving (and at the merge gate, `mergeAction`: approve only, auto-merge or merge) as the account named in **`identity`**. It refuses to act as any other `gh` account, and never approves a PR that account wrote. Off, it's advisory: each ticket shows its rating and whether it would have approved, and a person decides.
 - **`security.scanners`**: commands the security stage runs in each repo; `when` names a file that must be at the repo's root (e.g. `package-lock.json`, `go.mod`), null for every repo. Findings at `failOn` or worse fail the stage.
 - **The board's columns** are the stages that are on, with each gate that isn't off where it guards, between Queued and Done.
 
 **What the policy does once it's on** (`enabled: true`):
 - **Gates:** `/multirepo:implement` asks `factory.mjs decide` at each gate instead of following its own interactive/`--auto` rules.
   - `human`: a person decides. An unattended run that can't ask stops at the gate and says so on the ticket; a dashboard run asks through a question card. A ticket waiting at a gate shows **Approve and continue** / **Approve only** / **Reject** on the Factory page (full access), with its plan readable there. The decision is recorded with who made it (the signed-in person on a hosted dashboard, else the workspace's git `user.name`) and an optional note; approving and continuing starts the next implement run, where the gate passes; rejecting ends the ticket. While the ticket's own run is going (asking about the gate itself), it's decided there instead. The merge gate only records a decision: merging happens on the code host. A decision stands as a person's answer to the gate's latest request in the ticket's current round; a pre-PR approval lapses once there's new work to check.
-  - `approver`: a person decides for now, until the Approver runs.
+  - `approver`: the Approver rates the risk (`approver.enabled`; off, a person decides). Advisory unless `approver.enforce`: the ticket shows its assessment on the Factory page, and a person decides as for `human`.
   - `auto`: passes on its checks. The spec gate needs the spec to be Ready; the pre-PR gate needs every repo's review and the security stage to pass.
   - `off`: skipped.
-  - `implement` never merges: the merge gate is left to whoever the policy names.
+  - `implement` never merges: the merge gate is left to whoever the policy names (the enforced Approver, as its own account, or a person).
 - **Security stage:** `security-scan.mjs` runs `security.scanners` in each repo they apply to, plus gitleaks (8.19 or later) over the changed files when it's installed. A scanner that times out or can't run fails the stage; one that isn't installed is skipped. An agent security review runs alongside, unless `agentReview` is false. Anything at `failOn` or worse fails the stage.
 - **Limits:**
   - **Budgets:** the dashboard won't start an implement run for a ticket past `itemBudgetUsd` or `itemHours` (summed over its runs), or once the factory's runs today have spent `dayBudgetUsd`.
   - **WIP:** it won't start a new ticket while `wip` others are in flight (started and not done, or an implement run going). Carrying on with a ticket already in flight is fine.
   - `implement` checks WIP itself too, for runs started outside the dashboard.
-- **Not yet:** nothing picks tickets up on its own (`intake` is for the orchestrator to come), and the Approver's settings are saved for when it runs, advisory first.
+- **Not yet:** nothing picks tickets up on its own (`intake` is for the orchestrator to come).
 
 ## repos.json: the Repos page (workspace root)
 

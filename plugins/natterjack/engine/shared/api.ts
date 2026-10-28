@@ -833,11 +833,17 @@ export interface FactoryConfig {
     /** Weight per check (0 turns one off); checks not listed keep their default. */
     weights: Partial<Record<SpecCheckId, number>>;
   };
-  /** The Approver agent (advisory until it has a track record; nothing merges on its say yet). */
+  /** The Approver agent: rates each change's risk; acts on it only when `enforce` is on. */
   approver: {
     enabled: boolean;
+    /** Let it decide its gates (approve, and merge as `mergeAction` says). Off: advisory, a person decides. */
+    enforce: boolean;
+    /** The code-host account it acts as (never a PR's author); it refuses to act as anyone else. */
+    identity: string | null;
     /** Paths that are always high risk (globs). */
     highRiskPaths: string[];
+    /** Ticket labels that are always high risk. */
+    highRiskLabels: string[];
     maxFiles: number;
     maxLines: number;
     maxRepos: number;
@@ -846,6 +852,34 @@ export interface FactoryConfig {
     /** Share of auto-approvable items sent to a person anyway (0-100). */
     samplingPct: number;
   };
+}
+
+/** One rule of the Approver's that tripped (any means "not low risk"). */
+export interface FactoryRiskRule { id: 'path' | 'label' | 'security' | 'unknown' | 'files' | 'lines' | 'repos' | 'dependency'; level: 'medium' | 'high'; detail: string }
+
+/** The Approver's assessment at a gate (multirepo's approver.mjs assess), appended to the manifest. */
+export interface FactoryAssessment {
+  gate: FactoryGateId;
+  level: 'low' | 'medium' | 'high';
+  /** The rules' level (null: none tripped) and the agent's own judgement (null: none given). */
+  rulesLevel: 'medium' | 'high' | null;
+  judged: 'low' | 'medium' | 'high' | null;
+  rules: FactoryRiskRule[];
+  rationale: string | null;
+  concerns: string[];
+  /** Every condition for approving without a person was met. */
+  wouldApprove: boolean;
+  /** Why it couldn't approve without a person. */
+  blockers: string[];
+  /** Sent to a person anyway (the policy's sampling). */
+  sampled: boolean;
+  /** The policy let it decide (else advisory). */
+  enforced: boolean;
+  action: 'pass' | 'ask' | 'stop' | 'handoff';
+  reason: string;
+  by: string | null;
+  sha: string | null;
+  at: string;
 }
 
 export interface FactoryConfigState {
@@ -921,6 +955,8 @@ export interface FactoryManifest {
   stages: { id: FactoryStageId; repo: string | null; agent: string | null; status: FactoryStepStatus; startedAt: string | null; endedAt: string | null; note: string | null }[];
   gates: { id: FactoryGateId; mode: FactoryGateMode | null; decision: 'pending' | 'approved' | 'rejected'; by: string | null; risk: 'low' | 'medium' | 'high' | null; rationale: string | null; sha: string | null; at: string }[];
   prs: { repo: string | null; url: string; number: number | null; state: 'open' | 'merged' | 'closed' | null }[];
+  /** The Approver's assessments, oldest first (part of the audit log). */
+  assessments: FactoryAssessment[];
   /** The pipeline finished (or was abandoned) for this item. */
   done: boolean;
   error: string | null;
@@ -950,8 +986,10 @@ export interface FactoryItem {
   costUsd: number;
   budgetUsd: number | null;
   prs: FactoryManifest['prs'];
-  /** The newest gate decision with a risk rating, if any. */
+  /** The newest risk rating (the Approver's, else a gate decision's), if any. */
   risk: { level: 'low' | 'medium' | 'high'; rationale: string | null } | null;
+  /** The Approver's newest assessment this round, if any. */
+  approver: FactoryAssessment | null;
   /** Runs for this ticket, newest first. */
   runIds: string[];
   /** A run of this ticket waiting on an answer (an implement run first), or null. */

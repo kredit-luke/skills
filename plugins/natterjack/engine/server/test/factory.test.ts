@@ -292,6 +292,9 @@ test("the multirepo scripts read the policy as the dashboard does", async (t) =>
     { enabled: true, limits: { wip: 0 }, gates: { plan: "sometimes", merge: "auto" }, stages: [{ id: "security", on: false }, { id: "qa" }] },
     { limits: { wip: "7.6" }, security: { failOn: "medium", secretScan: false, agentReview: false, scanners: [{ command: "  osv-scanner -r .  ", when: " go.mod ", failOn: "x" }, { name: "n" }] } },
     { security: { scanners: [] } },
+    { requiredChecks: [" build ", "build", 3], reviewers: { bots: ["copilot"], pipeline: false, noUnresolved: false },
+      approver: { enabled: true, enforce: true, identity: " approver-bot ", highRiskPaths: [], highRiskLabels: ["Security", ""], maxFiles: "0", maxLines: 99.6, maxRepos: 500, mergeAction: "merge", mergeMethod: "fast", samplingPct: 101 } },
+    { approver: { enforce: "yes", identity: "", highRiskLabels: "security" } },
   ];
   for (const raw of inputs) {
     const d = normalizeFactoryConfig(raw);
@@ -301,6 +304,7 @@ test("the multirepo scripts read the policy as the dashboard does", async (t) =>
       stages: STAGE_IDS.map((id) => ({ id, on: d.stages.find((s) => s.id === id)!.on })),
       limits: { wip: d.limits.wip },
       security: { agentReview: d.security.agentReview, secretScan: d.security.secretScan, failOn: d.security.failOn, scanners: d.security.scanners },
+      requiredChecks: d.requiredChecks, reviewers: d.reviewers, approver: d.approver,
     }, JSON.stringify(raw));
   }
 });
@@ -394,4 +398,35 @@ test("Copilot on #114: only this round's request can be answered; the guard runs
   assert.deepEqual([a.askingRunId, a.implementLive, a.runIds[0]], ["impl", true, "explain"]);
   const b = item([run("explain", "waiting", false, t(2)), run("impl", "succeeded", true, t(1))]);
   assert.deepEqual([b.askingRunId, b.implementLive], ["explain", false], "an Explain question doesn't hold the gate");
+});
+
+test("the Approver's assessments: read and checked, the newest this round shows on the item and sets its risk", () => {
+  const a = (over: object) => ({ gate: "merge", level: "low", rulesLevel: null, judged: "low", rules: [], rationale: "Small.", concerns: [], wouldApprove: true, blockers: [], sampled: false, enforced: false, action: "handoff", reason: "Advisory.", by: "sam", sha: "abc", at, ...over });
+  const m = normalizeManifest({
+    ticket: "T-9", startedAt: at, roundStartedAt: "2026-10-27T11:00:00.000Z", stages: [{ id: "build", status: "done" }],
+    gates: [{ id: "merge", decision: "pending", risk: "medium", rationale: "gate", at: "2026-10-27T11:30:00.000Z" }],
+    assessments: [
+      a({ level: "high", at: "2026-10-27T10:30:00.000Z" }),
+      a({ at: "2026-10-27T12:00:00.000Z", rules: [{ id: "path", level: "high", detail: "x" }, { id: "nope", level: "x", detail: "y" }], concerns: ["c", 3], action: "jump" }),
+      { gate: "nope", level: "low" }, { gate: "plan", level: "extreme" },
+    ],
+  })!;
+  assert.equal(m.assessments.length, 2, "unknown gates and levels dropped");
+  assert.deepEqual(m.assessments[1].rules, [{ id: "path", level: "high", detail: "x" }]);
+  assert.deepEqual(m.assessments[1].concerns, ["c"]);
+  assert.equal(m.assessments[1].action, "handoff");
+  const item = buildBoard(defaultFactoryConfig(), true, [m], []).items[0];
+  assert.equal(item.approver!.at, "2026-10-27T12:00:00.000Z");
+  assert.deepEqual(item.risk, { level: "low", rationale: "Small." });
+  // An assessment from before this round doesn't count; the gate's rating does.
+  const old = normalizeManifest({ ...m, assessments: [a({ at: "2026-10-27T10:30:00.000Z" })] })!;
+  const oldItem = buildBoard(defaultFactoryConfig(), true, [old], []).items[0];
+  assert.equal(oldItem.approver, null);
+  assert.deepEqual(oldItem.risk, { level: "medium", rationale: "gate" });
+});
+
+test("an enforced Approver needs an identity", () => {
+  const c = normalizeFactoryConfig({ approver: { enabled: true, enforce: true } });
+  assert.ok(factoryConfigProblems(c).some((p) => /name its identity/.test(p)));
+  assert.ok(!factoryConfigProblems(normalizeFactoryConfig({ approver: { enabled: true, enforce: true, identity: "bot" } })).some((p) => /identity/.test(p)));
 });

@@ -401,6 +401,8 @@ export function validate(root) {
     const approverOn = !!(fac.approver && fac.approver.enabled === true);
     if (Object.values(fac.gates || {}).includes("approver") && !approverOn) err("factory.json", "a gate is set to the Approver, but approver.enabled isn't true");
     if (fac.approver && fac.approver.mergeAction && fac.approver.mergeAction !== "none" && (fac.gates || {}).merge !== "approver") err("factory.json", "approver.mergeAction needs gates.merge set to \"approver\"");
+    if (approverOn && fac.approver.enforce === true && !(typeof fac.approver.identity === "string" && fac.approver.identity.trim())) err("factory.json", "approver.enforce needs approver.identity: the account the Approver acts as");
+    for (const k of ["highRiskPaths", "highRiskLabels"]) if (fac.approver && fac.approver[k] !== undefined && !Array.isArray(fac.approver[k])) err("factory.json", `approver.${k} must be a list`);
     const scanners = fac.security && fac.security.scanners;
     if (scanners !== undefined && !Array.isArray(scanners)) err("factory.json", "security.scanners must be a list of { name, command, when, failOn }");
     for (const s of Array.isArray(scanners) ? scanners : []) {

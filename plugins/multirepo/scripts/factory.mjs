@@ -11,18 +11,19 @@
  *
  * Usage (every command takes --ticket, and --root <dir> to start from somewhere other than cwd):
  *   node factory.mjs start --ticket <id> [--title t] [--url u] [--mode interactive|autonomous]
- *                          [--branch b] [--repos a,b] [--plan <file>] [--workroot <dir>]
+ *                          [--branch b] [--repos a,b] [--labels a,b] [--plan <file>] [--workroot <dir>]
  *   node factory.mjs stage --ticket <id> --stage <stage> --status running|done|failed|skipped|pending
  *                          [--repo r] [--agent a] [--note "..."]
  *   node factory.mjs gate  --ticket <id> --gate spec|plan|prePr|merge --decision pending|approved|rejected
  *                          [--by who] [--mode human|approver|auto] [--risk low|medium|high] [--rationale "..."] [--sha s]
  *   node factory.mjs pr    --ticket <id> --url <pr url> [--repo r] [--number n] [--state open|merged|closed]
  *   node factory.mjs done  --ticket <id> [--error "why it stopped"]
+ *   (the Approver's assessments are recorded by approver.mjs assess --ticket <id>)
  *   (spec readiness is recorded by spec-check.mjs --ticket <id>)
  *   node factory.mjs show  --ticket <id>
  *   node factory.mjs policy [--root <dir>]     the workspace's factory.json (or { exists: false })
  *   node factory.mjs decide --ticket <id> --gate spec|plan|prePr|merge [--run interactive|autonomous] [--can-ask yes|no]
- *                          what to do at a gate by the policy: { action: own-rules|skip|pass|ask|stop|handoff, reason }
+ *                          what to do at a gate by the policy: { action: own-rules|skip|pass|ask|stop|handoff|approver, reason }
  *   node factory.mjs wip   --ticket <id>       other tickets in flight vs the policy's WIP limit: { inFlight, limit, ok }
  *   node factory.mjs stage-on --stage <stage>   whether the policy runs a stage: { policy, on } (on: null with no policy on)
  *
@@ -117,6 +118,8 @@ function apply(command, args, m, policy, now) {
     if (args.mode === "autonomous" || args.mode === "interactive") m.mode = args.mode;
     if (str(args.workroot)) m.workroot = path.resolve(args.workroot);
     if (list(args.repos).length) m.repos = [...new Set([...m.repos, ...list(args.repos)])];
+    // The ticket's labels: the Approver's risk rules read them (labels only ever add up).
+    if (list(args.labels).length) m.labels = [...new Set([...(m.labels || []), ...list(args.labels)])];
     m.policy = policy ? { preset: policy.preset ?? null, updatedAt: policy.updatedAt } : m.policy;
     // Picking up a finished (or rejected) ticket again starts a new round: earlier gate decisions no longer stand.
     if (m.done) m.roundStartedAt = now;
@@ -162,6 +165,11 @@ function apply(command, args, m, policy, now) {
     const r = args.result;
     if (!r || typeof r !== "object" || !Number.isFinite(r.score) || !Array.isArray(r.checks)) throw usage("spec needs spec-check.mjs's result");
     m.spec = { score: r.score, level: r.level, readyAt: r.readyAt, needsWorkAt: r.needsWorkAt, minScore: r.minScore ?? null, checks: r.checks, at: now };
+  } else if (command === "assess") {
+    // approver.mjs's assessment: appended, like gate decisions (its history is part of the audit log).
+    const a = args.assessment;
+    if (!a || typeof a !== "object" || !GATES.includes(a.gate) || !RISKS.includes(a.level)) throw usage("assess needs approver.mjs's assessment");
+    (m.assessments ||= []).push({ ...a, at: now });
   } else if (command === "done") {
     m.done = true;
     m.error = str(args.error);
@@ -177,6 +185,9 @@ const ALL_GATE_MODES = ["human", "approver", "auto", "off"];
 const SEVERITIES = ["critical", "high", "medium", "low"];
 /** Stages the dashboard has off by default. */
 const DEFAULT_OFF = ["align", "qa", "approve"];
+/** The Approver's defaults (the dashboard's, engine factory.ts defaultFactoryConfig). */
+export const DEFAULT_HIGH_RISK_PATHS = ["**/migrations/**", "**/auth/**", "infra/**", ".github/workflows/**", "**/*.lock"];
+export const DEFAULT_HIGH_RISK_LABELS = ["security"];
 /** The scanners the dashboard suggests (Factory → Policy) when the policy names none. */
 export const DEFAULT_SCANNERS = [
   { name: "npm audit", command: "npm audit --audit-level=high", when: "package-lock.json", failOn: "high" },
@@ -186,14 +197,18 @@ export const DEFAULT_SCANNERS = [
 
 /**
  * factory.json as the dashboard reads it (engine factory.ts normalizeFactoryConfig), for the
- * parts the pipeline acts on: enabled, gates, stages, the WIP limit and the security stage.
- * The engine's tests check the two agree.
+ * parts the pipeline acts on: enabled, gates, stages, the WIP limit, the security stage, the
+ * required checks, the reviewers and the Approver. The engine's tests check the two agree.
  */
 export function normalizePolicy(raw) {
   const r = raw && typeof raw === "object" ? raw : {};
   const num = (v, d, min, max) => { const n = Number(v); return v != null && v !== "" && Number.isFinite(n) ? Math.min(Math.max(n, min), max) : d; };
   const opt = (v) => (typeof v === "string" && v.trim() ? v.trim().slice(0, 200) : null);
   const sec = r.security && typeof r.security === "object" ? r.security : {};
+  const rev = r.reviewers && typeof r.reviewers === "object" ? r.reviewers : {};
+  const ap = r.approver && typeof r.approver === "object" ? r.approver : {};
+  const strs = (v, max = 50) => (Array.isArray(v) ? [...new Set(v.filter((x) => typeof x === "string").map((x) => x.trim()).filter(Boolean))].slice(0, max) : null);
+  const pick = (v, allowed, d) => (allowed.includes(v) ? v : d);
   const listed = Array.isArray(r.stages) ? r.stages : [];
   return {
     enabled: r.enabled === true,
@@ -212,6 +227,21 @@ export function normalizePolicy(raw) {
           failOn: SEVERITIES.includes(s.failOn) ? s.failOn : "high",
         }))
         : DEFAULT_SCANNERS.map((s) => ({ ...s })),
+    },
+    requiredChecks: strs(r.requiredChecks) ?? [],
+    reviewers: { bots: strs(rev.bots) ?? [], pipeline: rev.pipeline !== false, noUnresolved: rev.noUnresolved !== false },
+    approver: {
+      enabled: ap.enabled === true,
+      enforce: ap.enforce === true,
+      identity: opt(ap.identity),
+      highRiskPaths: strs(ap.highRiskPaths, 100) ?? [...DEFAULT_HIGH_RISK_PATHS],
+      highRiskLabels: strs(ap.highRiskLabels) ?? [...DEFAULT_HIGH_RISK_LABELS],
+      maxFiles: Math.round(num(ap.maxFiles, 20, 1, 10_000)),
+      maxLines: Math.round(num(ap.maxLines, 400, 1, 1_000_000)),
+      maxRepos: Math.round(num(ap.maxRepos, 1, 1, 100)),
+      mergeAction: pick(ap.mergeAction, ["none", "auto-merge", "merge"], "none"),
+      mergeMethod: pick(ap.mergeMethod, ["squash", "merge", "rebase"], "squash"),
+      samplingPct: Math.round(num(ap.samplingPct, 0, 0, 100)),
     },
   };
 }
@@ -257,6 +287,7 @@ export function standingDecision(manifest, gate) {
  *   ask        ask the person (AskUserQuestion; a question card in the dashboard)
  *   stop       stop here and say on the ticket why (record it pending, or rejected)
  *   handoff    nothing more for this run (the merge gate: implement never merges)
+ *   approver   the Approver decides: run it (approver.mjs assess) and do what its `action` says
  * `run` is how this run goes (interactive | autonomous); `canAsk` whether it can ask a person.
  * A person's decision that still stands at the gate (standingDecision) wins: approved passes,
  * rejected stops.
@@ -284,9 +315,15 @@ export function decide(policy, manifest, gate, { run = "interactive", canAsk = r
     return out("stop", `Spec readiness ${spec.score} is below the team's minimum for unattended runs (${spec.minScore}).`);
   }
   if (mode === "off") return out("skip", `The ${name} gate is off.`);
-  if (gate === "merge") return out("handoff", mode === "auto" ? "The merge gate passes when the required checks are green; this run never merges." : "A person (or the Approver, once it runs) merges; this run never merges.");
+  // The Approver rates the risk; it decides only when the policy enforces it, else a person does after it.
+  if (mode === "approver" && p.approver.enabled) {
+    return out("approver", p.approver.enforce
+      ? `The Approver decides the ${name} gate: low risk with every condition met passes${gate === "merge" ? " (and merges as the policy says)" : ""}; anything else goes to a person.`
+      : `The Approver rates the ${name} gate's risk (advisory: a person still decides).`);
+  }
+  if (gate === "merge") return out("handoff", mode === "auto" ? "The merge gate passes when the required checks are green; this run never merges." : "A person merges; this run never merges.");
   if (mode === "human" || mode === "approver") {
-    const who = mode === "approver" ? "The Approver isn't running yet, so a person decides." : `A person decides the ${name} gate.`;
+    const who = mode === "approver" ? "The gate is set to the Approver, but the Approver is off, so a person decides." : `A person decides the ${name} gate.`;
     return askOrStop(who);
   }
   // auto: passes when its checks pass.

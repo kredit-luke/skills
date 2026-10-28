@@ -14,8 +14,8 @@
 import fs from "node:fs";
 import path from "node:path";
 import type {
-  AgentId, FactoryBoard, FactoryColumn, FactoryConfig, FactoryConfigState, FactoryGateId, FactoryGateMode, FactoryItem,
-  FactoryItemStep, FactoryManifest, FactoryPreset, FactoryPresetPatch, FactoryScanner, FactorySpec, FactoryStageConfig, FactoryStageId, FactoryStepStatus, MergeMethod, RunStatus, Severity, SpecCheckId,
+  AgentId, FactoryAssessment, FactoryBoard, FactoryColumn, FactoryConfig, FactoryConfigState, FactoryGateId, FactoryGateMode, FactoryItem,
+  FactoryItemStep, FactoryManifest, FactoryPreset, FactoryPresetPatch, FactoryRiskRule, FactoryScanner, FactorySpec, FactoryStageConfig, FactoryStageId, FactoryStepStatus, MergeMethod, RunStatus, Severity, SpecCheckId,
 } from "../../shared/api.ts";
 import { pipelineOrder, withPresetPatch } from "../../shared/factory-rules.ts";
 import { CONFIG_DIR, LEDGER_DIR, readConfigFile, writeConfigFile } from "./config.ts";
@@ -75,8 +75,9 @@ export function defaultFactoryConfig(): FactoryConfig {
     reviewers: { bots: [], pipeline: true, noUnresolved: true },
     spec: { readyAt: 80, needsWorkAt: 50, minScore: null, weights: {} },
     approver: {
-      enabled: false,
+      enabled: false, enforce: false, identity: null,
       highRiskPaths: ["**/migrations/**", "**/auth/**", "infra/**", ".github/workflows/**", "**/*.lock"],
+      highRiskLabels: ["security"],
       maxFiles: 20, maxLines: 400, maxRepos: 1,
       mergeAction: "none", mergeMethod: "squash", samplingPct: 0,
     },
@@ -185,7 +186,10 @@ export function normalizeFactoryConfig(raw: any): FactoryConfig {
     },
     approver: {
       enabled: ap.enabled === true,
+      enforce: ap.enforce === true,
+      identity: optStr(ap.identity),
       highRiskPaths: strs(ap.highRiskPaths, 100) ?? d.approver.highRiskPaths,
+      highRiskLabels: strs(ap.highRiskLabels) ?? d.approver.highRiskLabels,
       maxFiles: Math.round(num(ap.maxFiles, d.approver.maxFiles, 1, 10_000)),
       maxLines: Math.round(num(ap.maxLines, d.approver.maxLines, 1, 1_000_000)),
       maxRepos: Math.round(num(ap.maxRepos, d.approver.maxRepos, 1, 100)),
@@ -203,6 +207,7 @@ export function factoryConfigProblems(c: FactoryConfig): string[] {
   if (!on("build")) out.push("The Build stage can't be turned off: it's where the work happens.");
   if (Object.values(c.gates).includes("approver") && !c.approver.enabled) out.push("A gate is set to the Approver, but the Approver is off.");
   if (c.approver.mergeAction !== "none" && c.gates.merge !== "approver") out.push("The Approver can only merge when the merge gate is set to the Approver.");
+  if (c.approver.enabled && c.approver.enforce && !c.approver.identity) out.push("The Approver decides only as its own account: name its identity, or leave it advisory.");
   if (c.spec.needsWorkAt >= c.spec.readyAt) out.push("Spec readiness: \"Needs work\" has to start below \"Ready\".");
   if (SPEC_IDS.every((id) => (c.spec.weights[id] ?? SPEC_CHECKS.find((x) => x.id === id)!.weight) === 0)) out.push("Spec readiness: at least one check needs a weight.");
   return out;
@@ -293,8 +298,32 @@ export function normalizeManifest(raw: any): FactoryManifest | null {
       repo: optStr(p.repo), url: p.url, number: Number.isInteger(p.number) ? p.number : null,
       state: pick(p.state, ["open", "merged", "closed", null] as const, null),
     })),
+    assessments: (Array.isArray(raw.assessments) ? raw.assessments : []).filter((a: any) => a && GATE_IDS.includes(a.gate) && RISK_LEVELS.includes(a.level)).slice(-100).map(normalizeAssessment),
     done: raw.done === true,
     error: optStr(raw.error),
+  };
+}
+
+const RISK_LEVELS = ["low", "medium", "high"] as const;
+const RULE_IDS: FactoryRiskRule["id"][] = ["path", "label", "security", "unknown", "files", "lines", "repos", "dependency"];
+const texts = (v: unknown, n: number, max = 1000) => (Array.isArray(v) ? v.filter((x) => typeof x === "string" && x.trim()).slice(0, n).map((x: string) => x.trim().slice(0, max)) : []);
+
+function normalizeAssessment(a: any): FactoryAssessment {
+  return {
+    gate: a.gate, level: a.level,
+    rulesLevel: pick(a.rulesLevel, ["medium", "high", null] as const, null),
+    judged: pick(a.judged, [...RISK_LEVELS, null], null),
+    rules: (Array.isArray(a.rules) ? a.rules : []).filter((r: any) => r && RULE_IDS.includes(r.id)).slice(0, 50)
+      .map((r: any) => ({ id: r.id, level: r.level === "high" ? "high" : "medium", detail: typeof r.detail === "string" ? r.detail.slice(0, 500) : "" })),
+    rationale: typeof a.rationale === "string" ? a.rationale.slice(0, 2000) : null,
+    concerns: texts(a.concerns, 10),
+    wouldApprove: a.wouldApprove === true,
+    blockers: texts(a.blockers, 20),
+    sampled: a.sampled === true,
+    enforced: a.enforced === true,
+    action: pick(a.action, ["pass", "ask", "stop", "handoff"] as const, "handoff"),
+    reason: typeof a.reason === "string" ? a.reason.slice(0, 1000) : "",
+    by: optStr(a.by), sha: optStr(a.sha), at: iso(a.at) || new Date(0).toISOString(),
   };
 }
 
@@ -603,7 +632,9 @@ export function buildBoard(cfg: FactoryConfig, configured: boolean, manifests: F
       for (const r of rows) if (!best || (order.get(r.id) ?? -1) >= (order.get(best.id) ?? -1)) best = r;
       return { repo, status: best ? best.status : "pending" as FactoryStepStatus, stage: best ? best.id : null };
     });
-    const risk = m.gates.filter((g) => g.risk).at(-1);
+    const assessed = m.assessments.filter((a) => !m.roundStartedAt || a.at >= m.roundStartedAt).at(-1) || null;
+    const gateRisk = m.gates.filter((g) => g.risk).at(-1);
+    const risk = assessed ? { risk: assessed.level, rationale: assessed.rationale || assessed.reason } : gateRisk;
     const itemStepList = itemSteps(m, steps, column);
     return {
       ticket: m.ticket, title: m.title, url: m.url, column, state, reason,
@@ -615,6 +646,7 @@ export function buildBoard(cfg: FactoryConfig, configured: boolean, manifests: F
       budgetUsd: cfg.limits.itemBudgetUsd,
       prs: m.prs,
       risk: risk ? { level: risk.risk!, rationale: risk.rationale } : null,
+      approver: assessed,
       runIds: mine.map((r) => r.id),
       askingRunId: (mine.find((r) => r.status === "waiting" && r.implement) || mine.find((r) => r.status === "waiting"))?.id ?? null,
       implementLive: mine.some((r) => r.implement && (r.status === "running" || r.status === "waiting")),

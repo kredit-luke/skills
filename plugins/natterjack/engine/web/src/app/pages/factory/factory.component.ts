@@ -89,7 +89,7 @@ const STATE: Record<FactoryItem['state'], { label: string; cls: string }> = {
                   @if (it.costUsd || it.budgetUsd) {
                     <span [class.over]="it.budgetUsd != null && it.costUsd > it.budgetUsd">\${{ it.costUsd.toFixed(2) }}{{ it.budgetUsd != null ? ' / $' + it.budgetUsd : '' }}</span>
                   }
-                  @if (it.risk; as r) { <span class="risk" [class]="'risk ' + r.level" [title]="r.rationale || ''">{{ r.level }} risk</span> }
+                  @if (it.risk; as r) { <span class="risk" [class]="'risk ' + r.level" [title]="it.approver ? it.approver.reason : (r.rationale || '')">{{ r.level }} risk{{ it.approver?.wouldApprove && !it.approver?.enforced ? ' · would approve' : '' }}</span> }
                 </div>
                 @if (it.waitingGate; as g) { <a class="decide-link" [routerLink]="[]" [queryParams]="{ view: 'tickets', ticket: it.ticket }">Decide the {{ g.label.toLowerCase() }}</a> }
                 @if (it.prs.length || it.runIds.length) {

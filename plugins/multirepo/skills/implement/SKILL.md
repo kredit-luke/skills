@@ -47,7 +47,7 @@ node "$F" done  --ticket <ID> [--error "<why it stopped>"]
 
 | When | Report |
 |---|---|
-| Ticket read (step 1) | `start` with the title, URL and mode, then score the spec and decide the spec gate (below) |
+| Ticket read (step 1) | `start` with the title, URL, mode and `--labels` (the ticket's labels: the Approver's risk rules read them), then score the spec and decide the spec gate (below) |
 | WORKROOT is set (step 5) | `start` again with `--workroot`, `--branch` and `--repos` (it merges into what's there) |
 | Plan file written (step 4) | `stage --stage plan --status done` |
 | Before building (step 4) | the plan gate (below) |
@@ -69,6 +69,7 @@ When the team's Factory policy is on (`factory.json` `enabled`), it decides the 
 | `ask` | `gate --decision pending`, then ask with `AskUserQuestion`, leading with `reason`; record the answer (`approved` / `rejected` `--by user`) |
 | `stop` | `gate --decision pending --rationale "<reason>"`, comment the reason on the ticket, and end the run: it's waiting for a person. Leave the work and the ticket's state as they are. They approve or reject it on the dashboard's Factory page (or in a later session); approving starts a new run, where `decide` says `pass` ("Already approved by …") and the work carries on from the plan file and WORKROOT. For a spec below the team's minimum, record `rejected` and `done --error "spec not ready"` instead |
 | `handoff` | The merge gate: `gate --gate merge --decision pending`; this run never merges |
+| `approver` | The gate is the Approver's: run `/multirepo:approve --ticket <ID> --gate <gate> --root <WORKROOT> --run <mode> --can-ask <yes\|no>` (with the ticket's labels). It records the gate itself and hands back its own `action` (`pass`, `ask`, `stop` or `handoff`): do that, without recording the gate again. Advisory (the policy doesn't enforce it), it always ends with a person deciding |
 
 A rejection ends the ticket's run: `done --error "<gate> rejected"`.
 
@@ -257,7 +258,7 @@ Each runs only when available; none blocks the run.
    - **Interactive**: `AskUserQuestion` "Next step": **Commit and open PRs** (recommended) / **Commit only** / **Not yet** (give WORKROOT and the commands for later).
    - **Autonomous**: `/multirepo:commit --auto --root <WORKROOT> --ticket <TICKET>`, then `/multirepo:pr --root <WORKROOT>`: request Copilot where possible, one status check, **never merge**, PR links on the ticket.
    - **Then the review guide**, once the PRs are open, when `stage-on --stage guide` says `on: true` (no policy on: autonomous runs it, interactive offers it): `/multirepo:review-guide <each PR> --ticket <TICKET> --root <WORKROOT>`, with what review, the security stage and QA found in its risk section. It posts a guide on each PR for its reviewers; a failure is recorded and never blocks the PR.
-   - **Then the merge gate**: `decide --gate merge` is always `handoff` (or `skip`/`own-rules`): record it pending and end. Whoever the policy names merges.
+   - **Then the merge gate**: `decide --gate merge`. `handoff` (or `skip`/`own-rules`): record it pending and end; whoever the policy names merges. `approver`: the Approver rates the PRs and, only when the policy enforces it, approves and merges them; otherwise a person does. This run itself never merges.
    - When this conversation isn't in the worktree, say so and give `cd <WORKROOT>` for a session whose history sits with the code.
 
 ## Errors

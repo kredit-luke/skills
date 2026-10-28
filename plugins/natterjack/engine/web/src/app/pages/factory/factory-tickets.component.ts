@@ -5,7 +5,7 @@ import type { FactoryGateResult, FactoryItem, FactoryItemStep, FactoryStepState,
 import { ApiService } from '../../core/api.service';
 import { ToastService } from '../../core/toast.service';
 import { relTime } from '../../core/util';
-import { checkMark, duration, guideLink, specLevel } from './factory.util';
+import { approverVerdict, checkMark, duration, gateName, guideLink, specLevel } from './factory.util';
 
 const STEP_MARK: Record<FactoryStepState, string> = { done: '✓', running: '●', failed: '✕', waiting: '!', skipped: '–', pending: '○' };
 const STEP_WORD: Record<FactoryStepState, string> = { done: 'Done', running: 'Under way', failed: 'Failed', waiting: 'Waiting', skipped: 'Skipped', pending: 'Not reached' };
@@ -112,6 +112,25 @@ const STATE: Record<FactoryItem['state'], { label: string; cls: string }> = {
                   </ul>
                 </section>
               }
+              @if (it.approver; as a) {
+                <section class="specd apd">
+                  <h3>Approver <span class="risk" [class]="'risk ' + a.level">{{ a.level }} risk</span>
+                    <span class="tag" [class]="verdict(a).cls">{{ verdict(a).label }}</span>
+                    <span class="faint">{{ a.enforced ? 'decides' : 'advisory' }} · {{ gateName(a.gate) }} gate · {{ rel(a.at) }}{{ a.judged && a.rulesLevel ? ' · it judged ' + a.judged + ', the rules say ' + a.rulesLevel : '' }}</span></h3>
+                  @if (a.rationale) { <p class="why">{{ a.rationale }}</p> }
+                  @if (a.rules.length) {
+                    <ul>@for (r of a.rules; track $index) { <li><span class="risk" [class]="'risk ' + r.level">{{ r.level }}</span> <span>{{ r.detail }}</span></li> }</ul>
+                  }
+                  @if (a.concerns.length) {
+                    <p class="faint">Its concerns</p>
+                    <ul>@for (c of a.concerns; track $index) { <li>{{ c }}</li> }</ul>
+                  }
+                  @if (a.blockers.length) {
+                    <p class="faint">Not approved without a person because</p>
+                    <ul>@for (b of a.blockers; track $index) { <li>{{ b }}</li> }</ul>
+                  } @else if (a.sampled) { <p class="faint">Every condition was met; it was sampled for a person anyway.</p> }
+                </section>
+              }
               <table>
                 <thead><tr><th>Step</th><th>State</th><th>Started</th><th>Took</th><th>What happened</th></tr></thead>
                 <tbody>
@@ -190,6 +209,8 @@ const STATE: Record<FactoryItem['state'], { label: string; cls: string }> = {
     .spec.tag { cursor: pointer; border: 0; font: inherit; font-size: 10.5px; }
     .specd h3 { margin: 0 0 6px; font-size: 12.5px; display: flex; flex-wrap: wrap; align-items: center; gap: 6px 10px; }
     .specd h3 .faint { font-weight: 400; font-size: 12px; }
+    .apd p { margin: 4px 0; font-size: 12.5px; }
+    .apd ul + p { margin-top: 8px; }
     .specd ul { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 3px; font-size: 12.5px; }
     .specd li { display: flex; flex-wrap: wrap; gap: 0 6px; align-items: baseline; }
     .line { display: flex; flex-wrap: wrap; align-items: baseline; gap: 0 5px; }
@@ -274,6 +295,8 @@ export class FactoryTicketsComponent {
   rowMark(s: FactoryStepStatus): string { return ROW_MARK[s]; }
   level = specLevel;
   guideLink = guideLink;
+  verdict = approverVerdict;
+  gateName = gateName;
   cmark = checkMark;
   rel(t: string): string { return relTime(t); }
   took(s: FactoryItemStep): string {

@@ -1,4 +1,4 @@
-import type { FactoryConfig, FactoryGateId, FactoryPreset, FactoryPresetPatch, FactoryStageId, SpecLevel } from '../../../../../shared/api';
+import type { FactoryAssessment, FactoryConfig, FactoryGateId, FactoryPreset, FactoryPresetPatch, FactoryStageId, SpecLevel } from '../../../../../shared/api';
 import { pipelineOrder, withPresetPatch } from '../../../../../shared/factory-rules';
 
 export const GATE_IDS: FactoryGateId[] = ['spec', 'plan', 'prePr', 'merge'];
@@ -43,6 +43,19 @@ export function guideLink(pr: { url: string; state: string | null }): { repo: st
   if (pr.state === 'merged' || pr.state === 'closed') return null;
   const m = /^https:\/\/github\.com\/([A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+)\/pull\/(\d+)(?:[/?#]|$)/.exec(pr.url || '');
   return m ? { repo: m[1], n: Number(m[2]), view: 'guide' } : null;
+}
+
+const GATE_NAMES: Record<FactoryGateId, string> = { spec: 'spec', plan: 'plan', prePr: 'pre-PR', merge: 'merge' };
+/** A gate's name in a sentence ("the pre-PR gate"). */
+export function gateName(id: FactoryGateId): string { return GATE_NAMES[id] || id; }
+
+/** What the Approver's assessment came to, in a few words and a tag colour. */
+export function approverVerdict(a: FactoryAssessment): { label: string; cls: string } {
+  if (a.enforced && a.action === 'pass') return { label: 'Approved', cls: 'good' };
+  if (a.wouldApprove && a.sampled) return { label: 'Sampled for a person', cls: 'amber' };
+  // Enforced but not passed (it stopped partway): a person has it.
+  if (a.wouldApprove && !a.enforced) return { label: 'Would have approved', cls: 'good' };
+  return { label: 'Needs a person', cls: 'amber' };
 }
 
 /** One per line, commas kept (commands, globs like src/{a,b}/**). */

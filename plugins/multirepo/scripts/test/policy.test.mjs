@@ -22,13 +22,13 @@ test("decide: no policy on means the skill's own rules; off gates skip; merge al
   assert.throws(() => decide(on({}), null, "deploy"), /--gate must be/);
 });
 
-test("decide: a person's gate asks when the run can ask, else stops; the Approver's is a person's for now", () => {
+test("decide: a person's gate asks when the run can ask, else stops", () => {
   assert.equal(decide(on({ plan: "human" }), null, "plan").action, "ask");
   const auto = decide(on({ plan: "human" }), null, "plan", { run: "autonomous" });
   assert.equal(auto.action, "stop");
   assert.match(auto.reason, /waiting at the plan gate/);
   assert.equal(decide(on({ plan: "human" }), null, "plan", { run: "autonomous", canAsk: true }).action, "ask", "a dashboard run can ask through a question card");
-  assert.match(decide(on({ prePr: "approver" }), null, "prePr").reason, /Approver isn't running yet/);
+  assert.match(decide(on({ prePr: "approver" }), null, "prePr").reason, /the Approver is off, so a person decides/);
   assert.equal(on({}).gates.plan, undefined);
   assert.equal(decide(on({}), null, "plan").mode, "human", "a gate the policy doesn't name is a person's");
 });
@@ -260,4 +260,17 @@ test("a manifest from before rounds keeps its approvals: its round starts when i
   const m = update("start", { ticket: "ENG-1" }, { start: ws, now: t(5) }).manifest;
   assert.equal(m.roundStartedAt, t(0));
   assert.equal(decide(on({ plan: "human" }), m, "plan", { run: "autonomous", canAsk: false }).action, "pass");
+});
+
+test("decide: with the Approver on, its gates are the Approver's (advisory unless enforced)", () => {
+  const p = (approver) => ({ enabled: true, gates: { plan: "approver", merge: "approver", prePr: "human" }, approver });
+  const advisory = decide(p({ enabled: true }), null, "plan");
+  assert.equal(advisory.action, "approver");
+  assert.match(advisory.reason, /advisory: a person still decides/);
+  assert.match(decide(p({ enabled: true, enforce: true }), null, "merge").reason, /merges as the policy says/);
+  assert.equal(decide(p({ enabled: true }), null, "prePr").action, "ask", "a person's gate stays a person's");
+  assert.equal(decide(p({ enabled: false }), null, "merge").action, "handoff");
+  // A person's standing decision still wins.
+  const m = { gates: [{ id: "plan", decision: "pending", at: "2026-01-01T00:00:00Z" }, { id: "plan", decision: "approved", by: "sam", at: "2026-01-01T00:01:00Z" }] };
+  assert.equal(decide(p({ enabled: true, enforce: true }), m, "plan").action, "pass");
 });
