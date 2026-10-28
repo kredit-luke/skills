@@ -239,10 +239,11 @@ export class Reviews {
     return { host: "github", viewer, orgs, prs, truncated: (open || []).length >= SEARCH_LIMIT, fetchedAt: Date.now(), errors };
   }
 
-  /** Who approved each PR, by node id. gh search can't return reviews, so this asks GraphQL, APPROVAL_BATCH PRs a call. */
+  /** Who approved each PR, by node id. gh search can't return reviews, so this asks GraphQL, APPROVAL_BATCH PRs a call.
+   *  Up to 100 reviewers a PR (one page); a PR with more than that is too rare to page through. */
   private async approvals(ids: string[], errors: string[]): Promise<Map<string, string[]>> {
     const out = new Map<string, string[]>();
-    const query = "query($ids:[ID!]!){nodes(ids:$ids){... on PullRequest{id latestOpinionatedReviews(first:50){nodes{state author{login}}}}}}";
+    const query = "query($ids:[ID!]!){nodes(ids:$ids){... on PullRequest{id latestOpinionatedReviews(first:100){nodes{state author{login}}}}}}";
     const batches: string[][] = [];
     for (let i = 0; i < ids.length; i += APPROVAL_BATCH) batches.push(ids.slice(i, i + APPROVAL_BATCH));
     const failed: string[] = [];
