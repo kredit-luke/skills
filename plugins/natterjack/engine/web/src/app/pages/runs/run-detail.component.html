@@ -182,19 +182,25 @@
     @if (view() === 'apps' && workWs(); as w) {
       <dash-workspace-apps class="tab-body apps-tab" [workspace]="w" [toolbar]="true" />
     }
-    <div class="transcript" #transcript (scroll)="onScroll()" [hidden]="view() !== 'transcript'">
-      <ng-container *ngTemplateOutlet="itemsTpl; context: { $implicit: thread().items }" />
-      @if (!thread().items.length) {
-        <div class="empty">{{ r.status === 'running' ? 'Starting…' : 'No transcript recorded.' }}</div>
+    <div class="transcript" #transcript (scroll)="onScroll()" [hidden]="view() !== 'transcript'" [class.loading]="backlogLoading()" [attr.aria-busy]="backlogLoading()">
+      @if (backlogLoading()) {
+        <div class="backlog-loading" role="status"><span class="spin"></span> Loading transcript…</div>
       }
-      @if (review()) {
-        <div class="rate-bar" role="group" aria-label="Rate this run">
-          <span class="q"><b>Finished.</b> Did it do what you asked?</span>
-          <button class="btn primary sm" (click)="verdict('good')">✓ Good</button>
-          <button class="btn sm" (click)="verdict('needed-fix')">✕ Needed fix</button>
-          <span class="hint">Rating clears it from Focus (unrated runs drop out after a day). Or reply below to keep going.</span>
-        </div>
-      }
+      <!-- Hidden, not removed, while the backlog loads: it lays out, so the box can be at its end when shown. -->
+      <div class="transcript-body" #transcriptBody [class.loading]="backlogLoading()">
+        <ng-container *ngTemplateOutlet="itemsTpl; context: { $implicit: thread().items }" />
+        @if (!thread().items.length && !backlogLoading()) {
+          <div class="empty">{{ r.status === 'running' ? 'Starting…' : 'No transcript recorded.' }}</div>
+        }
+        @if (review()) {
+          <div class="rate-bar" role="group" aria-label="Rate this run">
+            <span class="q"><b>Finished.</b> Did it do what you asked?</span>
+            <button class="btn primary sm" (click)="verdict('good')">✓ Good</button>
+            <button class="btn sm" (click)="verdict('needed-fix')">✕ Needed fix</button>
+            <span class="hint">Rating clears it from Focus (unrated runs drop out after a day). Or reply below to keep going.</span>
+          </div>
+        }
+      </div>
     </div>
     <!-- Always mounted (hidden when not selected) so the tab label can show the file count. Not for a mirrored run: its /changes is a 409. -->
     @if (!r.remote) {
@@ -264,7 +270,7 @@
           }
           @if (isOpen(it.key)) {
             <div class="agent-b">
-              @if (c.prompt) { <details class="instr"><summary>Instructions</summary><div class="prompt-box">{{ c.prompt }}</div></details> }
+              @if (c.prompt) { <details class="instr" #instr><summary (click)="instr.open || stopFollowing()">Instructions</summary><div class="prompt-box">{{ c.prompt }}</div></details> }
               <ng-container *ngTemplateOutlet="itemsTpl; context: { $implicit: c.items }" />
               @if (!c.items.length) { <div class="empty">No steps recorded{{ c.status === 'running' ? ' yet' : '' }}.</div> }
             </div>

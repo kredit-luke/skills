@@ -51,7 +51,14 @@
 .strip-more { border: 1px dashed var(--border-strong); background: transparent; border-radius: var(--r-pill); padding: 2px 9px; font-size: 11.5px; color: var(--brand-700); cursor: pointer; }
 .strip-more:hover { border-color: var(--brand-700); background: #fff; }
 
-.transcript { background: var(--paper); padding: 1rem 1.1rem 1.1rem; display: flex; flex-direction: column; gap: 0.45rem; max-height: var(--feed-max-h); min-height: 220px; overflow-y: auto; }
+.transcript { position: relative; background: var(--paper); padding: 1rem 1.1rem 1.1rem; max-height: var(--feed-max-h); min-height: 220px; overflow-y: auto; }
+/* The items, in their own box: the transcript is height-capped, so this is what a ResizeObserver sees grow. */
+.transcript-body { display: flex; flex-direction: column; gap: 0.45rem; }
+/* Switching runs: the backlog lays out hidden (so the box can be pinned to its end) under a spinner over the box. */
+.transcript-body.loading { visibility: hidden; }
+/* Nor scrollable: the hidden body keeps its height, and the wheel would scroll the spinner out of view. */
+.transcript.loading { overflow-y: hidden; }
+.backlog-loading { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; gap: 0.5rem; font-size: 0.78rem; color: var(--text-faint); z-index: 1; }
 .ev { font-size: 0.78rem; line-height: 1.5; }
 .ev.text { color: var(--text); padding: 0.1rem 0; overflow-wrap: anywhere; }
 .ev.sys { font-size: 0.68rem; color: var(--text-faint); font-family: var(--mono); }
@@ -177,6 +184,10 @@
   .tabs { padding: 0 8px; }
   .transcript, .tab-body { max-height: none; overflow-y: visible; min-height: 160px; }
   .transcript { padding: 0.8rem 0.8rem 1rem; }
+  /* The page scrolls here, so a hidden backlog would only push the composer down: drop it, spinner in its place. */
+  .transcript-body.loading { display: none; }
+  .transcript.loading { overflow-y: visible; }
+  .backlog-loading { position: static; padding: 3rem 0; }
   .issue-tab { padding: 0.8rem; }
   .agent-h { flex-wrap: wrap; }
   .agent-h .grow { display: none; }

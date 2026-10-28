@@ -1,4 +1,4 @@
-import { ChangeDetectionStrategy, Component, ElementRef, OnDestroy, computed, effect, inject, input, signal, untracked, viewChild } from '@angular/core';
+import { ChangeDetectionStrategy, Component, ElementRef, Injector, OnDestroy, afterNextRender, computed, effect, inject, input, signal, untracked, viewChild } from '@angular/core';
 import { NgTemplateOutlet } from '@angular/common';
 import type { Continuation, IssueDetail, RunDetail, RunEvent, RunMeta, RunOutput, SendToHostedResponse, TerminalResponse } from '../../../../../shared/api';
 import { ApiService } from '../../core/api.service';
@@ -11,6 +11,7 @@ import { TrustedHtmlPipe } from '../../core/trusted-html.pipe';
 import { copyText, dur, lsGet, lsSet, relTime, tokens, usd } from '../../core/util';
 import { buildThread, countSteps, isOpenModel, openModelSummary, stripAgents, stripSummary, type AgentCard, type ThreadItem } from '../../runs/thread';
 import { RunEventCache, type RunEvents } from '../../runs/event-cache';
+import { BacklogTracker } from '../../runs/backlog';
 import { cancelBlockedReason, pendingLabel, pendingText, remoteAllows, remoteBanner, withListRemote } from '../../runs/remote';
 import { runTicket } from '../../../../../shared/run-ticket';
 import { runWorkspace } from '../../../../../shared/run-workspace';
@@ -60,6 +61,7 @@ export class RunDetailComponent implements OnDestroy {
   private readonly data = inject(DataService);
   private readonly toast = inject(ToastService);
   private readonly small = inject(SmallScreenService).matches;
+  private readonly injector = inject(Injector);
 
   readonly runId = input.required<string>();
   readonly run = signal<RunMeta | null>(null);
@@ -81,8 +83,12 @@ export class RunDetailComponent implements OnDestroy {
   /** The title being edited, or null when not renaming. */
   readonly titleDraft = signal<string | null>(null);
   readonly renaming = signal(false);
+  /** The open run's saved events are still arriving: the transcript shows a spinner, its items hidden. */
+  readonly backlogLoading = signal(false);
 
   private readonly box = viewChild<ElementRef<HTMLElement>>('transcript');
+  /** The transcript's items, inside the height-capped box: what grows as content lays out. */
+  private readonly body = viewChild<ElementRef<HTMLElement>>('transcriptBody');
   private readonly top = viewChild<ElementRef<HTMLElement>>('top');
   private readonly composer = viewChild(RunComposerComponent, { read: ElementRef });
   private readonly titleInput = viewChild<ElementRef<HTMLInputElement>>('titleInput');
@@ -97,6 +103,7 @@ export class RunDetailComponent implements OnDestroy {
   private tick: ReturnType<typeof setInterval> | null = null;
   private stick = true;
   private loadSeq = 0;
+  private readonly backlog = new BacklogTracker();
   /** The run and turn state the outputs were last read for. */
   private outputsKey = '';
 
@@ -222,9 +229,19 @@ export class RunDetailComponent implements OnDestroy {
       const el = this.box()?.nativeElement;
       if (!el || !this.stick) return;
       setTimeout(() => {
-        if (getComputedStyle(el).overflowY !== 'visible') el.scrollTop = el.scrollHeight;
-        else if (!el.hidden) window.scrollTo({ top: document.documentElement.scrollHeight });
+        if (getComputedStyle(el).overflowY !== 'visible') this.pin();
+        else if (!el.hidden && !this.backlog.loading) window.scrollTo({ top: document.documentElement.scrollHeight });
       });
+    });
+    // Content that lays out after the scroll (markdown, agent cards, a late batch of the backlog) grows
+    // the transcript with no new events: while following, stay at its end. The box is height-capped,
+    // so watch its items instead.
+    effect((onCleanup) => {
+      const body = this.body()?.nativeElement;
+      if (!body) return;
+      const ro = new ResizeObserver(() => this.pin());
+      ro.observe(body);
+      onCleanup(() => ro.disconnect());
     });
     this.tick = setInterval(() => { if (this.active() || this.watching()) this.now.set(Date.now()); }, 1000);
     // A turn starting or ending (status, endedAt over the stream's meta): re-read the outputs folder,
@@ -257,8 +274,7 @@ export class RunDetailComponent implements OnDestroy {
         detail.style.setProperty('--composer-h', composerH + 'px');
         detail.classList.toggle('fits', !this.small() && topH + composerH + FEED_SLACK_PX + FEED_MIN_PX <= window.innerHeight);
         // A shrinking box keeps its scrollTop and fires no scroll event: stay on the newest output.
-        const box = this.box()?.nativeElement;
-        if (box && this.stick && getComputedStyle(box).overflowY !== 'visible') box.scrollTop = box.scrollHeight;
+        this.pin();
       };
       set();
       const ro = new ResizeObserver(set);
@@ -292,6 +308,8 @@ export class RunDetailComponent implements OnDestroy {
     this.detailsOpen.set(false);
     const seq = ++this.loadSeq;
     this.closeStream();
+    this.backlog.start(seq);
+    this.backlogLoading.set(true);
     if (this.contTimer) { clearInterval(this.contTimer); this.contTimer = null; }
     this.run.set(this.data.activityRuns().find((r) => r.id === id) || null);
     // A run opened recently shows its cached events now; its stream sends only the newer ones.
@@ -306,6 +324,9 @@ export class RunDetailComponent implements OnDestroy {
     // A phone opens a run at its top (the page would otherwise jump to the composer); following starts
     // once the reader scrolls to the bottom.
     this.stick = !this.pageScrolls();
+    // The spinner sits at the top of the box, over the previous run's (hidden) scroll position otherwise.
+    const box = this.box()?.nativeElement;
+    if (box) box.scrollTop = 0;
     this.streamOpened = false;
     this.eventsFetched = false;
     // The stream replays the saved events, so this GET only needs the run (a big run's events are megabytes).
@@ -317,6 +338,7 @@ export class RunDetailComponent implements OnDestroy {
       this.outputs.set(d.outputs || []);
     } catch (e) {
       if (seq === this.loadSeq) this.loadError.set((e as Error).message);
+      this.backlogDone(seq);
       return;
     }
     // A mirrored run has no terminal continuation on the pod (its /continuation is a 409).
@@ -329,6 +351,7 @@ export class RunDetailComponent implements OnDestroy {
     this.closeStream();
     if (document.hidden) return; // onVisibility connects when the tab is shown
     const cur = this.cur;
+    const seq = this.loadSeq;
     // A browser retry sends Last-Event-ID itself; ?after covers a new connection to a run we already have events for.
     const es = new EventSource('/api/runs/' + encodeURIComponent(id) + '/stream' + (cur.next ? '?after=' + (cur.next - 1) : ''));
     this.es = es;
@@ -339,12 +362,18 @@ export class RunDetailComponent implements OnDestroy {
       eventCache.grow(id, data.length);
       this.addEvents([JSON.parse(data)]);
     });
-    es.addEventListener('meta', (m) => { if (this.es === es) this.setRun(JSON.parse((m as MessageEvent).data)); });
+    // The server replays the saved events, then sends one meta, then live ones: the first meta means the backlog is in.
+    es.addEventListener('meta', (m) => {
+      if (this.es !== es) return;
+      this.setRun(JSON.parse((m as MessageEvent).data));
+      this.backlogDone(seq);
+    });
     es.onopen = () => { if (this.es === es) this.streamOpened = true; };
     // Older server: the stream ends when the run's process does.
     es.addEventListener('done', (m) => {
       if (this.es !== es) return;
       try { const r = JSON.parse((m as MessageEvent).data); if (r) this.setRun(r); } catch { /* ignore */ }
+      this.backlogDone(seq);
       es.close();
       this.es = null;
       this.data.loadRuns();
@@ -364,6 +393,7 @@ export class RunDetailComponent implements OnDestroy {
   private async loadEvents(id: string): Promise<void> {
     if (this.eventsFetched) return;
     this.eventsFetched = true;
+    const seq = this.loadSeq;
     try {
       const d = await this.api.get<RunDetail>('/api/runs/' + encodeURIComponent(id));
       if (this.runId() !== id) return;
@@ -372,6 +402,29 @@ export class RunDetailComponent implements OnDestroy {
       this.cur.next = Math.max(this.cur.next, d.events.length);
       eventCache.grow(id, JSON.stringify(d.events).length);
     } catch { /* the error state is set by load() */ }
+    finally { this.backlogDone(seq); }
+  }
+
+  /**
+   * The backlog is in (once per run): pin to its end after it renders, still hidden, then show it, so
+   * the run opens already at its end rather than jumping there.
+   */
+  private backlogDone(seq: number): void {
+    if (!this.backlog.end(seq)) return;
+    afterNextRender(() => {
+      if (seq !== this.loadSeq) return;
+      this.pin();
+      this.backlogLoading.set(false);
+    }, { injector: this.injector });
+  }
+
+  /**
+   * Desktop, while following: the transcript box to its end. Not while the backlog loads (the spinner
+   * sits at the box's top; backlogDone pins once it's in). Small screens scroll the page instead.
+   */
+  private pin(): void {
+    const el = this.box()?.nativeElement;
+    if (el && this.stick && !this.backlog.loading && getComputedStyle(el).overflowY !== 'visible') el.scrollTop = el.scrollHeight;
   }
 
   private async loadOutputs(id: string): Promise<void> {
@@ -417,6 +470,8 @@ export class RunDetailComponent implements OnDestroy {
   }
 
   onScroll(): void {
+    // load() puts the box at its top for the spinner: that isn't the reader leaving the end.
+    if (this.backlogLoading()) return;
     const el = this.box()?.nativeElement;
     if (el) this.stick = el.scrollHeight - el.scrollTop - el.clientHeight < STICK_PX;
   }
@@ -436,9 +491,15 @@ export class RunDetailComponent implements OnDestroy {
   isOpen(key: string): boolean { return this.expanded().has(key); }
   toggle(key: string): void {
     const s = new Set(this.expanded());
-    if (s.has(key)) s.delete(key); else s.add(key);
+    if (s.has(key)) s.delete(key); else { s.add(key); this.stopFollowing(); }
     this.expanded.set(s);
   }
+
+  /**
+   * The reader opened something in the transcript: stop following, or the resize observer pins the box
+   * to its end, past what they opened. onScroll follows again once they're back at the bottom.
+   */
+  stopFollowing(): void { this.stick = false; }
 
   /** Agent strip click: open the card (and its parents) and jump to it. scrollTop, not smooth scrolling. */
   jumpTo(card: AgentCard): void {
@@ -446,6 +507,9 @@ export class RunDetailComponent implements OnDestroy {
     s.add('agent:' + card.id);
     for (const a of this.thread().agents) if (containsCard(a, card.id)) s.add('agent:' + a.id);
     this.expanded.set(s);
+    // Stop following now: the opened card grows the transcript, and the resize observer would pin it to the end.
+    const stuck = this.stick;
+    this.stick = false;
     setTimeout(() => {
       const box = this.box()?.nativeElement;
       const find = (id: string) => box?.querySelector<HTMLElement>(`[data-agent="${CSS.escape(id)}"]`) || null;
@@ -454,12 +518,12 @@ export class RunDetailComponent implements OnDestroy {
         .sort((a, b) => Math.abs(a.pass - card.pass) - Math.abs(b.pass - card.pass)).map((a) => find(a.id)).find(Boolean) : null;
       const el = find(card.id) || sibling;
       if (box && el) {
-        this.stick = false;
         // Small screens: the transcript has no height cap and the page scrolls instead.
         if (getComputedStyle(box).overflowY === 'visible') el.scrollIntoView({ block: 'start' });
         else box.scrollTop = el.getBoundingClientRect().top - box.getBoundingClientRect().top + box.scrollTop - 8;
         if (el !== find(card.id)) this.toast.show(`Pass ${card.pass} isn't in the transcript; showing pass ${this.thread().agents.find((a) => find(a.id) === el)?.pass ?? '?'} of the same agent.`);
       } else {
+        this.stick = stuck;
         this.toast.show(`${card.agentType || 'This agent'}'s steps aren't in this transcript.`);
       }
     });
