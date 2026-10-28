@@ -4,7 +4,7 @@
   <div class="panel detail">
     <!-- Header, subagents, ticket and tabs: one block that stays at the top of the window as the page scrolls. -->
     <div class="run-top" #top>
-      <div class="detail-h">
+      <div class="detail-h" [class.collapsed]="headerCollapsed()">
         @if (banner(); as b) {
           <!-- The live region is the state only: "Last seen 3m ago" changes every minute and would be re-announced. -->
           <div class="remote-banner" [class]="'remote-banner ' + (b.tone === 'info' ? 'info-note' : b.tone === 'warn' ? 'warn-note' : 'off')"><span role="status">{{ b.text }}</span>@if (b.seen) { <span class="seen">{{ b.seen }}</span> }</div>
@@ -24,6 +24,9 @@
             <span class="name" (dblclick)="editTitle()">{{ r.label }}</span>
             <button class="btn ghost sm rename-btn" type="button" (click)="editTitle()" title="Rename this run" aria-label="Rename this run">✎</button>
           }
+          <span class="grow"></span>
+          <button class="btn ghost sm" type="button" [attr.aria-expanded]="!headerCollapsed()" (click)="toggleHeader()"
+            [title]="headerCollapsed() ? 'Show the run\'s details, actions, subagents and ticket' : 'Show only the title and tabs, so the transcript gets the room'">{{ headerCollapsed() ? 'Expand' : 'Collapse' }} <span aria-hidden="true">{{ headerCollapsed() ? '▾' : '▴' }}</span></button>
         </div>
         <!-- Small screens show model and updated (status is the badge above); the "x" ones are behind Details.
              The toggle comes before what it reveals (reading order); CSS order shows it at the end of the line. -->
@@ -126,7 +129,7 @@
         }
       </div>
   
-      @if (thread().agents.length) {
+      @if (thread().agents.length && !headerCollapsed()) {
         @let st = strip();
         <div class="agent-strip" [class.open]="stripOpen()" aria-label="Subagents">
           <span class="strip-lbl">Subagents <b>{{ thread().agents.length }}</b></span>
@@ -143,7 +146,7 @@
         </div>
       }
   
-      @if (issue(); as iss) {
+      @if (!headerCollapsed() && issue(); as iss) {
         <div class="ticket-strip">
           @if (iss.url) { <a class="badge badge-issue" [href]="iss.url" target="_blank" rel="noopener">{{ iss.id }} ↗</a> } @else { <span class="badge badge-issue">{{ iss.id }}</span> }
           @if (iss.detail; as d) {
