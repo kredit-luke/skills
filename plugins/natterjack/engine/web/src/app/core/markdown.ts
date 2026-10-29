@@ -35,7 +35,7 @@ export function inlineMd(s: string, urls?: MdUrls): string {
       out += src ? '<img src="' + esc(src) + '" alt="' + esc(m[1]) + '" loading="lazy">' : esc(m[0]);
     }
     else if (m[3] != null) out += '<code>' + esc(m[3]) + '</code>';
-    else if (m[4] != null) out += '<b>' + esc(m[4]) + '</b>';
+    else if (m[4] != null) out += '<b>' + inlineMd(m[4], urls) + '</b>'; // **[link](url)**, **`code`** render inside
     else if (m[5] != null) out += '<a href="' + esc(m[6]) + '" target="_blank" rel="noopener">' + esc(m[5]) + '</a>';
     else if (m[9] != null) {
       const href = urls?.link(m[10]);
