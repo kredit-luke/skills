@@ -96,7 +96,8 @@ export function runChecks(ticket, { repos = [] } = {}) {
   else set("outcome", 0, "Doesn't say what's true when it's done.");
 
   // Acceptance criteria: present, and most of them testable.
-  const acText = t.acceptanceCriteria || section(text, /acceptance criteria|\bac\b|definition of done|requirements|criteria|what.?s needed|deliverables/i);
+  // An "Acceptance criteria" heading wins over a broader one ("Business requirements") that comes before it.
+  const acText = t.acceptanceCriteria || section(text, /acceptance criteria|\bac\b/i) || section(text, /definition of done|requirements|criteria|what.?s needed|deliverables/i);
   const ac = items(acText);
   if (!ac.length) set("criteria", 0, "No acceptance criteria.");
   else {
