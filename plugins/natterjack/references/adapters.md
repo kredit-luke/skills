@@ -65,7 +65,7 @@ activity?(since: string /* ISO time */): Promise<{ changed: IssueChange[]; assig
 // AssignedIssue: { id, title, url, state, priority, priorityLabel, blocked, updatedAt }
 ```
 
-For the My updates (Standup) page: the issues the viewer changed since `since` (state moves, closes, comments, issues they created) and their open assigned issues, highest priority first. Helpers in `issues/activity.ts` (`noteChange`, `changesOf`, `isBlocked`, `byPriority`). Linear reads each issue's history and the viewer's comments (`isMe` filters); Jira uses relative JQL (`updatedBy(currentUser(), "-<n>m")`, so the site's time zone doesn't matter) with the changelog; GitHub reads each repo's issue events and comments. **Reject** when the tracker fails (the page shows the error over that section). Without it, the page leaves the tracker out.
+For the My updates (Standup) page: the issues the viewer changed since `since` (state moves, closes, comments, issues they created) and their open assigned issues, highest priority first. Helpers in `issues/activity.ts` (`noteChange`, `changesOf`, `isBlocked`, `byPriority`). Linear reads each issue's history and the viewer's comments (`isMe` filters); Jira uses relative JQL (`updatedBy("<accountId>", "-<n>m")`, so the site's time zone doesn't matter; JQL functions don't nest, so not `currentUser()`) with the changelog; GitHub reads each repo's issue events and comments. **Reject** when the tracker fails (the page shows the error over that section). Without it, the page leaves the tracker out.
 
 ## Meeting tools (the Meetings page)
 

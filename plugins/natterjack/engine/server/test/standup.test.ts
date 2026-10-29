@@ -263,8 +263,9 @@ test("linear: state moves, comments and created-by-you since; assigned started o
 });
 
 test("jira: relative JQL in the configured projects; your changelog, comments and created issues; open assigned issues", async () => {
-  const q = activityJql(90, ["ENG"]);
-  assert.equal(q.changed, 'project in ("ENG") AND (issue in updatedBy(currentUser(), "-90m") OR (reporter = currentUser() AND created >= "-90m")) ORDER BY updated DESC');
+  const q = activityJql(90, ["ENG"], "me1");
+  assert.equal(q.changed, 'project in ("ENG") AND (issue in updatedBy("me1", "-90m") OR (reporter = currentUser() AND created >= "-90m")) ORDER BY updated DESC');
+  assert.equal(activityJql(90, []).changed, '(reporter = currentUser() AND created >= "-90m") ORDER BY updated DESC');
   assert.equal(activityJql(5, []).assigned, "assignee = currentUser() AND statusCategory != Done ORDER BY priority DESC, updated DESC");
 
   const t = new JiraTracker(TMP, { kind: "jira", site: "acme.atlassian.net", projects: ["ENG"] } as any);
