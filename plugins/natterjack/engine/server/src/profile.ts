@@ -29,6 +29,7 @@
 
 import fs from "node:fs";
 import path from "node:path";
+import { writeAtomic } from "./atomic-write.ts";
 import { workspaceConfig, type RoleConfig } from "./config.ts";
 
 export type Profile = "developer" | "reader";
@@ -117,12 +118,7 @@ export function readProfile(ledgerDir: string, roles: RoleConfig[] = workspaceCo
   };
 }
 
-function writeJsonAtomic(file: string, data: unknown) {
-  fs.mkdirSync(path.dirname(file), { recursive: true });
-  const tmp = `${file}.${process.pid}.tmp`;
-  fs.writeFileSync(tmp, JSON.stringify(data, null, 2) + "\n");
-  try { fs.renameSync(tmp, file); } catch { fs.copyFileSync(tmp, file); fs.unlinkSync(tmp); }
-}
+const writeJsonAtomic = (file: string, data: unknown) => writeAtomic(file, JSON.stringify(data, null, 2) + "\n");
 
 /** Read settings.local.json, let `edit` change it, and write it back if it did. Refuses a file that isn't a JSON object. */
 export function editSettings<T>(root: string, edit: (settings: any) => { changed: boolean; result: T }, doing = "changing your role"): T {

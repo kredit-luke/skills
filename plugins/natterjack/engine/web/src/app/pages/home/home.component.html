@@ -1,5 +1,11 @@
 <dash-page-header eyebrow="Home" title="What's happening" sub="What Claude is working on, what needs you, and one-click skills." />
 
+@if (setupBanner(); as b) {
+  <a class="machine-banner setup" routerLink="/setup">
+    <b>Finish getting set up:</b> {{ b.remaining }} step{{ b.remaining === 1 ? '' : 's' }} left<span class="go">Get started →</span>
+  </a>
+}
+
 @if (machineBanner(); as b) {
   <a class="machine-banner" [class.warn]="!b.problems" routerLink="/machine">
     @if (b.problems) {

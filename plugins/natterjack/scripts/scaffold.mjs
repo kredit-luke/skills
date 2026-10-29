@@ -39,7 +39,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { DEFAULT_ENGINE_DIR, ENGINE_DIR, SOURCE_REPO, TAG_PREFIX, TEMPLATES_DIR, args, copyTree, engineDirOf, engineVersion, isMain, listFiles, normalizeRepo, readJson, readRepos, reposSchema, safeEngineDir, safeRelativePath, writeJson } from "./lib.mjs";
 
-const CONFIG_FILES = { workspace: "workspace.json", apps: "apps.json", machine: "machine.json", docs: "docs.json", infrastructure: "infrastructure.json", links: "links.json", connections: "connections.json", meetings: "meetings.json", deck: "deck.json" };
+const CONFIG_FILES = { workspace: "workspace.json", apps: "apps.json", machine: "machine.json", docs: "docs.json", infrastructure: "infrastructure.json", links: "links.json", connections: "connections.json", meetings: "meetings.json", deck: "deck.json", onboarding: "onboarding.json" };
 
 // What each file is, for its $comment (kept short; the full schema is references/config.md).
 const comments = (dir) => ({
@@ -52,6 +52,7 @@ const comments = (dir) => ({
   connections: "MCP servers this workspace relies on (Connections page). Names as `claude mcp list` shows them. Schema: references/config.md.",
   meetings: "Meetings page: the team's meeting tool (source: roam). Without this file the page isn't in the nav. Schema: references/config.md.",
   deck: "Skill cards, routines, limits, default model and the Issues view. Schema: references/config.md.",
+  onboarding: `The Get started page: built-in steps run in this order, and any not listed keep their default place; contacts say who to ask; manual steps are ticked off by each person. Schema: references/config.md (and ${dir}/shared/onboarding.schema.json).`,
 });
 
 /**

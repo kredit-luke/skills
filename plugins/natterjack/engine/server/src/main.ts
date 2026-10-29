@@ -100,6 +100,7 @@ import { Models } from "./models/index.ts";
 import { isRoutedId, routeOf } from "./models/routes.ts";
 import { UpdateCheck, updateCheckAllowed } from "./update-check.ts";
 import { webManifest } from "./pwa.ts";
+import { Onboarding } from "./onboarding.ts";
 
 const DIST_DIR = path.join(DASHBOARD_DIR, "dist", "browser");
 const VERSION = JSON.parse(fs.readFileSync(path.join(DASHBOARD_DIR, "package.json"), "utf-8")).version;
@@ -1015,6 +1016,17 @@ const launcher = new AppLauncher({
   ensurePorts,
 });
 launcher.onChange = () => { live.refresh("jobs"); live.refresh("status"); };
+// The Get started page: each step's state from the check the dashboard already has for it.
+const onboarding = new Onboarding({
+  root: MAIN_WORKSPACE_PATH, ledgerDir: LEDGER_DIR, hosted: !!HOSTED, roleLocked: !!ROLE_LOCK,
+  probes: {
+    claudeAuth: (force) => claudeAuth(force),
+    machine: (force) => machine.get(force),
+    connections: () => connections.list(),
+    atlassian: () => atlassian.get().status(),
+    snapshot: () => { try { const s = snapshotSource(); return s ? { label: s.label, connected: s.status().connected } : null; } catch { return null; } },
+  },
+});
 
 /** /api/apps/jobs and the live `jobs` topic. */
 function jobsView() {
@@ -1037,6 +1049,8 @@ function deckView() {
 
 claudeAuth().catch(() => {}); // sign-in state: runs check it before starting
 machine.get().catch(() => {}); // warm caches so the first page load has them
+// The boot payload's Get started count, once the sign-in and Machine checks above are cached; no `claude mcp list` at startup.
+setTimeout(() => { onboarding.warm().catch(() => {}); }, 5000).unref();
 usage.get().catch(() => {});
 Promise.resolve().then(() => trackers.get().issues(deck.config().issues)).catch(() => {});
 
@@ -1298,6 +1312,8 @@ live.register("deck", deckView, 30000);
 live.register("inbox", () => inbox.get(false), 60000);
 live.register("models", () => models.view(), 30000);
 live.register("factory", factoryBoard, 5000);
+// Get started's count and steps after a sign-in, clone or role change elsewhere (onboarding.refresh()), for every open page.
+onboarding.onChange = (r) => live.publish("onboarding", r);
 // Hosted: each linked computer's online state (RemoteLinkLive[]). Refreshed by every sync, open and
 // revoke; the cadence catches a link going quiet (offline after ONLINE_MS with nothing to refresh it).
 if (mirror) live.register("remote-links", () => mirror.remoteLinks(), 15000);
@@ -1570,6 +1586,7 @@ function bootInfo(user: string | null): Boot {
     })(),
     hosted: HOSTED ? { user } : null,
     hostedUrl: hostedUrl(),
+    onboarding: onboarding.boot(),
   };
 }
 
@@ -1800,7 +1817,7 @@ async function handleRemote(req: http.IncomingMessage, res: http.ServerResponse,
 }
 
 /** POSTs that open something on the server's own screen or ports, refused when hosted. */
-const LOCAL_ONLY_POSTS = new Set(["/api/models/routing", "/api/models/start", "/api/models/pull", "/api/models/cancel", "/api/models/delete", "/api/models/prepare", "/api/models/install-ollama", "/api/machine/install", "/api/machine/google-client", "/api/knowledge/setup", "/api/knowledge/store-source", "/api/docs/preview", "/api/apps/action", "/api/restart"]);
+const LOCAL_ONLY_POSTS = new Set(["/api/models/routing", "/api/models/start", "/api/models/pull", "/api/models/cancel", "/api/models/delete", "/api/models/prepare", "/api/models/install-ollama", "/api/machine/install", "/api/machine/google-client", "/api/knowledge/setup", "/api/knowledge/store-source", "/api/docs/preview", "/api/apps/action", "/api/restart", "/api/onboarding/atlassian-secret"]);
 
 async function handleApi(req: http.IncomingMessage, res: http.ServerResponse, url: URL, user: string | null) {
   const p = url.pathname;
@@ -1969,6 +1986,7 @@ async function handleApi(req: http.IncomingMessage, res: http.ServerResponse, ur
       return sendJson(res, await snapshotStatus(MAIN_WORKSPACE_PATH, source, force));
     }
     if (p === "/api/profile") return sendJson(res, profileInfo());
+    if (p === "/api/onboarding") return sendJson(res, await onboarding.get(force));
     if (p === "/api/apps/jobs") return sendJson(res, jobsView());
     if (p === "/api/apps/log") {
       const job = q("job");
@@ -2186,7 +2204,7 @@ async function handleApi(req: http.IncomingMessage, res: http.ServerResponse, ur
     if (body.action === "code") {
       const r = await claudeLogin.finish(String(body.code || ""));
       // The new account brings its own skills (claude.ai organization skills among them).
-      if (r.ok) usage.forgetCommands();
+      if (r.ok) { usage.forgetCommands(); onboarding.refresh(true); }
       return sendJson(res, r);
     }
     if (body.action === "cancel") { claudeLogin.cancel(); return sendJson(res, { ok: true }); }
@@ -2203,7 +2221,7 @@ async function handleApi(req: http.IncomingMessage, res: http.ServerResponse, ur
     // The GitHub tracker uses the gh CLI's login: a new or dropped one finds a meeting's tickets differently.
     if (body.action === "status") {
       const s = githubLogin.status();
-      if (s.state === "done") meetingLinks.clear();
+      if (s.state === "done") { meetingLinks.clear(); onboarding.refresh(true); }
       return sendJson(res, s);
     }
     if (body.action === "cancel") { githubLogin.cancel(); return sendJson(res, { ok: true }); }
@@ -2343,7 +2361,7 @@ async function handleApi(req: http.IncomingMessage, res: http.ServerResponse, ur
     if (body.action === "start") return sendJson(res, await auth.signInStart());
     if (body.action === "status" || body.action === "finish") {
       const st = body.action === "status" ? auth.signInStatus() : await auth.signInFinish(String(body.url || ""));
-      if (st.done && st.ok) atlassianChanged();
+      if (st.done && st.ok) { atlassianChanged(); onboarding.refresh(); }
       return sendJson(res, st);
     }
     if (body.action === "cancel") { auth.signInCancel(); return sendJson(res, { ok: true }); }
@@ -2613,9 +2631,11 @@ async function handleApi(req: http.IncomingMessage, res: http.ServerResponse, ur
     const job = launcher.job(main, label, async (step) => {
       // One failure doesn't stop the rest; the job fails at the end if any did.
       const failed: string[] = [];
-      for (const r of targets) {
-        try { await step(`Clone ${r.name} into ${r.relativePath}`, cloneStep(MAIN_WORKSPACE_PATH, r)); } catch { failed.push(r.name); }
-      }
+      try {
+        for (const r of targets) {
+          try { await step(`Clone ${r.name} into ${r.relativePath}`, cloneStep(MAIN_WORKSPACE_PATH, r)); } catch { failed.push(r.name); }
+        }
+      } finally { onboarding.refresh(); }
       if (failed.length) throw new Error(`Couldn't clone ${failed.join(", ")}`);
     });
     const { _log, ...pub } = job;
@@ -2644,14 +2664,16 @@ async function handleApi(req: http.IncomingMessage, res: http.ServerResponse, ur
     const label = targets.length === 1 ? `Download ${targets[0].repo.name}` : `Download ${targets.length} repos`;
     const job = launcher.job(main, label, async (step) => {
       const failed: string[] = [];
-      for (const t of targets) {
-        try { await step(`Download ${t.repo.name} into ${t.repo.relativePath}`, downloadStep(MAIN_WORKSPACE_PATH, source, t)); } catch { failed.push(t.repo.name); }
-      }
-      // Someone downloading code instead of cloning it reads it: default them to the reader profile once
-      // (the first reader role; if the team has roles, they're still asked which).
-      if (!readProfile(LEDGER_DIR).chosen) {
-        try { setRole(LEDGER_DIR, MAIN_WORKSPACE_PATH, { profile: "reader" }); } catch {}
-      }
+      try {
+        for (const t of targets) {
+          try { await step(`Download ${t.repo.name} into ${t.repo.relativePath}`, downloadStep(MAIN_WORKSPACE_PATH, source, t)); } catch { failed.push(t.repo.name); }
+        }
+        // Someone downloading code instead of cloning it reads it: default them to the reader profile once
+        // (the first reader role; if the team has roles, they're still asked which).
+        if (!readProfile(LEDGER_DIR).chosen) {
+          try { setRole(LEDGER_DIR, MAIN_WORKSPACE_PATH, { profile: "reader" }); } catch {}
+        }
+      } finally { onboarding.refresh(); }
       if (failed.length) throw new Error(`Couldn't download ${failed.join(", ")}`);
     });
     const { _log, ...pub } = job;
@@ -2710,6 +2732,7 @@ async function handleApi(req: http.IncomingMessage, res: http.ServerResponse, ur
       if (refused) return sendError(res, 403, refused);
       try { setAccess(LEDGER_DIR, MAIN_WORKSPACE_PATH, access); }
       catch (e) { return sendError(res, 400, e.message); }
+      onboarding.refresh();
       return sendJson(res, profileInfo());
     }
     // { role } picks a role; { profile } (older installers) takes the first role on that profile.
@@ -2722,8 +2745,13 @@ async function handleApi(req: http.IncomingMessage, res: http.ServerResponse, ur
     if (refused) return sendError(res, 403, refused);
     try { setRole(LEDGER_DIR, MAIN_WORKSPACE_PATH, pick); }
     catch (e) { return sendError(res, 400, e.message); }
+    onboarding.refresh();
     return sendJson(res, profileInfo());
   }
+  // The Get started page (onboarding.ts). Each answers with the page (OnboardingResponse); the secret is never sent back.
+  if (p === "/api/onboarding/tick") return sendJson(res, await onboarding.tick(body.id, body.done !== false));
+  if (p === "/api/onboarding/dismiss") return sendJson(res, await onboarding.dismiss(body.dismissed !== false));
+  if (p === "/api/onboarding/atlassian-secret") return sendJson(res, await onboarding.saveSecret(body.secret));
   if (p === "/api/docs/preview") return sendJson(res, { url: await docSites.preview(String(body.site || "")) });
   if (p === "/api/docs/external/connect") {
     const { provider } = externalDocs(body.site);

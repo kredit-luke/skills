@@ -28,6 +28,7 @@ export class ApiService {
             meetings: null,
             profile: { current: 'developer', role: 'developer', roleLabel: 'Developer', ask: false, roleLocked: false, hiddenPages: [] },
             hosted: null,
+            onboarding: { enabled: false, remaining: null, show: false },
           });
           return b;
         });

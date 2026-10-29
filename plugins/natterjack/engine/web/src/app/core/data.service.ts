@@ -1,6 +1,6 @@
 import { Injectable, computed, inject, signal } from '@angular/core';
 import type {
-  AgentInfo, ConnectionsResponse, DeckResponse, DocSite, DocsResponse, FactoryBoard, KnowledgeArea, Inbox, Job, JobsResponse, MachineReport, ModelsView, Overview, PresetStats,
+  AgentInfo, ConnectionsResponse, DeckResponse, DocSite, DocsResponse, FactoryBoard, KnowledgeArea, Inbox, Job, JobsResponse, MachineReport, ModelsView, OnboardingResponse, Overview, PresetStats,
   RemoteLinkLive, RunMeta, RunsResponse, Stack, StatusResponse,
 } from '../../../../shared/api';
 import { linkLive, mergeRuns, stampLinks, upsertRunSplit } from '../runs/remote';
@@ -68,6 +68,8 @@ export class DataService {
   /** docs.json areas (Knowledge page). */
   readonly docAreas = signal<KnowledgeArea[]>([]);
   readonly docsLoaded = signal(false);
+  /** The Get started page (sidebar count, Home banner, /setup); null until loaded, and while the page is off. */
+  readonly onboarding = signal<OnboardingResponse | null>(null);
   /** The first runs snapshot has arrived (stream or GET), even an empty one: until then `runs` is a placeholder. */
   readonly runsLoaded = signal(false);
 
@@ -124,6 +126,8 @@ export class DataService {
     on<Inbox>('inbox', (d) => { this.inbox.set(d); this.inboxError.set(null); });
     on<ModelsView>('models', (d) => this.applyModels(d));
     on<FactoryBoard>('factory', (d) => this.factory.set(d));
+    // Sent when the server evaluates Get started again after a sign-in, clone or role change.
+    on<OnboardingResponse>('onboarding', (d) => this.onboarding.set(d));
     es.onopen = () => { if (this.es === es) { this.api.connected.set(true); this.stopPolling(); } };
     es.onerror = () => {
       if (this.es !== es) return;
@@ -270,6 +274,8 @@ export class DataService {
         if (!this.es) this.loadStatus(); // the stream sends status after a job changes
         // Setup changes containers and installs; re-check the machine right away.
         if (j.label.startsWith('Setup')) this.loadMachine(true);
+        // The Get started page's Code step (and its sidebar count).
+        if (/^(Clone|Download)/.test(j.label)) this.loadOnboarding();
       }
     }
   }
@@ -277,10 +283,21 @@ export class DataService {
   async loadMachine(force: boolean): Promise<void> {
     try {
       this.machine.set(await this.api.get<MachineReport>('/api/machine' + (force ? '?force=1' : '')));
-      if (force) this.loadStatus(); // app cards show "Needs …" from this
+      if (force) { this.loadStatus(); this.loadOnboarding(); } // app cards show "Needs …" from this; Get started's steps too
     } catch (e) {
       if (force) this.toast.error((e as Error).message);
     }
+  }
+
+  /**
+   * The Get started page. force: run the Machine checks and `claude auth status` again. Off
+   * (boot.onboarding.enabled false) it isn't asked for; errors keep the last copy.
+   */
+  async loadOnboarding(force = false): Promise<OnboardingResponse | null> {
+    if (this.api.boot() && !this.api.boot()!.onboarding?.enabled) return null;
+    try { this.onboarding.set(await this.api.get<OnboardingResponse>('/api/onboarding' + (force ? '?force=1' : ''))); }
+    catch (e) { if (force) this.toast.error((e as Error).message); }
+    return this.onboarding();
   }
 
   /** wait: until the health check (`claude mcp list`, slow) is in; force: run a new one. */

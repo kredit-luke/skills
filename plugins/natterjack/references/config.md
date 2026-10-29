@@ -326,6 +326,55 @@ The file is optional and names the servers the team relies on. They show first, 
 
 `name` is the name `claude mcp list` shows (`claude.ai <Connector>` for claude.ai connectors, `plugin:<plugin>:<server>` for plugins'). `add` (only for plain names; not for connectors or plugins) is what the page's **Add** button sets up for someone who doesn't have it: `type` `http`/`sse` with `url` and optional `headers`, or `stdio` with `command`, `args`, `env`. Never put a secret in it: write `${VAR}` and the Add dialog asks each person for theirs. A claude.ai connector that's missing points the person at claude.ai's connector settings (an org admin adds it to the organization first). If the team shares servers through a committed `.mcp.json`, list them here too, so people see the ones they haven't approved. Don't list a GitHub MCP server just for GitHub access: the dashboard's GitHub features and runs use the `gh` CLI, which the Machine page checks. List it only when runs need its MCP tools.
 
+## onboarding.json: the Get started page
+
+The Get started page (`/setup`) is one checklist of what a new person has to do, in order: pick a role, sign in to Claude and GitHub, get the Atlassian client secret and connect, get the code, set up the machine, connect the team's MCP servers. Each step's state comes from the check the dashboard already has for it (the Machine page's checks, `claude auth status`, the Atlassian sign-in, the repos on disk, the Connections page), so the page is a view over them and keeps no copy. It opens by itself on first start while a required step isn't done (and asks for the role, instead of the old role question), shows a **Get started (3 left)** item at the top of the sidebar and a Home banner until everything required is done, and can be reopened from Settings. "I'll finish later" stops it opening and the banner; the sidebar item stays while anything required is left, and comes back if a step breaks later (a sign-in expires).
+
+The file is optional. Without it every built-in step that applies shows, in this order:
+
+| Step (`use`) | Shown when | Done when |
+|---|---|---|
+| `role` | `workspace.json` has `roles` and the role isn't assigned (`DASHBOARD_ROLE`) | they picked one |
+| `claude` | always | `claude auth status` says signed in |
+| `github` | `codeHost.kind` is `github` and machine.json has the `gh` check; full access (read access downloads the code instead), unless its step's `when` names `access` or `profile` and matches, e.g. `{ "use": "github", "when": { "access": "read" } }` | that check passes (installed and signed in) |
+| `atlassian-secret` | `atlassian.clientId` is set and something reads Atlassian; not hosted, and `ATLASSIAN_CLIENT_SECRET` isn't set | `.claude/ledger/atlassian-client-secret` holds a secret (pasted on the page, as the secret alone or an `ATLASSIAN_CLIENT_SECRET=` line: owner-only, never sent back to the browser, never committed; Connect to Atlassian works straight after) |
+| `atlassian` | `atlassian.clientId` is set and something reads Atlassian | they connected (the OAuth sign-in); waits for `atlassian-secret` |
+| `repos` | not hosted. Full access: **Clone missing**, when repos.json has repos with a `remote`; read access: **Download the code**, when there's a `snapshot` source and repos in it | every one of those repos is here; cloning from `https://github.com/` waits for `github` (downloading doesn't) |
+| `machine` | machine.json exists; not hosted | no required Machine check is missing (leaving out the ones the `claude`, `github` and `check` steps show) |
+| `connections` | connections.json has `required` servers | each works for them; waits for `claude` |
+
+```json
+{
+  "intro": "Welcome to Acme engineering. This takes about 20 minutes.",
+  "contacts": {
+    "eng-lead": { "label": "Your engineering lead", "how": "Ask in #eng-help on Slack" }
+  },
+  "steps": [
+    { "use": "role" },
+    { "use": "github", "detail": "You need to be in the acme org first. Ask {contact}.", "contact": "eng-lead" },
+    { "use": "atlassian-secret", "contact": "eng-lead", "detail": "Ask {contact} for the Atlassian client secret. Never post it in a channel; they'll send it in a DM." },
+    { "use": "connections", "off": true },
+    { "check": "vpn-client" },
+    { "id": "slack", "kind": "manual", "label": "Join #acme-dev and #acme-alerts", "link": "https://acme.slack.com/channels/acme-dev", "optional": true },
+    { "id": "vpn", "kind": "manual", "label": "Install the VPN", "contact": "eng-lead", "when": { "access": "full" } }
+  ]
+}
+```
+
+| Field | Default | Notes |
+|---|---|---|
+| `intro` | none | A line at the top of the page. |
+| `contacts` | none | Who to ask, by id: `{ "label", "how" }`. A step's `contact` shows "Need help? {label}: {how}" and a **Copy request** button (a ready-to-send message; nothing is sent by itself). |
+| `steps` | every built-in | The order. A built-in not listed keeps its place: right after the nearest earlier built-in that is listed (at the top when none is). `false` turns the page off: no sidebar item, and the role question is a modal again. |
+| `steps[].use` | | A built-in step (the table above). `label`, `detail`, `contact`, `optional` and `when` override its own; `"off": true` leaves it out. |
+| `steps[].check` | | A Machine page check by its machine.json id, as its own step (done when it passes; its Install button works from the page). Left out when the check isn't on that person's Machine page. `id` defaults to the check's, and follows the manual steps' rules (letters, digits, `-`, `_`; not a built-in's): one that doesn't is skipped and reported. |
+| `steps[].kind: "manual"` | | The team's own step: `id` (letters, digits, `-`, `_`) and `label` required; `link` (https), `detail`, `contact`. The person ticks it off; the tick is saved in their `.claude/ledger/onboarding.json`. |
+| `steps[].detail` | the built-in's | `{contact}` becomes the contact's label. |
+| `steps[].optional` | `false` | Not counted in "3 left", and doesn't make the page open. |
+| `steps[].when` | always | As machine.json checks: `access` (`full` / `read`), `profile`, `role` (workspace.json role ids), `os`, `hosted`, `exists`; each one value or a list. |
+
+Each id appears once, and a `check` or manual step can't take a built-in's id. Validate flags unknown `use` values, contacts that aren't in `contacts`, duplicate ids (built-in ones too), a `link` that isn't https, and manual steps without an id or label; it warns about a `check` that isn't in machine.json, a `when.role` that isn't a role, and a machine.json without `gh` (no GitHub sign-in step). Doctor lists the required steps still to do. Schema: `<engine>/shared/onboarding.schema.json`.
+
 ## models.json: the Models page (local and team open models)
 
 The Models page (under Agents) lets runs use open models instead of Claude's, for code search and exploring at no Claude cost. A local or team model is Claude Code with another backend: the run's turns start `claude` with `ANTHROPIC_BASE_URL` set to an Anthropic-compatible server (Ollama, vLLM, or LiteLLM in front of anything). So runs keep their tools, skills, CLAUDE.md, plan mode and run page. Each model that can call tools appears in Ask and Run's **Model** select after Claude's own: `Local · Qwen3.8 27B` (run model `local/<ollama tag>`), or `<endpoint label> · <model>` (`team/<endpoint id>/<model>`). They take no effort setting, show no dollar cost, and don't count against the Claude usage meters or budgets.
@@ -599,7 +648,7 @@ In these docs `<engine>/` means that folder.
 
 ```json
 {
-  "workspace": { … }, "apps": { … }, "machine": { … }, "docs": { … }, "infrastructure": { … }, "links": { … }, "connections": { … }, "meetings": { … }, "deck": { … },
+  "workspace": { … }, "apps": { … }, "machine": { … }, "docs": { … }, "infrastructure": { … }, "links": { … }, "connections": { … }, "meetings": { … }, "deck": { … }, "onboarding": { … },
   "repos": [{ "name": "API", "relativePath": "api", "remote": "https://github.com/acme/api.git", "dependencies": [] }],
   "engineDir": "natterjack",
   "skillName": "natterjack",

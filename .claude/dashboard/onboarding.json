@@ -1,0 +1,38 @@
+{
+  "$comment": "The Get started page: built-in steps run in this order, and any not listed keep their default place; contacts say who to ask; manual steps are ticked off by each person. Schema: references/config.md (and dashboard/shared/onboarding.schema.json).",
+  "intro": "Set up the dogfood dashboard: this repo running the Natterjack engine from its own source.",
+  "contacts": {
+    "maintainer": {
+      "label": "A Natterjack maintainer",
+      "how": "Open an issue on github.com/lhoezee/skills"
+    }
+  },
+  "steps": [
+    {
+      "use": "claude"
+    },
+    {
+      "use": "github",
+      "detail": "Runs push branches and open pull requests on lhoezee/skills as you. No write access to the repo? Ask {contact}.",
+      "contact": "maintainer"
+    },
+    {
+      "check": "dashboard-link",
+      "label": "Link dashboard/ to the engine",
+      "detail": "The dogfood dashboard runs the engine source: dashboard/ is a link to plugins/natterjack/engine (CLAUDE.md, Dogfood dashboard)."
+    },
+    {
+      "use": "machine"
+    },
+    {
+      "id": "multirepo",
+      "kind": "manual",
+      "label": "Install the multirepo plugin",
+      "detail": "Implement on the Issues page runs /multirepo:implement: claude plugin install multirepo@lhoezee-skills.",
+      "optional": true,
+      "when": {
+        "access": "full"
+      }
+    }
+  ]
+}

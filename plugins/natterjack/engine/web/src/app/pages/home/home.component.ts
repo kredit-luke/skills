@@ -60,6 +60,12 @@ export class HomeComponent {
     });
   });
 
+  /** Get started, while required steps are left and they haven't said "I'll finish later" (GET /api/onboarding show). */
+  readonly setupBanner = computed(() => {
+    const o = this.data.onboarding();
+    return o?.enabled && o.show && o.remaining > 0 ? { remaining: o.remaining } : null;
+  });
+
   readonly machineBanner = computed(() => {
     const m = this.data.machine();
     if (!m || (!m.problems && !m.warnings)) return null;

@@ -1,9 +1,12 @@
 import { ChangeDetectionStrategy, Component, HostListener, OnInit, computed, inject, signal } from '@angular/core';
-import { RouterLink, RouterLinkActive, RouterOutlet } from '@angular/router';
+import { NavigationEnd, Router, RouterLink, RouterLinkActive, RouterOutlet } from '@angular/router';
+import { toSignal } from '@angular/core/rxjs-interop';
+import { filter, firstValueFrom, map } from 'rxjs';
 import { ApiService } from './core/api.service';
 import type { UpdateInfo } from '../../../shared/api';
 import { bootStartedAt, waitForRestart } from './core/restart';
 import { DataService } from './core/data.service';
+import { navLabel, onboardingNow, rolePromptWanted, shouldAutoOpen } from './core/onboarding';
 import { LaunchService } from './core/launch.service';
 import { SearchService } from './core/search.service';
 import { ToastService } from './core/toast.service';
@@ -20,6 +23,9 @@ import { SearchPaletteComponent } from './shared/search-palette.component';
  * page depends on; while it's null the page isn't in the nav (meetings: meetings.json).
  */
 interface NavItem { path: string; label: string; icon: string; exact?: boolean; group?: string; needs?: 'meetings' }
+
+/** Set once Get started has opened by itself in this tab, so it doesn't again until the next session. */
+const SETUP_OPENED = 'dash.setup.opened';
 
 @Component({
   selector: 'dash-root',
@@ -40,6 +46,13 @@ interface NavItem { path: string; label: string; icon: string; exact?: boolean; 
           <dash-icon name="search" style="width:15px;height:15px" /><span>Search</span><kbd>Ctrl K</kbd>
         </button>
         <nav class="side-nav">
+          @if (setupLabel(); as l) {
+            <!-- Get started, on top while required steps are left (pages/setup). -->
+            <a routerLink="/setup" routerLinkActive="active" class="setup-nav" [title]="l">
+              <dash-icon name="bolt" style="width:17px;height:17px" />
+              <span class="lbl-t">{{ l }}</span>
+            </a>
+          }
           @for (n of visibleNav(); track n.path) {
             @if (n.group) { <div class="grp">{{ n.group }}</div> }
             <a [routerLink]="n.path" routerLinkActive="active" [routerLinkActiveOptions]="{ exact: !!n.exact }" [title]="n.label">
@@ -86,7 +99,7 @@ interface NavItem { path: string; label: string; icon: string; exact?: boolean; 
     <dash-launch-dialog />
     <dash-search-palette />
     <dash-logs-dialog />
-    <dash-role-prompt />
+    @if (rolePrompt()) { <dash-role-prompt /> }
     @if (toast.current(); as t) { <div class="toast" [class.err]="t.err" role="status">{{ t.msg }}</div> }
   `,
 })
@@ -98,6 +111,7 @@ export class AppComponent implements OnInit {
   private readonly launch = inject(LaunchService);
   private readonly logs = inject(LogsService);
   private readonly titles = inject(WorkspaceTitleStrategy);
+  private readonly router = inject(Router);
   /** Started here: the app badge, title count, chime and notifications for runs waiting on you. */
   private readonly attention = inject(AttentionService);
 
@@ -142,6 +156,15 @@ export class AppComponent implements OnInit {
   });
   readonly machineProblems = computed(() => this.data.machine()?.problems || 0);
   readonly connectionProblems = computed(() => this.data.connections()?.problems || 0);
+  /** Get started: the page's count once loaded, the boot payload's before. */
+  private readonly setup = computed(() => onboardingNow(this.api.boot()?.onboarding, this.data.onboarding()));
+  readonly setupLabel = computed(() => (this.setup().enabled ? navLabel(this.setup().remaining) : null));
+  /** The page they're on, for the role modal (it stays away from /setup, where the role step asks). */
+  private readonly url = toSignal(this.router.events.pipe(filter((e) => e instanceof NavigationEnd), map(() => this.router.url)), { initialValue: this.router.url });
+  /** Until openSetup() has decided whether to open /setup by itself (Home holds the role modal till then). */
+  private readonly autoOpening = signal(true);
+  /** The old role modal only where Get started doesn't ask (it's off, its role step is, or they aren't on it). */
+  readonly rolePrompt = computed(() => rolePromptWanted(this.api.boot(), this.data.onboarding(), this.url(), this.autoOpening()));
   readonly knowledgeStale = computed(() => this.data.docSites().reduce((n, s) => n + (s.stale || 0), 0));
 
   /**
@@ -196,13 +219,31 @@ export class AppComponent implements OnInit {
   ngOnInit(): void {
     this.api.loadBoot().then(() => {
       const ws = this.api.workspace();
-      if (!ws) return;
+      if (!ws) { this.autoOpening.set(false); return; }
       // The team's favicon, and "<page> · <title> · <name>" titles (WorkspaceTitleStrategy).
       if (ws.favicon) document.querySelector<HTMLLinkElement>('link[rel="icon"]')?.setAttribute('href', ws.favicon);
       this.titles.refresh();
       if (!this.api.hosted()) this.pollUpdate();
+      this.openSetup();
     });
     this.data.start();
+  }
+
+  /**
+   * Load Get started for the sidebar count, and open it on a first visit to Home while required steps
+   * are left (once per session). Before the server's first evaluation the boot has no count: wait for it.
+   */
+  private async openSetup(): Promise<void> {
+    try {
+      const boot = this.api.boot()?.onboarding;
+      if (!boot?.enabled) return;
+      const loading = this.data.loadOnboarding();
+      if (boot.remaining === null) await loading;
+      if (!this.router.navigated) await firstValueFrom(this.router.events.pipe(filter((e) => e instanceof NavigationEnd)));
+      if (!shouldAutoOpen(onboardingNow(boot, this.data.onboarding()), this.router.url, !!sessionStorage.getItem(SETUP_OPENED))) return;
+      sessionStorage.setItem(SETUP_OPENED, '1');
+      await this.router.navigateByUrl('/setup');
+    } finally { this.autoOpening.set(false); }
   }
 
   @HostListener('document:keydown', ['$event'])

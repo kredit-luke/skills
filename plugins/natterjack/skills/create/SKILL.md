@@ -59,6 +59,7 @@ Read `references/discovery.md` for how to turn the inventory into questions. Kee
 6. **Links** worth a tile beyond what discovery found (cloud consoles, monitoring, vendor portals), and, if discovery found infrastructure code (Terraform, Helm, Kubernetes) or the user has cloud access, whether to write an Infrastructure doc from it.
 7. **Dashboard port**: the suggested free one (3333 unless taken).
 8. **Install folder**: where the engine goes (default `natterjack/`; pick another if the workspace already has a folder or skill by that name, e.g. `tools/natterjack`). The workspace skill takes its last segment as its name (`/natterjack`).
+9. **Getting a newcomer started**: who a new person asks for what they can't do alone (org or repo access, the Atlassian client secret when `atlassian.clientId` is set, VPN or accounts), and how to reach them (a Slack channel, a person). Also any setup steps of the team's own (join channels, install a VPN, request an account). These go in `onboarding.json` (the dashboard's Get started page).
 
 Don't ask what the inventory already answers with confidence; state it in the summary instead.
 
@@ -68,10 +69,24 @@ The **Infrastructure** page is for infrastructure only (accounts, environments, 
 
 ## 4. Write the plan, confirm, scaffold
 
-Build a plan file (shape in `references/config.md`, "plan.json"): the contents of `workspace.json`, `apps.json`, `machine.json`, `docs.json`, `infrastructure.json` (only with infrastructure info; see below), `links.json`, `connections.json` (only when the team relies on MCP servers: their tracker or docs connector, e.g. `claude.ai Linear`, `claude.ai Atlassian`; see config.md), `deck.json`, plus `repos`, `engineDir` (only when it isn't `natterjack`), `skills: ["dashboard"]`, `claudeMd: true`. Show the user a short summary (apps with ports, tracker, docs, checks, port, install folder) and get a yes. Then:
+Build a plan file (shape in `references/config.md`, "plan.json"): the contents of `workspace.json`, `apps.json`, `machine.json`, `docs.json`, `infrastructure.json` (only with infrastructure info; see below), `links.json`, `connections.json` (only when the team relies on MCP servers: their tracker or docs connector, e.g. `claude.ai Linear`, `claude.ai Atlassian`; see config.md), `deck.json`, `onboarding.json` (a starter for the Get started page: see below), plus `repos`, `engineDir` (only when it isn't `natterjack`), `skills: ["dashboard"]`, `claudeMd: true`. Show the user a short summary (apps with ports, tracker, docs, checks, port, install folder) and get a yes. Then:
 
 ```bash
 node "${CLAUDE_PLUGIN_ROOT}/scripts/scaffold.mjs" <workspace> --plan <scratch>/plan.json
+```
+
+The starter `onboarding.json` holds only what the built-in steps can't know (they come from the config above: role from `roles`, GitHub from the `gh` check, the Atlassian secret and sign-in from `atlassian.clientId`, the code from repos.json, the machine from machine.json, MCP servers from connections.json). Give it an `intro` line, the `contacts` from question 9, a `contact` on the steps people need help with (`github` for org access, `atlassian-secret` for the secret, with a `detail` such as "Ask {contact} for it in a DM"), and the team's own steps as `"kind": "manual"` (with a `link` where there's a page for it). Leave `steps` out entirely when there's nothing to add: every built-in that applies still shows. Shape in `references/config.md`, "onboarding.json":
+
+```json
+{
+  "intro": "Welcome to Acme engineering. This takes about 20 minutes.",
+  "contacts": { "eng-lead": { "label": "Your engineering lead", "how": "Ask in #eng-help on Slack" } },
+  "steps": [
+    { "use": "github", "detail": "You need to be in the acme org first. Ask {contact}.", "contact": "eng-lead" },
+    { "use": "atlassian-secret", "contact": "eng-lead", "detail": "Ask {contact} for the Atlassian client secret; they'll send it in a DM." },
+    { "id": "slack", "kind": "manual", "label": "Join #acme-dev", "link": "https://acme.slack.com/channels/acme-dev", "optional": true }
+  ]
+}
 ```
 
 It copies the engine to the install folder (`<engine>/` from here on; it refuses a folder that's already something else), writes the config files (never overwriting existing ones unless `--force`), records the engine version and folder in `.claude/dashboard/engine.json`, updates `.gitignore`, installs the workspace's dashboard skill (named after the folder, e.g. `natterjack`) and adds a section to CLAUDE.md.

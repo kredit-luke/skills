@@ -1,0 +1,220 @@
+<dash-page-header eyebrow="Get started" title="Get set up" [sub]="sub()">
+  @if (o()?.enabled) {
+    <span class="ty">{{ meta() }}</span>
+    <button class="btn sm" type="button" (click)="reload(true)" [disabled]="busy()">{{ busy() ? 'Checking…' : 'Re-check' }}</button>
+    @if (!finished()) { <button class="btn ghost sm" type="button" (click)="later()">I'll finish later</button> }
+  }
+</dash-page-header>
+
+@let page = o();
+@if (!page) {
+  <div class="empty">{{ loaded() ? "Couldn't load the checklist. Is the dashboard running?" : 'Checking…' }}</div>
+} @else if (!page.enabled) {
+  <div class="panel"><div class="empty md tight" style="padding:2rem">
+    <p>Get started is turned off for this workspace (<code>"steps": false</code> in <code>.claude/dashboard/onboarding.json</code>). Your role is in Settings; sign-ins and tools are on the Machine page.</p>
+  </div></div>
+} @else {
+  @if (page.error) { <div class="warn-note">onboarding.json: {{ page.error }}</div> }
+
+  <ol class="steps">
+    @for (s of steps(); track s.id; let i = $index) {
+      <li class="step" [class]="'step ' + s.state" [class.open]="isOpen(s)" [class.optional]="s.optional">
+        <button type="button" class="step-h" [id]="'step-h-' + s.id" (click)="toggle(s)" [attr.aria-expanded]="isOpen(s)" [attr.aria-controls]="'step-b-' + s.id">
+          <span class="ic" aria-hidden="true">
+            @switch (s.state) {
+              @case ('done') { ✓ }
+              @case ('checking') { <span class="spin"></span> }
+              @default { {{ i + 1 }} }
+            }
+          </span>
+          <span class="tt">
+            <span class="nm">{{ s.label }}</span>
+            @if (s.status) { <span class="st">{{ s.status }}</span> }
+          </span>
+          <span class="chip" [class]="'chip ' + s.state">{{ stateLabel(s) }}</span>
+        </button>
+
+        @if (isOpen(s)) {
+          <div class="step-b" [id]="'step-b-' + s.id" role="region" [attr.aria-labelledby]="'step-h-' + s.id">
+            @if (s.detail) { <p class="detail">{{ s.detail }}</p> }
+
+            @if (s.state === 'blocked') {
+              <div class="info-note">
+                Do
+                @for (b of s.blockedBy; track b; let last = $last) {
+                  <button type="button" class="linkish" (click)="goTo(b)">{{ labelOf(b) }}</button>{{ last ? '' : ' and ' }}
+                }
+                first.
+              </div>
+            } @else if (s.state !== 'done') {
+              @switch (s.kind) {
+                @case ('role') {
+                  @if (roles(); as rs) {
+                    <div class="roles">
+                      @for (r of rs; track r.id) {
+                        <button type="button" class="role" [disabled]="roleSaving()" (click)="pickRole(r)">
+                          <span class="t">{{ r.label }}</span>
+                          @if (r.description) { <span class="d">{{ r.description }}</span> }
+                        </button>
+                      }
+                    </div>
+                  } @else { <div class="ty">Loading the roles…</div> }
+                }
+                @case ('atlassian-secret') {
+                  <form class="secret" (submit)="$event.preventDefault(); saveSecret(secret)">
+                    <label class="lbl" [for]="'secret-' + s.id">Client secret</label>
+                    <span class="row">
+                      <input #secret [id]="'secret-' + s.id" type="password" autocomplete="off" spellcheck="false" placeholder="Paste the secret you were sent">
+                      <button class="btn primary sm" type="submit" [disabled]="secretSaving()">{{ secretSaving() ? 'Saving…' : 'Save' }}</button>
+                    </span>
+                    <span class="ty">Kept on this computer in <code>.claude/ledger</code>, never committed or shown again.</span>
+                    @if (secretError()) { <span class="form-err" role="alert">{{ secretError() }}</span> }
+                  </form>
+                }
+                @case ('atlassian') {
+                  <dash-atlassian-connect [inputId]="'atlassian-callback-setup'" (connected)="reload(false)" />
+                }
+                @case ('repos') {
+                  @if (s.repos; as r) {
+                    <div class="acts">
+                      @if (r.via === 'download' && r.source && !r.source.connected) {
+                        <a class="btn primary sm" routerLink="/repos">Connect {{ r.source.label }} on the Repos page</a>
+                      } @else if (r.missing.length) {
+                        <button class="btn primary sm" type="button" [disabled]="jobRunning() || jobStarting()" (click)="getCode(s)">
+                          @if (jobRunning()) { {{ job()!.label.startsWith('Download') ? 'Downloading…' : 'Cloning…' }} }
+                          @else { {{ r.via === 'download' ? 'Download code' : 'Clone missing' }} ({{ r.missing.length }}) }
+                        </button>
+                      }
+                      <a class="btn ghost sm" routerLink="/repos">Repos page</a>
+                    </div>
+                  }
+                  @if (job(); as j) {
+                    <button type="button" class="job" (click)="openJob(j)" title="Show the log">
+                      <span class="t"><span [class]="'sdot ' + jobDot(j)"></span>{{ j.label }}<span class="ty">{{ j.error ? j.error : '' }}</span></span>
+                      <ol>
+                        @for (st of j.steps; track $index) {
+                          <li [class.failed]="st.status === 'failed'"><span class="m">@if (st.status === 'done') { ✓ } @else if (st.status === 'failed') { ✕ } @else { <span class="spin"></span> }</span>{{ st.label }}{{ st.error ? ': ' + st.error : '' }}</li>
+                        }
+                      </ol>
+                    </button>
+                  }
+                }
+                @case ('machine') {
+                  @if (s.machine?.missing?.length) {
+                    <ul class="checks">
+                      @for (c of s.machine!.missing; track c.id) {
+                        <li>
+                          <span class="nm">{{ c.label }}</span>
+                          @if (c.detail) { <span class="dt">{{ c.detail }}</span> }
+                          <span class="fx">
+                            @if (c.fix) { <code title="Click to copy" (click)="copy(c.fix)">{{ c.fix }}</code> }
+                            @if (c.install && !hosted()) { <button class="btn primary sm" type="button" [disabled]="installing() === c.id" (click)="install(c)" title="Opens a terminal running this command, so you can see and approve any prompts">{{ c.install }}</button> }
+                          </span>
+                        </li>
+                      }
+                    </ul>
+                  }
+                  <div class="acts">
+                    <button class="btn sm" type="button" (click)="reload(true)" [disabled]="busy()">{{ busy() ? 'Checking…' : 'Re-check' }}</button>
+                    <a class="btn ghost sm" routerLink="/machine">Machine page</a>
+                  </div>
+                }
+                @case ('connections') {
+                  @if (s.connections?.attention?.length) {
+                    <p class="ty">Not working for you yet: {{ s.connections!.attention.join(', ') }}. Sign in to, approve or add each on the Connections page.</p>
+                  }
+                  <div class="acts"><a class="btn primary sm" routerLink="/connections">Open Connections</a></div>
+                }
+                @case ('manual') {
+                  <div class="acts">
+                    @if (s.link) { <a class="btn sm" [href]="s.link" target="_blank" rel="noopener">Open ↗</a> }
+                    <button class="btn primary sm" type="button" [disabled]="ticking() === s.id" (click)="tick(s, true)">Mark as done</button>
+                  </div>
+                }
+                @default {
+                  <!-- claude, github and check steps: the Machine page check each mirrors. -->
+                  <div class="signin">
+                    @if (s.signIn === 'claude') {
+                      @if (!signInUrl()) {
+                        <button class="btn primary sm" type="button" [disabled]="signingIn()" (click)="startSignIn()">{{ signingIn() ? 'Starting…' : 'Sign in to Claude' }}</button>
+                      } @else {
+                        <ol>
+                          <li><a [href]="signInUrl()" target="_blank" rel="noopener">Open the Claude sign-in page ↗</a> and sign in with your work account.</li>
+                          <li><label for="claude-code-setup">Paste the code it shows you:</label>
+                            <span class="row">
+                              <input #code id="claude-code-setup" type="text" autocomplete="off" spellcheck="false" placeholder="Sign-in code" (keydown.enter)="finishSignIn(code)">
+                              <button class="btn primary sm" type="button" [disabled]="signingIn()" (click)="finishSignIn(code)">{{ signingIn() ? 'Signing in…' : 'Finish sign-in' }}</button>
+                              <button class="btn ghost sm" type="button" (click)="cancelSignIn()">Cancel</button>
+                            </span>
+                          </li>
+                        </ol>
+                      }
+                    } @else if (s.signIn === 'github') {
+                      @if (!ghCode()) {
+                        <button class="btn primary sm" type="button" [disabled]="ghBusy()" (click)="githubSignIn()">{{ ghBusy() ? 'Starting…' : 'Sign in to GitHub' }}</button>
+                      } @else {
+                        <ol>
+                          <li>Copy this code: <button type="button" class="code" title="Click to copy" (click)="copy(ghCode()!)">{{ ghCode() }}</button></li>
+                          <li><a [href]="ghUrl()" target="_blank" rel="noopener">Open GitHub's device page ↗</a>, enter the code and authorize.</li>
+                        </ol>
+                        <span class="row"><span class="ty" role="status">Waiting for GitHub…</span> <button class="btn ghost sm" type="button" (click)="cancelGithub()">Cancel</button></span>
+                      }
+                    } @else if (s.check; as c) {
+                      @if (c.detail && c.detail !== s.status) { <p class="ty">{{ c.detail }}</p> }
+                      <span class="fx">
+                        @if (c.install && !hosted()) {
+                          <button class="btn primary sm" type="button" [disabled]="installing() === c.id" (click)="install(c)" title="Opens a terminal running this command, so you can see and approve any prompts">{{ c.install }}</button>
+                        }
+                        @if (c.fix) { <code title="Click to copy" (click)="copy(c.fix)">{{ c.fix }}</code> }
+                      </span>
+                    } @else if (s.kind === 'claude' && !hosted()) {
+                      <!-- machine.json has no Claude check to run: the command to sign in yourself. -->
+                      <span class="fx"><span class="ty">In a terminal, run</span> <code title="Click to copy" (click)="copy('claude auth login')">claude auth login</code></span>
+                    } @else {
+                      <p class="ty">The Machine page has the details.</p>
+                    }
+                    <div class="acts">
+                      <button class="btn sm" type="button" (click)="reload(true)" [disabled]="busy()">{{ busy() ? 'Checking…' : 'Re-check' }}</button>
+                      <a class="btn ghost sm" routerLink="/machine">Machine page</a>
+                    </div>
+                  </div>
+                }
+              }
+            } @else {
+              <!-- Done. A ticked step can be unticked; the others follow their check. -->
+              @if (s.kind === 'manual') {
+                <div class="acts">
+                  @if (s.link) { <a class="btn ghost sm" [href]="s.link" target="_blank" rel="noopener">Open ↗</a> }
+                  <button class="btn ghost sm" type="button" [disabled]="ticking() === s.id" (click)="tick(s, false)">Not done yet</button>
+                </div>
+              } @else if (s.kind === 'role') {
+                <p class="ty">Change it any time in <a routerLink="/settings">Settings</a>.</p>
+              }
+            }
+
+            @if (s.contact && s.state !== 'done') {
+              <div class="help">
+                <span>Need help? <b>{{ s.contact.label }}</b>{{ s.contact.how ? ': ' + s.contact.how : '' }}</span>
+                <button class="btn ghost sm" type="button" (click)="copyRequest(s)" title="Copies a message you can send them; nothing is sent from here">Copy request</button>
+              </div>
+            }
+          </div>
+        }
+      </li>
+    }
+  </ol>
+
+  @if (finished()) {
+    <div class="panel next">
+      <div class="panel-h"><h2>You're set up</h2></div>
+      <div class="panel-b">
+        <p>Everything required is done. Some things to try next:</p>
+        <div class="acts">
+          @if (showAsk()) { <a class="btn primary sm" routerLink="/ask">Ask a question about the code</a> }
+          @if (showIssues()) { <a class="btn sm" routerLink="/issues">Open the Issues page</a> }
+          <a class="btn ghost sm" routerLink="/">Go to Home</a>
+        </div>
+      </div>
+    </div>
+  }
+}

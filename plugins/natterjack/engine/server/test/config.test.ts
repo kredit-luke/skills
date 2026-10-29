@@ -158,6 +158,26 @@ test("machine.json: hosted dashboards and read-only access skip the checks for r
   fs.rmSync(path.join(ROOT, ".claude", "settings.local.json"), { force: true });
 });
 
+test("whenMatches: the `when` rules machine.json checks (and Get started steps) share", async () => {
+  const { whenMatches } = await import("../src/machine.ts");
+  fs.mkdirSync(path.join(ROOT, "svc"), { recursive: true });
+  const dev = { root: ROOT, hosted: false, profile: "developer", role: "eng", os: "win" };
+  assert.equal(whenMatches(undefined, dev), true, "no when: always");
+  assert.equal(whenMatches({ exists: "svc" }, dev), true);
+  assert.equal(whenMatches({ exists: "not-cloned" }, dev), false);
+  assert.equal(whenMatches({ os: ["mac", "linux"] }, dev), false);
+  assert.equal(whenMatches({ os: "win" }, dev), true);
+  assert.equal(whenMatches({ access: "full" }, dev), true);
+  assert.equal(whenMatches({ access: "read" }, dev), false);
+  assert.equal(whenMatches({ access: "full" }, { ...dev, profile: "reader" }), false);
+  assert.equal(whenMatches({ profile: ["reader"] }, { ...dev, profile: "reader" }), true);
+  assert.equal(whenMatches({ role: ["pm", "eng"] }, dev), true);
+  assert.equal(whenMatches({ role: "pm" }, dev), false);
+  assert.equal(whenMatches({ hosted: true }, dev), false);
+  assert.equal(whenMatches({ hosted: false }, { ...dev, hosted: true }), false);
+  assert.equal(whenMatches({ hosted: true }, { ...dev, hosted: true }), true);
+});
+
 test("links: add team + personal, move between them, edit in place, delete", () => {
   const teamFile = path.join(CFG, "links.json");
   write("links.json", { $comment: "keep me", categories: [{ title: "Apps", tiles: [{ title: "Admin", url: "https://admin.example" }] }] });

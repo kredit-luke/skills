@@ -330,6 +330,44 @@ test("meetings.json: scaffold writes it; validate wants a source the engine has 
   assert.match(validate(ws).errors.join("\n"), /meetings\.json: "source" names the meeting tool/);
 });
 
+test("onboarding.json: scaffold writes it; validate flags unknown steps and contacts, duplicate ids, bad manual steps, checks and roles", () => {
+  const ws = fs.mkdtempSync(path.join(os.tmpdir(), "aos-onboarding-"));
+  const cfg = path.join(ws, ".claude", "dashboard");
+  const onboarding = { contacts: { lead: { label: "Your engineering lead", how: "Ask in #eng-help" } }, steps: [{ use: "github", contact: "lead" }, { id: "slack", kind: "manual", label: "Join #dev", link: "https://slack.example/dev" }] };
+  scaffold(ws, { workspace: { name: "T", roles: { eng: { label: "Engineering" } } }, machine: { checks: [{ use: "git" }, { use: "gh" }, { id: "vpn", kind: "env-var", label: "VPN", name: "VPN" }] }, onboarding });
+  const written = JSON.parse(fs.readFileSync(path.join(cfg, "onboarding.json"), "utf-8"));
+  assert.match(written.$comment, /Get started/);
+  const check = (data) => {
+    if (data !== undefined) fs.writeFileSync(path.join(cfg, "onboarding.json"), JSON.stringify(data));
+    const v = validate(ws);
+    const mine = (l) => l.filter((e) => e.startsWith("onboarding.json") || /Get started/.test(e)).join("\n");
+    return { errors: mine(v.errors), warnings: mine(v.warnings) };
+  };
+  assert.deepEqual(check(), { errors: "", warnings: "" });
+  assert.deepEqual(check({ steps: false }), { errors: "", warnings: "" });
+  assert.deepEqual(check({ steps: [{ check: "vpn" }, { use: "role", when: { role: "eng" } }] }), { errors: "", warnings: "" });
+
+  assert.match(check({ steps: [{ use: "slack" }] }).errors, /"use": "slack" isn't a built-in step \(role, claude, github, atlassian-secret, atlassian, repos, machine, connections\)/);
+  assert.match(check({ steps: [{ use: "github", contact: "nobody" }] }).errors, /contact "nobody" isn't in contacts/);
+  assert.match(check({ steps: [{ id: "a", label: "A" }, { id: "a", label: "B" }] }).errors, /two steps have the id "a"/);
+  assert.match(check({ steps: [{ use: "role" }, { use: "role", label: "Again" }] }).errors, /two steps have the id "role"/);
+  assert.match(check({ steps: [{ id: "a" }] }).errors, /a manual step needs an "id".* and a "label"/);
+  assert.match(check({ steps: [{ id: "a", label: "A", link: "slack://x" }] }).errors, /link must start with https:\/\//);
+  assert.match(check({ steps: [{ id: "a", label: "A", link: "http://example.com" }] }).errors, /link must start with https:\/\//);
+  assert.match(check({ steps: [{ id: "machine", kind: "manual", label: "Set up" }] }).errors, /steps\[0\] \(machine\): "machine" is a built-in step's id/);
+  assert.match(check({ steps: [{ check: "vpn", id: "repos" }] }).errors, /"repos" is a built-in step's id/);
+  assert.match(check({ steps: [{ id: "a", kind: "magic", label: "A" }] }).errors, /kind "magic" isn't a step kind/);
+  assert.match(check({ steps: "all" }).errors, /"steps" must be a list of steps, or false/);
+  assert.match(check({ contacts: { lead: { how: "Slack" } } }).errors, /contacts\.lead needs a "label"/);
+  assert.match(check({ steps: [{ check: "vpn-client" }] }).warnings, /check "vpn-client" isn't in machine\.json/);
+  assert.match(check({ steps: [{ id: "a", label: "A", when: { role: ["eng", "pm"] } }] }).warnings, /when\.role "pm" isn't a workspace\.json role/);
+
+  // The GitHub sign-in step is the Machine page's gh check: without one there's no step.
+  fs.writeFileSync(path.join(cfg, "machine.json"), JSON.stringify({ checks: [{ use: "git" }] }));
+  assert.match(check({}).warnings, /no "gh" check, so the Get started page has no GitHub sign-in step/);
+  assert.equal(check({ steps: [{ use: "github", off: true }] }).warnings, "", "unless it's turned off");
+});
+
 test("workspace.json atlassian: clientId, scopes and redirectUri follow the engine's rule; a clientId with nothing to read warns", () => {
   const ws = fs.mkdtempSync(path.join(os.tmpdir(), "aos-atlassian-"));
   const cfg = path.join(ws, ".claude", "dashboard");

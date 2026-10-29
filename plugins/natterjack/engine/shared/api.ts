@@ -55,6 +55,8 @@ export interface Boot {
    * Send to hosted moves a run. null when hosted, or when none is set.
    */
   hostedUrl?: string | null;
+  /** The Get started page (onboarding.json): its nav count and whether it opens by itself. */
+  onboarding: OnboardingBoot;
 }
 
 /**
@@ -1842,6 +1844,90 @@ export interface ProfileInfo {
   accessLocked: boolean;
 }
 export type Access = 'full' | 'read';
+
+// ---------------------------------------------------------------- get started (onboarding)
+
+/** The steps the engine knows without config (server/src/onboarding.ts BUILTIN_STEPS), in their default order. */
+export type OnboardingBuiltin = 'role' | 'claude' | 'github' | 'atlassian-secret' | 'atlassian' | 'repos' | 'machine' | 'connections';
+/**
+ * done; todo (theirs to do now); blocked (waits for the steps in `blockedBy`);
+ * checking (not known yet: the connections step until `claude mcp list` has run; ask again in a few seconds).
+ */
+export type OnboardingState = 'done' | 'todo' | 'blocked' | 'checking';
+/** onboarding.json `contacts`: who to ask. The page shows "Need help? {label}: {how}" and a Copy request button. */
+export interface OnboardingContact { id: string; label: string; how: string }
+/** A Machine page check a step mirrors: POST /api/machine/install { id } runs `install` in a terminal (local dashboards only). */
+export interface OnboardingCheck {
+  id: string;
+  label: string;
+  status: 'ok' | 'warn' | 'missing' | 'info';
+  detail: string;
+  /** The install (or sign-in) button's label; null = nothing to run, show `fix` instead. */
+  install: string | null;
+  /** A command to copy, or what to do by hand. */
+  fix: string;
+}
+export interface OnboardingStep {
+  /** The built-in's name, or onboarding.json's `id` (manual and check steps). Unique in the list. */
+  id: string;
+  /** A built-in step; `manual` (ticked by the person: POST /api/onboarding/tick); `check` (a Machine page check, by id). */
+  kind: OnboardingBuiltin | 'manual' | 'check';
+  label: string;
+  /** The team's wording (or the built-in's), with {contact} filled in; null = none. */
+  detail: string | null;
+  contact: OnboardingContact | null;
+  /** manual steps: a page to open for it (https), or null. */
+  link: string | null;
+  /** Doesn't count toward `remaining`. */
+  optional: boolean;
+  state: OnboardingState;
+  /** Ids of earlier steps that have to be done first (state blocked); empty otherwise. */
+  blockedBy: string[];
+  /** Where it stands in a line ("Signed in as @ana", "2 repos to clone: api, web"); null = nothing to add. */
+  status: string | null;
+  /** manual steps: when they ticked it; null otherwise. */
+  doneAt: string | null;
+  /**
+   * claude, github and check steps: the Machine page check it mirrors (local: its Install / Sign in
+   * button is POST /api/machine/install { id: check.id }); null when machine.json has no such check.
+   */
+  check: OnboardingCheck | null;
+  /** Hosted: sign in in the page (claude: POST /api/claude/login; github: POST /api/github/login) instead of a terminal. */
+  signIn: 'claude' | 'github' | null;
+  /**
+   * repos: how this person gets the code. clone: POST /api/repos/clone (job label "Clone ..."); download:
+   * POST /api/snapshot/download (job label "Download ..."), after connecting `source` (POST /api/snapshot/connect { key })
+   * when it isn't. `missing`: repos.json names not here yet.
+   */
+  repos?: { via: 'clone' | 'download'; missing: string[]; source: { label: string; connected: boolean } | null };
+  /** machine: the required checks still missing (not the ones the claude, github and check steps show). */
+  machine?: { missing: OnboardingCheck[] };
+  /** connections: the required MCP servers that don't work for this person yet (fix them on /connections). */
+  connections?: { attention: string[] };
+}
+/**
+ * GET /api/onboarding (?force=1 re-runs the Machine checks and `claude auth status`): the Get started page.
+ * POST /api/onboarding/tick { id, done } (manual steps only), POST /api/onboarding/dismiss { dismissed },
+ * POST /api/onboarding/atlassian-secret { secret } (local only) each answer with the same shape.
+ */
+export interface OnboardingResponse {
+  /** False when onboarding.json says "steps": false: no page, the role question is the old modal. */
+  enabled: boolean;
+  /** onboarding.json `intro`, or null. */
+  intro: string | null;
+  steps: OnboardingStep[];
+  /** Required steps that are todo or blocked (checking ones aren't counted). The nav item shows while it's above 0. */
+  remaining: number;
+  /** When they clicked "I'll finish later" (no auto-open, no Home banner); null when they haven't, or reopened it. */
+  dismissedAt: string | null;
+  /** Open it by itself / show the Home banner: enabled, not dismissed, and remaining > 0. */
+  show: boolean;
+  /** What's wrong with onboarding.json (unknown steps, contacts, duplicate ids), or null; the rest still works. */
+  error: string | null;
+  checkedAt: number;
+}
+/** Boot.onboarding: `remaining` is from the server's last evaluation (null before the first one finishes; GET /api/onboarding then). */
+export interface OnboardingBoot { enabled: boolean; remaining: number | null; show: boolean }
 
 // ---------------------------------------------------------------- explore
 

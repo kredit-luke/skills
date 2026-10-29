@@ -264,7 +264,7 @@ test("hosted server: boot says who's signed in and hides the machine-only pages"
 });
 
 test("hosted server: features that open things on the server's own machine are refused", async () => {
-  for (const [p, body] of [["/api/machine/install", { id: "claude-code" }], ["/api/docs/preview", { site: "x" }], ["/api/apps/action", { action: "stop-all", workspace: "main" }], ["/api/people/action", { action: "provision", email: "bo@example.com" }]] as const) {
+  for (const [p, body] of [["/api/machine/install", { id: "claude-code" }], ["/api/docs/preview", { site: "x" }], ["/api/apps/action", { action: "stop-all", workspace: "main" }], ["/api/people/action", { action: "provision", email: "bo@example.com" }], ["/api/onboarding/atlassian-secret", { secret: "x" }]] as const) {
     const r = await post(p, body);
     assert.equal(r.status, 400, p);
     assert.match(r.text, /hosted dashboard/, p);

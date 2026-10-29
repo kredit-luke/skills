@@ -1,7 +1,7 @@
 import { ChangeDetectionStrategy, Component, OnInit, computed, inject, signal } from '@angular/core';
 import { NgTemplateOutlet } from '@angular/common';
-import { RouterLink } from '@angular/router';
-import type { Limits, ProfileInfo, ReposResponse, Settings, SettingKey, SnapshotStatus } from '../../../../../shared/api';
+import { Router, RouterLink } from '@angular/router';
+import type { Limits, OnboardingResponse, ProfileInfo, ReposResponse, Settings, SettingKey, SnapshotStatus } from '../../../../../shared/api';
 import { ApiService } from '../../core/api.service';
 import { AttentionService } from '../../core/attention.service';
 import { DataService } from '../../core/data.service';
@@ -180,6 +180,27 @@ interface NumberRow { key: LimitKey; label: string; help: string; min: number; m
       <div class="empty">Loading…</div>
     }
 
+    @if (setup(); as o) {
+      <div class="panel">
+        <div class="panel-h"><h2>Get started</h2></div>
+        <div class="rows">
+          <div class="row">
+            <div class="lbl">
+              <div class="t">Setting up this dashboard</div>
+              <div class="h">
+                The checklist for your role, sign-ins, code and tools.
+                @if (o.remaining) { {{ o.remaining }} required step{{ o.remaining === 1 ? ' is' : 's are' }} left. } @else { Everything required is done. }
+                @if (o.dismissedAt) { You chose to finish it later, so it doesn't open by itself or show on Home. }
+              </div>
+            </div>
+            <div class="ctl">
+              <button class="btn sm" type="button" [disabled]="reopening()" (click)="reopenSetup()">{{ o.dismissedAt ? 'Reopen' : 'Open' }}</button>
+            </div>
+          </div>
+        </div>
+      </div>
+    }
+
     <div class="panel">
       <div class="panel-h"><h2>Factory</h2><span class="ty">the team's</span></div>
       <div class="rows">
@@ -219,6 +240,7 @@ export class SettingsComponent implements OnInit {
   private readonly api = inject(ApiService);
   private readonly data = inject(DataService);
   private readonly toast = inject(ToastService);
+  private readonly router = inject(Router);
   readonly attention = inject(AttentionService);
 
   readonly s = signal<Settings | null>(null);
@@ -250,6 +272,21 @@ export class SettingsComponent implements OnInit {
   ngOnInit(): void {
     this.load();
     this.loadProfile();
+    this.data.loadOnboarding();
+  }
+
+  /** Get started (pages/setup), unless onboarding.json turns it off. */
+  readonly setup = computed(() => { const o = this.data.onboarding(); return o?.enabled ? o : null; });
+  readonly reopening = signal(false);
+
+  /** Undo "I'll finish later" (so it's on Home and opens by itself again), then go to it. */
+  async reopenSetup(): Promise<void> {
+    this.reopening.set(true);
+    try {
+      if (this.setup()?.dismissedAt) this.data.onboarding.set(await this.api.post<OnboardingResponse>('/api/onboarding/dismiss', { dismissed: false }));
+      this.router.navigateByUrl('/setup');
+    } catch (e) { this.toast.error((e as Error).message); }
+    finally { this.reopening.set(false); }
   }
 
   async loadProfile(): Promise<void> {

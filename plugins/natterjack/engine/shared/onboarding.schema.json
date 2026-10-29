@@ -1,0 +1,88 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/lhoezee/skills/plugins/natterjack/engine/shared/onboarding.schema.json",
+  "title": "onboarding.json",
+  "description": "The dashboard's Get started page (.claude/dashboard/onboarding.json): the built-in steps reordered, reworded or turned off, who to ask, and the team's own steps. Optional: without it every built-in step that applies is shown. Read by the engine's server/src/onboarding.ts and validate.mjs.",
+  "type": "object",
+  "properties": {
+    "$schema": { "type": "string" },
+    "$comment": { "type": "string" },
+    "intro": { "type": "string", "description": "A line at the top of the page, e.g. \"Welcome to Acme engineering. This takes about 20 minutes.\"" },
+    "contacts": {
+      "type": "object",
+      "description": "Who to ask, by id. Steps name one with \"contact\"; the page shows \"Need help? {label}: {how}\" and a Copy request button.",
+      "additionalProperties": {
+        "type": "object",
+        "required": ["label"],
+        "properties": {
+          "label": { "type": "string", "description": "e.g. \"Your engineering lead\"" },
+          "how": { "type": "string", "description": "e.g. \"Ask in #eng-help on Slack\"" }
+        }
+      }
+    },
+    "steps": {
+      "description": "The steps in order; built-ins not listed keep their default place (right after the nearest earlier built-in that is). false turns the page off (the first-start role question is a modal again).",
+      "oneOf": [
+        { "const": false },
+        { "type": "array", "items": { "$ref": "#/$defs/step" } }
+      ]
+    }
+  },
+  "$defs": {
+    "when": {
+      "type": "object",
+      "description": "Show the step only when this matches (the same rules as machine.json checks).",
+      "properties": {
+        "access": { "$ref": "#/$defs/oneOrMany", "description": "full | read" },
+        "profile": { "$ref": "#/$defs/oneOrMany", "description": "developer | reader" },
+        "role": { "$ref": "#/$defs/oneOrMany", "description": "workspace.json role ids" },
+        "os": { "$ref": "#/$defs/oneOrMany", "description": "win | mac | linux" },
+        "hosted": { "type": "boolean" },
+        "exists": { "type": "string", "description": "A path in the workspace that must be there." }
+      }
+    },
+    "oneOrMany": { "oneOf": [{ "type": "string" }, { "type": "array", "items": { "type": "string" } }] },
+    "common": {
+      "type": "object",
+      "properties": {
+        "label": { "type": "string" },
+        "detail": { "type": "string", "description": "The team's wording; {contact} becomes the contact's label." },
+        "contact": { "type": "string", "description": "A key of \"contacts\"." },
+        "optional": { "type": "boolean", "description": "Doesn't count toward the steps left." },
+        "when": { "$ref": "#/$defs/when" }
+      }
+    },
+    "step": {
+      "anyOf": [
+        {
+          "description": "A built-in step.",
+          "allOf": [{ "$ref": "#/$defs/common" }],
+          "required": ["use"],
+          "properties": {
+            "use": { "enum": ["role", "claude", "github", "atlassian-secret", "atlassian", "repos", "machine", "connections"] },
+            "off": { "type": "boolean", "description": "true leaves the built-in out." }
+          }
+        },
+        {
+          "description": "A Machine page check (machine.json, by id) as its own step.",
+          "allOf": [{ "$ref": "#/$defs/common" }],
+          "required": ["check"],
+          "properties": {
+            "check": { "type": "string" },
+            "id": { "type": "string", "description": "Defaults to the check's id." }
+          }
+        },
+        {
+          "description": "A step the person ticks off themselves (saved in their ledger).",
+          "allOf": [{ "$ref": "#/$defs/common" }],
+          "required": ["id", "label"],
+          "properties": {
+            "id": { "type": "string", "pattern": "^[A-Za-z0-9][\\w-]{0,63}$" },
+            "kind": { "const": "manual" },
+            "link": { "type": "string", "pattern": "^https://" }
+          }
+        }
+      ]
+    }
+  }
+}

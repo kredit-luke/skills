@@ -344,6 +344,49 @@ export function validate(root) {
     }
   }
 
+  // ---- onboarding.json (the Get started page; engine server/src/onboarding.ts, which skips what's wrong and keeps the rest)
+  const onb = load("onboarding.json");
+  const O = "onboarding.json";
+  const onbSteps = onb && Array.isArray(onb.steps) ? onb.steps : [];
+  if (onb) {
+    const builtins = literalKeys(path.join(engine, "server", "src", "onboarding.ts"), "const BUILTIN_STEPS");
+    const contacts = onb.contacts && typeof onb.contacts === "object" && !Array.isArray(onb.contacts) ? onb.contacts : {};
+    if (onb.contacts !== undefined && contacts !== onb.contacts) err(O, '"contacts" is an object: { "<id>": { "label": "…", "how": "…" } }');
+    for (const [id, c] of Object.entries(contacts)) if (!c || typeof c.label !== "string" || !c.label.trim()) err(O, `contacts.${id} needs a "label" (who to ask, e.g. "Your engineering lead")`);
+    if (onb.steps !== undefined && onb.steps !== false && !Array.isArray(onb.steps)) err(O, '"steps" must be a list of steps, or false to turn the page off');
+    const roleIds = ws && ws.roles && typeof ws.roles === "object" && !Array.isArray(ws.roles) ? Object.keys(ws.roles) : [];
+    const checkIds = machine ? (machine.checks || []).map((c) => c && (c.id || c.use)).filter(Boolean) : [];
+    const ids = new Set();
+    onbSteps.forEach((s, i) => {
+      const where = `steps[${i}]${s && (s.use || s.id || s.check) ? ` (${s.use || s.id || s.check})` : ""}`;
+      if (!s || typeof s !== "object" || Array.isArray(s)) return err(O, `${where} must be an object`);
+      let id = null;
+      if (s.use !== undefined) {
+        if (builtins.length && !builtins.includes(s.use)) err(O, `${where}: "use": "${s.use}" isn't a built-in step (${builtins.join(", ")})`);
+        id = s.use;
+      } else if (s.check !== undefined) {
+        if (machine && !checkIds.includes(s.check)) warn(O, `${where}: check "${s.check}" isn't in machine.json, so the step never shows`);
+        id = s.id || s.check;
+      } else {
+        if (s.kind !== undefined && s.kind !== "manual") err(O, `${where}: kind "${s.kind}" isn't a step kind (a built-in is "use", a Machine check is "check", your own is "kind": "manual")`);
+        else if (typeof s.id !== "string" || !/^[A-Za-z0-9][\w-]{0,63}$/.test(s.id) || typeof s.label !== "string" || !s.label.trim()) err(O, `${where}: a manual step needs an "id" (letters, digits, - and _) and a "label"`);
+        if (s.link !== undefined && !/^https:\/\//i.test(String(s.link))) err(O, `${where}: link must start with https://`);
+        id = s.id;
+      }
+      // A built-in the file doesn't list is still added, under its own name.
+      if (s.use === undefined && builtins.includes(id)) err(O, `${where}: "${id}" is a built-in step's id; give your step another "id"`);
+      if (id) { if (ids.has(id)) err(O, `two steps have the id "${id}" (the first is used)`); ids.add(id); }
+      if (s.contact !== undefined && !Object.prototype.hasOwnProperty.call(contacts, s.contact)) err(O, `${where}: contact "${s.contact}" isn't in contacts`);
+      const role = s.when && s.when.role;
+      if (role !== undefined) for (const r of [].concat(role)) if (!roleIds.includes(r)) warn(O, `${where}: when.role "${r}" isn't a workspace.json role, so it never matches`);
+    });
+  }
+  // The Get started page's GitHub sign-in step is the Machine page's gh check: none, no step.
+  const githubOff = onb && (onb.steps === false || onbSteps.some((s) => s && s.use === "github" && s.off === true));
+  if (machine && !githubOff && ((ws && ws.codeHost && ws.codeHost.kind) || "github") === "github" && !(machine.checks || []).some((c) => c && (c.use === "gh" || c.id === "gh"))) {
+    warn("machine.json", 'no "gh" check, so the Get started page has no GitHub sign-in step (add { "use": "gh" })');
+  }
+
   // ---- models.json (local and team open models: the Models page)
   const mdl = load("models.json");
   if (mdl) {

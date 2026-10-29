@@ -250,17 +250,41 @@ export function requiredVersion(spec: any, root: string): string | null {
 /** Checks that are only about running the apps: a hosted container or a read-only person has nothing to run. */
 const RUN_KINDS = new Set(["dotnet-sdk", "dotnet-dev-cert", "dotnet-user-secrets", "docker", "docker-container", "port", "npm-global"]);
 
+/** Who a `when` is judged for: the workspace, hosted or not, the access in effect (developer | reader), the role id, and the OS (this one's by default). */
+export interface WhenContext { root: string; hosted: boolean; profile: string; role: string; os?: string }
+
+const accessOf = (a: string) => (a === "read" ? "reader" : a === "full" ? "developer" : a);
+
 /**
- * machine.json checks merged over their catalog entries, with `when` conditions applied:
- * exists, os, profile / access (full | read), role, hosted (true | false). A check for
- * running the apps (it names apps, or is one of RUN_KINDS) is left out on a hosted dashboard
- * and for read-only access, unless its `when` asks for it (hosted, profile or access).
+ * A `when` condition (machine.json checks, onboarding.json steps): exists (a workspace path),
+ * os (win | mac | linux), profile / access (full | read), role (workspace.json role ids),
+ * hosted (true | false). Each may be one value or a list; no `when` always matches.
+ */
+export function whenMatches(when: any, ctx: WhenContext): boolean {
+  if (!when) return true;
+  if (when.exists && !fs.existsSync(path.join(ctx.root, when.exists))) return false;
+  if (when.os && ![].concat(when.os).includes(ctx.os || OS_KEY)) return false;
+  // "developer" / "reader" (or access "full" / "read"): e.g. build tools only for people who build (profile.ts).
+  if (when.profile && ![].concat(when.profile).includes(ctx.profile)) return false;
+  if (when.access && ![].concat(when.access).map(accessOf).includes(ctx.profile)) return false;
+  // A role id from workspace.json roles: a check only one role needs.
+  if (when.role && ![].concat(when.role).includes(ctx.role)) return false;
+  if (when.hosted === true && !ctx.hosted) return false;
+  if (when.hosted === false && ctx.hosted) return false;
+  return true;
+}
+
+/**
+ * machine.json checks merged over their catalog entries, with `when` conditions applied
+ * (whenMatches). A check for running the apps (it names apps, or is one of RUN_KINDS) is
+ * left out on a hosted dashboard and for read-only access, unless its `when` asks for it
+ * (hosted, profile or access).
  */
 export function resolvedSpecs(root: string, opts: { hosted?: boolean } = {}) {
   const { data, error } = readConfigFile("machine.json");
   const list = data && Array.isArray(data.checks) ? data.checks : [];
   const me = readProfile(LEDGER_DIR);
-  const accessOf = (a: string) => (a === "read" ? "reader" : a === "full" ? "developer" : a);
+  const ctx: WhenContext = { root, hosted: !!opts.hosted, profile: me.profile, role: me.current.id };
   const out: any[] = [];
   const hiddenGroups: string[] = [];
   let hiddenCount = 0;
@@ -272,16 +296,8 @@ export function resolvedSpecs(root: string, opts: { hosted?: boolean } = {}) {
     if (!spec.kind) continue;
     spec.id = raw.id || raw.use;
     if (!spec.id) continue;
-    if (raw.when && raw.when.exists && !fs.existsSync(path.join(root, raw.when.exists))) continue;
-    if (raw.when && raw.when.os && ![].concat(raw.when.os).includes(OS_KEY)) continue;
+    if (!whenMatches(raw.when, ctx)) continue;
     const when = raw.when || {};
-    // "developer" / "reader" (or access "full" / "read"): e.g. build tools only for people who build (profile.ts).
-    if (when.profile && ![].concat(when.profile).includes(me.profile)) continue;
-    if (when.access && ![].concat(when.access).map(accessOf).includes(me.profile)) continue;
-    // A role id from workspace.json roles: a check only one role needs.
-    if (when.role && ![].concat(when.role).includes(me.current.id)) continue;
-    if (when.hosted === true && !opts.hosted) continue;
-    if (when.hosted === false && opts.hosted) continue;
     const forRunning = (Array.isArray(spec.apps) && spec.apps.length > 0) || RUN_KINDS.has(spec.kind);
     if (forRunning && (opts.hosted || me.profile === "reader") && when.hosted !== true && !when.profile && !when.access) {
       hiddenCount++;

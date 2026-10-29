@@ -86,6 +86,14 @@ export async function doctor(root) {
             bad.length ? "Open the Connections page: each one has a Sign in, Approve or Add button, or says what to do." : "");
         }
       }
+      // The Get started page (onboarding.json, or its built-in steps): what this person still has to do.
+      const onb = await getJson(port, "/api/onboarding");
+      if (onb && onb.enabled && Array.isArray(onb.steps)) {
+        const open = onb.steps.filter((s) => !s.optional && (s.state === "todo" || s.state === "blocked"));
+        add(open.length ? "warn" : "ok", "get started", open.length ? `still to do: ${open.map((s) => s.label).join(", ")}` : `${onb.steps.filter((s) => !s.optional).length} required steps done`,
+          open.length ? `Open the dashboard's Get started page (http://localhost:${port}/setup): each step says what to do and who to ask.` : "");
+        if (onb.error) add("warn", "get started", onb.error, "Fix .claude/dashboard/onboarding.json (references/config.md).");
+      }
       if (boot.issues && boot.issues.configured) {
         const iss = await getJson(port, "/api/issues");
         if (iss) add(iss.connected && !iss.error ? "ok" : "warn", "issues", iss.connected ? `${boot.issues.label}: ${iss.issues.length} issues${iss.error ? ` (error: ${iss.error})` : ""}` : `${boot.issues.label} isn't connected`, iss.connected ? "" : "Open the Issues page and follow its connect steps.");
