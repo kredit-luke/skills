@@ -18,12 +18,12 @@ The score the Factory's spec gate gives a ticket, before the Factory gets to it.
 ## 2. Score it
 
 ```bash
-node "${CLAUDE_PLUGIN_ROOT}/scripts/spec-check.mjs" <ticket.json> --root <workspace>
+node "${CLAUDE_PLUGIN_ROOT}/scripts/spec-check.mjs" <ticket.json> --root <workspace> [--overrides '<json>']
 ```
 
 `--root` is the workspace folder (the one with `.claude/dashboard/factory.json`); it's where the team's `readyAt`, `needsWorkAt`, `minScore` and weights come from, and `repos.json` gives the repo names the "Affected areas" check looks for. Add `--json` for the raw result. Never pass `--ticket`: that records the score on the Factory board, which is `implement`'s job.
 
-Read each finding against the text. Where the script was fooled (criteria that read as testable but contradict each other, a question answered later in the text), say so in your report rather than changing the number: the Factory scores the same text.
+Then correct it the way `implement` does at intake, so the number matches: read each check's finding against the text, and where the text fooled it (criteria that look testable but contradict each other, a "?" that was answered later on), re-run with `--overrides '{"criteria":{"score":0.5,"reason":"AC 2 and 3 contradict"}}'`. A score of 0, 0.5 or 1, and always a reason; the script ignores an override without one.
 
 ## 3. Report
 
