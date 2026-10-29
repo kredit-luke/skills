@@ -66,6 +66,12 @@ test("vague acceptance criteria count half; a question in the newest comment cou
   assert.match(c.questions.finding, /newest comment/);
 });
 
+test("an Acceptance criteria heading is read over a Requirements heading that comes before it", () => {
+  const t = { description: "**Business Requirements:**\n- Must export offers\n\n**Acceptance Criteria**:\n- An Export button is shown\n- Clicking it downloads a CSV\n- It has 4 columns" };
+  assert.match(runChecks(t).criteria.finding, /^3 acceptance criteria/);
+  assert.match(runChecks({ description: "## Requirements\n- Must export offers" }).criteria.finding, /^1 acceptance criterion/);
+});
+
 test("the team's weights, levels and the agent's overrides apply", () => {
   const policy = { spec: { readyAt: 95, needsWorkAt: 70, minScore: 60, weights: { scope: 0, constraints: 0 } } };
   const t = { ...GOOD, description: GOOD.description.replace(/## Out of scope[\s\S]*?## Constraints\n- [^\n]*\n/, "") };
