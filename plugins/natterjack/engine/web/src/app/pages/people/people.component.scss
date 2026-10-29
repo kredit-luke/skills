@@ -22,8 +22,9 @@ table.people { width: 100%; border-collapse: collapse; font-size: 13px; }
 .people td { padding: 9px 14px; vertical-align: middle; }
 .people tr + tr td { border-top: 1px solid var(--line-soft); }
 .people tr.dim .nm { color: var(--ink-soft); }
-.people .nm { font-weight: 600; }
-.people .em { font-size: 12px; color: var(--text-muted); }
+/* A person's name over their email: the tables and the bulk dialog's list. */
+.nm { font-weight: 600; }
+.em { font-size: 12px; color: var(--text-muted); }
 .people .tag + .tag { margin-left: 4px; }
 .people td.acts { text-align: right; white-space: nowrap; }
 .people td.acts .btn + .btn { margin-left: 4px; }
@@ -54,3 +55,16 @@ table.people { width: 100%; border-collapse: collapse; font-size: 13px; }
 .page-tabs .n { margin-left: 4px; opacity: .7; font-size: 12px; }
 /* Panels stacked one under another never touch. */
 .panel + .panel { margin-top: 16px; }
+
+/* Bulk: the tick column, and the action bar over the table while anyone is ticked. */
+.people th.sel, .people td.sel { width: 1%; padding-right: 0; }
+.people tr.on td { background: var(--paper-2); }
+.bulk { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; padding: 8px 14px; margin-bottom: 12px; border-radius: var(--r-sm); background: var(--blue-bg); font-size: 13px; }
+.bulk b { margin-right: 6px; }
+.lines { list-style: none; margin: 0; padding: 0; border: 1px solid var(--line-soft); border-radius: 6px; }
+.lines li { padding: 7px 10px; display: flex; flex-direction: column; gap: 4px; }
+.lines li + li { border-top: 1px solid var(--line-soft); }
+.lines .lh { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+.lines .warn-note.err { margin: 0; }
+.lines summary { font-size: 12px; color: var(--ink-soft); cursor: pointer; }
+.lines details .pv { margin-top: 4px; }

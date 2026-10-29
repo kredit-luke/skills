@@ -1,11 +1,12 @@
-import { ChangeDetectionStrategy, Component, OnInit, computed, inject, signal } from '@angular/core';
+import { ChangeDetectionStrategy, Component, OnInit, computed, inject, linkedSignal, signal } from '@angular/core';
 import { RouterLink } from '@angular/router';
-import type { Access, PeopleActionName, PeopleActionResponse, PeopleResponse, PeopleRole, PeopleRolesRequest, PeopleRoster, PersonRow, PersonState } from '../../../../../shared/api';
+import type { Access, PeopleActionName, PeopleActionRequest, PeopleActionResponse, PeopleResponse, PeopleRole, PeopleRolesRequest, PeopleRoster, PersonRow, PersonState } from '../../../../../shared/api';
 import { ApiService } from '../../core/api.service';
 import { LaunchService } from '../../core/launch.service';
 import { ToastService } from '../../core/toast.service';
 import { relTime } from '../../core/util';
 import { PageHeaderComponent } from '../../shared/page-header.component';
+import { ACTION_LABEL, BULK_ACTIONS, type BulkAction, type BulkChoice, appliesTo, bulkBody, bulkSummary, bulkTitle, managed, noAnswer, rowActions, selectable, skipReason, stopAfter } from './bulk';
 
 const SETUP_PROMPT = `Set up the dashboard's People page for our hosted dashboards. Write .claude/dashboard/hosting.json (the natterjack plugin's references/hosting.md, "Managing people from your dashboard", describes it): our directory (Google Workspace or Microsoft Entra ID, our email domain and optionally an OU or department), where the dashboards run (a Kubernetes context and namespace, or an Azure App Service resource group with its plan, storage account, registry and Key Vault), and a couple of profiles. Copy the matching template from the plugin's templates/hosted/ (kubernetes-person.yaml or app-service-person.bicep) into this workspace (for example hosting/), fill in our settings, and point "platform.template" at it. If dashboards already exist, look at how they're set up and match it. Ask me for anything you can't find from the CLIs I'm signed in to (kubectl, gcloud, az). Don't create or change anything in the cloud.`;
 
@@ -17,9 +18,26 @@ const TAG: Record<PersonState, string> = {
   'not-set-up': '', running: 'good', starting: 'amber', stopped: '', left: 'bad', missing: 'amber', unmanaged: 'amber', unknown: 'amber',
 };
 type Filter = 'set-up' | 'not-set-up' | 'attention' | 'all';
+/** A row button's look: Set up is the main one for someone new (rowBtn), Remove is dangerous, Start, Stop and Forget are quiet. */
+const ROW_BTN: Partial<Record<PeopleActionName, string>> = { remove: 'danger', start: 'ghost', stop: 'ghost', forget: 'ghost' };
 
 /** `role`: a workspace role id, or '' for "they pick their own". `access`: 'full', 'read', or '' for the role's. */
 interface Pending { row: PersonRow; action: PeopleActionName; profile?: string; role?: string; access?: string; keepVolume?: boolean; preview: PeopleActionResponse | null; error: string | null; busy: boolean; confirmText: string }
+/**
+ * One person in the bulk dialog. Preview: idle (nothing chosen yet), waiting, checking, then ok or error (skipped never runs;
+ * unchecked when the preview stopped before them: no answer, or the same error twice in a row). Confirm runs the ok ones: queued, running, then done or failed.
+ */
+type LineStatus = 'skipped' | 'idle' | 'waiting' | 'checking' | 'ok' | 'error' | 'unchecked' | 'queued' | 'running' | 'done' | 'failed';
+const LINE_LABEL: Record<Exclude<LineStatus, 'skipped'>, string> = {
+  idle: 'To do', waiting: 'Waiting', checking: 'Checking…', ok: 'Ready', error: 'Preview failed', unchecked: 'Not checked',
+  queued: 'Queued', running: 'Working…', done: 'Done', failed: 'Failed',
+};
+interface BulkLine { row: PersonRow; skip: string | null; status: LineStatus; output: string | null; message: string | null }
+/**
+ * The bulk dialog: one action and one choice for everyone ticked. profile/role/access undefined: not chosen yet (Set up: keep each person's own).
+ * stopped: why the last preview stopped early (its unchecked lines), or null.
+ */
+interface BulkPending extends BulkChoice { action: BulkAction; lines: BulkLine[]; running: boolean; ran: boolean; stopped: string | null }
 /** The role being added (no id) or edited in the Roles dialog. */
 interface RoleDraft { id: string | null; label: string; description: string; access: Access; outputStyle: string; busy: boolean; error: string | null }
 
@@ -108,19 +126,31 @@ interface RoleDraft { id: string | null; label: string; description: string; acc
         </form>
       </div>
 
+      @if (picked().length) {
+        <!-- Ticked people: each button counts who it applies to (bulk.ts mirrors the row buttons). -->
+        <div class="bulk">
+          <b aria-live="polite">{{ picked().length }} selected</b>
+          @for (b of bulkButtons(); track b.action) {
+            <button class="btn sm" [disabled]="!b.n" (click)="askBulk(b.action)">{{ confirmLabel(b.action) }}@if (b.n) { ({{ b.n }}) }</button>
+          }
+          <button class="btn sm ghost" (click)="clearTicks()">Clear</button>
+        </div>
+      }
+
       <div class="panel">
         <table class="people">
-          <thead><tr><th>Person</th><th>Dashboard</th><th title="hosting.json profiles: memory, CPU, runs at once and areas">Profile</th>@if (hasRoles()) { <th title="workspace.json roles: who they are and how Claude answers them; they can't change it">Role</th> }<th title="What they can do with the code: full stack (GitHub sign-in, Implement, Publish) or read-only; by default their role's">Access</th><th>Set up</th><th></th></tr></thead>
+          <thead><tr><th class="sel"><input type="checkbox" aria-label="Select everyone shown" [checked]="allTicked() === 'all'" [indeterminate]="allTicked() === 'some'" [disabled]="!tickable().length" (change)="tickAll()" /></th><th>Person</th><th>Dashboard</th><th title="hosting.json profiles: memory, CPU, runs at once and areas">Profile</th>@if (hasRoles()) { <th title="workspace.json roles: who they are and how Claude answers them; they can't change it">Role</th> }<th title="What they can do with the code: full stack (GitHub sign-in, Implement, Publish) or read-only; by default their role's">Access</th><th>Set up</th><th></th></tr></thead>
           <tbody>
             @for (r of shown(); track r.email) {
-              <tr [class.dim]="r.state === 'not-set-up'">
+              <tr [class.dim]="r.state === 'not-set-up'" [class.on]="selected().has(r.email)">
+                <td class="sel"><input type="checkbox" [attr.aria-label]="'Select ' + r.name + ' (' + r.email + ')'" [checked]="selected().has(r.email)" [disabled]="!selectable(r)" [title]="selectable(r) ? '' : 'Nothing to do for them in bulk'" (change)="tick(r)" /></td>
                 <td><div class="nm">{{ r.name }}</div><div class="em">{{ r.email }}</div></td>
                 <td>
                   <span [class]="'tag ' + tag(r.state)" [attr.title]="r.stateError">{{ label(r.state) }}</span>
                   @if (r.needsUpdate) { <span class="tag amber" title="The template, its profile or the image changed since it was applied">Needs update</span> }
                 </td>
                 <td>
-                  @if (r.state === 'not-set-up' || r.state === 'unmanaged' || r.state === 'missing' || r.state === 'unknown') {
+                  @if (!managed(r)) {
                     <span class="muted">{{ profileName(r.profile) || '—' }}</span>
                   } @else {
                     <select (change)="ask(r, 'profile', $any($event.target).value); $any($event.target).value = r.profile || ''">
@@ -131,7 +161,7 @@ interface RoleDraft { id: string | null; label: string; description: string; acc
                 </td>
                 @if (hasRoles()) {
                   <td>
-                    @if (r.state === 'not-set-up' || r.state === 'unmanaged' || r.state === 'missing' || r.state === 'unknown') {
+                    @if (!managed(r)) {
                       <span class="muted">{{ r.role ? roleLabel(r.role) : '—' }}</span>
                     } @else {
                       <select (change)="ask(r, 'role', undefined, $any($event.target).value); $any($event.target).value = r.role || ''">
@@ -143,7 +173,7 @@ interface RoleDraft { id: string | null; label: string; description: string; acc
                   </td>
                 }
                 <td>
-                  @if (r.state === 'not-set-up' || r.state === 'unmanaged' || r.state === 'missing' || r.state === 'unknown') {
+                  @if (!managed(r)) {
                     <span class="muted">{{ r.access ? accessLabel(r.access) : '—' }}</span>
                   } @else {
                     <select (change)="ask(r, 'access', undefined, undefined, $any($event.target).value); $any($event.target).value = r.access || ''">
@@ -155,23 +185,14 @@ interface RoleDraft { id: string | null; label: string; description: string; acc
                 </td>
                 <td class="muted">@if (r.provisionedAt) { {{ rel(r.provisionedAt) }} by {{ r.provisionedBy }} }</td>
                 <td class="acts">
-                  @switch (r.state) {
-                    @case ('not-set-up') { <button class="btn sm primary" (click)="ask(r, 'provision')">Set up…</button> }
-                    @case ('unmanaged') { <button class="btn sm" (click)="ask(r, 'adopt')">Adopt</button> <button class="btn sm danger" (click)="ask(r, 'remove')">Remove…</button> }
-                    @case ('missing') { <button class="btn sm" (click)="ask(r, 'provision')">Set up again</button> <button class="btn sm ghost" (click)="ask(r, 'forget')">Forget</button> }
-                    <!-- The platform didn't answer (the error is on the tag): nothing to do until it does. Refresh asks again. -->
-                    @case ('unknown') {}
-                    @default {
-                      @if (r.needsUpdate) { <button class="btn sm" (click)="ask(r, 'update')">Update</button> }
-                      @if (r.state === 'stopped') { <button class="btn sm ghost" (click)="ask(r, 'start')">Start</button> }
-                      @if (r.state === 'running' || r.state === 'starting') { <button class="btn sm ghost" (click)="ask(r, 'stop')">Stop</button> }
-                      <button class="btn sm danger" (click)="ask(r, 'remove')">Remove…</button>
-                    }
+                  <!-- bulk.ts rowActions, so the row and the bulk bar agree. Unknown (the platform didn't answer; the error is on the tag) has none: Refresh asks again. -->
+                  @for (a of rowActions(r); track a) {
+                    <button [class]="'btn sm ' + rowBtn(r, a)" (click)="ask(r, a)">{{ rowLabel(r, a) }}</button>
                   }
                 </td>
               </tr>
             } @empty {
-              <tr><td [attr.colspan]="hasRoles() ? 7 : 6" class="empty">{{ query() ? 'Nobody matches.' : filter() === 'set-up' ? 'Nobody has a hosted dashboard yet. Find someone under "Not set up".' : 'Nobody here.' }}</td></tr>
+              <tr><td [attr.colspan]="hasRoles() ? 8 : 7" class="empty">{{ query() ? 'Nobody matches.' : filter() === 'set-up' ? 'Nobody has a hosted dashboard yet. Find someone under "Not set up".' : 'Nobody here.' }}</td></tr>
             }
           </tbody>
         </table>
@@ -242,6 +263,64 @@ interface RoleDraft { id: string | null; label: string; description: string; acc
       </div>
     }
 
+    @if (bulk(); as bd) {
+      <div class="scrim" (click)="closeBulk()"></div>
+      <div class="dialog panel" role="dialog" aria-modal="true" aria-labelledby="bulk-dialog-title">
+        <div class="panel-h"><h2 id="bulk-dialog-title">{{ bulkHeading(bd) }}</h2></div>
+        <div class="dbody">
+          @if (bd.action === 'provision' || bd.action === 'profile') {
+            <label>Profile
+              <select [disabled]="bd.running || bd.ran" (change)="setBulk({ profile: keepOr($any($event.target).value) })">
+                @if (bd.action === 'provision') { <option [value]="KEEP" [selected]="bd.profile === undefined">Keep each person's own (new people: {{ profileName(view()!.defaultProfile) || 'the default' }})</option> }
+                @else if (bd.profile === undefined) { <option disabled selected>Choose a profile…</option> }
+                @for (p of view()!.profiles; track p.id) { <option [value]="p.id" [selected]="p.id === bd.profile">{{ p.name }}@if (p.areas.length) { ({{ p.areas.join(', ') }}) }</option> }
+              </select>
+            </label>
+          }
+          @if ((bd.action === 'provision' && view()!.roles.length) || bd.action === 'role') {
+            <label>Role
+              <select [disabled]="bd.running || bd.ran" (change)="setBulk({ role: keepOr($any($event.target).value) })">
+                @if (bd.action === 'provision') { <option [value]="KEEP" [selected]="bd.role === undefined">Keep each person's own (new people: they choose)</option> }
+                @else if (bd.role === undefined) { <option disabled selected>Choose a role…</option> }
+                <option value="" [selected]="bd.role === ''">Let them choose</option>
+                @for (ro of view()!.roles; track ro.id) { <option [value]="ro.id" [selected]="ro.id === bd.role">{{ ro.label }}</option> }
+              </select>
+            </label>
+          }
+          @if (bd.action === 'provision' || bd.action === 'access') {
+            <label>Access
+              <select [disabled]="bd.running || bd.ran" (change)="setBulk({ access: keepOr($any($event.target).value) })">
+                @if (bd.action === 'provision') { <option [value]="KEEP" [selected]="bd.access === undefined">Keep each person's own (new people: their role's)</option> }
+                @else if (bd.access === undefined) { <option disabled selected>Choose access…</option> }
+                <option value="" [selected]="bd.access === ''">Their role's</option>
+                <option value="full" [selected]="bd.access === 'full'">Full stack: GitHub sign-in, Implement, Publish</option>
+                <option value="read" [selected]="bd.access === 'read'">Read-only: ask, explain and search the code</option>
+              </select>
+            </label>
+          }
+          @if (bd.action === 'profile' || bd.action === 'role' || bd.action === 'access' || bd.action === 'update') { <p class="muted">This restarts the dashboards of those who have one. A run in progress is interrupted (they can reply to it to carry on).</p> }
+          @if (bulkOn(bd) || !bd.lines.length) { <div class="pv-h">{{ bulkStatus(bd) }}</div> } @else { <p class="muted">{{ bulkStatus(bd) }}</p> }
+          <ul class="lines" aria-live="polite">
+            @for (l of bd.lines; track l.row.email) {
+              <li>
+                <div class="lh">
+                  <span><span class="nm">{{ l.row.name }}</span> <span class="em">{{ l.row.email }}</span></span>
+                  <span [class]="'tag ' + lineTag(l.status)">{{ lineLabel(l) }}</span>
+                </div>
+                @if (l.message) { <div class="warn-note err">{{ l.message }}</div> }
+                @if (l.output) { <details><summary>Preview</summary><pre class="pv">{{ l.output }}</pre></details> }
+              </li>
+            }
+          </ul>
+        </div>
+        <div class="dfoot">
+          <button class="btn ghost sm" [disabled]="bd.running" (click)="closeBulk()">{{ bd.ran ? 'Close' : 'Cancel' }}</button>
+          <button class="btn sm" [disabled]="bd.running || bd.ran || bulkChecking()" (click)="previewBulk(true)">Preview again</button>
+          <button class="btn sm primary" [disabled]="!canRunBulk()" (click)="runBulk()">{{ bd.running ? 'Working…' : confirmLabel(bd.action) + (bulkReady() ? ' (' + bulkReady() + ')' : '') }}</button>
+        </div>
+      </div>
+    }
+
     @if (pending(); as pd) {
       <div class="scrim" (click)="cancel()"></div>
       <div class="dialog panel" role="dialog" aria-modal="true" aria-labelledby="people-dialog-title">
@@ -280,7 +359,7 @@ interface RoleDraft { id: string | null; label: string; description: string; acc
           @if (pd.action === 'profile' || pd.action === 'role' || pd.action === 'access' || pd.action === 'update') { <p class="muted">This restarts their dashboard. A run in progress is interrupted (they can reply to it to carry on).</p> }
           @if (pd.error) { <div class="warn-note err">{{ pd.error }}</div> }
           @if (pd.preview) { <div class="pv-h">Preview (nothing has changed yet):</div><pre class="pv">{{ pd.preview.output || 'OK' }}</pre> }
-          @else if (pd.busy) { <div class="muted">Checking the change with {{ view()!.cluster }}…</div> }
+          @else if (pd.busy) { <div class="muted">Checking the change with {{ view()!.cluster || 'the platform' }}…</div> }
         </div>
         <div class="dfoot">
           <button class="btn ghost sm" (click)="cancel()">Cancel</button>
@@ -335,6 +414,18 @@ export class PeopleComponent implements OnInit {
   readonly shown = computed(() => this.filtered().slice(0, this.LIMIT));
   readonly more = computed(() => Math.max(0, this.filtered().length - this.LIMIT));
 
+  readonly tickable = computed(() => this.shown().filter(selectable));
+  /** Ticked people, by email. Only tickable rows on screen stay ticked: a filter, search or reload drops the rest. */
+  readonly selected = linkedSignal<PersonRow[], ReadonlySet<string>>({
+    source: this.tickable,
+    computation: (rows, was) => new Set(rows.map((r) => r.email).filter((e) => was?.value.has(e))),
+  });
+  readonly picked = computed(() => this.tickable().filter((r) => this.selected().has(r.email)));
+  readonly allTicked = computed(() => { const n = this.picked().length; return !n ? 'none' : n === this.tickable().length ? 'all' : 'some'; });
+  /** The action bar: how many ticked people each bulk action applies to. Role only when the workspace has roles. */
+  readonly bulkButtons = computed(() => BULK_ACTIONS.filter((a) => a !== 'role' || this.hasRoles())
+    .map((action) => ({ action, n: this.picked().filter((r) => skipReason(r, action) === null).length })));
+
   ngOnInit(): void { void this.load(false); }
 
   async load(force: boolean): Promise<void> {
@@ -357,7 +448,11 @@ export class PeopleComponent implements OnInit {
   /** The access a role gives by default; someone who picks their own role gets their pick's, shown as full. */
   roleAccess(id: string | null): Access { return (id && this.view()?.roles.find((r) => r.id === id)?.access) || 'full'; }
   sourceLabel(s: string) { return ({ directory: 'Directory', roster: 'Roster', cluster: 'Dashboards', template: 'Template' } as Record<string, string>)[s] || s; }
-  confirmLabel(a: PeopleActionName) { return ({ provision: 'Set up', update: 'Update', profile: 'Change profile', role: 'Change role', access: 'Change access', start: 'Start', stop: 'Stop', remove: 'Remove', adopt: 'Adopt', forget: 'Forget' } as Record<string, string>)[a]; }
+  confirmLabel(a: PeopleActionName) { return ACTION_LABEL[a]; }
+  readonly managed = managed;
+  readonly rowActions = rowActions;
+  rowLabel(r: PersonRow, a: PeopleActionName) { return a === 'provision' ? (r.state === 'missing' ? 'Set up again' : 'Set up…') : a === 'remove' ? 'Remove…' : ACTION_LABEL[a]; }
+  rowBtn(r: PersonRow, a: PeopleActionName) { return a === 'provision' && r.state === 'not-set-up' ? 'primary' : ROW_BTN[a] || ''; }
   title(p: Pending) {
     const who = p.row.name;
     const access = p.access ? `Give ${who} ${p.access === 'full' ? 'full-stack' : 'read-only'} access` : `Let ${who}'s access follow their role`;
@@ -429,6 +524,156 @@ export class PeopleComponent implements OnInit {
     } catch (e) {
       this.pending.set({ ...p, busy: false, error: (e as Error).message });
     }
+  }
+
+  readonly selectable = selectable;
+  clearTicks(): void { this.selected.set(new Set()); }
+  tick(r: PersonRow): void {
+    const next = new Set(this.selected());
+    if (!next.delete(r.email)) next.add(r.email);
+    this.selected.set(next);
+  }
+  tickAll(): void { if (this.allTicked() === 'all') this.clearTicks(); else this.selected.set(new Set(this.tickable().map((r) => r.email))); }
+
+  readonly bulk = signal<BulkPending | null>(null);
+  bulkHeading(b: BulkPending) { return bulkTitle(b.action, this.bulkOn(b)); }
+  /** How many ticked people the action applies to (not skipped). */
+  bulkOn(b: BulkPending) { return b.lines.filter((l) => !l.skip).length; }
+  /** The Set up dialog's "Keep each person's own" option: undefined in the choice, so it's left out of the request. */
+  readonly KEEP = ':keep';
+  keepOr<T extends string>(v: T): T | undefined { return v === this.KEEP ? undefined : v; }
+  /** Bumped by each bulk preview, close and run: an older preview stops writing its answers. */
+  private bulkSeq = 0;
+  /** The bulk dialog's latest request, settled: the next is chained after it, so the platform has one call at a time even when a choice changes mid-preview. */
+  private bulkCall: Promise<unknown> = Promise.resolve();
+  /** Sends `body` once the call before it settles. `go` runs just before: false (a stale preview) sends nothing and gives null. */
+  private bulkPost(body: PeopleActionRequest, go: () => boolean): Promise<PeopleActionResponse | null> {
+    const call = this.bulkCall.then(() => (go() ? this.api.post<PeopleActionResponse>('/api/people/action', body) : null));
+    this.bulkCall = call.catch(() => undefined);
+    return call;
+  }
+  readonly bulkChecking = computed(() => !!this.bulk()?.lines.some((l) => l.status === 'waiting' || l.status === 'checking'));
+  /** How many previewed fine: Confirm runs those, and skips the ones whose preview failed. */
+  readonly bulkReady = computed(() => this.bulk()?.lines.filter((l) => l.status === 'ok').length || 0);
+  /** Unchecked lines block Confirm: Preview again checks them (and keeps the ready ones). */
+  readonly bulkUnchecked = computed(() => this.bulk()?.lines.filter((l) => l.status === 'unchecked').length || 0);
+  readonly canRunBulk = computed(() => {
+    const b = this.bulk();
+    return !!b && !b.running && !b.ran && !this.bulkChecking() && !this.bulkUnchecked() && this.bulkReady() > 0;
+  });
+
+  bulkStatus(b: BulkPending): string {
+    const on = this.bulkOn(b);
+    const head = appliesTo(on, b.lines.length - on);
+    if (!on) return head;
+    if (!this.chosen(b)) return `${head} Choose the new ${b.action} to preview it.`;
+    if (b.running || b.ran) return head;
+    if (this.bulkUnchecked()) return `${head} ${this.bulkUnchecked()} not checked: ${b.stopped || 'the preview stopped'}. Fix it, then Preview again.`;
+    return `${head} Preview (nothing has changed yet)${this.bulkChecking() ? `, checking with ${this.view()?.cluster || 'the platform'}…` : ':'}`;
+  }
+  lineLabel(l: BulkLine): string { return l.status === 'skipped' ? `Skipped: ${l.skip}` : LINE_LABEL[l.status]; }
+  lineTag(s: LineStatus): string { return s === 'ok' || s === 'done' ? 'good' : s === 'error' || s === 'failed' ? 'bad' : s === 'checking' || s === 'running' ? 'amber' : ''; }
+
+  /** Profile, role and access are picked before anything is previewed; Set up starts on keeping each person's own. */
+  private chosen(b: BulkPending): boolean { return b.action === 'profile' || b.action === 'role' || b.action === 'access' ? b[b.action] !== undefined : true; }
+
+  askBulk(action: BulkAction): void {
+    const lines = this.picked().map((row): BulkLine => ({ row, skip: null, status: 'idle', output: null, message: null }));
+    this.bulk.set({ action, lines, running: false, ran: false, stopped: null });
+    void this.previewBulk();
+  }
+  setBulk(patch: BulkChoice): void {
+    const b = this.bulk();
+    if (!b || b.running || b.ran) return;
+    this.bulk.set({ ...b, ...patch });
+    void this.previewBulk();
+  }
+  closeBulk(): void {
+    if (this.bulk()?.running) return;
+    this.bulkSeq++;
+    this.bulk.set(null);
+  }
+  private patchLine(email: string, patch: Partial<BulkLine>): void {
+    const b = this.bulk();
+    if (b) this.bulk.set({ ...b, lines: b.lines.map((l) => (l.row.email === email ? { ...l, ...patch } : l)) });
+  }
+
+  /**
+   * Dry-runs the action for each person it applies to, one at a time (the platform calls are heavy), chained after an older preview's call.
+   * A failure is marked and the rest go on, unless there was no answer or it's the same error as the one before (stopAfter): then the rest are unchecked.
+   * `again` (the Preview again button) keeps the ready lines; a new choice (setBulk) re-checks everyone, as their ok was for the old one.
+   */
+  async previewBulk(again = false): Promise<void> {
+    const b = this.bulk();
+    if (!b) return;
+    const seq = ++this.bulkSeq;
+    const ready = this.chosen(b);
+    // Who it applies to first, then who's skipped and why. Nothing chosen yet: idle until it is.
+    const lines = b.lines.map((was): BulkLine => {
+      const skip = skipReason(was.row, b.action, b);
+      if (again && !skip && was.status === 'ok') return was;
+      return { row: was.row, skip, status: skip ? 'skipped' : ready ? 'waiting' : 'idle', output: null, message: null };
+    }).sort((x, y) => Number(!!x.skip) - Number(!!y.skip));
+    this.bulk.set({ ...b, lines, stopped: null });
+    if (!ready) return;
+    const todo = lines.filter((x) => x.status === 'waiting');
+    let prev: string | null = null;
+    for (const [i, l] of todo.entries()) {
+      // In the chained step, just before the POST: a stale preview sends nothing.
+      const go = () => {
+        if (seq !== this.bulkSeq) return false;
+        this.patchLine(l.row.email, { status: 'checking' });
+        return true;
+      };
+      try {
+        const res = await this.bulkPost(bulkBody(b.action, l.row, b, true), go);
+        if (seq !== this.bulkSeq || !res) return;
+        this.patchLine(l.row.email, { status: 'ok', output: res.output || 'OK' });
+        prev = null;
+      } catch (e) {
+        if (seq !== this.bulkSeq) return;
+        const message = (e as Error).message;
+        this.patchLine(l.row.email, { status: 'error', message });
+        if (stopAfter(prev, e)) {
+          const rest = todo.slice(i + 1);
+          for (const r of rest) this.patchLine(r.row.email, { status: 'unchecked' });
+          const cur = this.bulk();
+          if (cur && rest.length) this.bulk.set({ ...cur, stopped: noAnswer(e) ? "the dashboard server didn't answer" : 'the same error twice in a row' });
+          return;
+        }
+        prev = message;
+      }
+    }
+  }
+
+  /**
+   * Runs it for real for everyone whose preview passed, one at a time, carrying on past failures.
+   * The dialog stays open when anyone failed or wasn't run (their preview failed), so the toast isn't the only word on them.
+   */
+  async runBulk(): Promise<void> {
+    const b = this.bulk();
+    if (!b || !this.canRunBulk()) return;
+    this.bulkSeq++;
+    const todo = b.lines.filter((l) => l.status === 'ok');
+    this.bulk.set({ ...b, running: true, lines: b.lines.map((l): BulkLine => (l.status === 'ok' ? { ...l, status: 'queued' } : l)) });
+    const done = new Set<string>();
+    let failed = 0;
+    const notRun = b.lines.filter((l) => !l.skip && l.status !== 'ok').length;
+    for (const l of todo) {
+      try {
+        await this.bulkPost(bulkBody(b.action, l.row, b, false), () => { this.patchLine(l.row.email, { status: 'running' }); return true; });
+        this.patchLine(l.row.email, { status: 'done' });
+        done.add(l.row.email);
+      } catch (e) {
+        this.patchLine(l.row.email, { status: 'failed', message: (e as Error).message });
+        failed++;
+      }
+    }
+    this.toast.show(bulkSummary(b.action, done.size, failed, notRun), failed + notRun > 0);
+    this.selected.set(new Set([...this.selected()].filter((e) => !done.has(e))));
+    // Failures and the ones not run stay on screen so their errors can be read; Close then.
+    this.bulk.set(failed || notRun ? { ...this.bulk()!, running: false, ran: true } : null);
+    await this.load(false);
   }
 
   async copy(text: string): Promise<void> {
