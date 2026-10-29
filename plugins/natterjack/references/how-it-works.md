@@ -62,7 +62,7 @@ The server can start processes as the user, so no other origin may reach it. Hos
 - **Windows**: `.cmd` shims (npm, az, composer) need a shell to run; `cmd.exe` mangles `^` and `$` in arguments, so only fall back to a shell when the plain exec fails. `jq` output has CRLF.
 - **Never kill terminal processes** (WindowsTerminal, conhost) to stop something: kill the app's own process tree or whatever listens on its port.
 - **A `.gitignore` that starts with `*`** (allow-list style) hides new top-level folders until `!folder/` and `!folder/**` are added; scaffold adds the dashboard's.
-- **Node version**: the dashboard needs ≥ 24.15 (type stripping, Angular 22). An older default Node shadowing a newer nvm one is common; `bin/dashboard.mjs` picks the nvm one.
+- **Node version**: the dashboard needs ≥ 24.22 (type stripping, Angular 22; 24.15 aborts natively on Windows during loopback HTTP). An older default Node shadowing a newer nvm one is common; `bin/dashboard.mjs` picks the nvm one.
 
 ## Searchable docs
 

@@ -433,8 +433,8 @@ export async function buildSnapshot(root: string, outDir: string, opts: { worksp
 function nodeFloor(): string {
   try {
     const pkg = JSON.parse(fs.readFileSync(path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "..", "package.json"), "utf-8"));
-    return (/(\d+\.\d+\.\d+)/.exec(String(pkg.engines && pkg.engines.node)) || [])[1] || "24.0.0";
-  } catch { return "24.0.0"; }
+    return (/(\d+\.\d+\.\d+)/.exec(String(pkg.engines && pkg.engines.node)) || [])[1] || "24.22.0";
+  } catch { return "24.22.0"; }
 }
 
 /** Newest mtime under p, skipping installs and build output (as dashboard.mjs does). */

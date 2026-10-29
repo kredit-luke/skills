@@ -823,7 +823,7 @@ async function suggest(root, repos, compose, pins, codeHost) {
       }
     }
   }
-  if (needsNode) machine.splice(1, 0, { use: "node", required: nodePin ? { file: nodePin.file, min: "24.15.0" } : { min: "24.15.0" }, why: "the dashboard itself runs on Node" });
+  if (needsNode) machine.splice(1, 0, { use: "node", required: nodePin ? { file: nodePin.file, min: "24.22.0" } : { min: "24.22.0" }, why: "the dashboard itself runs on Node" });
   addUse("git");
   if (codeHost === "gitlab") addUse("glab"); else addUse("gh");
   addUse("claude");

@@ -165,3 +165,13 @@ test("on Windows, Stop won't taskkill a pid whose process started at another tim
     assert.equal(treeAlive(other.pid), true, "the process that has the pid now is still running");
   } finally { other.end(); }
 });
+
+test("a job whose log can't be written still finishes (the log is best effort; a throw there would kill the dashboard)", async () => {
+  const job = await finished(launcher.job(ws, "Unloggable", async (step) => {
+    await step("Lose the log", async (log) => { fs.rmSync(log.file); fs.mkdirSync(log.file); });
+  }));
+  await new Promise((r) => setTimeout(r, 50));
+  assert.equal(job.status, "succeeded", job.error);
+  assert.ok(job.endedAt);
+  fs.rmSync(job._log, { recursive: true });
+});

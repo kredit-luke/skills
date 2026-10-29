@@ -6,6 +6,7 @@ import fs from "node:fs";
 import net from "node:net";
 import os from "node:os";
 import path from "node:path";
+import { freeBlock } from "./ports.ts";
 
 const ROOT = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "dash-fallback-")));
 const CFG = path.join(ROOT, ".claude", "dashboard");
@@ -16,7 +17,8 @@ process.env.DASHBOARD_LEDGER_DIR = path.join(ROOT, ".claude", "ledger");
 const { AppLauncher, killTree } = await import("../src/apps.ts");
 const { ownPort, resolvePort } = await import("../src/workspaces.ts");
 
-const MAIN_API = 47811, WT_API = 47821, WT2_API = 47831;
+const BASE = await freeBlock([11, 21, 31]);
+const MAIN_API = BASE + 11, WT_API = BASE + 21, WT2_API = BASE + 31;
 // api listens on {{port}}; web records the api port it was given, then idles.
 const listen = `require('net').createServer().listen(Number(process.env.PORT), '127.0.0.1'); setInterval(() => {}, 1000)`;
 const record = `require('fs').writeFileSync('api-port.txt', String(process.env.API)); setInterval(() => {}, 1000)`;
@@ -80,7 +82,7 @@ test("a stack in a worktree that hasn't cloned api uses main's, and web is point
   const job = await finished(launcher.startStack(wt, "app"));
   assert.equal(job.status, "succeeded", job.error);
   assert.ok(job.notes.some((n) => n.includes("main workspace's API")), job.notes.join("; "));
-  assert.ok(job.steps.some((s) => s.label === "API already running on :47811"), job.steps.map((s) => s.label).join("; "));
+  assert.ok(job.steps.some((s) => s.label === `API already running on :${MAIN_API}`), job.steps.map((s) => s.label).join("; "));
   assert.equal(await recorded(wt), MAIN_API);
 });
 

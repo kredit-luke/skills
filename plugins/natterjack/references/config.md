@@ -189,7 +189,7 @@ Each check picks a catalog entry with `use` and overrides any field, or defines 
 
 **Kinds** for custom checks: `command` (`probe: { cmd: "tool" | { win, mac, linux }, args: [], stream?: "out"|"err"|"both" }`, optional `auth: { cmd, args, detail, signIn: { label, win, mac, linux } }`), plus every kind above. Never put secrets in checks: secrets checks only look for a file and tell the user where it comes from.
 
-Always include: `package-manager`, `node` (the dashboard itself needs it; floor 24.15.0), `git`, the code host CLI (`gh`/`glab`), `claude`. Then each stack's toolchain (from its version pins), `docker` + one `docker-container` per database/service the apps need, and one `path` check per app's installed dependencies.
+Always include: `package-manager`, `node` (the dashboard itself needs it; floor 24.22.0), `git`, the code host CLI (`gh`/`glab`), `claude`. Then each stack's toolchain (from its version pins), `docker` + one `docker-container` per database/service the apps need, and one `path` check per app's installed dependencies.
 
 ## docs.json: the Knowledge page (and search)
 

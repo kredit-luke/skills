@@ -223,6 +223,43 @@ test("readManifests parses only the newest files, and re-reads one only when it 
   assert.equal(readManifests(dir).manifests.find((m) => m.ticket === "T-304")!.title, "v2");
 });
 
+test("readManifests re-reads a file rewritten within the same mtime (Windows' clock is coarse)", async () => {
+  const dir = tmp();
+  const f = path.join(dir, "T-5.json");
+  const same = new Date(1_700_000_000_000);
+  fs.writeFileSync(f, JSON.stringify({ ticket: "T-5", title: "v1", startedAt: at, gates: [{ id: "plan", decision: "pending", at }] }));
+  fs.utimesSync(f, same, same);
+  assert.equal(readManifests(dir).manifests[0].title, "v1");
+  fs.writeFileSync(f, JSON.stringify({ ticket: "T-5", title: "v two", startedAt: at, gates: [{ id: "plan", decision: "pending", at }] }));
+  fs.utimesSync(f, same, same);
+  assert.equal(readManifests(dir).manifests[0].title, "v two");
+  // Same size too, as another process (factory.mjs) can write: a file touched within ~2s of being
+  // cached is read again (git's "racy" rule), so the second write in one mtime tick isn't missed.
+  const recent = new Date(Date.now() - 500);
+  fs.writeFileSync(f, JSON.stringify({ ticket: "T-5", title: "v3", startedAt: at, gates: [{ id: "plan", decision: "pending", at }] }));
+  fs.utimesSync(f, recent, recent);
+  assert.equal(readManifests(dir).manifests[0].title, "v3");
+  fs.writeFileSync(f, JSON.stringify({ ticket: "T-5", title: "v4", startedAt: at, gates: [{ id: "plan", decision: "pending", at }] }));
+  fs.utimesSync(f, recent, recent);
+  assert.equal(readManifests(dir).manifests[0].title, "v4", "same mtime and size, but racy when cached");
+  // The dashboard's own writes drop the cached copy.
+  await recordGateDecision("T-5", "plan", "approved", "kim", null, { dir, now: "2026-10-27T11:00:00.000Z" });
+  fs.utimesSync(f, same, same);
+  assert.equal(readManifests(dir).manifests[0].gates.at(-1)!.decision, "approved");
+});
+
+test("readManifests caches a file whose mtime is far in the future (clock skew), not re-read every poll", () => {
+  const dir = tmp();
+  const f = path.join(dir, "T-6.json");
+  const future = new Date(Date.now() + 365 * 24 * 3600_000);
+  fs.writeFileSync(f, JSON.stringify({ ticket: "T-6", title: "f1" }));
+  fs.utimesSync(f, future, future);
+  assert.equal(readManifests(dir).manifests[0].title, "f1");
+  fs.writeFileSync(f, JSON.stringify({ ticket: "T-6", title: "f2" }));
+  fs.utimesSync(f, future, future);
+  assert.equal(readManifests(dir).manifests[0].title, "f1", "same mtime and size, not racy: served from the cache");
+});
+
 // The multirepo plugin's scripts (in this repo) write what the engine reads: their lists must match.
 test("the multirepo scripts' stages, gates and spec checks match the engine's", async (t) => {
   const scripts = path.join(import.meta.dirname, "..", "..", "..", "..", "multirepo", "scripts");
@@ -346,6 +383,48 @@ test("a person's gate decision: recorded only where the ticket waits, a rejectio
 
   const r = await recordGateDecision("acme/api#7", "spec", "rejected", "kim", "too vague", { dir });
   assert.deepEqual([r.done, r.error], [true, "Spec gate rejected by kim: too vague"]);
+});
+
+test("a gate decision waits out Windows' EPERM while factory.mjs's lock is being deleted", async () => {
+  const dir = tmp();
+  const file = path.join(dir, "T-6.json");
+  fs.writeFileSync(file, JSON.stringify({ ticket: "T-6", startedAt: at, gates: [{ id: "plan", decision: "pending", at }] }));
+  const open = fs.openSync;
+  const platform = Object.getOwnPropertyDescriptor(process, "platform")!;
+  let tries = 0;
+  (fs as any).openSync = (p: string, ...rest: any[]) => {
+    if (p === `${file}.lock` && ++tries < 3) throw Object.assign(new Error("EPERM: operation not permitted"), { code: "EPERM" });
+    return (open as any)(p, ...rest);
+  };
+  Object.defineProperty(process, "platform", { value: "win32" });
+  try {
+    assert.equal((await recordGateDecision("T-6", "plan", "approved", "kim", null, { dir })).gates.at(-1)!.decision, "approved");
+    assert.equal(tries, 3);
+  } finally {
+    fs.openSync = open;
+    Object.defineProperty(process, "platform", platform);
+  }
+});
+
+test("a gate decision rethrows a lasting Windows EPERM (a real permission error) after a short wait, not the full timeout", async () => {
+  const dir = tmp();
+  const file = path.join(dir, "T-7.json");
+  fs.writeFileSync(file, JSON.stringify({ ticket: "T-7", startedAt: at, gates: [{ id: "plan", decision: "pending", at }] }));
+  const open = fs.openSync;
+  const platform = Object.getOwnPropertyDescriptor(process, "platform")!;
+  (fs as any).openSync = (p: string, ...rest: any[]) => {
+    if (p === `${file}.lock`) throw Object.assign(new Error("EPERM: operation not permitted"), { code: "EPERM" });
+    return (open as any)(p, ...rest);
+  };
+  Object.defineProperty(process, "platform", { value: "win32" });
+  const started = Date.now();
+  try {
+    await assert.rejects(recordGateDecision("T-7", "plan", "approved", "kim", null, { dir }), { code: "EPERM" });
+    assert.ok(Date.now() - started < 2000, "gave up well before the 5s lock timeout");
+  } finally {
+    fs.openSync = open;
+    Object.defineProperty(process, "platform", platform);
+  }
 });
 
 test("a new round leaves earlier gate decisions in the trail but out of the ticket's place", () => {

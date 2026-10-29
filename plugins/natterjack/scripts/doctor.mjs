@@ -42,7 +42,7 @@ export async function doctor(root) {
   const dir = engineDirOf(root);
   const dash = path.join(root, dir);
   const pkg = readJson(path.join(dash, "package.json")) || {};
-  const floor = (/(\d+\.\d+\.\d+)/.exec((pkg.engines && pkg.engines.node) || "") || [])[1] || "24.15.0";
+  const floor = (/(\d+\.\d+\.\d+)/.exec((pkg.engines && pkg.engines.node) || "") || [])[1] || "24.22.0";
   const node = run("node", ["-v"]);
   add(node && cmp(node, floor) >= 0 ? "ok" : "warn", "node", `${node || "not on PATH"} (dashboard needs ≥ ${floor})`,
     node && cmp(node, floor) >= 0 ? "" : "Install a newer Node (winget install OpenJS.NodeJS.LTS / brew install node), or nvm install; the start script also picks up a newer nvm version by itself.");

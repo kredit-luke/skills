@@ -375,31 +375,39 @@ function normalizeAssessment(a: any): FactoryAssessment {
   };
 }
 
-/** Parsed manifests by file, kept until the file's mtime changes (the board reloads every few seconds). */
-const parsed = new Map<string, { mtimeMs: number; manifest: FactoryManifest | null; error: string | null }>();
+/**
+ * Parsed manifests by file, kept until the file's mtime or size changes (the board reloads every few
+ * seconds). Size too: two writes can land in the same mtime tick, which on Windows is coarse. And a
+ * file whose mtime was within RACY_MS of when it was cached is read again every time (git's "racy"
+ * rule): another process can rewrite it at the same size inside that tick. Within RACY_MS either
+ * way, so a future mtime (clock skew) is cached like any other rather than re-read on every poll.
+ */
+const parsed = new Map<string, { mtimeMs: number; size: number; cachedAt: number; manifest: FactoryManifest | null; error: string | null }>();
+const RACY_MS = 2000;
 
 /**
  * The newest manifests in the folder (by file time, at most `limit`: the board's MAX_MANIFESTS; limits
  * are checked against all of them), newest first, plus the files that couldn't be read.
  */
 export function readManifests(dir = manifestDir(), limit = MAX_MANIFESTS): { manifests: FactoryManifest[]; errors: string[] } {
-  let files: { f: string; mtimeMs: number }[] = [];
+  let files: { f: string; mtimeMs: number; size: number }[] = [];
   try {
     files = fs.readdirSync(dir).filter((f) => f.endsWith(".json"))
-      .map((f) => { try { return { f, mtimeMs: fs.statSync(path.join(dir, f)).mtimeMs }; } catch { return null; } })
-      .filter((x): x is { f: string; mtimeMs: number } => !!x)
+      .map((f) => { try { const s = fs.statSync(path.join(dir, f)); return { f, mtimeMs: s.mtimeMs, size: s.size }; } catch { return null; } })
+      .filter((x): x is { f: string; mtimeMs: number; size: number } => !!x)
       .sort((a, b) => b.mtimeMs - a.mtimeMs).slice(0, limit);
   } catch { return { manifests: [], errors: [] }; }
   const manifests: FactoryManifest[] = [];
   const errors: string[] = [];
-  for (const { f, mtimeMs } of files) {
+  for (const { f, mtimeMs, size } of files) {
     const file = path.join(dir, f);
     let hit = parsed.get(file);
-    if (!hit || hit.mtimeMs !== mtimeMs) {
+    if (!hit || hit.mtimeMs !== mtimeMs || hit.size !== size || Math.abs(mtimeMs - hit.cachedAt) < RACY_MS) {
+      const cachedAt = Date.now();
       try {
         const m = normalizeManifest(JSON.parse(fs.readFileSync(file, "utf-8")));
-        hit = { mtimeMs, manifest: m, error: m ? null : `${f}: not a factory manifest (no ticket).` };
-      } catch (e) { hit = { mtimeMs, manifest: null, error: `${f}: ${(e as Error).message}` }; }
+        hit = { mtimeMs, size, cachedAt, manifest: m, error: m ? null : `${f}: not a factory manifest (no ticket).` };
+      } catch (e) { hit = { mtimeMs, size, cachedAt, manifest: null, error: `${f}: ${(e as Error).message}` }; }
       parsed.set(file, hit);
     }
     if (hit.manifest) manifests.push(hit.manifest);
@@ -414,6 +422,7 @@ export function readManifests(dir = manifestDir(), limit = MAX_MANIFESTS): { man
 /** factory.mjs's lock on a manifest: `<file>.lock`, created exclusively, broken when older than this. */
 const LOCK_STALE_MS = 10_000;
 const LOCK_WAIT_MS = 5_000;
+const LOCK_DELETE_WAIT_MS = 500; // Windows EPERM/EACCES/EBUSY while another writer deletes its lock
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 /** Runs fn holding `<file>.lock` (the lock factory.mjs takes), waiting without blocking the server. */
@@ -421,11 +430,17 @@ async function withLock<T>(file: string, fn: () => T): Promise<T> {
   const lock = `${file}.lock`;
   const deadline = Date.now() + LOCK_WAIT_MS;
   let fd: number | null = null;
+  let deletingSince = 0;
   while (fd === null) {
     try { fd = fs.openSync(lock, "wx"); } catch (e: any) {
-      if (e.code !== "EEXIST") throw e;
-      try { if (Date.now() - fs.statSync(lock).mtimeMs > LOCK_STALE_MS) { fs.unlinkSync(lock); continue; } } catch { continue; }
-      if (Date.now() > deadline) throw Object.assign(new Error("The ticket's progress file is busy; try again."), { status: 409 });
+      // On Windows, opening a lock another writer is deleting fails with EPERM (or EACCES, EBUSY): wait it out
+      // too, but only briefly; one that lasts is a real permission error, so it's rethrown.
+      const deleting = process.platform === "win32" && ["EPERM", "EACCES", "EBUSY"].includes(e.code);
+      if (e.code !== "EEXIST" && !deleting) throw e;
+      deletingSince = deleting ? deletingSince || Date.now() : 0;
+      if (deleting && Date.now() - deletingSince > LOCK_DELETE_WAIT_MS) throw e;
+      if (!deleting) try { if (Date.now() - fs.statSync(lock).mtimeMs > LOCK_STALE_MS) { fs.unlinkSync(lock); continue; } } catch { continue; }
+      if (Date.now() > deadline) throw Object.assign(new Error(`The ticket's progress file is busy${deleting ? ` (last error: ${e.code})` : ""}; try again.`), { status: 409 });
       await sleep(25);
     }
   }
@@ -472,6 +487,7 @@ async function updateManifest(ticket: string, dir: string, now: string, change: 
     change(raw, m);
     raw.updatedAt = now;
     writeConfigFile(path.basename(file), raw, path.dirname(file));
+    parsed.delete(file); // the next read sees this write, even within the same mtime and size
     return normalizeManifest(raw)!;
   });
 }

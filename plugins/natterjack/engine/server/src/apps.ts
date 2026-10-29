@@ -566,7 +566,8 @@ class AppLauncher {
     this._prune();
     this._save(job);
 
-    const log: any = (text) => fs.appendFileSync(logFile, String(text).replace(/\r/g, "") + "\n");
+    // Best effort: it runs in the job's .finally too, where a throw would be an unhandled rejection.
+    const log: any = (text) => { try { fs.appendFileSync(logFile, String(text).replace(/\r/g, "") + "\n"); } catch {} };
     log.file = logFile;
     const note = (text) => { job.notes.push(text); log(`note: ${text}`); this._save(job); };
     const step = async (stepLabel, fn) => {
@@ -632,8 +633,11 @@ export function twoHop(p: { file: string; args: string[]; cwd: string; env: Reco
     stdio: "ignore",
     windowsHide: true,
   });
+  // A spawn that fails emits "error" later; unheard, that would take the dashboard down. No pid = it failed.
+  child.on("error", (e) => { try { fs.appendFileSync(logFile, `\n[${key} launcher failed: ${e.message}]\n`); } catch {} });
   child.unref();
-  return child.pid!;
+  if (!child.pid) throw new Error(`Couldn't start ${key}'s launcher.`);
+  return child.pid;
 }
 
 /** Kill a process and everything under it. Best effort. */

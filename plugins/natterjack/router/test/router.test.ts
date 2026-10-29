@@ -4,6 +4,7 @@ import { test, before, after } from "node:test";
 import assert from "node:assert/strict";
 import fs from "node:fs";
 import http from "node:http";
+import net from "node:net";
 import os from "node:os";
 import path from "node:path";
 import { spawn, type ChildProcess } from "node:child_process";
@@ -11,6 +12,7 @@ import { fileURLToPath } from "node:url";
 import { routerConfig } from "../src/config.ts";
 import { backendUrl } from "../src/backends.ts";
 import { LinkTokens } from "../../engine/server/src/link-tokens.ts";
+import { freePort } from "../../engine/server/test/ports.ts";
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const ROUTER_MAIN = path.join(HERE, "..", "src", "main.ts");
@@ -18,12 +20,16 @@ const ENGINE_MAIN = path.join(HERE, "..", "..", "engine", "server", "src", "main
 const TMP = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "dash-router-")));
 const HOST = "dash.example.com";
 const FRONT = "f".repeat(40), BACK = "b".repeat(40);
-const base = 40000 + Math.floor(Math.random() * 900) * 10;
-const P = { dash: base, stream: base + 1, dead: base + 2, k8s: base + 3, routerStatic: base + 4, routerK8s: base + 5, busy: base + 6, evil: base + 7, crashy: base + 8 };
+// Ports, set in before(): the servers here listen on whatever the OS picks; the processes get a free one.
+const P = { dash: 0, stream: 0, dead: 0, k8s: 0, routerStatic: 0, routerK8s: 0, busy: 0, evil: 0, crashy: 0 };
 const kids: ChildProcess[] = [];
 let evilHits = 0;
 const servers: http.Server[] = [];
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+/** Listens on a port the OS picks; resolves to it. */
+const listen = (s: net.Server) => new Promise<number>((resolve, reject) => {
+  s.once("error", reject).listen(0, "127.0.0.1", () => resolve((s.address() as net.AddressInfo).port));
+});
 
 test("backendUrl: only the request's path and query; the host is always the backend's", () => {
   assert.equal(backendUrl("http://127.0.0.1:3333", "/api/runs?limit=5").href, "http://127.0.0.1:3333/api/runs?limit=5");
@@ -73,6 +79,7 @@ function node(script: string, env: NodeJS.ProcessEnv, args: string[] = []) {
 const k8s = { replicas: 0, ready: 0, patches: [] as number[], busyPatches: [] as number[] };
 
 before(async () => {
+  for (const k of ["dash", "dead", "routerStatic", "routerK8s"] as const) P[k] = await freePort();
   // A real hosted dashboard for ana, set up the way the router expects.
   const ws = path.join(TMP, "ws");
   fs.mkdirSync(path.join(ws, ".claude", "dashboard"), { recursive: true });
@@ -93,7 +100,7 @@ before(async () => {
     }
     res.write(`data: ${JSON.stringify({ secret: req.headers["x-dashboard-proxy-secret"], email: req.headers["x-forwarded-email"] })}\n\n`);
   });
-  stream.listen(P.stream, "127.0.0.1");
+  P.stream = await listen(stream);
   servers.push(stream);
 
   // bo's dashboard, mid-run: the router must never stop it, however idle.
@@ -101,12 +108,12 @@ before(async () => {
     res.setHeader("Content-Type", "application/json");
     res.end(JSON.stringify(req.url!.startsWith("/api/runs") ? { runs: [{ id: "r1", status: "running" }] } : {}));
   });
-  busy.listen(P.busy, "127.0.0.1");
+  P.busy = await listen(busy);
   servers.push(busy);
 
   // Somewhere a request must never reach: it would get the backend secret and an email.
   const evil = http.createServer((req, res) => { evilHits++; res.end("got it"); });
-  evil.listen(P.evil, "127.0.0.1");
+  P.evil = await listen(evil);
   servers.push(evil);
 
   // A dashboard that dies mid-response (restart, OOM kill).
@@ -115,7 +122,7 @@ before(async () => {
     res.write("data: 1\n\n");
     setTimeout(() => req.socket.destroy(), 50);
   });
-  crashy.listen(P.crashy, "127.0.0.1");
+  P.crashy = await listen(crashy);
   servers.push(crashy);
 
   const api = http.createServer((req, res) => {
@@ -149,7 +156,7 @@ before(async () => {
       res.end("{}");
     });
   });
-  api.listen(P.k8s, "127.0.0.1");
+  P.k8s = await listen(api);
   servers.push(api);
 
   const routing = path.join(TMP, "dashboards.json");

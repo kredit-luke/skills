@@ -170,7 +170,9 @@ export class McpLogin {
     const target = callbackTarget(pasted, p.start.callback);
     if (!p.child.stdin || p.child.stdin.destroyed) return { pending: true, done: false, ok: false, message: "The sign-in isn't waiting for an address any more. Start again." };
     p.child.stdin.write(target.toString() + "\r");
-    const code = await Promise.race([p.exit, new Promise<"timeout">((r) => setTimeout(() => r("timeout"), FINISH_WAIT_MS))]);
+    let timer: NodeJS.Timeout | undefined;
+    const code = await Promise.race([p.exit, new Promise<"timeout">((r) => { timer = setTimeout(() => r("timeout"), FINISH_WAIT_MS); })]);
+    clearTimeout(timer); // else it holds the process open for FINISH_WAIT_MS after the CLI is done
     if (code === "timeout") { this.cancel(name); return { pending: false, done: true, ok: false, message: "Claude didn't finish the sign-in. Start again." }; }
     return this.result(name, p);
   }

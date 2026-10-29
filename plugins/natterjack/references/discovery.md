@@ -31,7 +31,7 @@
 - Ports: confirm unknowns (`port: null`), and check the command actually uses `{{port}}` / `PORT`; if the app can't be told its port, drop `{{port}}` and use its fixed port.
 - Commands that need env (database URLs, API URLs of other apps): put them in `launch.env`, using `{{port:<appId>}}` for sibling apps. Secrets stay in the repo's own `.env` (never in apps.json).
 - Stacks: group apps that are run together; order `steps` by dependency (datastores → backends that run migrations → the rest). Pick the most-used stack as `defaultStack`.
-- Machine: dedupe; set `required` from pins (`.nvmrc`, `go.mod`, `global.json`, `composer.json`'s php); keep Node's floor at 24.15.0 (the dashboard's). Each check's `apps` = the app ids that need it.
+- Machine: dedupe; set `required` from pins (`.nvmrc`, `go.mod`, `global.json`, `composer.json`'s php); keep Node's floor at 24.22.0 (the dashboard's). Each check's `apps` = the app ids that need it.
 - Links: prod/staging URLs per app (from `deploy[].urls`, `readmeUrls`, `homepage`), plus the code host org, the tracker, CI, and consoles for `services`.
 
 ## The interview

@@ -46,8 +46,8 @@ test("from a plain git worktree (no .worktree.json), the manifest goes to the ma
   g(ws, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "init");
   const wt = path.join(tmp(), "eng-1");
   g(ws, "worktree", "add", "-q", wt);
-  assert.equal(fs.realpathSync(sourceWorkspace(wt)), fs.realpathSync(ws));
-  assert.equal(fs.realpathSync(sourceWorkspace(ws)), fs.realpathSync(ws));
+  assert.equal(fs.realpathSync.native(sourceWorkspace(wt)), fs.realpathSync.native(ws));
+  assert.equal(fs.realpathSync.native(sourceWorkspace(ws)), fs.realpathSync.native(ws));
 });
 
 test("a workspace without a dashboard is skipped, nothing written", () => {

@@ -9,7 +9,7 @@
       "required": {
         "file": "plugins/natterjack/engine/package.json",
         "regex": "\"node\":\\s*\">=([\\d.]+)\"",
-        "min": "24.15.0"
+        "min": "24.22.0"
       }
     },
     {

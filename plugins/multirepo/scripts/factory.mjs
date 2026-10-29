@@ -67,7 +67,9 @@ function gitMainCheckout(root) {
   if (!top || !common || path.basename(common) !== ".git") return null;
   const main = path.dirname(common);
   if (path.resolve(main) === path.resolve(top)) return null;
-  const same = path.join(main, path.relative(top, root));
+  // git prints real paths (macOS /private/var, Windows long names); compare like with like.
+  const real = (p) => { try { return fs.realpathSync.native(p); } catch { return path.resolve(p); } };
+  const same = path.join(main, path.relative(real(top), real(root)));
   return fs.existsSync(same) ? path.resolve(same) : null;
 }
 

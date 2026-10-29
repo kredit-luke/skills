@@ -7,11 +7,12 @@ import os from "node:os";
 import path from "node:path";
 import { spawn, type ChildProcess } from "node:child_process";
 import { fileURLToPath } from "node:url";
+import { freePort } from "./ports.ts";
 
 const TMP = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "dash-meetings-routes-")));
 const ROOT = path.join(TMP, "ws");
-// Its own range: hosted.test.ts and apps-cli.test.ts start servers on 39000-39999.
-const PORT = 36000 + Math.floor(Math.random() * 1000);
+// The OS picks a free port, so it can't collide with another test file's server.
+const PORT = await freePort();
 const url = `http://localhost:${PORT}`;
 let server: ChildProcess | null = null;
 let token = "";

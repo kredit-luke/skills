@@ -196,6 +196,44 @@ test("withFileLock breaks a stale lock and waits for a live one", async () => {
   assert.equal(withFileLock(file, () => fs.existsSync(marker)), true, "ran only after the other writer released the lock");
 });
 
+test("withFileLock waits out Windows' EPERM while another writer's lock is being deleted", () => {
+  const file = path.join(TMP, "deleting.json");
+  const open = fs.openSync;
+  const platform = Object.getOwnPropertyDescriptor(process, "platform")!;
+  let tries = 0;
+  (fs as any).openSync = (p: string, ...rest: any[]) => {
+    if (p === `${file}.lock` && ++tries < 3) throw Object.assign(new Error("EPERM: operation not permitted"), { code: "EPERM" });
+    return (open as any)(p, ...rest);
+  };
+  Object.defineProperty(process, "platform", { value: "win32" });
+  try {
+    assert.equal(withFileLock(file, () => "ran"), "ran");
+    assert.equal(tries, 3);
+  } finally {
+    fs.openSync = open;
+    Object.defineProperty(process, "platform", platform);
+  }
+});
+
+test("withFileLock rethrows a lasting Windows EPERM (a real permission error) after a short wait, not the full timeout", () => {
+  const file = path.join(TMP, "denied.json");
+  const open = fs.openSync;
+  const platform = Object.getOwnPropertyDescriptor(process, "platform")!;
+  (fs as any).openSync = (p: string, ...rest: any[]) => {
+    if (p === `${file}.lock`) throw Object.assign(new Error("EPERM: operation not permitted"), { code: "EPERM" });
+    return (open as any)(p, ...rest);
+  };
+  Object.defineProperty(process, "platform", { value: "win32" });
+  const started = Date.now();
+  try {
+    assert.throws(() => withFileLock(file, () => "ran"), { code: "EPERM" });
+    assert.ok(Date.now() - started < 2000, "gave up well before the 5s lock timeout");
+  } finally {
+    fs.openSync = open;
+    Object.defineProperty(process, "platform", platform);
+  }
+});
+
 test("gitWorktrees: a worktree added or removed later is picked up without waiting out the cache", async () => {
   const root = repo(path.join(TMP, "later"));
   assert.deepEqual(gitWorktrees(root), []); // first call: git, synchronously

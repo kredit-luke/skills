@@ -10,6 +10,7 @@ import { spawn, type ChildProcess } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { checkHostedRequest, hostedConfig, SECRET_HEADER } from "../src/hosted.ts";
 import { LinkTokens } from "../src/link-tokens.ts";
+import { freePort } from "./ports.ts";
 
 const SECRET = "s".repeat(40);
 const ENV = { DASHBOARD_HOSTED: "1", DASHBOARD_PUBLIC_URL: "https://dash.example.com", DASHBOARD_PROXY_SECRET: SECRET };
@@ -60,7 +61,7 @@ test("checkHostedRequest: the secret first, then Host, Origin, identity and owne
 const TMP = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "dash-hosted-")));
 const ROOT = path.join(TMP, "ws");
 const BIN = path.join(TMP, "bin");
-const PORT = 39000 + Math.floor(Math.random() * 1000);
+const PORT = await freePort();
 const PUBLIC_HOST = "dash.example.com";
 const ONLINE_TEST_MS = 3000;
 let server: ChildProcess | null = null;

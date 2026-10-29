@@ -9,6 +9,7 @@ import os from "node:os";
 import path from "node:path";
 import { execFileSync, spawn, spawnSync, type ChildProcess } from "node:child_process";
 import { fileURLToPath } from "node:url";
+import { freeBlock, freePort } from "./ports.ts";
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const CLI = path.resolve(HERE, "..", "..", "bin", "dashboard.mjs");
@@ -89,9 +90,10 @@ const TMP = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "dash-apps-cli
 const ROOT = path.join(TMP, "shop");
 const WT = path.join(TMP, "shop-ENG-9");
 const LEDGER = path.join(ROOT, ".claude", "ledger");
-const PORT = 39000 + Math.floor(Math.random() * 1000);
-const BASE = 45000 + Math.floor(Math.random() * 40) * 100;
+const PORT = await freePort();
+const BASE = await freeBlock([1, 2, 101]); // main's api and broken; the worktree's api (slot 1)
 const MAIN_API = BASE + 1, WT_API = BASE + 101;
+const DASH_ERR = path.join(TMP, "dash.err");
 let server: ChildProcess | null = null;
 
 const w = (rel: string, text: string) => { const f = path.join(ROOT, rel); fs.mkdirSync(path.dirname(f), { recursive: true }); fs.writeFileSync(f, text); };
@@ -134,20 +136,62 @@ before(async () => {
   git(ROOT, "commit", "-q", "-m", "init");
   git(ROOT, "worktree", "add", "-q", "-b", "feature/ENG-9", WT);
 
-  server = spawn(process.execPath, ["--disable-warning=ExperimentalWarning", path.join(HERE, "..", "src", "main.ts"), "--port", String(PORT)], { env, stdio: "ignore" });
+  // Its stderr goes to a file, shown in after() if it died: a dead dashboard then names its cause.
+  const err = fs.openSync(DASH_ERR, "w");
+  server = spawn(process.execPath, ["--disable-warning=ExperimentalWarning", path.join(HERE, "..", "src", "main.ts"), "--port", String(PORT)], { env, stdio: ["ignore", "ignore", err] });
+  fs.closeSync(err);
   for (let i = 0; i < 80 && !(await listening(PORT)); i++) await sleep(250);
   assert.ok(await listening(PORT), "the server came up");
 });
 
-after(() => {
-  try { apps(WT, "stop-all"); } catch {}
-  try { apps(ROOT, "stop-all"); } catch {}
+// Cleanup never fails the file: a test that failed says why on its own.
+after(async () => {
+  // A dashboard that stopped answering may not have reported its exit yet: give it a moment.
+  const alive = (c: ChildProcess) => c.exitCode === null && c.signalCode === null;
+  if (server && alive(server) && !(await listening(PORT))) await new Promise((r) => { server!.once("exit", r); setTimeout(r, 3000); });
+  if (server && !alive(server)) {
+    const read = (f: string, max = 4000) => { try { return fs.readFileSync(f, "utf-8").slice(-max); } catch { return ""; } };
+    const jobs = path.join(LEDGER, "apps");
+    let logs = "";
+    try {
+      for (const f of fs.readdirSync(jobs).filter((f) => f.endsWith(".log")).sort().slice(-3)) logs += `--- ${f} (end)\n${read(path.join(jobs, f), 1500)}\n`;
+    } catch {}
+    const abort = server.exitCode === 0xC0000409 ? ": 0xC0000409, Node aborting natively (Node 24.15 does this at random on Windows, skills#124)" : "";
+    console.error(`The dashboard exited early (code ${server.exitCode}${abort}, signal ${server.signalCode}). Its stderr:\n${read(DASH_ERR) || "(empty)"}\nIts latest app jobs:\n${logs || "(none)"}`);
+  }
+  const stopped = [WT, ROOT].map((cwd) => { try { return apps(cwd, "stop-all").code === 0; } catch { return false; } });
+  if (stopped.includes(false)) {
+    // No dashboard to stop them: kill the launchers it recorded that are still ours, checked as
+    // Stop checks (stillOurs, then the start time), so a pid the OS has since handed to something
+    // else isn't taken down. A record without a start time can't be checked: leave it.
+    try {
+      const { stillOurs, launchedAt } = await import("../src/apps.ts");
+      const pids = JSON.parse(fs.readFileSync(path.join(LEDGER, "apps", "pids.json"), "utf-8"));
+      for (const rec of Object.values<any>(pids)) {
+        if (!rec?.pid || !rec.startedAt || !stillOurs(rec)) continue;
+        if (!(await launchedAt(rec.pid, rec.startedAt).catch(() => false))) continue;
+        const pid = rec.pid;
+        if (process.platform === "win32") spawnSync("taskkill", ["/PID", String(pid), "/T", "/F"], { windowsHide: true });
+        else try { process.kill(-pid, "SIGKILL"); } catch { try { process.kill(pid, "SIGKILL"); } catch {} }
+      }
+    } catch {}
+  }
   server?.kill();
   try { git(ROOT, "worktree", "remove", "--force", WT); } catch {}
-  fs.rmSync(TMP, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
+  try { fs.rmSync(TMP, { recursive: true, force: true, maxRetries: 10, retryDelay: 200 }); } catch {}
 });
 
 test("from a worktree's folder: status, then start a stack there, then stop it", { timeout: 180_000 }, async () => {
+  // The server's view of the native worktree: its ticket from the branch, no ports until a first start, its repo the root.
+  const get = async (p: string) => (await fetch(`http://localhost:${PORT}${p}`)).json();
+  const wt = (await get("/api/status")).workspaces.find((x) => x.name === "shop-ENG-9");
+  assert.ok(wt, "the worktree is a workspace");
+  assert.equal(wt._ticketId, "ENG-9");
+  assert.ok(wt.apps.every((a) => a.port === null), "no ports before the first start");
+  const g = await get("/api/git?workspace=" + wt.slug);
+  assert.deepEqual(Object.keys(g.repos), ["."]);
+  assert.equal(g.repos["."].branch, "feature/ENG-9");
+
   const st = apps(path.join(WT, "apps"), "status");
   assert.equal(st.code, 0, st.err);
   assert.match(st.out, /shop-ENG-9 \(--workspace shop-eng-9\)/, "the worktree holding the current folder");
@@ -162,6 +206,10 @@ test("from a worktree's folder: status, then start a stack there, then stop it",
   assert.match(start.out, /apps stop --stack app --workspace shop-eng-9/, "how to stop it");
   assert.match(await (await fetch(`http://localhost:${WT_API}`)).text(), /shop-ENG-9/, "the worktree's own instance");
   assert.equal(await listening(MAIN_API), false, "not main's");
+  const ports = JSON.parse(fs.readFileSync(path.join(TMP, "ports.json"), "utf-8"));
+  const entry = Object.values<any>(ports.worktrees)[0];
+  assert.deepEqual({ slot: entry.slot, ports: entry.ports }, { slot: 1, ports: { api: WT_API, broken: BASE + 102 } },
+    "the first start allocated slot 1 in the ports file, each app at its offset");
 
   const stop = apps(ROOT, "stop", "--stack", "app", "--workspace", "shop-eng-9");
   assert.equal(stop.code, 0, stop.err);
@@ -196,7 +244,7 @@ test("errors: an unknown app lists the ids; bad arguments exit 2; no dashboard, 
 
   const elsewhere = path.join(TMP, "other");
   fs.mkdirSync(path.join(elsewhere, ".claude", "dashboard"), { recursive: true });
-  const free = 47000 + Math.floor(Math.random() * 1000);
+  const free = await freePort();
   fs.writeFileSync(path.join(elsewhere, ".claude", "dashboard", "workspace.json"), JSON.stringify({ name: "Other", dashboard: { port: free } }));
   const down = spawnSync(process.execPath, [CLI, "apps", "status"], { cwd: elsewhere, encoding: "utf-8", env: { ...env, WORKSPACE_ROOT: elsewhere, DASHBOARD_LEDGER_DIR: path.join(elsewhere, "ledger") } });
   assert.equal(down.status, 1);

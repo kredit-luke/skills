@@ -10,6 +10,7 @@ import os from "node:os";
 import path from "node:path";
 import { execFileSync, spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
+import { freePort } from "./ports.ts";
 
 const CLI = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..", "bin", "dashboard.mjs");
 const TMP = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "dash-cli-")));
@@ -25,14 +26,6 @@ const cli = (...args: string[]) =>
     env: { ...process.env, WORKSPACE_ROOT: TMP, DASHBOARD_LEDGER_DIR: LEDGER, DASHBOARD_PORT: "" },
   });
 
-function freePort(): Promise<number> {
-  return new Promise((resolve) => {
-    const s = net.createServer().listen(0, "127.0.0.1", () => {
-      const { port } = s.address() as net.AddressInfo;
-      s.close(() => resolve(port));
-    });
-  });
-}
 function listening(port: number): Promise<boolean> {
   return new Promise((resolve) => {
     const s = net.connect(port, "127.0.0.1");
@@ -47,7 +40,7 @@ async function until(check: () => Promise<boolean>, ms = 10_000) {
 
 after(() => {
   try { cli("stop"); } catch {}
-  fs.rmSync(TMP, { recursive: true, force: true });
+  try { fs.rmSync(TMP, { recursive: true, force: true, maxRetries: 10, retryDelay: 200 }); } catch {}
 });
 
 test("after a port change, restart moves the dashboard and start doesn't run a second", { timeout: 180_000 }, async () => {

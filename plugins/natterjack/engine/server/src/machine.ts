@@ -230,7 +230,7 @@ function installFor(spec: any, vars: Record<string, any> = {}, label = "Install"
   return { label: (typeof spec === "object" && spec.label) || label, cmd: fill(cmdText, vars), cwd: (typeof spec === "object" && spec.cwd) || null };
 }
 
-/** A required version: "1.2" or { min?, file?, regex?, default? } → "24.15.0" / "10", or null. */
+/** A required version: "1.2" or { min?, file?, regex?, default? } → "24.22.0" / "10", or null. */
 export function requiredVersion(spec: any, root: string): string | null {
   if (!spec) return null;
   if (typeof spec === "string") return spec;

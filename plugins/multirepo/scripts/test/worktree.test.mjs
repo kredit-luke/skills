@@ -8,7 +8,7 @@ import path from "node:path";
 import { execFileSync } from "node:child_process";
 import {
   allocatePorts, copyConfig, createWorktree, decidePrMerged, gatherWorktrees, ghRepoFromUrl, parseGhAuthHosts, readApps, releasePorts, removeWorktree,
-  slotOffsets, syncWorktree, vsMain, writeMeta,
+  slotOffsets, syncWorktree, vsMain, withFileLock, writeMeta,
 } from "../worktree.mjs";
 
 Object.assign(process.env, {
@@ -593,4 +593,43 @@ test("ghRepoFromUrl: --repo only for github.com or a logged-in host; SSH aliases
   ].join("\n");
   assert.deepEqual(parseGhAuthHosts(status), ["github.com", "other.example.com"]);
   assert.deepEqual(parseGhAuthHosts(""), []);
+});
+
+test("withFileLock waits out Windows' EPERM while another writer's lock is being deleted", () => {
+  const file = path.join(fs.mkdtempSync(path.join(os.tmpdir(), "wt-lock-")), "ports.json");
+  const open = fs.openSync;
+  const platform = Object.getOwnPropertyDescriptor(process, "platform");
+  let tries = 0;
+  fs.openSync = (p, ...rest) => {
+    if (p === `${file}.lock` && ++tries < 3) throw Object.assign(new Error("EPERM: operation not permitted"), { code: "EPERM" });
+    return open(p, ...rest);
+  };
+  Object.defineProperty(process, "platform", { value: "win32" });
+  try {
+    assert.equal(withFileLock(file, () => "ran"), "ran");
+    assert.equal(tries, 3);
+    assert.ok(!fs.existsSync(`${file}.lock`));
+  } finally {
+    fs.openSync = open;
+    Object.defineProperty(process, "platform", platform);
+  }
+});
+
+test("withFileLock rethrows a lasting Windows EPERM (a real permission error) after a short wait, not the full timeout", () => {
+  const file = path.join(fs.mkdtempSync(path.join(os.tmpdir(), "wt-lock-")), "ports.json");
+  const open = fs.openSync;
+  const platform = Object.getOwnPropertyDescriptor(process, "platform");
+  fs.openSync = (p, ...rest) => {
+    if (p === `${file}.lock`) throw Object.assign(new Error("EPERM: operation not permitted"), { code: "EPERM" });
+    return open(p, ...rest);
+  };
+  Object.defineProperty(process, "platform", { value: "win32" });
+  const started = Date.now();
+  try {
+    assert.throws(() => withFileLock(file, () => "ran"), { code: "EPERM" });
+    assert.ok(Date.now() - started < 2000, "gave up well before the 5s lock timeout");
+  } finally {
+    fs.openSync = open;
+    Object.defineProperty(process, "platform", platform);
+  }
 });

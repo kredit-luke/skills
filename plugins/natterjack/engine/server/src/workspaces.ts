@@ -313,6 +313,7 @@ export async function resolvePort(
 
 const LOCK_STALE_MS = 10_000;
 const LOCK_TIMEOUT_MS = 5_000;
+const LOCK_DELETE_WAIT_MS = 500; // Windows EPERM/EACCES/EBUSY while another writer deletes its lock
 
 /**
  * Run fn while holding `<file>.lock` (created exclusively; broken when older than
@@ -323,15 +324,21 @@ export function withFileLock<T>(file: string, fn: () => T): T {
   const lock = `${file}.lock`;
   const deadline = Date.now() + LOCK_TIMEOUT_MS;
   let fd: number | null = null;
+  let deletingSince = 0;
   while (fd === null) {
     try {
       fs.mkdirSync(path.dirname(lock), { recursive: true });
       fd = fs.openSync(lock, "wx");
       fs.writeSync(fd, JSON.stringify({ pid: process.pid, at: new Date().toISOString() }));
     } catch (e) {
-      if (e.code !== "EEXIST") throw e;
-      try { if (Date.now() - fs.statSync(lock).mtimeMs > LOCK_STALE_MS) { fs.unlinkSync(lock); continue; } } catch { continue; }
-      if (Date.now() > deadline) throw new Error(`Timed out waiting for ${lock}`);
+      // On Windows, opening a lock another writer is deleting fails with EPERM (or EACCES, EBUSY): wait it out
+      // too, but only briefly; one that lasts is a real permission error, so it's rethrown.
+      const deleting = process.platform === "win32" && ["EPERM", "EACCES", "EBUSY"].includes(e.code);
+      if (e.code !== "EEXIST" && !deleting) throw e;
+      deletingSince = deleting ? deletingSince || Date.now() : 0;
+      if (deleting && Date.now() - deletingSince > LOCK_DELETE_WAIT_MS) throw e;
+      if (!deleting) try { if (Date.now() - fs.statSync(lock).mtimeMs > LOCK_STALE_MS) { fs.unlinkSync(lock); continue; } } catch { continue; }
+      if (Date.now() > deadline) throw new Error(`Timed out waiting for ${lock}${deleting ? ` (last error: ${e.code})` : ""}`);
       Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 25);
     }
   }

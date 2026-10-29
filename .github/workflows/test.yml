@@ -23,7 +23,9 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
-          node-version: "24.15"
+          # Not 24.15: on Windows it aborts (exit 0xC0000409, no output) during plain loopback
+          # HTTP at random, which killed test dashboards mid-run (skills#124). 24.22 doesn't.
+          node-version: "24.22"
           cache: npm
           cache-dependency-path: plugins/natterjack/engine/package-lock.json
       - name: Git identity (the tests make throwaway repos and worktrees)
@@ -50,6 +52,8 @@ jobs:
             npm test
           fi
       - name: Router (no packages of its own; tsc and @types/node come from the engine's install)
+        # The router ships as a Linux container, so it's tested on Linux only.
+        if: runner.os == 'Linux'
         working-directory: plugins/natterjack/router
         run: |
           ../engine/node_modules/.bin/tsc -p tsconfig.json

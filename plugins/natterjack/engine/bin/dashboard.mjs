@@ -127,14 +127,14 @@ function listening(port) {
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
-/** The Node floor from package.json engines (">=24.15.0"). */
+/** The Node floor from package.json engines (">=24.22.0"). */
 function nodeFloor() {
   try {
     const pkg = JSON.parse(fs.readFileSync(path.join(DASH_DIR, "package.json"), "utf-8"));
     const m = /(\d+\.\d+\.\d+)/.exec((pkg.engines && pkg.engines.node) || "");
     if (m) return m[1];
   } catch {}
-  return "24.15.0";
+  return "24.22.0";
 }
 
 /**
