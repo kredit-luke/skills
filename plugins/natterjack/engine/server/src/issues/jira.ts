@@ -67,13 +67,15 @@ export function linkedJql(markers: string[], projects: string[]): string {
  * The Standup page's JQL, in the configured projects: issues the viewer changed in the last
  * `minutes` (updatedBy counts edits, transitions and comments) or created then; and their open
  * issues, highest priority first. Relative dates, so the site's time zone doesn't matter.
+ * JQL functions don't nest, so updatedBy takes the viewer's account id, not currentUser().
  */
-export function activityJql(minutes: number, projects: string[]): { changed: string; assigned: string } {
+export function activityJql(minutes: number, projects: string[], accountId?: string | null): { changed: string; assigned: string } {
   const q = (s: string) => `"${String(s).replace(/(["\\])/g, "\\$1")}"`;
   const scope = projects.length ? `project in (${projects.map(q).join(", ")}) AND ` : "";
   const ago = `"-${Math.max(1, Math.floor(minutes))}m"`;
+  const created = `(reporter = currentUser() AND created >= ${ago})`;
   return {
-    changed: `${scope}(issue in updatedBy(currentUser(), ${ago}) OR (reporter = currentUser() AND created >= ${ago})) ORDER BY updated DESC`,
+    changed: `${scope}${accountId ? `(issue in updatedBy(${q(accountId)}, ${ago}) OR ${created})` : created} ORDER BY updated DESC`,
     assigned: `${scope}assignee = currentUser() AND statusCategory != Done ORDER BY priority DESC, updated DESC`,
   };
 }
@@ -411,7 +413,7 @@ class JiraTracker implements IssueTracker {
     if (!cred || !this.site) throw new Error("Jira isn't connected.");
     const me = await this._get(cred, "/rest/api/3/myself");
     const accountId = me && me.accountId;
-    const q = activityJql(minutesAgo(since), this.projects);
+    const q = activityJql(minutesAgo(since), this.projects, accountId);
     const [changed, assigned] = await Promise.all([
       this._get(cred, "/rest/api/3/search/jql", { jql: q.changed, fields: ["summary", "status", "created", "reporter", "comment"], expand: "changelog", maxResults: ACTIVITY_LIMIT }),
       this._get(cred, "/rest/api/3/search/jql", { jql: q.assigned, fields: FIELDS, maxResults: ACTIVITY_LIMIT }),
