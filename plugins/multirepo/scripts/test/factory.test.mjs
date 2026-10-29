@@ -36,6 +36,20 @@ test("from a worktree, the manifest goes to the source workspace's ledger", () =
   assert.equal(manifestPath(ws, "ENG-1"), path.join(ws, ".claude", "ledger", "factory", "ENG-1.json"));
 });
 
+test("from a plain git worktree (no .worktree.json), the manifest goes to the main checkout's ledger", () => {
+  const ws = tmp();
+  const g = (cwd, ...args) => execFileSync("git", ["-C", cwd, ...args], { stdio: "pipe" });
+  g(ws, "init", "-q");
+  fs.mkdirSync(path.join(ws, ".claude", "dashboard"), { recursive: true });
+  fs.writeFileSync(path.join(ws, ".claude", "dashboard", "workspace.json"), "{}");
+  g(ws, "add", ".");
+  g(ws, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "init");
+  const wt = path.join(tmp(), "eng-1");
+  g(ws, "worktree", "add", "-q", wt);
+  assert.equal(fs.realpathSync(sourceWorkspace(wt)), fs.realpathSync(ws));
+  assert.equal(fs.realpathSync(sourceWorkspace(ws)), fs.realpathSync(ws));
+});
+
 test("a workspace without a dashboard is skipped, nothing written", () => {
   const { ws, wt } = workspace({ dashboard: false });
   const r = update("start", { ticket: "ENG-1" }, { start: wt });

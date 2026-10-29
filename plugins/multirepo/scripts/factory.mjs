@@ -37,7 +37,7 @@
  */
 import fs from "node:fs";
 import path from "node:path";
-import { findRoot, isMain, parseArgs, readJson, readWorktreeMeta } from "./lib.mjs";
+import { findRoot, git, isMain, parseArgs, readJson, readWorktreeMeta } from "./lib.mjs";
 import { withFileLock } from "./worktree.mjs";
 
 export const STAGES = ["align", "plan", "build", "review", "security", "qa", "guide", "pr", "approve", "merge"];
@@ -49,11 +49,26 @@ const RISKS = ["low", "medium", "high"];
 
 const usage = (msg) => Object.assign(new Error(msg), { usage: true });
 
-/** The workspace whose ledger holds the manifests: a worktree's source workspace, else the root itself. */
+/**
+ * The workspace whose ledger holds the manifests: a worktree's source workspace, else the main
+ * checkout of a plain `git worktree` (same folder within it), else the root itself.
+ */
 export function sourceWorkspace(start) {
   const root = findRoot(start);
   const src = readWorktreeMeta(root)?.sourceWorkspace;
-  return typeof src === "string" && src && fs.existsSync(src) ? path.resolve(src) : root;
+  if (typeof src === "string" && src && fs.existsSync(src)) return path.resolve(src);
+  return gitMainCheckout(root) || root;
+}
+
+/** For a folder inside a linked git worktree, the same folder in the main checkout; else null. */
+function gitMainCheckout(root) {
+  const top = git(root, ["rev-parse", "--show-toplevel"]);
+  const common = git(root, ["rev-parse", "--path-format=absolute", "--git-common-dir"]);
+  if (!top || !common || path.basename(common) !== ".git") return null;
+  const main = path.dirname(common);
+  if (path.resolve(main) === path.resolve(top)) return null;
+  const same = path.join(main, path.relative(top, root));
+  return fs.existsSync(same) ? path.resolve(same) : null;
 }
 
 /** A ticket id as a file name: owner/repo#7 → owner_repo_7. */
