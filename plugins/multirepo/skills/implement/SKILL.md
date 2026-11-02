@@ -55,7 +55,10 @@ node "$F" done  --ticket <ID> [--error "<why it stopped>"]
 | After the reviews (step 7) | the security stage (step 7), per `--repo` |
 | QA, second opinion (step 8) | `stage --stage qa`, and `--stage review` for the second opinion |
 | Commit and PRs (step 9) | the pre-PR gate (below), then `pr` per PR, `stage --stage pr --status done`, the review guide (`--ticket` records its guide stage), then the merge gate |
-| Wrap-up, or stopping for good | `done` (`--error` when it stopped short) |
+| Stopping short (a gate rejected, blocked, aborted) | `done --error "<why>"` |
+| A run that ends with no PRs to wait on | `done` |
+
+**Never `done` at the merge handoff.** A ticket with open PRs stays at the merge gate, waiting; the board finishes it by itself when every PR is merged. `done` there moves the card to Done while the PRs still wait for review, and the merge gate shows as skipped.
 
 ### Following the team's policy
 
@@ -68,7 +71,7 @@ When the team's Factory policy is on (`factory.json` `enabled`), it decides the 
 | `pass` | `gate --decision approved --by auto --rationale "<reason>"`, carry on. When `decided` is true (a person's approval that stands), record nothing: carry on |
 | `ask` | `gate --decision pending`, then ask with `AskUserQuestion`, leading with `reason`; record the answer (`approved` / `rejected` `--by user`) |
 | `stop` | `gate --decision pending --rationale "<reason>"`, comment the reason on the ticket, and end the run: it's waiting for a person. Leave the work and the ticket's state as they are. They approve or reject it on the dashboard's Factory page (or in a later session); approving starts a new run, where `decide` says `pass` ("Already approved by …") and the work carries on from the plan file and WORKROOT. For a spec below the team's minimum, record `rejected` and `done --error "spec not ready"` instead |
-| `handoff` | The merge gate: `gate --gate merge --decision pending`; this run never merges |
+| `handoff` | The merge gate: `gate --gate merge --decision pending`, then end the run without `done` (the card waits at the merge gate until the PRs merge); this run never merges |
 | `approver` | The gate is the Approver's: run `/multirepo:approve --ticket <ID> --gate <gate> --root <WORKROOT> --run <mode> --can-ask <yes\|no>` (with the ticket's labels). It records the gate itself and hands back its own `action` (`pass`, `ask`, `stop` or `handoff`): do that, without recording the gate again. Advisory (the policy doesn't enforce it), it always ends with a person deciding |
 
 A rejection ends the ticket's run: `done --error "<gate> rejected"`.
@@ -259,7 +262,7 @@ Each runs only when available; none blocks the run.
    - **Interactive**: `AskUserQuestion` "Next step": **Commit and open PRs** (recommended) / **Commit only** / **Not yet** (give WORKROOT and the commands for later).
    - **Autonomous**: `/multirepo:commit --auto --root <WORKROOT> --ticket <TICKET>`, then `/multirepo:pr --root <WORKROOT>`: request Copilot where possible, one status check, **never merge**, PR links on the ticket.
    - **Then the review guide**, once the PRs are open, when `stage-on --stage guide` says `on: true` (no policy on: autonomous runs it, interactive offers it): `/multirepo:review-guide <each PR> --ticket <TICKET> --root <WORKROOT>`, with what review, the security stage and QA found in its risk section. It posts a guide on each PR for its reviewers; a failure is recorded and never blocks the PR.
-   - **Then the merge gate**: `decide --gate merge`. `handoff` (or `skip`/`own-rules`): record it pending and end; whoever the policy names merges. `approver`: the Approver rates the PRs and, only when the policy enforces it, approves and merges them; otherwise a person does. This run itself never merges.
+   - **Then the merge gate**: `decide --gate merge`. `handoff` (or `skip`/`own-rules`): record it pending and end, without `done`; whoever the policy names merges, and the board closes the ticket once every PR is merged. `approver`: the Approver rates the PRs and, only when the policy enforces it, approves and merges them; otherwise a person does. This run itself never merges.
    - When this conversation isn't in the worktree, say so and give `cd <WORKROOT>` for a session whose history sits with the code.
 
 ## Errors
