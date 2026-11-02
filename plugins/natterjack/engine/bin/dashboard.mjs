@@ -360,6 +360,14 @@ async function start() {
   if (up) {
     await killDashboard();
     await sleep(1000);
+    // Still held: what's there didn't confirm it's ours (killDashboard leaves that alone), or
+    // it's slow to go. A new server couldn't listen, and the old one answering would pass for it.
+    for (let i = 0; i < 20 && (await listening(PORT)); i++) await sleep(250);
+    if (await listening(PORT)) {
+      console.error(`Port ${PORT} is still in use: what's there didn't confirm it's this workspace's dashboard, so it was left running. Stop it, or start this one on another port (--port, or dashboard.port in workspace.json).`);
+      process.exitCode = 1;
+      return;
+    }
     console.log("Stopped the running dashboard.");
   }
 

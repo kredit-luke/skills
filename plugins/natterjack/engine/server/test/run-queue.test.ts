@@ -44,6 +44,18 @@ test("normaliseMeta gives old runs an empty queue", () => {
   assert.equal(m.queueBlocked, null);
 });
 
+test("an /implement reply marks the run implementing its ticket on disk as the turn starts (the Factory's gate guard reads saved runs)", async () => {
+  const dir = fs.mkdtempSync(path.join(TMP, "run-"));
+  const runs = manager(dir);
+  const run = runs.start({ prompt: "Explain something", cwd: dir });
+  await settled(runs, run.id);
+  runs.reply(run.id, "/multirepo:implement ENG-7 --auto");
+  const saved = JSON.parse(fs.readFileSync(runs.metaFile(run.id), "utf-8"));
+  assert.equal(saved.implementing, true);
+  assert.equal(saved.implementingTicket, "ENG-7");
+  await settled(runs, run.id);
+});
+
 test("messages queued mid-turn can be edited and removed, and go out together when the turn ends", async () => {
   const dir = fs.mkdtempSync(path.join(TMP, "run-"));
   const runs = manager(dir);

@@ -17,6 +17,11 @@ test("applyEvent: a run that calls the implement skill mid-run is implementing (
   }
   const sub = meta(); applyEvent(sub, skill("multirepo:implement"), false, 0, 0);
   assert.equal(sub.implementing, undefined, "a subagent's call doesn't count");
+  // The skill's args name the ticket: the Factory then ties the run to it, whatever it started as.
+  const withArgs = meta();
+  applyEvent(withArgs, { type: "assistant", message: { content: [{ type: "tool_use", name: "Skill", input: { skill: "multirepo:implement", args: "ENG-123 --auto" } }] } } as any, true, 0, 0);
+  assert.equal(withArgs.implementingTicket, "ENG-123");
+  assert.equal(meta().implementingTicket, undefined);
 });
 
 test("parseQuestion: {questions:[...]} with options", () => {

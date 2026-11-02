@@ -369,7 +369,8 @@ function factoryRuns(limit = Infinity): FactoryRun[] {
   const wsTicket = new Map(listWorkspaces().map((w) => [w.slug, w.ticketId || null]));
   const now = Date.now();
   return runs.list().slice(0, limit).map((r) => ({
-    id: r.id, ticket: runTicket(r, wsTicket.get(r.workspace))?.id ?? null, status: r.status,
+    // A later turn's `/implement X` names the ticket the run works on now, whatever it started as.
+    id: r.id, ticket: r.implementingTicket || runTicket(r, wsTicket.get(r.workspace))?.id || null, status: r.status,
     costUsd: r.costUsd || 0, startedAt: r.startedAt, agent: r.agent || "claude", model: r.model,
     // durationMs grows when a turn ends: a turn still going counts from when it started.
     durationMs: (r.durationMs || 0) + (r.status === "running" && r.turnStartedAt ? Math.max(0, now - Date.parse(r.turnStartedAt)) : 0),

@@ -163,6 +163,8 @@ test("stop leaves alone a port holder that doesn't answer the boot check (a busy
     try { fs.rmSync(path.join(LEDGER, "dashboard.pid")); } catch {}
 
     assert.match(cli("stop"), /Left :\d+ alone/);
+    // And a restart says so instead of reporting a new dashboard the old holder would pass for.
+    assert.throws(() => cli("start", "--restart"), (e: any) => /still in use/.test(String(e.stderr)));
     await new Promise((r) => setTimeout(r, 500));
     assert.equal(other.exitCode, null, "it's still running");
   } finally { other.kill("SIGKILL"); }
