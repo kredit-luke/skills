@@ -685,10 +685,14 @@ function latestPerRepo<T extends { repo: string | null }>(rows: T[]): T[] {
 const sameTicket = (a: string | null | undefined, b: string | null | undefined) => !!a && !!b && a.toLowerCase() === b.toLowerCase();
 const money = (n: number) => `$${n.toFixed(2)}`;
 
-/** Tickets in flight (lower-cased id → id): a manifest that has started and isn't done, or an implement run that's going. */
+/**
+ * Tickets in flight (lower-cased id → id): a manifest that has started and isn't finished (done, or
+ * every PR merged, as placeItem has it), or an implement run that's going.
+ */
 export function inFlightTickets(manifests: FactoryManifest[], runs: FactoryRun[]): Map<string, string> {
   const inFlight = new Map<string, string>();
-  for (const m of manifests) if (!m.done && (m.stages.length > 0 || m.gates.length > 0)) inFlight.set(m.ticket.toLowerCase(), m.ticket);
+  const merged = (m: FactoryManifest) => m.prs.length > 0 && m.prs.every((p) => p.state === "merged");
+  for (const m of manifests) if (!m.done && !merged(m) && (m.stages.length > 0 || m.gates.length > 0)) inFlight.set(m.ticket.toLowerCase(), m.ticket);
   for (const r of runs) if (r.implement && r.ticket && (r.status === "running" || r.status === "waiting")) inFlight.set(r.ticket.toLowerCase(), r.ticket);
   return inFlight;
 }

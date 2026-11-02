@@ -414,16 +414,19 @@ export function intakeCheck(ws, ticket, { record = false, now = new Date().toISO
 
 /**
  * Tickets in flight (started, not done) other than this one, against the policy's WIP limit.
- * A ticket that's already in flight may always carry on (as the dashboard allows).
+ * A ticket that's already in flight may always carry on (as the dashboard allows). One whose PRs
+ * have all merged is finished: runs end at the merge handoff without `done`, and the dashboard
+ * records the merges.
  */
 export function wip(ws, ticket, policy) {
   const dir = path.join(ws, ".claude", "ledger", "factory");
   const same = (t) => String(t).toLowerCase() === String(ticket).toLowerCase();
+  const merged = (m) => Array.isArray(m.prs) && m.prs.length > 0 && m.prs.every((p) => p && p.state === "merged");
   let started = [];
   try {
     started = fs.readdirSync(dir).filter((f) => f.endsWith(".json"))
       .map((f) => readJson(path.join(dir, f)))
-      .filter((m) => m && m.ticket && !m.done && ((m.stages || []).length || (m.gates || []).length));
+      .filter((m) => m && m.ticket && !m.done && !merged(m) && ((m.stages || []).length || (m.gates || []).length));
   } catch {}
   const inFlight = started.filter((m) => !same(m.ticket)).map((m) => m.ticket);
   const self = started.some((m) => same(m.ticket));

@@ -332,6 +332,17 @@ test("WIP counts implement runs that are going but haven't reported yet", () => 
   assert.equal(factoryLaunchBlocker(cfg, true, "ENG-1", [], [going("ENG-1")]), null, "carrying on with its own ticket");
 });
 
+test("WIP: a ticket waiting at the merge gate counts until every PR has merged", () => {
+  const cfg = { ...defaultFactoryConfig(), enabled: true, limits: { ...defaultFactoryConfig().limits, wip: 1 } };
+  const atMerge = (...states: string[]) => manifest({
+    stages: [{ id: "pr", status: "done" }], gates: [{ id: "merge", mode: "human", decision: "pending", at }],
+    prs: states.map((state, i) => ({ url: `https://github.com/acme/api/pull/${i + 1}`, state })),
+  });
+  assert.match(factoryLaunchBlocker(cfg, true, "ENG-2", [atMerge("open")], [])!, /WIP limit 1\): ENG-1/);
+  assert.match(factoryLaunchBlocker(cfg, true, "ENG-2", [atMerge("merged", "open")], [])!, /WIP limit 1\): ENG-1/);
+  assert.equal(factoryLaunchBlocker(cfg, true, "ENG-2", [atMerge("merged", "merged")], []), null, "every PR merged: finished, not in flight");
+});
+
 // factory.mjs reads factory.json for the pipeline: it must read it as the dashboard does.
 test("the multirepo scripts read the policy as the dashboard does", async (t) => {
   const scripts = path.join(import.meta.dirname, "..", "..", "..", "..", "multirepo", "scripts");

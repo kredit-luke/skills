@@ -83,6 +83,21 @@ test("wip counts other started tickets that aren't done, against the limit", () 
   assert.equal(wip(ws, "ENG-9", { enabled: false, limits: { wip: 2 } }).ok, true, "no limit without a policy on");
 });
 
+test("wip: a ticket counts while it waits at the merge gate, and stops counting once every PR has merged", () => {
+  const ws = tmp("wip-merged-");
+  const dir = path.join(ws, ".claude", "ledger", "factory");
+  fs.mkdirSync(dir, { recursive: true });
+  const put = (t, ...states) => fs.writeFileSync(path.join(dir, `${t}.json`), JSON.stringify({
+    ticket: t, stages: [{ id: "pr", status: "done" }], gates: [{ id: "merge", decision: "pending" }],
+    prs: states.map((state, i) => ({ url: `https://github.com/acme/api/pull/${i + 1}`, state })),
+  }));
+  put("ENG-1", "merged", "merged");
+  put("ENG-2", "merged", "open");
+  put("ENG-3", null);
+  const r = wip(ws, "ENG-10", { enabled: true, limits: { wip: 3 } });
+  assert.deepEqual([r.inFlight.sort(), r.ok], [["ENG-2", "ENG-3"], true]);
+});
+
 function repo(dir, files = {}) {
   fs.mkdirSync(dir, { recursive: true });
   const g = (...a) => execFileSync("git", ["-C", dir, ...a], { stdio: "pipe" });
