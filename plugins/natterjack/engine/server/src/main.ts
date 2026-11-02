@@ -38,7 +38,7 @@ import type { Ws } from "./workspaces.ts";
 // start (apps, terminals). claude.ts strips them per spawn too; drop them here once.
 for (const key of CLAUDE_SESSION_ENV) delete process.env[key];
 
-import { RunManager, TERMINAL_QUIET_MS, httpError, runLabel } from "./runs.ts";
+import { IMPLEMENT_PROMPT, RunManager, TERMINAL_QUIET_MS, httpError, runLabel } from "./runs.ts";
 import { claudeDir, findSession, forkSession, isInside, listSessions as listTerminalSessions, suggestFolders, type SessionInfo } from "./sessions.ts";
 import { Deck, Scheduler } from "./deck.ts";
 import { Inbox, gh as ghJson } from "./inbox.ts";
@@ -373,7 +373,7 @@ function factoryRuns(limit = Infinity): FactoryRun[] {
     costUsd: r.costUsd || 0, startedAt: r.startedAt, agent: r.agent || "claude", model: r.model,
     // durationMs grows when a turn ends: a turn still going counts from when it started.
     durationMs: (r.durationMs || 0) + (r.status === "running" && r.turnStartedAt ? Math.max(0, now - Date.parse(r.turnStartedAt)) : 0),
-    implement: IMPLEMENT_PROMPT.test(String(r.prompt || "").trim()),
+    implement: r.implementing === true || IMPLEMENT_PROMPT.test(String(r.prompt || "").trim()),
   }));
 }
 
@@ -445,8 +445,6 @@ const retroRuns = new Map<string, string>();
 const changing = new Set<string>();
 const changeRuns = new Map<string, string>();
 
-/** `/implement X` or a plugin's `/multirepo:implement X` (not Explain: that only reads). */
-const IMPLEMENT_PROMPT = /^\/(?:[\w.-]+:)?implement\s+\S/;
 
 /**
  * What the factory would pull in now: the intake's tracker tickets that aren't in it yet, and

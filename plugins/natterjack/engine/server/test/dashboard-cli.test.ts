@@ -19,6 +19,9 @@ fs.mkdirSync(path.join(TMP, ".claude", "dashboard"), { recursive: true });
 
 const setPort = (port: number) =>
   fs.writeFileSync(path.join(TMP, ".claude", "dashboard", "workspace.json"), JSON.stringify({ name: "CLI test", dashboard: { port } }));
+// Its own port from the start: with none, the CLI falls back to 3333, where the real dashboard
+// runs, and the cleanup's stop (or a test skipped by --test-name-pattern) would aim at that.
+setPort(await freePort());
 const cli = (...args: string[]) =>
   execFileSync(process.execPath, [CLI, ...args, "--skip-build"], {
     encoding: "utf-8",
@@ -146,6 +149,22 @@ test("stop and start leave another workspace's dashboard on this one's port alon
     assert.throws(() => cli("start", "--restart"), (e: any) => /taken by the dashboard for .*elsewhere/.test(String(e.stderr)));
     await new Promise((r) => setTimeout(r, 500));
     assert.equal(other.exitCode, null, "the other workspace's dashboard is still running");
+  } finally { other.kill("SIGKILL"); }
+});
+
+test("stop leaves alone a port holder that doesn't answer the boot check (a busy dashboard that may be another workspace's)", { timeout: 180_000 }, async () => {
+  const port = await freePort();
+  setPort(port);
+  // Accepts connections and never replies: the boot check times out.
+  const serve = `require("net").createServer(() => {}).listen(${port}, "127.0.0.1")`;
+  const other = spawn(process.execPath, ["-e", serve], { stdio: "ignore" });
+  try {
+    assert.ok(await until(() => listening(port)), "the silent holder is up");
+    try { fs.rmSync(path.join(LEDGER, "dashboard.pid")); } catch {}
+
+    assert.match(cli("stop"), /Left :\d+ alone/);
+    await new Promise((r) => setTimeout(r, 500));
+    assert.equal(other.exitCode, null, "it's still running");
   } finally { other.kill("SIGKILL"); }
 });
 

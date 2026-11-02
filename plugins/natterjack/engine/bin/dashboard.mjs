@@ -254,15 +254,23 @@ function readRecord() {
 }
 const readPid = () => readRecord().pid;
 
+/** Whether the dashboard on `port` says it serves this workspace. */
+async function ownsPort(port) {
+  const root = await servedRoot(port);
+  return !!root && samePath(root, ROOT);
+}
+
 /**
- * Kill the dashboard: the pid it recorded, and whatever still holds its port, unless
- * that's another workspace's dashboard.
+ * Kill the dashboard: the pid it recorded, and whatever holds its port when that says it's
+ * this workspace's dashboard. Not what doesn't answer: a busy dashboard that misses the
+ * boot check's timeout may be another workspace's (a test's scratch workspace on the
+ * default port once took down the real one that way).
  */
 async function killDashboard(port = PORT) {
   const pids = new Set();
   const recorded = readPid();
   if (recorded) pids.add(recorded);
-  if (!(await otherWorkspaceOn(port))) try {
+  if (await ownsPort(port)) try {
     if (IS_WIN) {
       const out = execFileSync("powershell.exe", ["-NoProfile", "-NonInteractive", "-Command",
         `Get-NetTCPConnection -LocalPort ${port} -State Listen -ErrorAction SilentlyContinue | Select-Object -ExpandProperty OwningProcess -Unique`],
@@ -398,8 +406,12 @@ async function stop() {
     console.log(other ? `No dashboard for this workspace on :${PORT} (it's ${other}'s).` : `No dashboard running on :${PORT}.`);
     return;
   }
-  await killDashboard();
-  if (was.port && was.port !== PORT) await killDashboard(was.port); // started before a port change
+  let killed = await killDashboard();
+  if (was.port && was.port !== PORT) killed = (await killDashboard(was.port)) || killed; // started before a port change
+  if (!killed) {
+    console.log(`Left :${PORT} alone: what's there didn't confirm it's this workspace's dashboard, and none is recorded as running.`);
+    return;
+  }
   console.log("Dashboard stopped. Runs that were in progress show as interrupted; reply to one to carry on.");
 }
 

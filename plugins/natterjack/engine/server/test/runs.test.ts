@@ -4,7 +4,20 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { EventEmitter } from "node:events";
-import { parseQuestion, parseWatch, stripBlock, toolLabel, backgroundWarning, normaliseMeta, lastActivity, RunManager } from "../src/runs.ts";
+import { parseQuestion, parseWatch, stripBlock, toolLabel, backgroundWarning, normaliseMeta, lastActivity, RunManager, applyEvent } from "../src/runs.ts";
+
+test("applyEvent: a run that calls the implement skill mid-run is implementing (the factory gate then waits on it)", () => {
+  const skill = (name: string) => ({ type: "assistant", message: { content: [{ type: "tool_use", name: "Skill", input: { skill: name } }] } }) as any;
+  const meta = () => ({ toolCalls: 0, costUsd: 0, numTurns: 0 }) as any;
+  for (const name of ["multirepo:implement", "implement"]) {
+    const m = meta(); applyEvent(m, skill(name), true, 0, 0); assert.equal(m.implementing, true, name);
+  }
+  for (const name of ["multirepo:implement-review", "multirepo:fetch-ticket"]) {
+    const m = meta(); applyEvent(m, skill(name), true, 0, 0); assert.equal(m.implementing, undefined, name);
+  }
+  const sub = meta(); applyEvent(sub, skill("multirepo:implement"), false, 0, 0);
+  assert.equal(sub.implementing, undefined, "a subagent's call doesn't count");
+});
 
 test("parseQuestion: {questions:[...]} with options", () => {
   const text = `I need a decision.\n<<QUESTION>>\n{"questions":[{"question":"Which DB?","header":"DB","multiSelect":false,"options":[{"label":"Postgres","description":"the usual"},{"label":"SQLite"}]}]}\n<</QUESTION>>`;

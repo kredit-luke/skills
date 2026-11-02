@@ -137,6 +137,8 @@ export interface RunMeta {
   label: string;
   /** The first prompt. Later turns' prompts are `human` events in the transcript. */
   prompt: string;
+  /** Set once a later turn implements a ticket (an `/implement` reply, or the implement skill called mid-run): an Explain run that went on to build. */
+  implementing?: boolean;
   cwd: string;
   workspace: string;
   model: string | null;

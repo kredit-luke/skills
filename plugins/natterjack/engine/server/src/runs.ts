@@ -997,6 +997,7 @@ export class RunManager {
     this._save(meta);
 
     if (!first) {
+      if (IMPLEMENT_PROMPT.test(prompt.trim())) meta.implementing = true;
       const at = meta.turnStartedAt;
       this._append(meta, { type: "turn", turn: meta.turns, planMode: meta.planMode, uuid: crypto.randomUUID(), timestamp: at });
       this._append(meta, { type: "human", text: prompt, turn: meta.turns, uuid: crypto.randomUUID(), timestamp: at, ...(files.length ? { attachments: files } : {}) });
@@ -1386,8 +1387,13 @@ function blankWatch(now: Date, prs: WatchedPr[], everyMinutes: number, prompt: s
 /** When a run last did something (shared/remote.ts, where the mirror and the web read it too). */
 export { lastActivity };
 
+/** `/implement X` or a plugin's `/multirepo:implement X` (not Explain: that only reads). */
+export const IMPLEMENT_PROMPT = /^\/(?:[\w.-]+:)?implement\s+\S/;
+/** The implement skill, called by the model with the Skill tool (`implement`, `multirepo:implement`). */
+const IMPLEMENT_SKILL = /^\/?(?:[\w.-]+:)?implement$/;
+
 /** Update counters from one event. For a result, returns whether it failed. */
-function applyEvent(meta: RunMeta, ev: RunEvent, main: boolean, costBefore: number, roundTripsBefore: number): boolean | undefined {
+export function applyEvent(meta: RunMeta, ev: RunEvent, main: boolean, costBefore: number, roundTripsBefore: number): boolean | undefined {
   if (ev.type === "system" && ev.subtype === "init" && main) {
     // The CLI can downgrade the requested mode (e.g. auto isn't available on every model).
     meta.effectivePermissionMode = ev.permissionMode || null;
@@ -1398,6 +1404,7 @@ function applyEvent(meta: RunMeta, ev: RunEvent, main: boolean, costBefore: numb
       if (b.type === "tool_use") {
         meta.toolCalls++;
         meta.lastActivity = toolLabel(b.name, b.input);
+        if (main && b.name === "Skill" && IMPLEMENT_SKILL.test(String(b.input?.skill || ""))) meta.implementing = true;
       } else if (b.type === "text" && main && b.text && b.text.trim()) {
         meta.lastActivity = b.text.trim().split("\n")[0].slice(0, 140);
       }
