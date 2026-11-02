@@ -28,6 +28,7 @@ import type { ServerResponse } from "node:http";
 import type { Attachment, Effort, PermissionMode, QueuedMessage, Question, RunEvent, RunMeta, RunWatch, WatchedPr } from "../../shared/api.ts";
 import { BETWEEN_TURNS } from "../../shared/send-to-hosted.ts";
 import { lastActivity } from "../../shared/remote.ts";
+import { implementTicket } from "../../shared/run-ticket.ts";
 import { agentHeadlessRules, agentOf, keepRunningRule, outputsRule, type ParseState, type TurnInput } from "./agents/index.ts";
 import { LOCAL_MODEL_RULE, isRoutedId } from "./models/routes.ts";
 import { expandSlash } from "./agents/skills.ts";
@@ -991,6 +992,8 @@ export class RunManager {
     meta.effectivePermissionMode = null; // this turn's init sets it again
     this._cont.delete(meta.id); // the terminal-continuation cutoff moves with each dashboard turn
     if (meta.adoptedFrom) meta.adoptedFrom.inTerminal = false; // what the terminal says after this gets a divider of its own
+    // Before the save below: the Factory's gate guard reads saved runs.
+    if (!first && IMPLEMENT_PROMPT.test(prompt.trim())) markImplementing(meta, prompt.trim());
     // Snapshot the workspace's repos (runs alongside the spawn: claude takes seconds to
     // start, long before its first edit).
     try { this.onTurnStart(meta); } catch {}
@@ -1386,8 +1389,20 @@ function blankWatch(now: Date, prs: WatchedPr[], everyMinutes: number, prompt: s
 /** When a run last did something (shared/remote.ts, where the mirror and the web read it too). */
 export { lastActivity };
 
+/** `/implement X` or a plugin's `/multirepo:implement X` (not Explain: that only reads). */
+export const IMPLEMENT_PROMPT = /^\/(?:[\w.-]+:)?implement\s+\S/;
+/** The implement skill, called by the model with the Skill tool (`implement`, `multirepo:implement`). */
+const IMPLEMENT_SKILL = /^\/?(?:[\w.-]+:)?implement$/;
+
+/** A later turn implements a ticket: flag the run, and keep the ticket `prompt` (an `/implement X`) names, if any. */
+function markImplementing(meta: RunMeta, prompt: string) {
+  meta.implementing = true;
+  const ticket = implementTicket(prompt);
+  if (ticket) meta.implementingTicket = ticket;
+}
+
 /** Update counters from one event. For a result, returns whether it failed. */
-function applyEvent(meta: RunMeta, ev: RunEvent, main: boolean, costBefore: number, roundTripsBefore: number): boolean | undefined {
+export function applyEvent(meta: RunMeta, ev: RunEvent, main: boolean, costBefore: number, roundTripsBefore: number): boolean | undefined {
   if (ev.type === "system" && ev.subtype === "init" && main) {
     // The CLI can downgrade the requested mode (e.g. auto isn't available on every model).
     meta.effectivePermissionMode = ev.permissionMode || null;
@@ -1398,6 +1413,7 @@ function applyEvent(meta: RunMeta, ev: RunEvent, main: boolean, costBefore: numb
       if (b.type === "tool_use") {
         meta.toolCalls++;
         meta.lastActivity = toolLabel(b.name, b.input);
+        if (main && b.name === "Skill" && IMPLEMENT_SKILL.test(String(b.input?.skill || ""))) markImplementing(meta, `/implement ${String(b.input?.args || "").trim()}`);
       } else if (b.type === "text" && main && b.text && b.text.trim()) {
         meta.lastActivity = b.text.trim().split("\n")[0].slice(0, 140);
       }
