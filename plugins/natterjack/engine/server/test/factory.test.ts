@@ -343,6 +343,19 @@ test("WIP: a ticket waiting at the merge gate counts until every PR has merged",
   assert.equal(factoryLaunchBlocker(cfg, true, "ENG-2", [atMerge("merged", "merged")], []), null, "every PR merged: finished, not in flight");
 });
 
+test("the board's in-flight count is the one the launch check refuses on", () => {
+  const cfg = { ...defaultFactoryConfig(), enabled: true, limits: { ...defaultFactoryConfig().limits, wip: 1 } };
+  const atMerge = (state: string) => manifest({ stages: [{ id: "pr", status: "done" }], prs: [{ url: "https://github.com/acme/api/pull/1", state }] });
+  // The PR open: still in flight. Every PR merged: out of it.
+  const open = buildBoard(cfg, true, [atMerge("open")], []);
+  assert.equal(open.wip.inFlight, 1);
+  assert.match(factoryLaunchBlocker(cfg, true, "ENG-2", [atMerge("open")], [])!, /WIP limit 1\)/);
+  assert.equal(buildBoard(cfg, true, [atMerge("merged")], []).wip.inFlight, 0);
+  // An implement run that hasn't reported yet counts on the board too.
+  const going = { id: "r", ticket: "ENG-3", status: "running" as const, costUsd: 0, startedAt: at, agent: "claude", model: null, implement: true };
+  assert.equal(buildBoard(cfg, true, [], [going]).wip.inFlight, 1);
+});
+
 // factory.mjs reads factory.json for the pipeline: it must read it as the dashboard does.
 test("the multirepo scripts read the policy as the dashboard does", async (t) => {
   const scripts = path.join(import.meta.dirname, "..", "..", "..", "..", "multirepo", "scripts");

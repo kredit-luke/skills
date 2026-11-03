@@ -822,7 +822,8 @@ export function buildBoard(cfg: FactoryConfig, configured: boolean, manifests: F
     preset: configured ? cfg.preset : null,
     columns: boardColumns(cfg),
     items,
-    wip: { inFlight: items.filter((i) => i.column !== "done" && i.column !== "queued").length, limit: cfg.limits.wip },
+    // The same count the launch check and Pull work in use, so the board and the refusal agree.
+    wip: { inFlight: inFlightTickets(all.manifests, all.runs).size, limit: cfg.limits.wip },
     errors,
     canDecide,
     approverStats: approverStats(all.manifests),
