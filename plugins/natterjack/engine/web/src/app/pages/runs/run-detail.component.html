@@ -53,7 +53,6 @@
         <div class="prompt-box">{{ r.prompt }}</div>
         @if (!r.remote) {
           <dash-attachment-list [runId]="r.id" [files]="r.attachments || []" [removed]="!!r.attachmentsRemovedAt" />
-          <dash-run-outputs [runId]="r.id" [files]="outputs()" />
         }
         @if (r.remote; as rm) {
           @if (rm.pending.length) {
@@ -168,6 +167,9 @@
         @if (workWs() && !api.hosted() && !r.remote) {
           <button type="button" role="tab" [class.on]="view() === 'apps'" [attr.aria-selected]="view() === 'apps'" (click)="tab.set('apps')">Apps @if (appsBadge(); as b) { <span class="n" [class.up]="b.up">{{ b.text }}</span> }</button>
         }
+        @if (!r.remote && outputs().length) {
+          <button type="button" role="tab" [class.on]="view() === 'files'" [attr.aria-selected]="view() === 'files'" (click)="tab.set('files')" title="Files this run made for you (its outputs folder)">Files <span class="n">{{ outputs().length }}</span></button>
+        }
       </div>
     </div>
     @if (view() === 'issue' && issue(); as iss) {
@@ -181,6 +183,9 @@
     }
     @if (view() === 'apps' && workWs(); as w) {
       <dash-workspace-apps class="tab-body apps-tab" [workspace]="w" [toolbar]="true" />
+    }
+    @if (view() === 'files') {
+      <dash-run-outputs class="tab-body" [runId]="r.id" [files]="outputs()" />
     }
     <div class="transcript" #transcript (scroll)="onScroll()" [hidden]="view() !== 'transcript'" [class.loading]="backlogLoading()" [attr.aria-busy]="backlogLoading()">
       @if (backlogLoading()) {

@@ -4,32 +4,40 @@ import { bytes, relTime } from '../../core/util';
 
 const OPENABLE = /\.(pdf|png|jpe?g|gif|webp)$/i;
 
-/** Files the run made in its outputs folder: each downloads; PDFs and images also open in a tab. */
+/** The run page's Files tab: what the run made in its outputs folder. Each downloads; PDFs and images also open in a tab. */
 @Component({
   selector: 'dash-run-outputs',
   changeDetection: ChangeDetectionStrategy.OnPush,
   template: `
-    @if (files().length) {
-      <div class="ro">
-        <span class="lbl" title="Files this run made for you (its outputs folder)">Files</span>
+    <div class="ro">
+      <p class="hint">Files this run made for you (its outputs folder).</p>
+      <ul>
         @for (f of files(); track f.name) {
-          <span class="chip" [title]="f.name + ' · ' + size(f.size) + ' · ' + rel(f.modifiedAt)">
-            <a [href]="url(f)" [attr.download]="base(f)">{{ icon(f) }} {{ f.name }} <span class="sz">{{ size(f.size) }}</span></a>
-            @if (openable(f)) { <a class="open" [href]="url(f)" target="_blank" rel="noopener" title="Open in a new tab" [attr.aria-label]="'Open ' + f.name + ' in a new tab'">↗</a> }
-          </span>
+          <li>
+            <span class="ic" aria-hidden="true">{{ icon(f) }}</span>
+            <a class="nm" [href]="url(f)" [attr.download]="base(f)" [title]="'Download ' + f.name">{{ f.name }}</a>
+            <span class="meta">{{ size(f.size) }} · {{ rel(f.modifiedAt) }}</span>
+            <span class="acts">
+              @if (openable(f)) { <a class="btn sm ghost" [href]="url(f)" target="_blank" rel="noopener" [attr.aria-label]="'Open ' + f.name + ' in a new tab'">Open ↗</a> }
+              <a class="btn sm" [href]="url(f)" [attr.download]="base(f)" [attr.aria-label]="'Download ' + f.name">Download</a>
+            </span>
+          </li>
         }
-      </div>
-    }
+      </ul>
+    </div>
   `,
   styles: [`
-    .ro { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; margin-top: 6px; }
-    .lbl { font-size: 11px; color: var(--ink-faint); text-transform: uppercase; letter-spacing: .04em; margin-right: 2px; }
-    .chip { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; border: 1px solid var(--line); background: #fff; border-radius: 7px; padding: 3px 8px; }
-    .chip:hover { border-color: var(--brand-700); }
-    .chip a { color: var(--ink); text-decoration: none; }
-    .chip a.open { color: var(--ink-faint); }
-    .chip a.open:hover { color: var(--brand-700); }
-    .sz { color: var(--ink-faint); font-size: 11px; }
+    :host { display: block; }
+    .ro { padding: 1rem 1.1rem; }
+    .hint { margin: 0 0 10px; font-size: 12px; color: var(--ink-faint); }
+    ul { list-style: none; margin: 0; padding: 0; border: 1px solid var(--line); border-radius: 8px; background: #fff; }
+    li { display: flex; align-items: center; gap: 10px; padding: 8px 12px; font-size: 13px; min-width: 0; }
+    li + li { border-top: 1px solid var(--line); }
+    .nm { color: var(--ink); text-decoration: none; overflow-wrap: anywhere; min-width: 0; }
+    .nm:hover { color: var(--brand-700); text-decoration: underline; }
+    .meta { color: var(--ink-faint); font-size: 12px; white-space: nowrap; }
+    .acts { margin-left: auto; display: flex; gap: 6px; flex: none; }
+    @media (max-width: 640px) { li { flex-wrap: wrap; } .acts { margin-left: 0; } }
   `],
 })
 export class RunOutputsComponent {
