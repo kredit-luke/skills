@@ -1,0 +1,34 @@
+:host { display: block; }
+.questions { display: flex; flex-direction: column; gap: 10px; background: #fff; border: 1px solid #F1D9A6; border-left: 3px solid #F6C35B; border-radius: 10px; padding: 12px 14px; }
+.q-h { font-family: var(--font-mono); font-size: 10.5px; letter-spacing: .12em; text-transform: uppercase; color: var(--yellow); }
+.q-t { font-size: 14px; font-weight: 600; margin-top: 2px; line-height: 1.4; }
+.opts { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
+.opt { display: flex; flex-direction: column; align-items: flex-start; gap: 2px; text-align: left; border: 1px solid var(--line); background: #fff; border-radius: 9px; padding: 7px 11px; cursor: pointer; max-width: 340px; }
+.opt:hover { border-color: var(--brand-700); }
+.opt.on { border-color: var(--brand-800); background: var(--blue-bg); box-shadow: inset 0 0 0 1px var(--brand-800); }
+.opt:disabled { opacity: .6; cursor: default; }
+.ol { font-size: 13px; font-weight: 600; color: var(--brand-800); }
+.od { font-size: 11.5px; color: var(--ink-soft); line-height: 1.35; }
+.q-note { font-size: 11.5px; color: var(--ink-faint); margin-top: 4px; }
+.q-other { margin-top: 8px; width: 100%; max-width: 680px; font-family: var(--font-body); font-size: 13.5px; }
+.q-send { display: flex; justify-content: flex-end; align-items: center; gap: 10px; }
+.q-extra { flex: 1; font-size: 11.5px; color: var(--ink-faint); }
+
+/* Docked in the left column: the panel is the frame, so no second card; questions are separated by a
+   rule, and options fill a grid that follows the column's width as it's dragged. Send stays in view. */
+:host(.docked) .questions { border: 0; border-radius: 0; padding: 0; gap: 0; background: none; }
+:host(.docked) .q { padding: 14px 16px; border-bottom: 1px solid var(--line-soft); }
+:host(.docked) .opts { display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); }
+:host(.docked) .opt { max-width: none; }
+:host(.docked) .q-other { max-width: none; }
+:host(.docked) .q-send { position: sticky; bottom: 0; padding: 10px 16px; background: var(--surface); border-top: 1px solid var(--line-soft); }
+
+/* Phone-sized. 600px = SMALL_SCREEN in core/small-screen.ts. */
+@media (max-width: 600px) {
+  .questions { padding: 10px; }
+  .opts { flex-direction: column; flex-wrap: nowrap; }
+  .opt { max-width: none; width: 100%; min-height: 44px; justify-content: center; }
+  .q-send .btn { flex: 1; justify-content: center; min-height: 44px; }
+  /* 16px stops iOS Safari zooming the page when the control is focused. */
+  .q-other { font-size: 16px; }
+}

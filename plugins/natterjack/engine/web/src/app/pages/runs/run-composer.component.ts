@@ -1,4 +1,4 @@
-import { ChangeDetectionStrategy, Component, computed, effect, inject, input, output, signal, viewChild } from '@angular/core';
+import { ChangeDetectionStrategy, Component, computed, DestroyRef, effect, inject, input, output, signal, viewChild } from '@angular/core';
 import type { Question, QueuedMessage, RunMeta } from '../../../../../shared/api';
 import { ApiService } from '../../core/api.service';
 import { ToastService } from '../../core/toast.service';
@@ -8,6 +8,8 @@ import { agentLabel, isRoutedModel, modelsFor } from '../../core/agents';
 import { DataService } from '../../core/data.service';
 import { SlashInputComponent } from '../../shared/slash-input.component';
 import { LongTextComponent } from '../../shared/long-text.component';
+import { QuestionDock, type QuestionHost } from './question-dock';
+import { RunQuestionsComponent } from './run-questions.component';
 import { composerAction, composerHint, offlineQueueHint, planModeBlockedReason, remoteAllows, remoteBlockedReason } from '../../runs/remote';
 
 /** Your last auto-send choice (localStorage), the default for the next queue. */
@@ -21,7 +23,7 @@ const AUTO_SEND_KEY = 'dash.queueAutoSend';
  */
 @Component({
   selector: 'dash-run-composer',
-  imports: [AttachComponent, SlashInputComponent, LongTextComponent],
+  imports: [AttachComponent, SlashInputComponent, LongTextComponent, RunQuestionsComponent],
   changeDetection: ChangeDetectionStrategy.OnPush,
   styleUrl: './run-composer.component.scss',
   template: `
@@ -38,34 +40,12 @@ const AUTO_SEND_KEY = 'dash.queueAutoSend';
     } @else {
       <div class="composer">
         @if (hint(); as h) { <div class="note remote-hint">{{ h }}</div> }
-        @if (questions().length && r.status === 'waiting') {
-          <div class="questions">
-            @for (q of questions(); track $index; let qi = $index) {
-              <div class="q">
-                @if (q.header) { <div class="q-h">{{ q.header }}</div> }
-                <div class="q-t">{{ q.question }}</div>
-                <div class="opts">
-                  @for (o of q.options; track o.label) {
-                    <button type="button" class="opt" [class.on]="picked(qi, o.label)" [disabled]="busy() || !mode()" (click)="pick(qi, o.label, !!q.multiSelect)" [title]="o.description || ''">
-                      <span class="ol">{{ o.label }}</span>@if (o.description) { <span class="od">{{ o.description }}</span> }
-                    </button>
-                  }
-                  <button type="button" class="opt" [class.on]="isOpen(qi)" [disabled]="busy() || !mode()" (click)="toggleOther(qi, !!q.multiSelect)" title="Type your own answer">
-                    <span class="ol">Other…</span><span class="od">Type your own answer.</span>
-                  </button>
-                </div>
-                @if (isOpen(qi)) {
-                  <input class="q-other" [id]="'q-other-' + qi" type="text" [value]="notes()[qi] || ''" [disabled]="busy() || !mode()"
-                    (input)="setNote(qi, $any($event.target).value)" (keydown.enter)="onOtherEnter($any($event))"
-                    [placeholder]="q.multiSelect ? 'Add your own answer…' : 'Your answer…'" />
-                }
-                @if (q.multiSelect) { <div class="q-note">Pick any that apply.</div> }
-              </div>
-            }
-            @if (!single() || isOpen(0)) {
-              <div class="q-send"><button class="btn primary sm" type="button" [disabled]="busy() || !mode() || !anyPicked()" (click)="sendPicks()">Send answers</button></div>
-            }
-          </div>
+        @if (asking()) {
+          @if (docked()) {
+            <div class="note docked-note">{{ who() }}'s questions are in the panel on the left. Drag its edge to make it wider or narrower.</div>
+          } @else {
+            <dash-run-questions [host]="this" />
+          }
         }
 
         <div class="plan-bar" [class.on]="r.planMode">
@@ -171,7 +151,7 @@ const AUTO_SEND_KEY = 'dash.queueAutoSend';
     }
   `,
 })
-export class RunComposerComponent {
+export class RunComposerComponent implements QuestionHost {
   private readonly api = inject(ApiService);
   private readonly toast = inject(ToastService);
   private readonly data = inject(DataService);
@@ -200,6 +180,13 @@ export class RunComposerComponent {
   readonly single = computed(() => this.questions().length === 1 && !this.questions()[0].multiSelect);
   readonly anyPicked = computed(() =>
     Object.values(this.picks()).some((a) => a.length) || Object.values(this.notes()).some((n) => n.trim()));
+  /** The run is waiting on questions it asked. */
+  readonly asking = computed(() => this.questions().length > 0 && this.run().status === 'waiting');
+  /** The option buttons and Send answers are off: sending, or the run can't take an answer now. */
+  readonly locked = computed(() => this.busy() || !this.mode());
+  /** On the Activity page with two columns, the questions show in the left column (question-dock.ts). */
+  private readonly dock = inject(QuestionDock, { optional: true });
+  readonly docked = computed(() => !!this.dock?.wide() && this.asking());
   /**
    * The main action: queue while a turn runs, reply between turns. On a mirrored run (hosted
    * dashboard) it follows the computer (runs/remote.ts composerAction): offline it's queue between
@@ -224,6 +211,14 @@ export class RunComposerComponent {
   private readonly att = viewChild<AttachComponent>('att');
 
   constructor() {
+    // Docked: the page's left column shows this composer's questions; it lets go when they're answered.
+    effect(() => {
+      const dock = this.dock;
+      if (!dock) return;
+      if (this.docked()) dock.host.set(this);
+      else if (dock.host() === this) dock.host.set(null);
+    });
+    inject(DestroyRef).onDestroy(() => { if (this.dock?.host() === this) this.dock.host.set(null); });
     // New run or new question → clear old picks and typed answers.
     let lastQ = '';
     effect(() => {
