@@ -27,7 +27,7 @@ import { IssueSummaryComponent } from '../../shared/issue-summary.component';
 import { WorkspaceAppsComponent } from '../../shared/workspace-apps.component';
 import { LongTextComponent } from '../../shared/long-text.component';
 
-type Tab = 'issue' | 'transcript' | 'changes' | 'apps';
+type Tab = 'issue' | 'transcript' | 'changes' | 'apps' | 'files';
 /** A tracker lookup: the issue, or why it couldn't be loaded. */
 type IssueLookup = { detail: IssueDetail } | { error: string };
 
@@ -75,7 +75,7 @@ export class RunDetailComponent implements OnDestroy {
   readonly sending = signal(false);
   readonly expanded = signal<Set<string>>(new Set());
   readonly now = signal(Date.now());
-  /** Issue (its tracker ticket), Transcript, Changes (what the run changed in the code) or Apps (its workspace's). */
+  /** Issue (its tracker ticket), Transcript, Changes (what the run changed in the code), Apps (its workspace's) or Files (its outputs folder). */
   readonly tab = signal<Tab>('transcript');
   readonly changedFiles = signal(0);
   /** Tracker lookups by ticket id, kept across runs so switching back is instant. */
@@ -185,12 +185,13 @@ export class RunDetailComponent implements OnDestroy {
     if (hit && 'error' in hit && !t.sure) return null;
     return { id: t.id, url: (hit && 'detail' in hit && hit.detail.url) || this.api.issueUrl(t.id), loading: !hit, detail: hit && 'detail' in hit ? hit.detail : null, error: hit && 'error' in hit ? hit.error : null };
   });
-  /** The tab actually shown: Issue/Apps fall back to Transcript on a run that has neither. */
+  /** The tab actually shown: Issue/Apps/Files fall back to Transcript on a run that has none. */
   readonly view = computed<Tab>(() => {
     const t = this.tab();
     if (t === 'issue' && !this.issue()) return 'transcript';
     if (t === 'apps' && (!this.workWs() || this.api.hosted())) return 'transcript';
     if (t === 'changes' && this.mirrored()) return 'transcript';
+    if (t === 'files' && (this.mirrored() || !this.outputs().length)) return 'transcript';
     return t;
   });
   readonly ranAs = computed(() => {
