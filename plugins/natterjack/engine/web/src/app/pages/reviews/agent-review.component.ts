@@ -8,8 +8,8 @@ import { commentBody, groupFindings, initialPicks, placeOf } from './agent-revie
 /**
  * A coding agent's review of a PR on the Reviews page: its findings in four groups (bugs,
  * performance, security, nitpicks), each one pickable and editable, and posting the picked ones
- * to the PR as line comments (or with a request for changes). The detail panel's "Ask agent for
- * review" button calls run(); a saved review for the PR's current commit shows on its own.
+ * to the PR as line comments (or with a request for changes). The "Ask agent for
+ * review" button (ReviewActionsComponent) calls run(); a saved review for the PR's current commit shows on its own.
  */
 @Component({
   selector: 'dash-agent-review',

@@ -1,14 +1,10 @@
-import { ChangeDetectionStrategy, Component, computed, effect, inject, input, output, signal, viewChild } from '@angular/core';
-import { FormsModule } from '@angular/forms';
-import type { AgentId, MergeMethod, ReviewEvent, ReviewPrDetail, ReviewSubmitted, ReviewSummary } from '../../../../../shared/api';
+import { ChangeDetectionStrategy, Component, computed, effect, inject, input, output, signal } from '@angular/core';
+import type { ReviewPrDetail, ReviewSummary } from '../../../../../shared/api';
 import { RouterLink } from '@angular/router';
-import { usableAgents } from '../../core/agents';
 import { ApiService } from '../../core/api.service';
-import { DataService } from '../../core/data.service';
-import { LaunchService } from '../../core/launch.service';
 import { relTime } from '../../core/util';
-import { AgentReviewComponent } from './agent-review.component';
-import { mergeBlock, mergeNote, methodLabel, shownReviews } from './reviews.util';
+import { ReviewActionsComponent } from './review-actions.component';
+import { shownReviews } from './reviews.util';
 
 /** Files listed before "Show all". */
 const FILES_SHOWN = 40;
@@ -29,7 +25,7 @@ const DECISIONS: Record<string, { label: string; cls: string }> = {
 /** One pull request on the Reviews page: its summary, checks, reviews and the files it changes. */
 @Component({
   selector: 'dash-review-detail',
-  imports: [RouterLink, FormsModule, AgentReviewComponent],
+  imports: [RouterLink, ReviewActionsComponent],
   changeDetection: ChangeDetectionStrategy.OnPush,
   template: `
     <article class="panel detail" aria-live="polite">
@@ -73,58 +69,10 @@ const DECISIONS: Record<string, { label: string; cls: string }> = {
           <span class="diffstat"><span class="add">+{{ d()!.additions }}</span> <span class="del">−{{ d()!.deletions }}</span> in {{ d()!.changedFiles }} {{ d()!.changedFiles === 1 ? 'file' : 'files' }}</span>
         </div>
 
-        <div class="actions">
+        <dash-review-actions [repo]="repo()" [number]="number()" [detail]="d()!" [mine]="isMine()" (changed)="refresh()" (merged)="merged$.emit()">
           <a class="btn primary sm" [routerLink]="[]" [queryParams]="{ view: 'guide' }" queryParamsHandling="merge">Guided review</a>
-          <span class="ask">
-            <button class="btn sm" type="button" (click)="askAgent()" [disabled]="agentBusy() || !agents().length" [title]="agents().length ? '' : 'No coding agent is installed and signed in.'">{{ agentBusy() ? 'Reviewing…' : agentDone() ? 'Review again' : 'Ask agent for review' }}</button>
-            @if (agents().length > 1) {
-              <select class="agent-sel" [ngModel]="agent()" (ngModelChange)="agentPick.set($event)" aria-label="Agent that reviews">
-                @for (a of agents(); track a.id) { <option [value]="a.id">{{ a.label }}</option> }
-              </select>
-            }
-          </span>
-          <a class="btn ghost sm" [href]="d()!.url" target="_blank" rel="noopener">Open on GitHub</a>
-        </div>
-
-        @if (d()!.state === 'OPEN' || merged()) {
-        <section class="yours">
-          @if (verdict(); as v) {
-            <label class="lbl" for="review-text">{{ v === 'APPROVE' ? 'Approve, with a comment (optional)' : 'What needs to change' }}</label>
-            <textarea id="review-text" rows="3" [ngModel]="verdictText()" (ngModelChange)="verdictText.set($event)"></textarea>
-            <div class="btns">
-              <button class="btn sm" type="button" [class.primary]="v === 'APPROVE'" [class.danger]="v === 'REQUEST_CHANGES'" (click)="submitVerdict()" [disabled]="sending() || (v === 'REQUEST_CHANGES' && !verdictText().trim())">{{ sending() ? 'Sending…' : v === 'APPROVE' ? 'Approve on GitHub' : 'Request changes on GitHub' }}</button>
-              <button class="btn ghost sm" type="button" (click)="verdict.set(null)" [disabled]="sending()">Cancel</button>
-            </div>
-          } @else if (merging()) {
-            <div class="btns">
-              @if (d()!.mergeMethods.length > 1) {
-                <select class="agent-sel" [ngModel]="mergeMethod()" (ngModelChange)="mergeMethod.set($event)" aria-label="Merge method">
-                  @for (m of d()!.mergeMethods; track m) { <option [value]="m">{{ methodLabel(m) }}</option> }
-                </select>
-              }
-              <button class="btn primary sm" type="button" (click)="merge()" [disabled]="sending()">{{ sending() ? 'Merging…' : 'Confirm ' + methodLabel(mergeMethod()).toLowerCase() }}</button>
-              <button class="btn ghost sm" type="button" (click)="merging.set(false)" [disabled]="sending()">Cancel</button>
-            </div>
-            <p class="faint">Merges commit <span class="mono">{{ d()!.sha.slice(0, 7) }}</span> into {{ d()!.base }} on GitHub{{ d()!.deletesBranch ? ', and GitHub deletes the branch' : '' }}.@if (mergeNote(); as n) { {{ ' ' + n }} }</p>
-          } @else if (!merged()) {
-            <div class="btns">
-              @if (!isMine()) {
-                <button class="btn sm" type="button" (click)="startVerdict('APPROVE')">Approve</button>
-                <button class="btn sm" type="button" (click)="startVerdict('REQUEST_CHANGES')">Request changes</button>
-              }
-              <button class="btn sm" type="button" (click)="startMerge()" [disabled]="!!mergeBlock()" [title]="mergeBlock() || ''">Merge…</button>
-              @if (mergeBlock(); as b) { <span class="faint">{{ b }}</span> }
-            </div>
-          }
-          @if (verdictErr()) { <p class="err-note">{{ verdictErr() }}</p> }
-          @if (verdictDone(); as v) {
-            <p class="ok">{{ v.state === 'APPROVED' ? 'Approved' : 'Changes requested' }} on GitHub. @if (v.url) { <a [href]="v.url" target="_blank" rel="noopener">View</a> }</p>
-          }
-          @if (merged()) { <p class="ok">Merged into {{ d()!.base }}. <a [href]="d()!.url" target="_blank" rel="noopener">View on GitHub</a></p> }
-        </section>
-        }
-
-        <dash-agent-review [repo]="repo()" [number]="number()" [mine]="isMine()" (submitted)="refresh()" />
+          <a trail class="btn ghost sm" [href]="d()!.url" target="_blank" rel="noopener">Open on GitHub</a>
+        </dash-review-actions>
 
         @if (d()!.failingChecks.length) {
           <p class="failing">Failing: {{ d()!.failingChecks.join(', ') }}</p>
@@ -177,14 +125,6 @@ const DECISIONS: Record<string, { label: string; cls: string }> = {
     .diffstat { font-size: 12px; color: var(--ink-soft); }
     .add { color: var(--green); font-family: var(--font-mono); font-size: 11.5px; }
     .del { color: var(--red); font-family: var(--font-mono); font-size: 11.5px; }
-    .actions, .yours .btns { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
-    .ask { display: inline-flex; align-items: center; gap: 6px; }
-    .agent-sel { font: inherit; font-size: 12.5px; padding: 4px 8px; border: 1px solid var(--line); border-radius: 8px; background: #fff; color: var(--ink); }
-    .yours { display: flex; flex-direction: column; gap: 6px; }
-    .yours .lbl { font-size: 12.5px; color: var(--ink-soft); }
-    .yours textarea { font: inherit; font-size: 13px; padding: 6px 8px; border: 1px solid var(--line); border-radius: 6px; resize: vertical; }
-    .yours p { margin: 0; font-size: 13px; }
-    .ok { color: var(--green); }
     .failing { margin: 0; font-size: 12.5px; color: var(--red); }
     ul { list-style: none; margin: 0; padding: 0; }
     .reviews li { font-size: 13px; padding: 3px 0; display: flex; align-items: center; gap: 8px; }
@@ -196,8 +136,6 @@ const DECISIONS: Record<string, { label: string; cls: string }> = {
 })
 export class ReviewDetailComponent {
   private readonly api = inject(ApiService);
-  private readonly data = inject(DataService);
-  private readonly launch = inject(LaunchService);
   readonly repo = input.required<string>();
   readonly number = input.required<number>();
   /** The person's login on the code host (their own PRs can't be approved). */
@@ -214,26 +152,7 @@ export class ReviewDetailComponent {
   readonly summarizing = signal(false);
   readonly sumErr = signal<string | null>(null);
   readonly allFiles = signal(false);
-  private readonly agentReview = viewChild(AgentReviewComponent);
-  /** Agents installed and signed in; the one picked here, else the one runs start on. */
-  readonly agents = computed(() => usableAgents(this.data.agents()));
-  readonly agentPick = signal<AgentId | null>(null);
-  readonly agent = computed<AgentId>(() => { const p = this.agentPick(); return p && this.agents().some((a) => a.id === p) ? p : this.launch.agent(); });
-  readonly agentBusy = computed(() => !!this.agentReview()?.running());
-  /** The review showing is the picked agent's: asking again makes a new one. */
-  readonly agentDone = computed(() => this.agentReview()?.review()?.agent === this.agent());
-  readonly verdict = signal<ReviewEvent | null>(null);
-  readonly verdictText = signal('');
-  readonly sending = signal(false);
-  readonly verdictErr = signal<string | null>(null);
-  readonly verdictDone = signal<ReviewSubmitted | null>(null);
-  readonly merging = signal(false);
-  readonly merged = signal(false);
-  readonly mergeMethod = signal<MergeMethod>('squash');
   readonly shownReviews = computed(() => shownReviews(this.d()?.reviews || []));
-  readonly mergeBlock = computed(() => { const d = this.d(); return d ? mergeBlock(d) : null; });
-  readonly mergeNote = computed(() => mergeNote(this.d()?.mergeState || ''));
-  readonly methodLabel = methodLabel;
   readonly isMine = computed(() => { const v = this.viewer(); const d = this.d(); return !!v && !!d && d.author === v; });
   /** Bumped per PR, so an answer for the previous one is dropped. */
   private gen = 0;
@@ -262,14 +181,7 @@ export class ReviewDetailComponent {
     this.err.set(null);
     this.sumErr.set(null);
     this.allFiles.set(false);
-    this.verdict.set(null);
-    this.verdictText.set('');
-    this.verdictErr.set(null);
-    this.verdictDone.set(null);
-    this.merging.set(false);
-    this.merged.set(false);
     // A request for the previous PR may still be out; its finally won't clear these for this one.
-    this.sending.set(false);
     this.summarizing.set(false);
     try {
       const d = await this.api.get<ReviewPrDetail>(`/api/reviews/pr?repo=${encodeURIComponent(repo)}&number=${n}`);
@@ -278,66 +190,6 @@ export class ReviewDetailComponent {
       if (!this.current()) this.summarize(false);
     } catch (e) {
       if (gen === this.gen) this.err.set((e as Error).message);
-    }
-  }
-
-  /** Asks the picked agent for a review: a new one when its review is the one showing, else its saved one if it has one. */
-  askAgent(): void {
-    const id = this.agent();
-    const label = this.agents().find((a) => a.id === id)?.label || id;
-    this.agentReview()?.run(id, label, this.agentDone());
-  }
-
-  startVerdict(v: ReviewEvent): void {
-    this.verdict.set(v);
-    this.verdictErr.set(null);
-    this.verdictDone.set(null);
-    this.merging.set(false);
-  }
-
-  startMerge(): void {
-    this.mergeMethod.set(this.d()?.mergeMethods[0] || 'squash');
-    this.verdict.set(null);
-    this.verdictErr.set(null);
-    this.merging.set(true);
-  }
-
-  async merge(): Promise<void> {
-    const d = this.d();
-    if (!d) return;
-    const gen = this.gen;
-    this.sending.set(true);
-    this.verdictErr.set(null);
-    try {
-      await this.api.post('/api/reviews/merge', { repo: this.repo(), number: this.number(), method: this.mergeMethod(), sha: d.sha });
-      if (gen !== this.gen) return;
-      this.merging.set(false);
-      this.merged.set(true);
-      this.merged$.emit();
-    } catch (e) {
-      if (gen === this.gen) this.verdictErr.set((e as Error).message);
-    } finally {
-      if (gen === this.gen) this.sending.set(false);
-    }
-  }
-
-  async submitVerdict(): Promise<void> {
-    const event = this.verdict();
-    if (!event) return;
-    const gen = this.gen;
-    this.sending.set(true);
-    this.verdictErr.set(null);
-    try {
-      const done = await this.api.post<ReviewSubmitted>('/api/reviews/submit', { repo: this.repo(), number: this.number(), event, body: this.verdictText(), sha: this.d()?.sha, comments: [] });
-      if (gen !== this.gen) return;
-      this.verdictDone.set(done);
-      this.verdict.set(null);
-      this.verdictText.set('');
-      this.refresh();
-    } catch (e) {
-      if (gen === this.gen) this.verdictErr.set((e as Error).message);
-    } finally {
-      if (gen === this.gen) this.sending.set(false);
     }
   }
 
