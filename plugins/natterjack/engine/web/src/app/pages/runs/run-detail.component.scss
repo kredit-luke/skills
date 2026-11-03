@@ -102,8 +102,8 @@
 .instr summary { font-family: var(--font-mono); font-size: 11px; color: var(--ink-soft); cursor: pointer; }
 .instr .prompt-box { margin-top: 6px; max-height: 14rem; }
 
-.tabs { display: flex; gap: 2px; padding: 0 14px; background: #fff; border-bottom: 1px solid var(--border-strong); box-shadow: 0 4px 10px -3px rgba(11,29,111,.28); position: relative; z-index: 1; }
-.tabs button { border: 0; background: transparent; padding: 8px 12px 7px; font-size: 13px; color: var(--ink-soft); cursor: pointer; border-bottom: 2px solid transparent; margin-bottom: -1px; display: inline-flex; align-items: center; gap: 6px; }
+.tabs { display: flex; flex-wrap: wrap; gap: 2px; padding: 0 14px; background: #fff; border-bottom: 1px solid var(--border-strong); box-shadow: 0 4px 10px -3px rgba(11,29,111,.28); position: relative; z-index: 1; }
+.tabs button { border: 0; background: transparent; padding: 8px 12px 7px; white-space: nowrap; font-size: 13px; color: var(--ink-soft); cursor: pointer; border-bottom: 2px solid transparent; margin-bottom: -1px; display: inline-flex; align-items: center; gap: 6px; }
 .tabs button:hover { color: var(--ink); }
 .tabs button.on { color: var(--brand-800); font-weight: 600; border-bottom-color: var(--ok); }
 .tabs .n { font-family: var(--font-mono); font-size: 10.5px; background: var(--purple-bg); color: var(--brand-800); border-radius: 99px; padding: 0 6px; }
