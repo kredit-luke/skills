@@ -109,6 +109,7 @@ const parse = (s: string | null | undefined) => new Set(String(s || '').split(',
         }
       </div>
       <div class="split" role="separator" aria-orientation="vertical" aria-label="Resize the left column" tabindex="0"
+        [attr.aria-valuenow]="split().now" [attr.aria-valuemin]="split().min" [attr.aria-valuemax]="split().max" [attr.aria-valuetext]="split().now + '% of the page'"
         title="Drag to resize · double-click to reset" (pointerdown)="dragStart($event)" (dblclick)="resetWidth()" (keydown)="onSplitKey($event)"></div>
       <div class="detail-col">
         @if (selectedId(); as id) {
@@ -140,6 +141,20 @@ export class RunsComponent {
   /** Runs other than the open one waiting for your answer: shown on the folded History bar. */
   readonly waitingOthers = computed(() =>
     this.data.activityRuns().filter((r) => r.id !== this.selectedId() && this.data.needsAnswer(r)).length);
+  /** The page's width, for the separator's value (a ResizeObserver in the constructor). */
+  private readonly layoutW = signal(0);
+  /**
+   * The separator's value for assistive tech: the left column's rendered share of the page, in %,
+   * clamped the way the CSS track is (LEFT_MIN_PX to the width less the run's minimum).
+   */
+  readonly split = computed(() => {
+    const w = this.layoutW();
+    if (!w) return { now: 0, min: 0, max: 100 };
+    const hi = Math.max(LEFT_MIN_PX, w - SPLIT_PX - RUN_MIN_PX);
+    const want = this.dock.host() ? this.askingShare() * w : this.historyPx();
+    const pctOf = (px: number) => Math.round((px / w) * 100);
+    return { now: pctOf(Math.max(LEFT_MIN_PX, Math.min(want, hi))), min: pctOf(LEFT_MIN_PX), max: pctOf(hi) };
+  });
   toggleHistory(): void {
     this.historyOpen.set(!this.historyOpen());
     lsSet(HISTORY_OPEN_KEY, this.historyOpen() ? '1' : '0');
@@ -184,6 +199,13 @@ export class RunsComponent {
   });
 
   constructor() {
+    effect((onCleanup) => {
+      const el = this.layout()?.nativeElement;
+      if (!el) return;
+      const ro = new ResizeObserver(() => this.layoutW.set(el.getBoundingClientRect().width));
+      ro.observe(el);
+      onCleanup(() => ro.disconnect());
+    });
     // Open the newest run when none is selected (replaceUrl so Back still works). Not on a small
     // screen: there the list and the run take turns, and /runs is the list ("All runs" goes back to it).
     // Decided once, at the screen size the page loaded with: rotating or resizing doesn't change it,

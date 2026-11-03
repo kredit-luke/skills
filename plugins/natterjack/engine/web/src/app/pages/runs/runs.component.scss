@@ -6,9 +6,10 @@
 @media (min-width: 1101px) {
   .runs-layout > .col { position: sticky; top: 1rem; max-height: calc(100vh - 2rem); overflow-y: auto; }
   .runs-layout > .col > .panel { flex-shrink: 0; }
-  /* The left column's width is dragged with .split (--left-w from runs.component.ts), never so wide
-     the run gets under 420px (RUN_MIN_PX there; 16px = SPLIT_PX). */
-  .runs-layout { grid-template-columns: min(var(--left-w, 400px), calc(100% - 436px)) 16px minmax(0, 1fr); column-gap: 0; }
+  /* The left column's width is dragged with .split (--left-w from runs.component.ts), kept between
+     280px (LEFT_MIN_PX) and leaving the run 420px (RUN_MIN_PX; 16px = SPLIT_PX), also when a saved
+     width meets a resized window. */
+  .runs-layout { grid-template-columns: clamp(280px, var(--left-w, 400px), calc(100% - 436px)) 16px minmax(0, 1fr); column-gap: 0; }
   .split { display: block; position: sticky; top: 1rem; height: calc(100vh - 2rem); cursor: col-resize; touch-action: none; outline: none; }
   .split::before { content: ''; position: absolute; top: 0; bottom: 0; left: 7px; width: 2px; border-radius: 2px; background: transparent; transition: background .12s; }
   .split::after { content: ''; position: absolute; top: 50%; left: 5px; width: 6px; height: 40px; margin-top: -20px; border-radius: 3px; background: var(--border-strong); opacity: .55; }
