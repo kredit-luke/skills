@@ -2,10 +2,31 @@
 @media (max-width: 1100px) { .runs-layout { grid-template-columns: 1fr; } }
 /* Two columns: the history column stays in view while the run beside it scrolls the page; it
    scrolls on its own if it's taller than the window (Track record under History). */
+.split { display: none; }
 @media (min-width: 1101px) {
   .runs-layout > .col { position: sticky; top: 1rem; max-height: calc(100vh - 2rem); overflow-y: auto; }
   .runs-layout > .col > .panel { flex-shrink: 0; }
+  /* The left column's width is dragged with .split (--left-w from runs.component.ts), never so wide
+     the run gets under 420px (RUN_MIN_PX there; 16px = SPLIT_PX). */
+  .runs-layout { grid-template-columns: min(var(--left-w, 400px), calc(100% - 436px)) 16px minmax(0, 1fr); column-gap: 0; }
+  .split { display: block; position: sticky; top: 1rem; height: calc(100vh - 2rem); cursor: col-resize; touch-action: none; outline: none; }
+  .split::before { content: ''; position: absolute; top: 0; bottom: 0; left: 7px; width: 2px; border-radius: 2px; background: transparent; transition: background .12s; }
+  .split::after { content: ''; position: absolute; top: 50%; left: 5px; width: 6px; height: 40px; margin-top: -20px; border-radius: 3px; background: var(--border-strong); opacity: .55; }
+  .split:hover::before, .split:focus-visible::before, .dragging .split::before { background: var(--brand-700); }
+  .split:hover::after, .split:focus-visible::after, .dragging .split::after { opacity: 1; background: var(--brand-700); }
+  /* No text selection or transcript hover effects while dragging. */
+  .runs-layout.dragging { user-select: none; cursor: col-resize; }
+  .runs-layout.dragging .detail-col { pointer-events: none; }
+  /* The docked questions fill the column; the panel scrolls with Send answers stuck at its bottom. */
+  .runs-layout.asking > .col { overflow: hidden; display: flex; flex-direction: column; }
+  /* Questions on top take what's left; History under them is a bar when folded, and when open its
+     list gets up to 40% of the window so the questions keep at least the rest. */
+  .runs-layout > .col > .q-panel { flex: 1 1 auto; }
+  .q-panel { display: flex; flex-direction: column; min-height: 140px; border-color: #F1D9A6; border-top: 3px solid #F6C35B; }
+  .runs-layout.asking .history .runs-list { max-height: 40vh; }
+  .q-panel > dash-run-questions { flex: 1; min-height: 0; overflow-y: auto; }
 }
+.q-panel .panel-h .shown { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 60%; }
 .runs-list { max-height: calc(100vh - 330px); overflow-y: auto; }
 .detail-col { min-width: 0; }
 .back { display: none; }
@@ -29,3 +50,11 @@
 .chip .n.hot { opacity: 1; background: #F6C35B; color: var(--brand-900); border-radius: 99px; padding: 0 5px; }
 .chip.on .n.hot { background: #F6C35B; }
 .chips .sep { width: 1px; height: 16px; background: var(--border); margin: 0 2px; }
+
+/* The History header as a fold toggle (only while questions are docked). */
+.panel-h.fold { width: 100%; border: 0; background: none; font: inherit; color: inherit; text-align: left; cursor: pointer; display: flex; align-items: center; justify-content: flex-start; gap: 8px; }
+.history.folded .panel-h.fold { border-bottom: 0; }
+.panel-h.fold:hover h2 { color: var(--brand-700); }
+.panel-h.fold .shown { margin-left: auto; }
+.panel-h.fold .caret { font-size: 12px; color: var(--ink-soft); width: 12px; text-align: center; }
+.n-hot { font-family: var(--font-mono); font-size: 10.5px; background: #F6C35B; color: var(--brand-900); border-radius: 99px; padding: 1px 7px; }

@@ -1,4 +1,4 @@
-import { ChangeDetectionStrategy, Component, computed, effect, inject, input, signal, untracked } from '@angular/core';
+import { ChangeDetectionStrategy, Component, computed, effect, ElementRef, inject, input, signal, untracked, viewChild } from '@angular/core';
 import { ActivatedRoute, Router, RouterLink } from '@angular/router';
 import type { RunMeta } from '../../../../../shared/api';
 import { ApiService } from '../../core/api.service';
@@ -9,7 +9,9 @@ import { dur, lsGet, lsSet, pct } from '../../core/util';
 import { PageHeaderComponent } from '../../shared/page-header.component';
 import { RunRowComponent } from '../../shared/run-row.component';
 import { toReview, unrated } from '../../shared/run-status';
+import { QuestionDock } from './question-dock';
 import { RunDetailComponent } from './run-detail.component';
+import { RunQuestionsComponent } from './run-questions.component';
 import { TerminalSessionsComponent } from './terminal-sessions.component';
 
 /**
@@ -29,11 +31,21 @@ const CHIPS: { key: string; label: string; test: (r: RunMeta, data: DataService)
 ];
 const FOCUS = ['flagged', 'running', 'waiting', 'review'];
 const KEYS = new Set(CHIPS.map((c) => c.key));
+/** The left column's widths (localStorage) and limits; SPLIT_PX is .split's width in runs.component.scss. */
+const HISTORY_W_KEY = 'dash.runs.historyWidth';
+const ASKING_W_KEY = 'dash.runs.questionsShare';
+const HISTORY_W_DEFAULT = 400;
+const HISTORY_OPEN_KEY = 'dash.runs.historyOpenWhileAsking';
+const ASKING_W_DEFAULT = 0.5;
+const LEFT_MIN_PX = 280;
+const RUN_MIN_PX = 420;
+const SPLIT_PX = 16;
 const parse = (s: string | null | undefined) => new Set(String(s || '').split(',').map((x) => x.trim()).filter((x) => KEYS.has(x)));
 
 @Component({
   selector: 'dash-runs',
-  imports: [RouterLink, PageHeaderComponent, RunRowComponent, RunDetailComponent, TerminalSessionsComponent],
+  imports: [RouterLink, PageHeaderComponent, RunRowComponent, RunDetailComponent, RunQuestionsComponent, TerminalSessionsComponent],
+  providers: [QuestionDock],
   changeDetection: ChangeDetectionStrategy.OnPush,
   styleUrl: './runs.component.scss',
   template: `
@@ -42,11 +54,29 @@ const parse = (s: string | null | undefined) => new Set(String(s || '').split(',
       <button class="btn primary sm" type="button" (click)="newSession()" title="Start a new run in its own session">New session</button>
     </dash-page-header>
     <!-- Small screens show one thing at a time: the list, or the open run with "All runs" back to the list. -->
-    <div class="runs-layout" [class.has-run]="!!selectedId()">
+    <div class="runs-layout" #layout [class.has-run]="!!selectedId()" [class.asking]="!!dock.host()" [style.--left-w]="leftWidth()">
       <div class="col">
+        @if (dock.host(); as h) {
+          <div class="panel q-panel">
+            <div class="panel-h"><h2>Needs your answer</h2><span class="shown" [title]="h.run().label || ''">{{ h.run().label }}</span></div>
+            <dash-run-questions [host]="h" [docked]="true" />
+          </div>
+        }
         @if (fromTerminal()) { <dash-terminal-sessions (closed)="fromTerminal.set(false)" /> }
-        <div class="panel">
-          <div class="panel-h"><h2>History</h2><span class="shown">{{ list().length }} of {{ data.activityRuns().length }}</span></div>
+        @let folded = !!dock.host() && !historyOpen();
+        <div class="panel history" [class.folded]="folded">
+          @if (dock.host()) {
+            <button type="button" class="panel-h fold" [attr.aria-expanded]="!folded" (click)="toggleHistory()"
+              [title]="folded ? 'Show the runs, to open another one' : 'Hide the runs, to give the questions the room'">
+              <h2>History</h2>
+              @if (waitingOthers(); as n) { <span class="n-hot" title="Other runs waiting for your answer">{{ n }} waiting</span> }
+              <span class="shown">{{ list().length }} of {{ data.activityRuns().length }}</span>
+              <span class="caret">{{ folded ? '▸' : '▾' }}</span>
+            </button>
+          } @else {
+            <div class="panel-h"><h2>History</h2><span class="shown">{{ list().length }} of {{ data.activityRuns().length }}</span></div>
+          }
+          @if (!folded) {
           <div class="chips" role="group" aria-label="Filter runs by status">
             <button type="button" class="chip preset" [class.on]="isFocus()" (click)="setFilter(isFocus() ? [] : focus)" title="Only what needs you now: flagged, running, waiting for an answer, and finished in the last day but not rated yet">Focus</button>
             <button type="button" class="chip" [class.on]="!selected().size" (click)="setFilter([])">All</button>
@@ -61,7 +91,9 @@ const parse = (s: string | null | undefined) => new Set(String(s || '').split(',
             @for (r of list(); track r.id) { <dash-run-row [run]="r" [selected]="r.id === selectedId()" [keepQuery]="true" /> }
             @empty { <div class="empty">{{ selected().size ? 'Nothing here right now.' : 'No runs yet.' }}</div> }
           </div>
+          }
         </div>
+        @if (!dock.host()) {
         <div class="panel">
           <div class="panel-h"><h2>Track record</h2></div>
           @if (trust().length) {
@@ -74,7 +106,10 @@ const parse = (s: string | null | undefined) => new Set(String(s || '').split(',
           } @else { <div class="empty">No finished runs yet.</div> }
           <div class="hint">Verdicts are yours: mark each finished run <b>good</b> or <b>needed fix</b>. A preset earns more autonomy once it has a real record.</div>
         </div>
+        }
       </div>
+      <div class="split" role="separator" aria-orientation="vertical" aria-label="Resize the left column" tabindex="0"
+        title="Drag to resize · double-click to reset" (pointerdown)="dragStart($event)" (dblclick)="resetWidth()" (keydown)="onSplitKey($event)"></div>
       <div class="detail-col">
         @if (selectedId(); as id) {
           <a class="back" routerLink="/runs" queryParamsHandling="preserve">← All runs</a>
@@ -88,6 +123,28 @@ const parse = (s: string | null | undefined) => new Set(String(s || '').split(',
 })
 export class RunsComponent {
   readonly data = inject(DataService);
+  /** The open run's questions, when they're docked in the left column (question-dock.ts). */
+  readonly dock = inject(QuestionDock);
+  private readonly layout = viewChild<ElementRef<HTMLElement>>('layout');
+  /**
+   * The left column's width, dragged with the handle beside it. Kept per mode: History in px
+   * (default 400), the questions as a share of the page (default half), so each opens as you left it.
+   */
+  readonly historyPx = signal(Number(lsGet(HISTORY_W_KEY, '')) || HISTORY_W_DEFAULT);
+  readonly askingShare = signal(Number(lsGet(ASKING_W_KEY, '')) || ASKING_W_DEFAULT);
+  /**
+   * While questions are docked, History sits folded under them (one click to open, so another run
+   * is always reachable). Your last choice is kept.
+   */
+  readonly historyOpen = signal(lsGet(HISTORY_OPEN_KEY, '') === '1');
+  /** Runs other than the open one waiting for your answer: shown on the folded History bar. */
+  readonly waitingOthers = computed(() =>
+    this.data.activityRuns().filter((r) => r.id !== this.selectedId() && this.data.needsAnswer(r)).length);
+  toggleHistory(): void {
+    this.historyOpen.set(!this.historyOpen());
+    lsSet(HISTORY_OPEN_KEY, this.historyOpen() ? '1' : '0');
+  }
+  readonly leftWidth = computed(() => this.dock.host() ? (this.askingShare() * 100).toFixed(2) + '%' : this.historyPx() + 'px');
   readonly api = inject(ApiService);
   /** The "From terminal" list is open. */
   readonly fromTerminal = signal(false);
@@ -142,6 +199,61 @@ export class RunsComponent {
     effect(() => {
       if (this.selectedId() && untracked(this.small)) untracked(() => window.scrollTo({ top: 0 }));
     });
+  }
+
+  dragStart(e: PointerEvent): void {
+    const el = this.layout()?.nativeElement;
+    if (!el || e.button !== 0) return;
+    e.preventDefault();
+    const handle = e.currentTarget as HTMLElement;
+    handle.setPointerCapture(e.pointerId);
+    el.classList.add('dragging');
+    const left = el.getBoundingClientRect().left;
+    const move = (ev: PointerEvent) => this.setWidth(ev.clientX - left);
+    const up = () => {
+      handle.removeEventListener('pointermove', move);
+      handle.removeEventListener('pointerup', up);
+      handle.removeEventListener('pointercancel', up);
+      el.classList.remove('dragging');
+      this.saveWidth();
+    };
+    handle.addEventListener('pointermove', move);
+    handle.addEventListener('pointerup', up);
+    handle.addEventListener('pointercancel', up);
+  }
+
+  /** Arrow keys move the handle 24px (Shift: 96px); Home/End go to the narrowest and widest. */
+  onSplitKey(e: KeyboardEvent): void {
+    const step = e.shiftKey ? 96 : 24;
+    const cur = this.currentPx();
+    const to = e.key === 'ArrowLeft' ? cur - step : e.key === 'ArrowRight' ? cur + step : e.key === 'Home' ? 0 : e.key === 'End' ? Infinity : null;
+    if (to === null) return;
+    e.preventDefault();
+    this.setWidth(to);
+    this.saveWidth();
+  }
+
+  resetWidth(): void {
+    if (this.dock.host()) this.askingShare.set(ASKING_W_DEFAULT); else this.historyPx.set(HISTORY_W_DEFAULT);
+    this.saveWidth();
+  }
+
+  private currentPx(): number {
+    const w = this.layout()?.nativeElement.getBoundingClientRect().width || 0;
+    return this.dock.host() ? this.askingShare() * w : this.historyPx();
+  }
+
+  /** Clamped so both columns stay usable: the left at least 280px, the run at least 420px. */
+  private setWidth(px: number): void {
+    const w = this.layout()?.nativeElement.getBoundingClientRect().width || 0;
+    if (!w) return;
+    const clamped = Math.round(Math.max(LEFT_MIN_PX, Math.min(px, w - SPLIT_PX - RUN_MIN_PX)));
+    if (this.dock.host()) this.askingShare.set(clamped / w); else this.historyPx.set(clamped);
+  }
+
+  private saveWidth(): void {
+    lsSet(HISTORY_W_KEY, String(this.historyPx()));
+    lsSet(ASKING_W_KEY, this.askingShare().toFixed(4));
   }
 
   /** The run dialog on an empty prompt, as from Home: a new run, not a reply to the open one. */
