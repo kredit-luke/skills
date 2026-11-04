@@ -31,7 +31,7 @@ const SUMMARY_ROWS = 40;
     </dash-page-header>
 
     @if (guiding(); as s) {
-      <dash-review-guide [repo]="s.repo" [number]="s.n" (back)="closeGuide()" />
+      <dash-review-guide [repo]="s.repo" [number]="s.n" [viewer]="list()?.viewer ?? null" (merged)="load(true)" (back)="closeGuide()" />
     } @else if (error() && !list()) { <div class="warn-note">{{ error() }}</div> }
     @else if (!list()) { <div class="empty">Loading…</div> }
     @else {

@@ -5,6 +5,7 @@ import { RouterLink } from '@angular/router';
 import { guideLink } from '../factory/factory.util';
 import { ApiService } from '../../core/api.service';
 import { ToastService } from '../../core/toast.service';
+import { ReviewActionsComponent } from './review-actions.component';
 import { type DraftComment, type HunkGroup, draftsKey, groupHunks, hunkLabel, lineKey, noHunkLabel, progressKey } from './review-guide.util';
 
 /** How often an open guided review checks whether the PR has new commits. */
@@ -26,7 +27,7 @@ type Chapter = typeof CHAPTERS[number];
  */
 @Component({
   selector: 'dash-review-guide',
-  imports: [FormsModule, RouterLink],
+  imports: [FormsModule, RouterLink, ReviewActionsComponent],
   changeDetection: ChangeDetectionStrategy.OnPush,
   template: `
     <div class="head">
@@ -56,6 +57,9 @@ type Chapter = typeof CHAPTERS[number];
       </div>
       @if (detail(); as d) { <a class="btn sm" [href]="d.url" target="_blank" rel="noopener">Open on GitHub</a> }
     </div>
+    @if (detail(); as d) {
+      <dash-review-actions class="panel acts" [repo]="repo()" [number]="number()" [detail]="d" [mine]="isMine()" [hold]="hold()" (changed)="refreshDetail()" (merged)="merged.emit()" />
+    }
     @if (drafts().length) {
       <div class="drafts panel">
         <span><b>{{ drafts().length }}</b> draft {{ drafts().length === 1 ? 'comment' : 'comments' }}</span>
@@ -181,6 +185,7 @@ type Chapter = typeof CHAPTERS[number];
   `,
   styles: [`
     .head { display: flex; align-items: flex-start; gap: 12px; margin-bottom: 14px; }
+    .acts { padding: 10px 14px; margin-bottom: 12px; }
     .ttl { flex: 1; min-width: 0; }
     h2 { margin: 0; font-size: 17px; line-height: 1.35; overflow-wrap: anywhere; }
     .sub { margin-top: 4px; font-size: 12px; color: var(--ink-faint); }
@@ -241,6 +246,10 @@ export class ReviewGuideComponent {
   readonly repo = input.required<string>();
   readonly number = input.required<number>();
   readonly back = output<void>();
+  /** The person's login on the code host (their own PRs can't be approved). */
+  readonly viewer = input<string | null>(null);
+  /** The PR merged: the list should drop it. */
+  readonly merged = output<void>();
 
   readonly chapters = CHAPTERS;
   readonly pointChapters: { id: Chapter & keyof ReviewGuide; label: string; empty: string }[] = [
@@ -282,6 +291,13 @@ export class ReviewGuideComponent {
   readonly groups = computed<HunkGroup[]>(() => groupHunks(this.diff()?.files || [], this.guide()));
   /** Files with no lines to show: binary ones, pure renames, and empty files added or deleted. */
   readonly noHunkFiles = computed(() => (this.diff()?.files || []).filter((f) => f.binary || !f.hunks.length));
+  /** Approving or merging binds to the PR's commit: only once the diff on screen is that commit's. */
+  readonly hold = computed(() => {
+    if (this.diffErr()) return "The diff didn't load, so there's nothing reviewed to approve or merge.";
+    const d = this.detail(), f = this.diff();
+    return d && f && f.sha === d.sha ? null : "Waiting for this commit's diff to load.";
+  });
+  readonly isMine = computed(() => { const v = this.viewer(); const d = this.detail(); return !!v && !!d && d.author === v; });
   readonly doneCount = computed(() => CHAPTERS.filter((c) => this.done()[c]).length);
 
   constructor() {
@@ -378,6 +394,18 @@ export class ReviewGuideComponent {
       if (this.movedTimer) clearTimeout(this.movedTimer);
       this.movedTimer = setTimeout(() => this.moved.set(null), 15_000);
     } catch {}
+  }
+
+  /** Reads the PR's checks and reviews again (after a review was posted from here). */
+  async refreshDetail(): Promise<void> {
+    const gen = this.gen;
+    try {
+      const d = await this.api.get<ReviewPrDetail>(`/api/reviews/pr?repo=${encodeURIComponent(this.repo())}&number=${this.number()}`);
+      if (gen !== this.gen) return;
+      // New commits since the diff was read: reload the diff, guide and checklist with it, not just the header.
+      if (d.sha !== this.diff()?.sha) await this.load(this.repo(), this.number(), true);
+      else this.detail.set(d);
+    } catch { /* keep what's shown */ }
   }
 
   pointsOf(id: keyof ReviewGuide): GuidePoint[] { return (this.guide()?.[id] as GuidePoint[]) || []; }
