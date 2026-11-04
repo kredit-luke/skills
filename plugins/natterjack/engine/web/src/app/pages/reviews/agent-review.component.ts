@@ -107,6 +107,8 @@ export class AgentReviewComponent {
   private readonly api = inject(ApiService);
   readonly repo = input.required<string>();
   readonly number = input.required<number>();
+  /** The PR's current commit: a new one reloads (findings are bound to the commit they were made on). */
+  readonly sha = input<string | null>(null);
   /** The person's own PR: GitHub won't take a request for changes on it. */
   readonly mine = input(false);
   /** After posting: the PR's reviews changed. */
@@ -131,7 +133,7 @@ export class AgentReviewComponent {
   readonly pickCount = computed(() => [...this.picked()].filter((id) => !this.posted().has(id)).length);
 
   constructor() {
-    effect(() => { this.load(this.repo(), this.number()); });
+    effect(() => { this.sha(); this.load(this.repo(), this.number()); });
     inject(DestroyRef).onDestroy(() => this.stopTimer());
   }
 

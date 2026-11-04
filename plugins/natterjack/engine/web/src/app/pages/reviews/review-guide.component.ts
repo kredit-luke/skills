@@ -58,7 +58,7 @@ type Chapter = typeof CHAPTERS[number];
       @if (detail(); as d) { <a class="btn sm" [href]="d.url" target="_blank" rel="noopener">Open on GitHub</a> }
     </div>
     @if (detail(); as d) {
-      <dash-review-actions class="panel acts" [repo]="repo()" [number]="number()" [detail]="d" [mine]="isMine()" (changed)="refreshDetail()" (merged)="merged.emit()" />
+      <dash-review-actions class="panel acts" [repo]="repo()" [number]="number()" [detail]="d" [mine]="isMine()" [hold]="hold()" (changed)="refreshDetail()" (merged)="merged.emit()" />
     }
     @if (drafts().length) {
       <div class="drafts panel">
@@ -291,6 +291,12 @@ export class ReviewGuideComponent {
   readonly groups = computed<HunkGroup[]>(() => groupHunks(this.diff()?.files || [], this.guide()));
   /** Files with no lines to show: binary ones, pure renames, and empty files added or deleted. */
   readonly noHunkFiles = computed(() => (this.diff()?.files || []).filter((f) => f.binary || !f.hunks.length));
+  /** Approving or merging binds to the PR's commit: only once the diff on screen is that commit's. */
+  readonly hold = computed(() => {
+    if (this.diffErr()) return "The diff didn't load, so there's nothing reviewed to approve or merge.";
+    const d = this.detail(), f = this.diff();
+    return d && f && f.sha === d.sha ? null : "Waiting for this commit's diff to load.";
+  });
   readonly isMine = computed(() => { const v = this.viewer(); const d = this.detail(); return !!v && !!d && d.author === v; });
   readonly doneCount = computed(() => CHAPTERS.filter((c) => this.done()[c]).length);
 
@@ -395,7 +401,10 @@ export class ReviewGuideComponent {
     const gen = this.gen;
     try {
       const d = await this.api.get<ReviewPrDetail>(`/api/reviews/pr?repo=${encodeURIComponent(this.repo())}&number=${this.number()}`);
-      if (gen === this.gen) this.detail.set(d);
+      if (gen !== this.gen) return;
+      // New commits since the diff was read: reload the diff, guide and checklist with it, not just the header.
+      if (d.sha !== this.diff()?.sha) await this.load(this.repo(), this.number(), true);
+      else this.detail.set(d);
     } catch { /* keep what's shown */ }
   }
 

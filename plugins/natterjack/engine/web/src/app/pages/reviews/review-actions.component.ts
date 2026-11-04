@@ -37,7 +37,7 @@ import { mergeBlock, mergeNote, methodLabel } from './reviews.util';
         <label class="lbl" [for]="textId">{{ v === 'APPROVE' ? 'Approve, with a comment (optional)' : 'What needs to change' }}</label>
         <textarea [id]="textId" rows="3" [ngModel]="verdictText()" (ngModelChange)="verdictText.set($event)"></textarea>
         <div class="btns">
-          <button class="btn sm" type="button" [class.primary]="v === 'APPROVE'" [class.danger]="v === 'REQUEST_CHANGES'" (click)="submitVerdict()" [disabled]="sending() || (v === 'REQUEST_CHANGES' && !verdictText().trim())">{{ sending() ? 'Sending…' : v === 'APPROVE' ? 'Approve on GitHub' : 'Request changes on GitHub' }}</button>
+          <button class="btn sm" type="button" [class.primary]="v === 'APPROVE'" [class.danger]="v === 'REQUEST_CHANGES'" (click)="submitVerdict()" [disabled]="sending() || !!hold() || (v === 'REQUEST_CHANGES' && !verdictText().trim())" [title]="hold() || ''">{{ sending() ? 'Sending…' : v === 'APPROVE' ? 'Approve on GitHub' : 'Request changes on GitHub' }}</button>
           <button class="btn ghost sm" type="button" (click)="verdict.set(null)" [disabled]="sending()">Cancel</button>
         </div>
       } @else if (merging()) {
@@ -47,18 +47,18 @@ import { mergeBlock, mergeNote, methodLabel } from './reviews.util';
               @for (m of d().mergeMethods; track m) { <option [value]="m">{{ methodLabel(m) }}</option> }
             </select>
           }
-          <button class="btn primary sm" type="button" (click)="merge()" [disabled]="sending()">{{ sending() ? 'Merging…' : 'Confirm ' + methodLabel(mergeMethod()).toLowerCase() }}</button>
+          <button class="btn primary sm" type="button" (click)="merge()" [disabled]="sending() || !!hold()" [title]="hold() || ''">{{ sending() ? 'Merging…' : 'Confirm ' + methodLabel(mergeMethod()).toLowerCase() }}</button>
           <button class="btn ghost sm" type="button" (click)="merging.set(false)" [disabled]="sending()">Cancel</button>
         </div>
         <p class="faint">Merges commit <span class="mono">{{ d().sha.slice(0, 7) }}</span> into {{ d().base }} on GitHub{{ d().deletesBranch ? ', and GitHub deletes the branch' : '' }}.@if (mergeNote(); as n) { {{ ' ' + n }} }</p>
       } @else if (!merged()) {
         <div class="btns">
           @if (!mine()) {
-            <button class="btn sm" type="button" (click)="startVerdict('APPROVE')">Approve</button>
-            <button class="btn sm" type="button" (click)="startVerdict('REQUEST_CHANGES')">Request changes</button>
+            <button class="btn sm" type="button" (click)="startVerdict('APPROVE')" [disabled]="!!hold()" [title]="hold() || ''">Approve</button>
+            <button class="btn sm" type="button" (click)="startVerdict('REQUEST_CHANGES')" [disabled]="!!hold()" [title]="hold() || ''">Request changes</button>
           }
-          <button class="btn sm" type="button" (click)="startMerge()" [disabled]="!!mergeBlock()" [title]="mergeBlock() || ''">Merge…</button>
-          @if (mergeBlock(); as b) { <span class="faint">{{ b }}</span> }
+          <button class="btn sm" type="button" (click)="startMerge()" [disabled]="!!hold() || !!mergeBlock()" [title]="hold() || mergeBlock() || ''">Merge…</button>
+          @if (hold() || mergeBlock(); as b) { <span class="faint">{{ b }}</span> }
         </div>
       }
       @if (verdictErr()) { <p class="err-note">{{ verdictErr() }}</p> }
@@ -69,7 +69,7 @@ import { mergeBlock, mergeNote, methodLabel } from './reviews.util';
     </section>
     }
 
-    <dash-agent-review [repo]="repo()" [number]="number()" [mine]="mine()" (submitted)="changed.emit()" />
+    <dash-agent-review [repo]="repo()" [number]="number()" [sha]="d().sha" [mine]="mine()" (submitted)="changed.emit()" />
   `,
   styles: [`
     :host { display: flex; flex-direction: column; gap: 14px; }
@@ -95,6 +95,8 @@ export class ReviewActionsComponent {
   readonly d = input.required<ReviewPrDetail>({ alias: 'detail' });
   /** The person opened it (their own PRs can't be approved). */
   readonly mine = input(false);
+  /** Why approving and merging wait (e.g. the diff shown isn't this commit's yet); null when they don't. */
+  readonly hold = input<string | null>(null);
   /** A review was posted: the PR's checks and reviews should be read again. */
   readonly changed = output<void>();
   /** The PR merged. */
@@ -125,9 +127,11 @@ export class ReviewActionsComponent {
   private gen = 0;
 
   constructor() {
-    // Another PR: start clean. A request for the previous one may still be out; its finally won't clear these.
+    // Another PR or a new commit: start clean, so an open approval or merge can't land on code it wasn't
+    // opened for. A re-read of the same commit (checks, reviews) keeps it. A request for the previous
+    // one may still be out; its finally won't clear these.
     effect(() => {
-      this.repo(); this.number();
+      this.repo(); this.number(); this.d().sha;
       untracked(() => {
         this.gen++;
         this.verdict.set(null);
