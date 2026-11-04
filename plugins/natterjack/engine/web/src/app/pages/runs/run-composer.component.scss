@@ -54,7 +54,9 @@
   .queue-h, .queue-item { flex-wrap: wrap; }
   .queue-h span { flex-basis: 100%; }
   .queue-acts .linkish { padding: 6px 0; }
-  .reply .btn { min-height: 42px; }
+  /* The box gets the full width; the button sits under it, full width too. */
+  .reply { flex-direction: column; align-items: stretch; }
+  .reply .btn { min-height: 42px; width: 100%; justify-content: center; }
   .next-model { flex-wrap: wrap; justify-content: flex-start; }
   .note, .hint, .cmd { white-space: normal; overflow-wrap: anywhere; }
   /* 16px stops iOS Safari zooming the page when the control is focused. */
