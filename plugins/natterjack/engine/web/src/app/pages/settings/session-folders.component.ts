@@ -12,24 +12,34 @@ import { relTime } from '../../core/util';
 @Component({
   selector: 'dash-session-folders',
   changeDetection: ChangeDetectionStrategy.OnPush,
+  // Settings' panel and row rules (width, spacing, .row/.t/.h): a child component doesn't get the
+  // page's emulated styles, so it loads the same sheet (as remote-link does), plus its list rows.
+  styleUrls: ['./settings.component.scss'],
   styles: [`
-    .sf-b { padding: 4px 16px 14px; }
-    .sf-h { font-size: 12.5px; color: var(--text-muted); margin: 10px 0 8px; }
+    .sf-list { padding: 0 16px 14px; }
+    .sf-sub { font-size: 11.5px; font-weight: 600; color: var(--ink-soft); margin: 4px 0 2px; }
+    .sf-none { font-size: 12.5px; color: var(--ink-soft); padding: 6px 0; }
     .sf-row { display: flex; gap: 10px; align-items: center; padding: 7px 0; border-bottom: 1px solid var(--line-soft); }
-    .sf-row:last-child { border-bottom: 0; }
     .sf-path { flex: 1; min-width: 0; font-family: var(--font-mono); font-size: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-    .sf-meta { font-size: 11.5px; color: var(--text-muted); white-space: nowrap; }
+    .sf-meta { font-size: 11.5px; color: var(--ink-soft); white-space: nowrap; }
     .sf-add { display: flex; gap: 8px; margin-top: 10px; }
     .sf-add input { flex: 1; min-width: 0; font-family: var(--font-mono); font-size: 12px; padding: 5px 8px; }
   `],
   template: `
     <div class="panel">
       <div class="panel-h"><h2>Sessions from other folders</h2></div>
-      <div class="sf-b">
-        <div class="sf-h">
-          Folders outside this workspace whose Claude Code sessions <b>From terminal</b> (Activity) lists too, say a project you worked in before this one.
-          Open one to carry it on where it is, or move it into this workspace to carry it on here.
+      <div class="rows">
+        <div class="row">
+          <div class="lbl">
+            <div class="t">Other folders</div>
+            <div class="h">
+              Folders outside this workspace whose Claude Code sessions <b>From terminal</b> (Activity) lists too, say a project you worked in before this one.
+              Open one to carry it on where it is, or move it into this workspace to carry it on here.
+            </div>
+          </div>
         </div>
+      </div>
+      <div class="sf-list">
         @if (folders().length) {
           @for (f of folders(); track f.path) {
             <div class="sf-row">
@@ -40,9 +50,9 @@ import { relTime } from '../../core/util';
               <button class="btn sm" type="button" [disabled]="saving()" (click)="remove(f)">Remove</button>
             </div>
           }
-        } @else if (!loading()) { <div class="sf-h">None yet.</div> }
+        } @else if (!loading()) { <div class="sf-none">None added yet.</div> }
         @if (suggestions().length) {
-          <div class="sf-h">Where you've used Claude Code lately:</div>
+          <div class="sf-sub">Where you've used Claude Code lately</div>
           @for (s of suggestions(); track s.path) {
             <div class="sf-row">
               <span class="sf-path" [title]="s.path">{{ s.path }}</span>
