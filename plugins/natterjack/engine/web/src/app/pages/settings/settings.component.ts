@@ -109,7 +109,7 @@ interface NumberRow { key: LimitKey; label: string; help: string; min: number; m
               <div class="h">Stop a run when its API-equivalent cost passes its budget (Implement $40, the other skill cards $2–8, $5 otherwise). On a subscription nothing is billed and the cap only stops runs that are working fine, so it's off by default. Turn it on if you run Claude on an API key.</div>
             </div>
             <div class="ctl">
-              <label class="chk"><input type="checkbox" [checked]="s.effective.limits.runBudget" [disabled]="saving()" (change)="saveLimit('runBudget', $any($event.target).checked)"> {{ s.effective.limits.runBudget ? 'On' : 'Off' }}</label>
+              <label class="chk"><input type="checkbox" [checked]="s.effective.limits.runBudget" [disabled]="saving()" (change)="saveLimit('runBudget', $any($event.target).checked)"> Stop runs over budget</label>
               <ng-container *ngTemplateOutlet="teamNote; context: { $implicit: 'runBudget', team: s.team.limits.runBudget ? 'on' : 'off' }" />
             </div>
           </div>
@@ -120,7 +120,7 @@ interface NumberRow { key: LimitKey; label: string; help: string; min: number; m
                 <div class="h">Every new Claude Code session you start in this workspace or its worktrees (<code>claude</code> in a terminal, the desktop app, an IDE) shows up in Activity by itself, and keeps up with what you type there. Exit the terminal before replying from the dashboard. With Remote control on, you can follow and answer them from your hosted dashboard too. Off, open one with <b>From terminal</b> on the Activity page.</div>
               </div>
               <div class="ctl">
-                <label class="chk"><input type="checkbox" [checked]="s.effective.limits.adoptSessions" [disabled]="saving()" (change)="saveLimit('adoptSessions', $any($event.target).checked)"> {{ s.effective.limits.adoptSessions ? 'On' : 'Off' }}</label>
+                <label class="chk"><input type="checkbox" [checked]="s.effective.limits.adoptSessions" [disabled]="saving()" (change)="saveLimit('adoptSessions', $any($event.target).checked)"> Show them in Activity</label>
                 <ng-container *ngTemplateOutlet="teamNote; context: { $implicit: 'adoptSessions', team: s.team.limits.adoptSessions ? 'on' : 'off' }" />
               </div>
             </div>
@@ -161,8 +161,9 @@ interface NumberRow { key: LimitKey; label: string; help: string; min: number; m
               <div class="h">A soft chime when a run starts waiting for your answer while you're not looking at the dashboard. Saved in this browser only.</div>
             </div>
             <div class="ctl">
-              <label class="chk"><input type="checkbox" [checked]="attention.sound()" (change)="attention.setSound($any($event.target).checked)"> {{ attention.sound() ? 'On' : 'Off' }}</label>
+              <label class="chk"><input type="checkbox" [checked]="attention.sound()" (change)="attention.setSound($any($event.target).checked)"> Chime when a run waits</label>
               <button class="btn ghost sm" type="button" (click)="attention.chime()">Play it</button>
+              @if (!attention.sound()) { <span class="team">A test only: tick the box to hear it when a run waits.</span> }
             </div>
           </div>
           <div class="row">
@@ -176,7 +177,7 @@ interface NumberRow { key: LimitKey; label: string; help: string; min: number; m
               } @else if (attention.permission() === 'denied') {
                 <span class="ty">Blocked for this site: allow notifications in the browser's site settings, then reload.</span>
               } @else {
-                <label class="chk"><input type="checkbox" [checked]="attention.notify()" (change)="attention.setNotify($any($event.target).checked)"> {{ attention.notify() ? 'On' : 'Off' }}</label>
+                <label class="chk"><input type="checkbox" [checked]="attention.notify()" (change)="attention.setNotify($any($event.target).checked)"> Show a notification</label>
               }
             </div>
           </div>

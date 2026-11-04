@@ -24,6 +24,28 @@ import { SearchPaletteComponent } from './shared/search-palette.component';
  */
 interface NavItem { path: string; label: string; icon: string; exact?: boolean; group?: string; needs?: 'meetings' }
 
+/** A sidebar section: its heading (none for the top one), the pages showing, and how many the toggle covers (0: no toggle). */
+interface NavSection { key: string; group?: string; shown: NavItem[]; open: boolean; more: number; toggleLabel: string }
+
+/** Pages a section shows before its Show more toggle. */
+const NAV_SECTION_MAX = 4;
+/** The sections someone opened, as a JSON array of group names. */
+const NAV_OPEN_KEY = 'dash.nav.open';
+
+function readOpenSections(): Set<string> {
+  try {
+    const v = JSON.parse(localStorage.getItem(NAV_OPEN_KEY) || '[]');
+    return new Set(Array.isArray(v) ? v.filter((x) => typeof x === 'string') : []);
+  } catch {
+    return new Set();
+  }
+}
+
+/** Whether the page at `path` is this nav item's (routerLinkActive's rule: exact, or the item's path and below). */
+function isActivePath(n: NavItem, path: string): boolean {
+  return path === n.path || (!n.exact && path.startsWith(n.path + '/'));
+}
+
 /** Set once Get started has opened by itself in this tab, so it doesn't again until the next session. */
 const SETUP_OPENED = 'dash.setup.opened';
 
@@ -53,8 +75,9 @@ const SETUP_OPENED = 'dash.setup.opened';
               <span class="lbl-t">{{ l }}</span>
             </a>
           }
-          @for (n of visibleNav(); track n.path) {
-            @if (n.group) { <div class="grp">{{ n.group }}</div> }
+          @for (sec of navSections(); track sec.key) {
+            @if (sec.group) { <div class="grp">{{ sec.group }}</div> }
+            @for (n of sec.shown; track n.path) {
             <a [routerLink]="n.path" routerLinkActive="active" [routerLinkActiveOptions]="{ exact: !!n.exact }" [title]="n.label">
               <dash-icon [name]="n.icon" style="width:17px;height:17px" />
               <span class="lbl-t">{{ n.label }}</span>
@@ -69,6 +92,15 @@ const SETUP_OPENED = 'dash.setup.opened';
                 @case ('/machine') { @if (machineProblems()) { <span class="pill red" title="Missing requirements">{{ machineProblems() }}</span> } }
               }
             </a>
+            }
+            @if (sec.more) {
+              <!-- The section's name in the title and aria-label: in the narrow sidebar headings and text are hidden. -->
+              <button type="button" class="nav-more" (click)="toggleSection(sec.key)" [attr.aria-expanded]="sec.open"
+                [title]="sec.toggleLabel" [attr.aria-label]="sec.toggleLabel">
+                <dash-icon [name]="sec.open ? 'chevron-up' : 'chevron-down'" style="width:15px;height:15px" />
+                <span class="lbl-t">{{ sec.open ? 'Show less' : 'Show ' + sec.more + ' more' }}</span>
+              </button>
+            }
           }
         </nav>
         <div class="side-foot">
@@ -118,11 +150,11 @@ export class AppComponent implements OnInit {
   readonly nav: NavItem[] = [
     { path: '/', label: 'Home', icon: 'home', exact: true },
     { path: '/standup', label: 'My updates', icon: 'standup' },
-    { path: '/links', label: 'Links', icon: 'links', group: 'Company' },
-    { path: '/knowledge', label: 'Knowledge', icon: 'docs' },
-    { path: '/infrastructure', label: 'Infrastructure', icon: 'infrastructure' },
-    { path: '/issues', label: 'Issues', icon: 'issues' },
+    { path: '/issues', label: 'Issues', icon: 'issues', group: 'Company' },
     { path: '/meetings', label: 'Meetings', icon: 'meetings', needs: 'meetings' },
+    { path: '/infrastructure', label: 'Infrastructure', icon: 'infrastructure' },
+    { path: '/links', label: 'Links', icon: 'links' },
+    { path: '/knowledge', label: 'Knowledge', icon: 'docs' },
     { path: '/ask', label: 'Ask', icon: 'ask', group: 'Agents' },
     { path: '/runs', label: 'Activity', icon: 'runs' },
     { path: '/factory', label: 'Factory', icon: 'factory' },
@@ -133,9 +165,9 @@ export class AppComponent implements OnInit {
     { path: '/usage', label: 'Usage', icon: 'usage' },
     { path: '/apps', label: 'Apps', icon: 'apps', group: 'Workspace' },
     { path: '/workspaces', label: 'Workspaces', icon: 'workspaces' },
-    { path: '/repos', label: 'Repos', icon: 'repos' },
-    { path: '/people', label: 'People', icon: 'people' },
     { path: '/explore', label: 'Explore', icon: 'explore' },
+    { path: '/people', label: 'People', icon: 'people' },
+    { path: '/repos', label: 'Repos', icon: 'repos' },
     { path: '/memory', label: 'Memory', icon: 'memory' },
     { path: '/machine', label: 'Machine', icon: 'machine' },
     { path: '/settings', label: 'Settings', icon: 'settings' },
@@ -154,6 +186,38 @@ export class AppComponent implements OnInit {
     }
     return out;
   });
+  /** Sections of the sidebar whose hidden items are showing, per browser (localStorage). */
+  private readonly openSections = signal<Set<string>>(readOpenSections());
+  /**
+   * The visible nav split at its group headings. A section shows its first NAV_SECTION_MAX
+   * pages, then a Show more toggle; the page you're on stays in view while it's collapsed.
+   */
+  readonly navSections = computed<NavSection[]>(() => {
+    const path = this.url().split(/[?#]/)[0];
+    const sections: { key: string; group?: string; items: NavItem[] }[] = [];
+    for (const n of this.visibleNav()) {
+      if (n.group || !sections.length) sections.push({ key: n.group || '', group: n.group, items: [] });
+      sections[sections.length - 1].items.push(n);
+    }
+    return sections.map((s) => {
+      const open = this.openSections().has(s.key);
+      const extra = s.group ? s.items.slice(NAV_SECTION_MAX) : [];
+      const shown = open || !extra.length ? s.items
+        : [...s.items.slice(0, NAV_SECTION_MAX), ...extra.filter((n) => isActivePath(n, path))];
+      // Open: the toggle reads Show less. Shut: it counts what's still hidden (none if the only extra is the page you're on).
+      const more = open ? extra.length : s.items.length - shown.length;
+      const toggleLabel = open ? `Show fewer ${s.group} pages` : `Show ${more} more ${s.group} page${more === 1 ? '' : 's'}`;
+      return { key: s.key, group: s.group, open, shown, more, toggleLabel };
+    });
+  });
+  toggleSection(key: string): void {
+    this.openSections.update((set) => {
+      const next = new Set(set);
+      if (!next.delete(key)) next.add(key);
+      try { localStorage.setItem(NAV_OPEN_KEY, JSON.stringify([...next])); } catch { /* private mode: this tab only */ }
+      return next;
+    });
+  }
   readonly machineProblems = computed(() => this.data.machine()?.problems || 0);
   readonly connectionProblems = computed(() => this.data.connections()?.problems || 0);
   /** Get started: the page's count once loaded, the boot payload's before. */
