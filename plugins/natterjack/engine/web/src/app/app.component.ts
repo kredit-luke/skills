@@ -25,7 +25,7 @@ import { SearchPaletteComponent } from './shared/search-palette.component';
 interface NavItem { path: string; label: string; icon: string; exact?: boolean; group?: string; needs?: 'meetings' }
 
 /** A sidebar section: its heading (none for the top one), the pages showing, and how many the toggle covers (0: no toggle). */
-interface NavSection { key: string; group?: string; shown: NavItem[]; open: boolean; more: number }
+interface NavSection { key: string; group?: string; shown: NavItem[]; open: boolean; more: number; toggleLabel: string }
 
 /** Pages a section shows before its Show more toggle. */
 const NAV_SECTION_MAX = 4;
@@ -94,8 +94,9 @@ const SETUP_OPENED = 'dash.setup.opened';
             </a>
             }
             @if (sec.more) {
+              <!-- The section's name in the title and aria-label: in the narrow sidebar headings and text are hidden. -->
               <button type="button" class="nav-more" (click)="toggleSection(sec.key)" [attr.aria-expanded]="sec.open"
-                [title]="sec.open ? 'Show fewer' : 'Show ' + sec.more + ' more'">
+                [title]="sec.toggleLabel" [attr.aria-label]="sec.toggleLabel">
                 <dash-icon [name]="sec.open ? 'chevron-up' : 'chevron-down'" style="width:15px;height:15px" />
                 <span class="lbl-t">{{ sec.open ? 'Show less' : 'Show ' + sec.more + ' more' }}</span>
               </button>
@@ -204,7 +205,9 @@ export class AppComponent implements OnInit {
       const shown = open || !extra.length ? s.items
         : [...s.items.slice(0, NAV_SECTION_MAX), ...extra.filter((n) => isActivePath(n, path))];
       // Open: the toggle reads Show less. Shut: it counts what's still hidden (none if the only extra is the page you're on).
-      return { key: s.key, group: s.group, open, shown, more: open ? extra.length : s.items.length - shown.length };
+      const more = open ? extra.length : s.items.length - shown.length;
+      const toggleLabel = open ? `Show fewer ${s.group} pages` : `Show ${more} more ${s.group} page${more === 1 ? '' : 's'}`;
+      return { key: s.key, group: s.group, open, shown, more, toggleLabel };
     });
   });
   toggleSection(key: string): void {
