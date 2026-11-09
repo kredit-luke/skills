@@ -77,7 +77,7 @@
         }
         @if (r.watch; as w) {
           @if (!w.endedAt) {
-            <div class="info-note watch-note">
+            <div class="info-note watch-note" [class.needs-you]="w.approval === 'pending' && !r.remote">
               <span><b>{{ watchTitle() }}.</b>
                 @if (w.kind === 'check') { <code class="watch-cmd">{{ w.command }}</code> }
                 @if (w.approval === 'pending') { The dashboard runs this command every {{ w.everyMinutes }} min and resumes this run {{ w.until === 'success' ? 'once it succeeds' : 'when its output changes' }}. Nothing runs until you approve it: check it only reads. }
@@ -111,7 +111,7 @@
           } @else if (p.error) {
             <div class="warn-note"><b>Claude proposed a routine, but it can't be used:</b> {{ p.error }} Reply to have it try again, or create one on the <a routerLink="/loops">Loops</a> page.</div>
           } @else if (!r.remote) {
-            <div class="info-note watch-note">
+            <div class="info-note watch-note needs-you">
               <span><b>Claude proposes a routine: {{ p.routine.label || 'untitled' }}.</b> {{ proposalSchedule() }}{{ p.routine.mode === 'continue' ? ', continuing its last run' : ', a new run each time' }}.
                 <span class="proposal-prompt">{{ p.routine.prompt || ('skill card ' + p.routine.preset) }}</span>
                 Nothing is scheduled until you create it.</span>

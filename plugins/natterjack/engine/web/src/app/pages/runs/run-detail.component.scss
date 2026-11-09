@@ -16,8 +16,11 @@
 .rename-btn { opacity: .55; padding: 2px 7px; }
 .ttl:hover .rename-btn, .rename-btn:focus-visible { opacity: 1; }
 /* Collapsed (the title line's toggle): the title line only, and the template drops the subagent and
-   ticket strips; the ResizeObserver in run-detail.component.ts hands the freed height to the feed. */
-.collapsed > :not(.ttl) { display: none; }
+   ticket strips; the ResizeObserver in run-detail.component.ts hands the freed height to the feed.
+   A card waiting on you (.needs-you: a watch to approve, a routine to create) stays, or a collapsed
+   header hides the only button that moves the run on; its routine prompt scrolls instead of growing. */
+.collapsed > :not(.ttl):not(.needs-you) { display: none; }
+.collapsed .needs-you .proposal-prompt { max-height: 4.5em; overflow: auto; }
 .collapsed .ttl { flex-wrap: nowrap; }
 .collapsed .name { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
 .rename { display: flex; gap: 6px; align-items: center; flex: 1; min-width: 240px; }
