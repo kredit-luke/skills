@@ -72,7 +72,7 @@ docker build -f plugins/natterjack/templates/hosted/Dockerfile --pull --no-cache
 **When to rebuild.** Most engine upgrades don't need it: hosted dashboards run the engine from the workspace (the published snapshot, or the workspace repo). Rebuild when:
 - **A release changes the images.** `upgrade` says so (its `hostedImages`).
 - **You want a newer Claude CLI.** Auto-update is off in the image, so everyone runs the version it was built with.
-- **For OS security fixes**, every month or so. Both images upgrade Debian's packages at build time, because the `node:24-trixie-slim` base often doesn't have them yet. Without `--pull --no-cache` Docker reuses the cached upgrade layer and the rebuild changes nothing (the script always passes both).
+- **For OS security fixes**, every month or so. Both images upgrade Debian's packages at build time, because the `node:24-trixie-slim` base often doesn't have them yet. The dashboard image also updates the base image's bundled npm to the latest npm 11, and the router drops npm, which it doesn't use, since scanners report npm's own dependencies (undici, brace-expansion) too. Without `--pull --no-cache` Docker reuses the cached upgrade layer and the rebuild changes nothing (the script always passes both).
 
 On start, `entrypoint.sh` puts the workspace in `/data/workspace` or updates it. Then it runs `node <engine>/bin/dashboard.mjs run` (`<engine>` is the engine folder: `natterjack/` by default, `dashboard/` in older workspaces; `.claude/dashboard/engine.json` `dir` says which), which is the server in the foreground. The workspace comes from one of two places.
 
