@@ -28,6 +28,26 @@
  *       Nothing else is ever moved (no checkout, stash, rebase or merge commit).
  *       needsDecision lists the repos a person should decide about.
  *
+ *   --recent --since <ISO date> [--root <dir>] [--repos a,b] [--paths p1,p2] [--json]
+ *       What landed on each repo's origin/<default> since the date (the ticket's creation), as last
+ *       fetched: no fetch of its own (--freshness just fetched). --since is ISO 8601: YYYY-MM-DD,
+ *       optionally with a time (no offset = UTC; ±hh:mm or ±hhmm); anything else exits 2. Per repo
+ *         { name, state: ok|shallow|error|no-origin|missing, detail, ref, base, paths, missingPaths,
+ *           notInRepo, removedPaths, files: [{ path, status, from? }], commits: [{ sha, date, subject }],
+ *           docs: [{ path, kind: readme|contributing|decision, status }] }
+ *       base is the newest first-parent commit at or before the date, so a branch merged after it counts.
+ *       shallow: the history doesn't reach the date; the lists start at the oldest commit it has.
+ *       error: a git read (rev-list, diff or log) failed or timed out (detail says which and why,
+ *       then any notes gathered before it); the CLI exits 1. Other states exit 0.
+ *       --paths (relative to each repo; absolute or with a '..' segment exits 2) narrows files and commits, but the root docs (the root README,
+ *       CONTRIBUTING, decision records at the root level or under docs/) and files renamed out of a
+ *       watched folder are kept; a --paths the tip doesn't have is in removedPaths when the base had
+ *       it, else in missingPaths (a typo, named in detail) when no picked repo has it, or notInRepo
+ *       when another one does. No net change still lists the commits.
+ *       A partial clone diffs with --no-renames (no blob fetches; detail says so); past the rename
+ *       limit (-l20000) renames show as a delete and an add (detail says so).
+ *       changed[] names the repos with files.
+ *
  *   --branches --branch <b> --repos a,b [--ticket <ID>] [--root <dir>] [--json]
  *       Create or switch to <b> in each repo under --root (default: the current
  *       folder's workspace or worktree). Refuses in a main workspace when the
@@ -41,10 +61,11 @@ import { execFile } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import {
-  defaultBranch, dependencyOrder, findRoot, findTicket, git, gitRun, isMain, listRepos, parseArgs,
+  defaultBranch, dependencyOrder, findRoot, findTicket, git, gitRun, isMain, isoUtc, listRepos, parseArgs,
   readJson, readWorkspaceConfig, readWorktreeMeta, samePath, slash,
 } from "./lib.mjs";
 import { syncRepo } from "./pull.mjs";
+import { parseNameStatus } from "./repo-status.mjs";
 import { NAME_RE, normalizeMeta, worktreeSettings } from "./worktree.mjs";
 
 const firstLine = (s) => String(s ?? "").split("\n").map((l) => l.trim()).find(Boolean) ?? "";
@@ -364,6 +385,272 @@ export async function checkFreshness({ root = process.cwd(), pull = false, repos
   };
 }
 
+// ------------------------------------------------------------------ recent changes
+
+const DOC_EXT = "(md|mdx|markdown|rst|txt|adoc)";
+const README_RE = new RegExp(`^readme(\\.${DOC_EXT})?$`, "i");
+const CONTRIBUTING_RE = new RegExp(`^contributing(\\.${DOC_EXT})?$`, "i");
+const DOC_FILE_RE = new RegExp(`\\.${DOC_EXT}$`, "i");
+const DECISION_DIRS = "adrs?|decisions|decision-records|architecture-decisions";
+const DECISION_DIR_RE = new RegExp(`(^|/)(${DECISION_DIRS})/`, "i");
+const REPO_WIDE_DECISION_DIR_RE = new RegExp(`^(docs|${DECISION_DIRS})$`, "i");
+const DECISION_NAME_RE = /^adr[-_ ]?\d+|\.adr\.[a-z]+$/i;
+
+/**
+ * What kind of guiding doc a repo path is: "readme" (README, README.<doc ext>),
+ * "contributing" (CONTRIBUTING likewise), "decision" (a doc file under an
+ * adr/, adrs/, decisions/, decision-records/ or architecture-decisions/ folder,
+ * or named ADR-<n>…, ADR_<n>… or *.adr.<doc ext>), else null.
+ */
+export function docKind(file) {
+  const p = slash(String(file ?? ""));
+  const base = p.split("/").pop();
+  if (README_RE.test(base)) return "readme";
+  if (CONTRIBUTING_RE.test(base)) return "contributing";
+  if (!DOC_FILE_RE.test(base)) return null;
+  if (DECISION_DIR_RE.test(p) || DECISION_NAME_RE.test(base)) return "decision";
+  return null;
+}
+
+/**
+ * Docs that bind every folder of a repo, kept when --paths narrows the rest: the
+ * root ones only. The README at the root; CONTRIBUTING where GitHub looks for it
+ * (the root, docs/, .github/); decision records at the root level: in a root
+ * decision folder (adr/…, decisions/…), anywhere under the root docs/, or an ADR
+ * file at the root. Another top-level folder's (web/docs/adr/x.md,
+ * web/CONTRIBUTING.md) count only when that folder is watched.
+ */
+const repoWide = (file, kind = docKind(file)) => {
+  const parts = file.split("/");
+  if (kind === "readme") return parts.length === 1;
+  if (kind === "contributing") return parts.length === 1 || (parts.length === 2 && /^(docs|\.github)$/i.test(parts[0]));
+  if (kind === "decision") return parts.length === 1 || REPO_WIDE_DECISION_DIR_RE.test(parts[0]);
+  return false;
+};
+
+const STATUS = { A: "added", M: "modified", D: "deleted", R: "renamed", C: "copied", T: "modified" };
+
+/** `git diff --name-status -z` → [{ path, status, from? }], via repo-status's parser. */
+const nameStatus = (out) => parseNameStatus(out).map(({ status, path: p, oldPath }) => {
+  const s = STATUS[status[0]] || "modified";
+  return oldPath === undefined ? { path: p, status: s } : { path: p, status: s, from: oldPath };
+});
+
+/** Large: a monorepo's diff or log since an old date passes Node's 1 MB default; past it is an error, never a short list. */
+const RECENT_MAX_BUFFER = 64 * 1024 * 1024;
+/** Per git read: a monorepo's diff or log over months can outlast gitRun's 30 s default. */
+const RECENT_TIMEOUT = 120000;
+/** Pathspec characters per git log call: far under Windows' ~32K command line, however many files a folder move adds. */
+const PATHSPEC_LIMIT = 8000;
+/** The diff's rename limit (-l): far over git's default (1000), so a big change still pairs its renames. */
+const RENAME_LIMIT = 20000;
+
+/**
+ * A clone that fetches objects on demand (git clone --filter=…): a promisor remote
+ * or extensions.partialClone set. Rename detection there would fetch file contents.
+ */
+export function isPartialClone(repo) {
+  if (git(repo, ["config", "--get", "extensions.partialClone"])) return true;
+  const promisors = gitRun(repo, ["config", "--type=bool", "--get-regexp", "^remote\\..*\\.promisor$"]);
+  return promisors.ok && promisors.out.split("\n").some((l) => / true$/.test(l.trim()));
+}
+
+/**
+ * The repo-wide docs (see repoWide) at any of these commits, read from trees only (never a blob a partial clone
+ * would fetch): the root's files, and the files under the root folders that can hold them (docs/, .github/, a root
+ * decision folder). → { ok, paths } or the failed gitRun.
+ */
+function repoWideDocs(repo, commits, opts) {
+  const paths = new Set();
+  for (const c of commits) {
+    const top = gitRun(repo, ["ls-tree", "-z", c], { ...opts, trim: false });
+    if (!top.ok) return top;
+    const dirs = [];
+    for (const entry of top.out.split("\0").filter(Boolean)) {
+      const tab = entry.indexOf("\t");
+      const type = entry.slice(0, tab).split(" ")[1];
+      const name = entry.slice(tab + 1);
+      if (type === "blob" && repoWide(name)) paths.add(name);
+      else if (type === "tree" && (REPO_WIDE_DECISION_DIR_RE.test(name) || /^\.github$/i.test(name))) dirs.push(name);
+    }
+    if (!dirs.length) continue;
+    const below = gitRun(repo, ["--literal-pathspecs", "ls-tree", "-r", "-z", "--name-only", c, "--", ...dirs], { ...opts, trim: false });
+    if (!below.ok) return below;
+    for (const p of below.out.split("\0").filter(Boolean)) if (repoWide(p)) paths.add(p);
+  }
+  return { ok: true, paths: [...paths] };
+}
+
+/** Where a repo's typo note goes in its notes, filled in once every repo is read. */
+const MISSING = Symbol("missing paths");
+
+/** Pathspec entries in groups whose joined length stays under limit (an entry longer than it gets a group of its own). */
+function chunkPaths(entries, limit) {
+  const groups = [];
+  let group = [];
+  let len = 0;
+  for (const e of entries) {
+    if (group.length && len + e.length + 1 > limit) { groups.push(group); group = []; len = 0; }
+    group.push(e);
+    len += e.length + 1;
+  }
+  if (group.length) groups.push(group);
+  return groups;
+}
+
+/**
+ * What landed on each repo's origin/<default> since a date, as last fetched (no
+ * fetch: implement's freshness check fetched every repo just before). Per repo
+ * { name, state, detail, ref, base, paths, missingPaths, notInRepo, removedPaths, files: [{ path, status, from? (renamed/copied) }],
+ * commits: [{ sha, date, subject }] (newest first), docs: [{ path, kind, status }] }.
+ * since must be an ISO 8601 date, YYYY-MM-DD optionally with a time (a time
+ * without an offset is UTC; an offset is ±hh:mm or ±hhmm, so a tracker's raw
+ * created timestamp works, Jira's included: lib's isoUtc); anything else is a
+ * usage error. git gets it as UTC.
+ * state: ok; shallow (the clone's history doesn't reach the date: the lists hold
+ * only what changed after its oldest commit, which is base); error (a git read
+ * failed: rev-list for the baseline, the diff, ls-tree or the log, including output past
+ * maxBuffer (64 MB) or a read past timeout (120 s each); detail says which and
+ * why, then the notes gathered before it; files, commits and docs are empty, the
+ * path lists are kept); no-origin or missing (empty lists).
+ * missingPaths: the --paths neither the tip nor base has (exact case) in this
+ * repo nor in any other picked repo that got that far, so "nothing changed" there
+ * may be a typo (detail names them); notInRepo: the ones this repo lacks but
+ * another picked repo has (another repo's folder; no note). removedPaths: the ones
+ * base has and the tip doesn't (removed or moved since the date; detail names them).
+ * The diff's rename limit is renameLimit (20000, far over git's 1000); past it git
+ * skips inexact renames with only a warning, so they show as a delete and an add
+ * and detail says so.
+ * An empty net diff (a change merged, then reverted) still lists its commits.
+ * In a partial clone (git clone --filter=…) the diff skips rename detection, which
+ * would fetch file contents: a rename shows as a delete and an add (detail says so).
+ *
+ * The baseline is the newest first-parent commit on origin/<default> at or before
+ * the date (the branch as it stood then), so a branch committed earlier and merged
+ * later counts. A branch committed before the date and fast-forwarded onto the
+ * default branch after it is missed (its commits become first-parent history
+ * dated before the date); GitHub's merge, squash and rebase merges all write new
+ * commits, so only local --ff-only pushes do this. A date before a full clone's
+ * first commit diffs from the empty tree (every file added; detail says so).
+ * paths (relative to each repo; absolute or with a '..' segment is a usage error) narrow files and
+ * commits, except the root docs that bind the whole repo (see repoWide: the root
+ * README, CONTRIBUTING at the root, docs/ or .github/, decision records at the root
+ * level or under the root docs/) and files renamed out of a watched folder or out of
+ * a repo-wide doc's place (kind by the new path); the log also covers every repo-wide
+ * doc base or the tip has (ls-tree, trees only), so a root doc changed and then reverted
+ * still lists its commits; another top-level folder's decision records count only
+ * when it's watched. docs never
+ * lists a deleted file. Past pathspecLimit characters (a big folder move) the log's
+ * pathspec is split over several calls and their commits merged.
+ */
+export function recentChanges({
+  root = process.cwd(), since, repos = [], paths = [], maxBuffer = RECENT_MAX_BUFFER, timeout = RECENT_TIMEOUT, pathspecLimit = PATHSPEC_LIMIT,
+  renameLimit = RENAME_LIMIT,
+} = {}) {
+  if (typeof since !== "string" || !since.trim()) throw Object.assign(new Error("--since is required (an ISO 8601 date, e.g. the ticket's creation date)"), { usage: true });
+  const iso = isoUtc(since);
+  if (!iso) throw Object.assign(new Error(`--since '${since}' isn't an ISO 8601 date: pass YYYY-MM-DD, optionally with a time (2026-02-01T09:30:00Z; a time without an offset is UTC)`), { usage: true });
+  const absolute = paths.find((p) => path.isAbsolute(p) || /^[a-z]:/i.test(p) || /^[\\/]/.test(p));
+  if (absolute) throw Object.assign(new Error(`--paths takes folders relative to each repo; '${absolute}' is absolute`), { usage: true });
+  const upward = paths.find((p) => slash(p).split("/").includes(".."));
+  if (upward) throw Object.assign(new Error(`--paths takes folders inside each repo; '${upward}' has a '..' segment`), { usage: true });
+  const wanted = [...new Set(paths.map((p) => slash(p).replace(/^(\.\/)+/, "").replace(/\/+$/, "")).filter((p) => p && p !== "."))];
+  const under = (f) => !wanted.length || (f != null && wanted.some((p) => f === p || f.startsWith(`${p}/`)));
+  const base = findRoot(root);
+  const day = iso.slice(0, 10);
+  const opts = { maxBuffer, timeout };
+  const quoted = (ps) => ps.map((p) => `'${p}'`).join(", ");
+
+  const results = pickRepos(base, repos).map((r) => {
+    const def = r.exists ? defaultBranch(r.path, r.defaultBranch) : r.defaultBranch || null;
+    const ref = def ? `origin/${def}` : null;
+    const out = { name: r.name, relativePath: r.relativePath, path: slash(r.path), state: "ok", detail: null, defaultBranch: def, ref, base: null, paths: wanted, missingPaths: [], notInRepo: [], removedPaths: [], files: [], commits: [], docs: [] };
+    if (!r.exists) return { ...out, state: "missing", detail: "not cloned here" };
+    if (!refExists(r.path, `refs/remotes/${ref}`)) return { ...out, state: "no-origin", detail: `no ${ref} to compare (a local-only repo, or never fetched)` };
+    // notes become detail after every repo is read (the typo note needs them all); MISSING marks where it goes.
+    const notes = [];
+    let removedPaths = [];
+    let absent = null; // null until the paths are checked: a repo that failed before then can't say a path is a typo
+    const failed = (what, res, fromSha = null) => ({
+      ...out, base: fromSha, state: "error", removedPaths, absent, notes: [`git ${what} failed: ${firstLine(res.err) || "unknown error"}`, ...notes],
+    });
+
+    // A failed read (timeout, corrupt object) is an error; only an empty successful one means "nothing before the date".
+    const baseRun = gitRun(r.path, ["rev-list", "-1", "--first-parent", `--before=${iso}`, ref], { timeout });
+    if (!baseRun.ok) return failed("rev-list", baseRun);
+    let from = baseRun.out || null;
+    let state = "ok";
+    if (!from && git(r.path, ["rev-parse", "--is-shallow-repository"]) === "true") {
+      // The history stops after the date: diff from the oldest commit it has, never from the empty tree.
+      const oldestRun = gitRun(r.path, ["rev-list", "--first-parent", "--max-parents=0", ref], opts);
+      if (!oldestRun.ok) return failed("rev-list", oldestRun);
+      from = oldestRun.out.split("\n").filter(Boolean).pop() || null;
+      const oldest = from ? (isoUtc(git(r.path, ["log", "-1", "--format=%cI", from])) || "").slice(0, 10) : "";
+      state = "shallow";
+      notes.push(`a shallow clone whose history doesn't reach ${day}: lists only what changed after its oldest commit${oldest ? ` (${oldest})` : ""}; run git fetch --unshallow for the full list`);
+    } else if (!from) {
+      notes.push(`${day} is before the first commit on ${ref}: every file counts as added`);
+    }
+    // A watched folder the tip doesn't have would read as "nothing changed": removed since the date when base has it, else
+    // a typo or the wrong case (git paths are exact). rev-parse reads trees only, never a blob a partial clone would fetch.
+    const has = (commit, p) => gitRun(r.path, ["rev-parse", "--verify", "--quiet", `${commit}:${p}`], { timeout }).ok;
+    const gone = wanted.filter((p) => !has(ref, p));
+    removedPaths = from ? gone.filter((p) => has(from, p)) : [];
+    absent = gone.filter((p) => !removedPaths.includes(p));
+    if (removedPaths.length) notes.push(`${quoted(removedPaths)} ${removedPaths.length === 1 ? "was" : "were"} removed or moved on ${ref} since ${day}`);
+    notes.push(MISSING);
+    const partial = isPartialClone(r.path);
+    if (partial) notes.push("a partial clone: renames show as a delete and an add (detecting them would fetch file contents)");
+    const emptyTree = from ? null : git(r.path, ["hash-object", "-t", "tree", "--stdin"]);
+    const diff = gitRun(r.path, ["diff", "--no-ext-diff", "--name-status", "-z", ...(partial ? ["--no-renames"] : ["-M", `-l${renameLimit}`]), from || emptyTree, ref], { ...opts, trim: false });
+    if (!diff.ok) return failed("diff", diff, from);
+    // Past the limit git skips inexact renames with only a warning on stderr (exit 0).
+    if (!partial && /rename detection was skipped/i.test(diff.err)) notes.push("too many files for rename detection: renames show as a delete and an add");
+    const kept = nameStatus(diff.out).map((f) => ({ f, kind: docKind(f.path) }))
+      .filter(({ f, kind }) => under(f.path) || under(f.from) || repoWide(f.path, kind) || (f.from != null && repoWide(f.from)));
+    const files = kept.map(({ f }) => f);
+
+    // The log runs even with no net change (merged, then reverted), so its commits show. Its pathspec: the watched
+    // folders, the files kept outside them (repo-wide docs, renames in or out) and their old names, and every
+    // repo-wide doc on base or the tip whatever the net diff (a root README changed, then reverted), chunked.
+    let rootDocs = [];
+    if (wanted.length) {
+      const listed = repoWideDocs(r.path, [from, ref].filter(Boolean), opts);
+      if (!listed.ok) return failed("ls-tree", listed, from);
+      rootDocs = listed.paths;
+    }
+    const spec = wanted.length ? [...new Set([...wanted, ...[...files.flatMap((f) => [f.path, f.from]), ...rootDocs].filter((p) => p && !under(p))])] : [];
+    const groups = spec.length ? chunkPaths(spec, pathspecLimit) : [[]];
+    const seen = new Map();
+    for (const group of groups) {
+      const log = gitRun(r.path, ["--literal-pathspecs", "log", "--format=%h%x1f%cI%x1f%s", from ? `${from}..${ref}` : ref, "--", ...group], opts);
+      if (!log.ok) return failed("log", log, from);
+      for (const l of log.out.split("\n").filter(Boolean)) {
+        const [sha, date, subject] = l.split("\x1f");
+        if (!seen.has(sha)) seen.set(sha, { sha, date, subject });
+      }
+    }
+    const commits = [...seen.values()];
+    if (groups.length > 1) commits.sort((a, b) => Date.parse(b.date) - Date.parse(a.date)); // newest first; ties keep their order
+    const docs = kept.filter(({ f, kind }) => kind && f.status !== "deleted").map(({ f, kind }) => ({ path: f.path, kind, status: f.status }));
+    return { ...out, base: from, state, removedPaths, absent, notes, files, commits, docs };
+  });
+
+  // A path absent (tip and base) from every repo that was read is a typo; absent from only some, it's another repo's folder.
+  const read = results.filter((x) => x.absent);
+  const typo = (p) => read.every((x) => x.absent.includes(p));
+  const repoResults = results.map(({ absent, notes, ...x }) => {
+    if (!notes) return x;
+    const missingPaths = (absent || []).filter(typo);
+    const notInRepo = (absent || []).filter((p) => !typo(p));
+    const missingNote = missingPaths.length
+      ? `${quoted(missingPaths)} ${missingPaths.length === 1 ? "isn't a path" : "aren't paths"} on ${x.ref} (check the spelling and case)` : null;
+    const detail = notes.map((n) => (n === MISSING ? missingNote : n)).filter(Boolean).join("; ") || null;
+    return { ...x, detail, missingPaths, notInRepo };
+  });
+  return { root: slash(base), since: iso, paths: wanted, changed: repoResults.filter((r) => r.files.length).map((r) => r.name), repos: repoResults };
+}
+
 // ------------------------------------------------------------------ branches
 
 /**
@@ -436,6 +723,7 @@ export function createBranches({ root = process.cwd(), branch, repos = [], ticke
 const USAGE = `Usage:
   node implement.mjs --ticket <ID> --resolve [--root <dir>] [--branch <b>] [--type <issue type>] [--here] [--json]
   node implement.mjs --freshness [--pull] [--root <dir>] [--repos a,b] [--layer <layer>] [--json]
+  node implement.mjs --recent --since <ISO date> [--root <dir>] [--repos a,b] [--paths p1,p2] [--json]
   node implement.mjs --branches --branch <b> --repos a,b [--ticket <ID>] [--root <dir>] [--json]`;
 
 function printResolve(r) {
@@ -456,7 +744,7 @@ function printResolve(r) {
 }
 
 async function main(argv) {
-  const args = parseArgs(argv, { booleans: ["resolve", "freshness", "branches", "pull", "here", "json"] });
+  const args = parseArgs(argv, { booleans: ["resolve", "freshness", "recent", "branches", "pull", "here", "json"] });
   const json = args.json === true;
   const print = (s) => process.stdout.write(s + "\n");
   const root = typeof args.root === "string" ? path.resolve(args.root) : process.cwd();
@@ -473,6 +761,26 @@ async function main(argv) {
     print(`Freshness at ${r.root}${r.pulled ? " (--pull)" : ""}`);
     for (const x of r.repos) print(`  ${x.name}: ${x.state}: ${x.detail}`);
     if (r.needsDecision.length) print(`Needs a decision: ${r.needsDecision.join(", ")}`);
+    return;
+  }
+  if (args.recent) {
+    const r = recentChanges({ root, since: str("since"), repos: list(args.repos), paths: list(args.paths) });
+    if (r.repos.some((x) => x.state === "error")) process.exitCode = 1; // no-origin, missing and shallow are informational
+    if (json) return print(JSON.stringify(r, null, 2));
+    const day = r.since.slice(0, 10);
+    print(`Changes on the default branch since ${r.since}${r.paths.length ? ` under ${r.paths.join(", ")}` : ""} (as last fetched)`);
+    for (const x of r.repos) {
+      if (!["ok", "shallow"].includes(x.state)) { print(`  ${x.name}: ${x.state}: ${x.detail}`); continue; }
+      const note = x.detail ? ` (${x.detail})` : "";
+      const n = (k, w) => `${k} ${w}${k === 1 ? "" : "s"}`;
+      if (!x.files.length) {
+        print(`  ${x.name}: ${x.commits.length ? `no net change on ${x.ref} since ${day} (${n(x.commits.length, "commit")})` : `nothing on ${x.ref} since ${day}`}${note}`);
+        continue;
+      }
+      print(`  ${x.name}: ${n(x.files.length, "file")}, ${n(x.commits.length, "commit")} on ${x.ref} since ${day}${note}`);
+      for (const d of x.docs) print(`    doc (${d.kind}): ${d.path}`);
+      for (const f of x.files) print(`    ${f.status}: ${f.from ? `${f.from} -> ` : ""}${f.path}`);
+    }
     return;
   }
   if (args.branches) {

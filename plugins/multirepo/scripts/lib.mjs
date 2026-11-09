@@ -8,10 +8,10 @@
  *   .worktree.json                     { name, ticketId, tracker, branch, repos, created }
  * and otherwise fall back to discovery (a single repo, or the git repos one level down).
  *
- * git runs through execFileSync with argument arrays (no shell), so everything
+ * git runs through spawnSync with argument arrays (no shell), so everything
  * behaves the same on Windows, macOS and Linux.
  */
-import { execFileSync } from "node:child_process";
+import { spawnSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -28,18 +28,23 @@ export function readJson(file) {
 /**
  * Runs git in cwd: { ok, out, err }. Never throws. Pass `trim: false` for -z
  * (NUL-separated) output, where trimming would eat a path's leading space.
+ * `maxBuffer` (bytes, default Node's 1 MB) caps stdout; past it the call fails
+ * (ok: false, err names ENOBUFS), as a timeout does (ETIMEDOUT). On success err
+ * holds git's stderr (its warnings), trimmed.
  */
-export function gitRun(cwd, args, { timeout = 30000, trim = true } = {}) {
-  try {
-    const out = execFileSync("git", ["-C", cwd, ...args], {
-      encoding: "utf-8",
-      timeout,
-      stdio: ["ignore", "pipe", "pipe"],
-    });
-    return { ok: true, out: trim ? out.trim() : out, err: "" };
-  } catch (e) {
-    return { ok: false, out: String(e.stdout ?? "").trim(), err: String(e.stderr ?? e.message ?? "").trim() };
+export function gitRun(cwd, args, { timeout = 30000, trim = true, maxBuffer } = {}) {
+  const r = spawnSync("git", ["-C", cwd, ...args], {
+    encoding: "utf-8",
+    timeout,
+    stdio: ["ignore", "pipe", "pipe"],
+    ...(maxBuffer ? { maxBuffer } : {}),
+  });
+  const out = String(r.stdout ?? "");
+  const err = String(r.stderr ?? "").trim();
+  if (r.error || r.status !== 0) {
+    return { ok: false, out: out.trim(), err: r.error ? r.error.message : err || `git exited with ${r.status ?? r.signal}` };
   }
+  return { ok: true, out: trim ? out.trim() : out, err };
 }
 
 /** git's trimmed stdout, or "" on any failure. */
@@ -80,6 +85,24 @@ export function isRepoTop(dir) {
 
 /** Forward slashes, for output that's the same on every OS. */
 export const slash = (p) => String(p).replace(/\\/g, "/");
+
+const ISO_DATE = /^(\d{4})-(\d{2})-(\d{2})(?:[T ](\d{2}):(\d{2})(?::(\d{2})(\.\d+)?)?(Z|[+-]\d{2}:?\d{2})?)?$/i;
+
+/**
+ * An ISO 8601 date as a UTC ISO string (seconds, no millis), or null when it
+ * isn't one: YYYY-MM-DD, optionally with a time hh:mm[:ss[.frac]] (after T or
+ * a space) and Z or an offset (±hh:mm, or ±hhmm as Jira writes it). A time
+ * without an offset is UTC. Every tracker's raw created timestamp parses.
+ */
+export function isoUtc(value) {
+  const m = ISO_DATE.exec(String(value ?? "").trim());
+  if (!m) return null;
+  const [, y, mo, d, h = "00", mi = "00", sec = "00", frac = "", zone] = m;
+  if (+mo < 1 || +mo > 12 || +d < 1 || +d > new Date(Date.UTC(+y, +mo, 0)).getUTCDate() || +h > 23 || +mi > 59 || +sec > 59) return null;
+  const tz = !zone || /^z$/i.test(zone) ? "Z" : zone.replace(/^([+-]\d{2}):?(\d{2})$/, "$1:$2");
+  const when = new Date(`${y}-${mo}-${d}T${h}:${mi}:${sec}${frac}${tz}`);
+  return Number.isNaN(when.getTime()) ? null : when.toISOString().replace(/\.\d{3}Z$/, "Z");
+}
 
 /** ~ at the start of a path → the home folder. */
 export function expandHome(p) {

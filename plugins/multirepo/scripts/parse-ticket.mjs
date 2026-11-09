@@ -5,12 +5,13 @@
  * Reads what a tracker returned (Jira REST / Atlassian MCP, the Linear MCP, or
  * `gh issue view --json ...`), auto-detects which it is, and prints
  *
- *   { id, tracker, title, url, state, type, labels[], assignee, priority,
+ *   { id, tracker, title, url, created, state, type, labels[], assignee, priority,
  *     description (Markdown), acceptanceCriteria, links: [{ type, id, title, state }],
  *     subtasks: [{ id, title, state }], parent, components[], customFields: [{ id, name, value }],
  *     comments: [{ id, author, created, body }], planComment, alignComment }
  *
- * planComment / alignComment are the newest comments carrying this plugin's
+ * created is when the ticket was created, as the tracker wrote it (null when the
+ * input doesn't carry it). planComment / alignComment are the newest comments carrying this plugin's
  * submit-plan / align markers (null when there's none).
  *
  * Inputs may be wrapped the way an MCP result spills to a file,
@@ -28,7 +29,7 @@
  * Exits 1 when no ticket can be found in the input.
  */
 import fs from "node:fs";
-import { isMain, parseArgs } from "./lib.mjs";
+import { isMain, isoUtc, parseArgs } from "./lib.mjs";
 
 export const PLAN_MARKER = "<!-- GENERATED-BY-SUBMIT-PLAN-SKILL -->";
 export const ALIGN_MARKER = "<!-- GENERATED-BY-ALIGN-SKILL -->";
@@ -347,6 +348,7 @@ function fromJira(issue) {
     tracker: "jira",
     title: f.summary ?? null,
     url: site && issue.key ? `${site}/browse/${issue.key}` : null,
+    created: f.created ?? null,
     state: nameOf(f.status),
     type: nameOf(f.issuetype),
     labels: (f.labels ?? []).map(nameOf).filter(Boolean),
@@ -394,6 +396,7 @@ function fromLinear(issue) {
     tracker: "linear",
     title: issue.title,
     url: issue.url ?? null,
+    created: issue.createdAt ?? issue.created ?? null,
     state: nameOf(issue.status) || nameOf(issue.state),
     type: nameOf(issue.type) || null,
     labels: nodes(issue.labels).map(nameOf).filter(Boolean),
@@ -420,6 +423,7 @@ function fromGitHub(issue) {
     tracker: "github",
     title: issue.title,
     url: issue.url ?? null,
+    created: issue.createdAt ?? issue.created_at ?? null,
     state: issue.state ? String(issue.state).toLowerCase() : null,
     type: nameOf(issue.issueType ?? issue.type) || null,
     labels: nodes(issue.labels).map(nameOf).filter(Boolean),
@@ -479,12 +483,16 @@ export function parseTicket(inputs, { tracker = null } = {}) {
 
 const refLine = (r) => `${r.id ?? "?"}${r.title ? `: ${r.title}` : ""}${r.state ? ` [${r.state}]` : ""}`;
 
+/** A tracker timestamp in UTC ISO (2026-01-01T09:30:00Z), parsed as implement --recent --since parses it; else as written. */
+const utcIso = (v) => isoUtc(v) ?? String(v).trim();
+
 /** A ticket as readable Markdown. */
 export function toMarkdown(t) {
   const out = [`# ${t.id ?? "?"}: ${t.title ?? "(untitled)"}`, ""];
   const facts = [
     ["Tracker", t.tracker],
     ["URL", t.url],
+    ["Created", t.created && utcIso(t.created)],
     ["Type", t.type],
     ["State", t.state],
     ["Priority", t.priority],

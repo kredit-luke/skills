@@ -29,6 +29,7 @@ const jiraIssue = {
   names: { customfield_10050: "Acceptance Criteria", customfield_10016: "Story points" },
   fields: {
     summary: "Export invoices as CSV",
+    created: "2026-01-01T09:30:00.000+0000",
     issuetype: { name: "Story" },
     status: { name: "To Do" },
     priority: { name: "High" },
@@ -93,6 +94,7 @@ test("jira: fields, custom fields, AC field, links, subtasks, parent, newest pla
   assert.equal(r.tracker, "jira");
   assert.equal(r.id, "ENG-123");
   assert.equal(r.url, "https://acme.example.net/browse/ENG-123");
+  assert.equal(r.created, "2026-01-01T09:30:00.000+0000");
   assert.equal(r.type, "Story");
   assert.equal(r.state, "To Do");
   assert.equal(r.priority, "High");
@@ -128,6 +130,7 @@ test("linear: MCP issue plus a separate list_comments result, align + plan marke
     title: "Retry webhooks",
     description: "Webhooks drop.\n\n## Acceptance criteria\n\n- retries 3 times\n- logs failures\n\n## Notes\n\nlater",
     url: "https://linear.app/acme/issue/ENG-42/retry-webhooks",
+    createdAt: "2026-01-20T08:00:00.000Z",
     status: "In Progress",
     priority: { value: 2, name: "High" },
     labels: ["Bug"],
@@ -146,6 +149,7 @@ test("linear: MCP issue plus a separate list_comments result, align + plan marke
   assert.equal(detectTracker(issue), "linear");
   assert.equal(r.tracker, "linear");
   assert.equal(r.id, "ENG-42");
+  assert.equal(r.created, "2026-01-20T08:00:00.000Z");
   assert.equal(r.state, "In Progress");
   assert.equal(r.priority, "High");
   assert.deepEqual(r.labels, ["Bug"]);
@@ -166,6 +170,7 @@ test("github: gh issue view --json, id from url, bold AC heading", () => {
     body: "Add a toggle.\n\n**Acceptance criteria**\n- [ ] toggle persists\n\n**Out of scope**\n- themes",
     state: "OPEN",
     url: "https://github.com/acme/web/issues/12",
+    createdAt: "2026-02-27T12:00:00Z",
     labels: [{ name: "enhancement", color: "fff" }],
     assignees: [{ login: "samdev", name: "" }],
     comments: [{ id: "IC_1", author: { login: "patpm" }, body: `${PLAN_MARKER}\nplan`, createdAt: "2026-03-01T00:00:00Z" }],
@@ -173,6 +178,8 @@ test("github: gh issue view --json, id from url, bold AC heading", () => {
   const r = parseTicket(JSON.stringify(issue));
   assert.equal(r.tracker, "github");
   assert.equal(r.id, "acme/web#12");
+  assert.equal(r.created, "2026-02-27T12:00:00Z");
+  assert.equal(parseTicket({ title: "t", body: "" }).created, null); // not in the input: null
   assert.equal(r.state, "open");
   assert.deepEqual(r.labels, ["enhancement"]);
   assert.equal(r.assignee, "samdev");
@@ -195,6 +202,9 @@ test("no ticket → throws", () => {
 test("toMarkdown: readable sections", () => {
   const md = toMarkdown(parseTicket(jiraIssue));
   assert.match(md, /^# ENG-123: Export invoices as CSV/);
+  assert.match(md, /- \*\*Created:\*\* 2026-01-01T09:30:00Z\n/); // the full time, in UTC
+  assert.match(toMarkdown({ ...parseTicket(jiraIssue), created: "2026-01-01T23:30:00-05:00" }), /- \*\*Created:\*\* 2026-01-02T04:30:00Z\n/);
+  assert.match(toMarkdown({ ...parseTicket(jiraIssue), created: "yesterday" }), /- \*\*Created:\*\* yesterday\n/); // unparseable: as written
   assert.match(md, /- \*\*Plan comment:\*\* yes \(Sam Dev, 2026-01-04\)/);
   assert.match(md, /## Acceptance criteria\n\n1\. A CSV downloads/);
   assert.match(md, /- \*\*Story points:\*\* 3/);

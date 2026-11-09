@@ -5,7 +5,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { execFileSync } from "node:child_process";
-import { defaultBranch, dependencyOrder, findRoot, findTicket, isRepoTop, listRepos, parseArgs, readWorkspaceConfig, samePath, sameTicket, ticketCase, ticketRegex } from "../lib.mjs";
+import { defaultBranch, dependencyOrder, findRoot, findTicket, isoUtc, isRepoTop, listRepos, parseArgs, readWorkspaceConfig, samePath, sameTicket, ticketCase, ticketRegex } from "../lib.mjs";
 
 const git = (cwd, ...args) => execFileSync("git", ["-C", cwd, ...args], { encoding: "utf-8", stdio: "pipe" }).trim();
 const tmp = (prefix) => fs.mkdtempSync(path.join(os.tmpdir(), prefix));
@@ -137,4 +137,13 @@ test("readWorkspaceConfig: a worktree without its own workspace.json reads its s
   fs.writeFileSync(path.join(wt, ".claude", "dashboard", "workspace.json"), JSON.stringify({ issues: { kind: "none" } }));
   assert.deepEqual(readWorkspaceConfig(wt), { issues: { kind: "none" } });
   assert.deepEqual(readWorkspaceConfig(tmp("mr-lib-none-")), {});
+});
+
+test("isoUtc: an ISO 8601 date or date-time as UTC (seconds), else null", () => {
+  for (const [s, want] of [
+    ["2026-02-01", "2026-02-01T00:00:00Z"], ["2026-02-01T09:30", "2026-02-01T09:30:00Z"], ["2026-02-01 09:30:00", "2026-02-01T09:30:00Z"],
+    ["2026-02-01T09:30:15.250Z", "2026-02-01T09:30:15Z"], ["2026-02-01T09:30:00+02:00", "2026-02-01T07:30:00Z"],
+    ["2026-01-01T09:30:00.000+0000", "2026-01-01T09:30:00Z"], ["2026-01-01T23:30:00-05:00", "2026-01-02T04:30:00Z"], [" 2026-02-01 ", "2026-02-01T00:00:00Z"],
+  ]) assert.equal(isoUtc(s), want, s);
+  for (const bad of ["", "2026", "2026-02", "2026-02-30", "2026-02-01T25:00", "Feb 1 2026", "yesterday", null, undefined]) assert.equal(isoUtc(bad), null, String(bad));
 });

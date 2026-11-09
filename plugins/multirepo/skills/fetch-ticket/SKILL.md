@@ -37,9 +37,9 @@ Match MCP tools by name suffix; the server prefix differs per install. If nothin
 
 | Tracker | Fetch |
 |---|---|
-| Jira (Atlassian MCP) | `getJiraIssue` with `issueIdOrKey` and `fields: ["summary","issuetype","status","priority","parent","assignee","labels","components","description","issuelinks","subtasks","comment","*navigable"]` (plus `expand: "names"` if the tool takes it, so custom fields get readable names). `cloudId`: `workspace.json` `issues.site` when set, else discover it with the MCP's accessible-resources tool (ends `getAccessibleAtlassianResources`); never guess it. |
+| Jira (Atlassian MCP) | `getJiraIssue` with `issueIdOrKey` and `fields: ["summary","created","issuetype","status","priority","parent","assignee","labels","components","description","issuelinks","subtasks","comment","*navigable"]` (plus `expand: "names"` if the tool takes it, so custom fields get readable names). `cloudId`: `workspace.json` `issues.site` when set, else discover it with the MCP's accessible-resources tool (ends `getAccessibleAtlassianResources`); never guess it. |
 | Linear (MCP) | `get_issue` (with relations / children if the tool offers them), then `list_comments` for the issue, following pagination to the end. |
-| GitHub Issues | `gh issue view <n> -R <owner>/<repo> --json number,title,body,state,labels,assignees,comments,url` |
+| GitHub Issues | `gh issue view <n> -R <owner>/<repo> --json number,title,body,state,labels,assignees,comments,url,createdAt` |
 
 ## 3. Normalize
 
@@ -54,7 +54,7 @@ Give it the saved file paths (or `-` / nothing to read stdin; for an inline resu
 Output (JSON by default):
 
 ```
-{ id, tracker, title, url, state, type, labels[], assignee, priority,
+{ id, tracker, title, url, created, state, type, labels[], assignee, priority,   // created: when the ticket was created, as the tracker wrote it, or null
   description,          // Markdown; Jira ADF flattened (lists, code, mentions, links, tables)
   acceptanceCriteria,   // a custom field named "Acceptance criteria", else that section of the description, else null
   links: [{ type, id, title, state }],   // "blocks", "blocked by", "related to", ...
