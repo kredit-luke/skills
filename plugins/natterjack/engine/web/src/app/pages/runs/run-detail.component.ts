@@ -1,6 +1,8 @@
 import { ChangeDetectionStrategy, Component, ElementRef, Injector, OnDestroy, afterNextRender, computed, effect, inject, input, signal, untracked, viewChild } from '@angular/core';
 import { NgTemplateOutlet } from '@angular/common';
-import type { Continuation, IssueDetail, RunDetail, RunEvent, RunMeta, RunOutput, SendToHostedResponse, TerminalResponse } from '../../../../../shared/api';
+import type { Continuation, IssueDetail, RoutinesResponse, RunDetail, RunEvent, RunMeta, RunOutput, SendToHostedResponse, TerminalResponse } from '../../../../../shared/api';
+import { daysLabel, formatMinutes, parseDuration } from '../../../../../shared/loops';
+import { RouterLink } from '@angular/router';
 import { ApiService } from '../../core/api.service';
 import { DataService, normaliseRun } from '../../core/data.service';
 import { agentLabel, isRoutedModel } from '../../core/agents';
@@ -51,7 +53,7 @@ const eventCache = new RunEventCache();
 @Component({
   selector: 'dash-run-detail',
   imports: [NgTemplateOutlet, RunComposerComponent, RunChangesComponent, RunOutputsComponent, DiffViewComponent, AttachmentListComponent,
-    IssueSummaryComponent, WorkspaceAppsComponent, LongTextComponent, MdPipe, TrustedHtmlPipe],
+    IssueSummaryComponent, WorkspaceAppsComponent, LongTextComponent, MdPipe, TrustedHtmlPipe, RouterLink],
   changeDetection: ChangeDetectionStrategy.OnPush,
   styleUrl: './run-detail.component.scss',
   templateUrl: './run-detail.component.html',
@@ -692,6 +694,23 @@ export class RunDetailComponent implements OnDestroy {
   }
 
   readonly watchedPrs = computed(() => (this.run()?.watch?.prs || []).map((p) => p.repo + '#' + p.number).join(', '));
+  /** The watch panel's heading: what this run watches (pages/loops/loops.util.ts). */
+  readonly watchTitle = computed(() => {
+    const w = this.run()?.watch;
+    if (!w) return '';
+    if (w.kind === 'every') return `Looping every ${formatMinutes(w.everyMinutes)}`;
+    if (w.kind === 'check') return w.approval === 'pending' ? 'Claude wants to watch a command' : `Watching a command ${w.until === 'success' ? 'until it succeeds' : 'for changes'}`;
+    return `Watching ${this.watchedPrs()}`;
+  });
+  /** The proposed routine's schedule in words. */
+  readonly proposalSchedule = computed(() => {
+    const p = this.run()?.routineProposal?.routine;
+    if (!p) return '';
+    if (p.at) return `${daysLabel(p.days)} at ${p.at}`;
+    const m = parseDuration(p.every);
+    return `Every ${m ? formatMinutes(m) : p.every}${p.between ? `, ${p.between}` : ''}${p.days && daysLabel(p.days) !== 'Daily' ? `, ${daysLabel(p.days).toLowerCase()}` : ''}`;
+  });
+  readonly creatingRoutine = signal(false);
 
   async stopWatch(): Promise<void> {
     const r = this.run();
@@ -699,9 +718,36 @@ export class RunDetailComponent implements OnDestroy {
     try {
       const res = await this.api.post<{ run: RunMeta }>('/api/runs/' + r.id + '/watch-stop');
       this.setRun(res.run);
-      this.toast.show('Stopped watching');
+      this.toast.show(r.watch?.kind === 'github-pr' ? 'Stopped watching' : 'Stopped');
       this.data.loadRuns();
     } catch (e) { this.toast.error((e as Error).message); }
+  }
+
+  /** Let a check watch run its command (nothing runs before). */
+  async approveWatch(): Promise<void> {
+    const r = this.run();
+    if (!r) return;
+    try {
+      // The command shown here: the server refuses if a turn replaced it since.
+      const res = await this.api.post<{ run: RunMeta }>('/api/runs/' + r.id + '/watch-approve', { startedAt: r.watch?.startedAt, command: r.watch?.command });
+      this.setRun(res.run);
+      this.toast.show('Approved: the first check runs within a minute');
+      this.data.loadRuns();
+    } catch (e) { this.toast.error((e as Error).message); }
+  }
+
+  /** Create the routine Claude proposed (its <<ROUTINE>> block). */
+  async createProposedRoutine(): Promise<void> {
+    const r = this.run();
+    if (!r) return;
+    this.creatingRoutine.set(true);
+    try {
+      const res = await this.api.post<RoutinesResponse & { run: RunMeta; routine: { id: string } }>('/api/routines/from-run', { runId: r.id });
+      this.setRun(res.run);
+      this.data.applyRoutines(res);
+      this.toast.show('Routine created: it\'s on the Loops page');
+    } catch (e) { this.toast.error((e as Error).message); }
+    finally { this.creatingRoutine.set(false); }
   }
 
   async toggleFlag(): Promise<void> {

@@ -1,11 +1,13 @@
 /**
- * Skills deck + routines config, the skill catalog, and the routine scheduler.
+ * Skills deck + routines config and the skill catalog (the routine scheduler is routines.ts).
  *
  * Config lives in <main workspace>/.claude/dashboard/deck.json (committed):
  *   limits   { maxConcurrentRuns, pauseAtSessionPct, pauseAtWeeklyPct, runBudget, dailyBudgetUsd?, adoptSessions? }
  *   presets  [{ id, label, prompt, args?, model, effort, permissionMode, budgetUsd, workspace? }]
  *            `prompt` may contain {argName} placeholders filled from `args`.
- *   routines [{ id, preset, at: "HH:MM", days: "daily"|"weekdays"|["mon",...], workspace?, enabled }]
+ *   routines [Routine]  { id, preset | prompt, at: "HH:MM" | every: "2h", days?, ... } (routines.ts;
+ *            your own are in .claude/ledger/routines.json)
+ *   loops    { allowCommands?: [regex] }  check watches whose command matches one run without asking
  *
  * Personal overrides (the Settings page) live in .claude/ledger/settings.json (gitignored):
  * { limits?, defaults? }, laid over the team file key by key, so changing your own
@@ -21,7 +23,6 @@ import type { SkillInfo } from "../../shared/api.ts";
 import { skillFile } from "./config.ts";
 import { pluginSkillDirs } from "./plugin-skills.ts";
 
-const DAY_KEYS = ["sun", "mon", "tue", "wed", "thu", "fri", "sat"];
 // Subscription-first: new runs (manual and routine) pause when /usage says a
 // window is nearly spent. runBudget turns on the per-run API-equivalent cap
 // (--max-budget-usd, from each preset's budgetUsd); off, runs have no cap, since on a
@@ -95,11 +96,12 @@ class Deck {
         limits: { ...DEFAULT_LIMITS, ...(cfg.limits || {}) },
         presets: cfg.presets || [],
         routines: cfg.routines || [],
+        loops: { allowCommands: Array.isArray(cfg.loops?.allowCommands) ? cfg.loops.allowCommands : [] },
         issues: { ...DEFAULT_ISSUES, ...(cfg.issues || {}) },
         defaults: { ...DEFAULT_RUN, ...(cfg.defaults || {}) },
       };
     } catch (e) {
-      return { limits: { ...DEFAULT_LIMITS }, presets: [], routines: [], issues: { ...DEFAULT_ISSUES }, defaults: { ...DEFAULT_RUN }, error: `deck.json: ${e.message}` };
+      return { limits: { ...DEFAULT_LIMITS }, presets: [], routines: [], loops: { allowCommands: [] }, issues: { ...DEFAULT_ISSUES }, defaults: { ...DEFAULT_RUN }, error: `deck.json: ${e.message}` };
     }
   }
 
@@ -232,86 +234,5 @@ class Deck {
   }
 }
 
-function routineDays(days) {
-  if (!days || days === "daily") return DAY_KEYS;
-  if (days === "weekdays") return DAY_KEYS.slice(1, 6);
-  return Array.isArray(days) ? days.map((d) => d.toLowerCase().slice(0, 3)) : DAY_KEYS;
-}
+export { Deck };
 
-/** Next local Date a routine will fire, or null if it never will. */
-function nextFire(routine, from = new Date()) {
-  const m = /^(\d{1,2}):(\d{2})$/.exec(routine.at || "");
-  if (!m) return null;
-  const days = routineDays(routine.days);
-  for (let i = 0; i < 8; i++) {
-    const d = new Date(from);
-    d.setDate(d.getDate() + i);
-    d.setHours(Number(m[1]), Number(m[2]), 0, 0);
-    if (d > from && days.includes(DAY_KEYS[d.getDay()])) return d;
-  }
-  return null;
-}
-
-/**
- * Minute-granularity scheduler. Fires each enabled routine at most once per
- * scheduled slot; last-fired slots persist so a restart doesn't double-fire.
- */
-class Scheduler {
-  deck: any;
-  stateFile: any;
-  fire: any;
-  state: any;
-  timer: any;
-
-  constructor(deck, stateFile, fire) {
-    this.deck = deck;
-    this.stateFile = stateFile;
-    this.fire = fire; // (routine, preset) => { ok, error?, run? }
-    this.state = {};
-    try { this.state = JSON.parse(fs.readFileSync(stateFile, "utf-8")); } catch {}
-  }
-
-  start() {
-    this.timer = setInterval(() => this.tick(), 30 * 1000);
-    this.timer.unref();
-  }
-
-  _save() {
-    try { fs.writeFileSync(this.stateFile, JSON.stringify(this.state, null, 2)); } catch {}
-  }
-
-  tick(now = new Date()) {
-    const { routines } = this.deck.config();
-    for (const r of routines) {
-      if (!r.enabled) continue;
-      const m = /^(\d{1,2}):(\d{2})$/.exec(r.at || "");
-      if (!m) continue;
-      const slot = new Date(now);
-      slot.setHours(Number(m[1]), Number(m[2]), 0, 0);
-      // Fire within a 10-minute grace window after the slot (covers sleep/restart).
-      const late = now.getTime() - slot.getTime();
-      if (late < 0 || late > 10 * 60 * 1000) continue;
-      if (!routineDays(r.days).includes(DAY_KEYS[slot.getDay()])) continue;
-      const slotKey = slot.toISOString();
-      if (this.state[r.id] && this.state[r.id].slot === slotKey) continue;
-      const preset = this.deck.preset(r.preset);
-      const outcome = preset ? this.fire(r, preset) : { ok: false, error: `Unknown preset ${r.preset}` };
-      this.state[r.id] = { slot: slotKey, firedAt: now.toISOString(), ok: outcome.ok, error: outcome.error || null, runId: outcome.run ? outcome.run.id : null };
-      this._save();
-    }
-  }
-
-  view(now = new Date()) {
-    const { routines } = this.deck.config();
-    return routines.map((r) => {
-      const next = nextFire(r, now);
-      return {
-        ...r,
-        nextAt: next ? next.toISOString() : null,
-        last: this.state[r.id] || null,
-      };
-    });
-  }
-}
-
-export { Deck, Scheduler, nextFire };

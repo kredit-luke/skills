@@ -743,6 +743,23 @@ test("validate warns when the workspace isn't shared through git, except for sna
   assert.ok(validate(inner).warnings.some((w) => /^workspace: the git repo at .* ignores \.claude\/dashboard\//.test(w)));
 });
 
+test("validate: a routine runs a preset that exists or its own prompt", () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "aos-routines-"));
+  scaffold(root, { workspace: { name: "Routines" }, deck: {
+    presets: [{ id: "brief", label: "Brief", prompt: "Brief me." }],
+    routines: [
+      { id: "ok-preset", preset: "brief", at: "08:30", enabled: true },
+      { id: "ok-prompt", prompt: "Check the queue.", every: "2h", enabled: true },
+      { id: "bad-preset", preset: "gone", at: "09:00" },
+      { id: "nothing", at: "09:00" },
+    ],
+  } });
+  const errors = validate(root).errors.filter((e) => /routine/.test(e));
+  assert.equal(errors.length, 2, errors.join("\n"));
+  assert.ok(errors.some((e) => /"bad-preset" uses preset "gone"/.test(e)));
+  assert.ok(errors.some((e) => /"nothing" needs a "preset" or a "prompt"/.test(e)));
+});
+
 test("scaffold gitignores the product repos' clones and the worktrees folder", () => {
   const { deny } = gitignoreLines("natterjack", [{ relativePath: "api" }, { relativePath: "services/web" }, { relativePath: "." }, { relativePath: "api" }]);
   assert.deepEqual(deny.filter((l) => !l.includes("natterjack") && !l.includes("ledger")), ["/api/", "/services/web/", "/worktrees/"]);

@@ -21,6 +21,27 @@ export function outputsRule(dir: string): string {
   return `Files you make for the user to keep (reports, PDFs, spreadsheets, exports) go in ${dir} (also in the DASHBOARD_OUTPUTS environment variable); they can download them from the run page. Write them there directly, or copy them there when a tool or script writes elsewhere (including paths like /mnt/user-data/outputs that don't exist here).`;
 }
 
+/**
+ * How a headless run keeps watching or repeats work (watches.ts, routines.ts): the dashboard
+ * does the waiting and resumes the conversation, since nothing the turn starts outlives it.
+ * `tools`: what this agent might otherwise reach for. Bullets, for both rule sets.
+ */
+export function loopRules(tools: string): string {
+  return `- Don't schedule anything that has to outlive this turn yourself (${tools}): it stops when your turn ends. The dashboard does the waiting instead. Do one pass now, then end your turn with a watch block; the dashboard resumes this conversation later, sending what happened followed by your prompt. Pick the kind that fits:
+  - Pull requests (a PR monitor, babysitting reviews or checks): {"prs":["owner/repo#123"],"everyMinutes":5,"prompt":"<what to do on each wake-up>"}. It wakes you only when something changes (a new review or comment, checks failing, the branch falling behind or conflicting, approval) and stops by itself once every PR is merged or closed.
+  - Until something happens (a deploy finishes, a job completes, a file appears, a queue drains): {"command":"<bash command that tells>","until":"change","everyMinutes":5,"prompt":"<what to do then>"}. The dashboard runs the command itself every few minutes, at no cost, and wakes you when its output or exit code changes ("until":"change") or once when it exits 0 ("until":"success"). The user approves the command on the run page before it first runs, so keep it short, read-only and obvious. Prefer this to an interval whenever a command can tell.
+  - On an interval (/loop 15m <task>, "check this every hour"): {"every":"15m","prompt":"<the task, in full>","days":1}, from 10 minutes to 24 hours apart, for up to 7 days. For /loop without an interval, choose one that fits how fast things change, and end a later turn with a new block to change it.
+  For example:
+<<WATCH>>
+{"every":"30m","prompt":"Check the staging deploy's error rate and report anything new.","days":1}
+<</WATCH>>
+  A watch stays on across turns. On a wake-up where nothing needs doing, say so in one line and end with <<WATCH>>{"noop":true}<</WATCH>>. End a later turn with a new block to replace the watch, or with <<WATCH>>{"stop":true}<</WATCH>> to end it.
+- Work that should start fresh on a schedule ("every weekday at 9", "each morning", "every 2 hours during work hours") is a routine, not a watch: each time, the dashboard starts a new run with the prompt. Don't set one up any other way; propose it by ending your turn with a routine block (the user creates it with one click, and nothing is scheduled until they do). "at" + "days" ("daily", "weekdays", "weekends" or ["mon","thu"]), or "every" with optional "between":"08:00-18:00"; "mode":"continue" replies to the routine's last run instead of starting a new one:
+<<ROUTINE>>
+{"label":"<short name>","prompt":"<what each run does, in full>","at":"09:00","days":"weekdays"}
+<</ROUTINE>>`;
+}
+
 /** The rules every non-Claude agent gets (Claude gets its own wording, with its tool names). */
 export function agentHeadlessRules(appsCli: string | null = null): string {
   return `You are running headless inside the workspace dashboard: nobody can answer an interactive prompt or approve a tool, and there is no terminal to type into.
@@ -32,10 +53,7 @@ Put any explanation the user needs before the block. The user's answer arrives a
 
 This process exits the moment your turn ends, and anything it started in the background stops with it:
 - Run commands in the foreground and wait for them. A process that must keep running after your turn (e.g. dev servers) can't be started as a background job. ${keepRunningRule(appsCli)}
-- To keep monitoring GitHub pull requests, do one check now, then end your turn with a watch block instead of a loop; the dashboard resumes this conversation when something changes:
-<<WATCH>>
-{"prs":["owner/repo#123"],"everyMinutes":5,"prompt":"<what to do on each wake-up>"}
-<</WATCH>>
+${loopRules("a background loop or scheduler")}
 
 Don't end on a to-do list for the user. If you finish with follow-up steps you could do yourself (commit, open a PR, deploy), end with the question block offering to do them, recommended option first. If your turn ends with the user doing something and reporting back (test a change, reload a page), end with the question block too. End without a block only when the work is actually finished.`;
 }

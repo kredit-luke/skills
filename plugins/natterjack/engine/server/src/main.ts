@@ -22,7 +22,7 @@ import path from "node:path";
 import crypto from "node:crypto";
 import { execFile, execFileSync } from "node:child_process";
 import { restartSelf } from "./self-restart.ts";
-import type { Boot, FactoryIntake, FactoryNotice, ImportRunJob, LaunchRequest, ProfileInfo, PublishPlanResponse, RunEvent, RunMeta, SessionFolder, SessionFoldersResponse, TerminalSession, TerminalSessionsResponse } from "../../shared/api.ts";
+import type { Boot, FactoryIntake, FactoryNotice, ImportRunJob, LaunchRequest, ProfileInfo, PublishPlanResponse, Routine, RoutinesResponse, RunEvent, RunMeta, SessionFolder, SessionFoldersResponse, TerminalSession, TerminalSessionsResponse } from "../../shared/api.ts";
 import { implementTicket, runTicket } from "../../shared/run-ticket.ts";
 import { runWorkspace } from "../../shared/run-workspace.ts";
 import { CLAUDE_SESSION_ENV } from "./claude.ts";
@@ -38,14 +38,15 @@ import type { Ws } from "./workspaces.ts";
 // start (apps, terminals). claude.ts strips them per spawn too; drop them here once.
 for (const key of CLAUDE_SESSION_ENV) delete process.env[key];
 
-import { IMPLEMENT_PROMPT, RunManager, TERMINAL_QUIET_MS, httpError, runLabel } from "./runs.ts";
+import { IMPLEMENT_PROMPT, REPLYABLE, RunManager, TERMINAL_QUIET_MS, httpError, runLabel, watchActive } from "./runs.ts";
 import { claudeDir, findSession, forkSession, isInside, listSessions as listTerminalSessions, suggestFolders, type SessionInfo } from "./sessions.ts";
-import { Deck, Scheduler } from "./deck.ts";
+import { Deck } from "./deck.ts";
+import { Routines, Scheduler, describeSchedule, type FireOutcome } from "./routines.ts";
 import { Inbox, gh as ghJson } from "./inbox.ts";
 import { Reviews, askChangePrompt, numberParam, repoParam } from "./reviews.ts";
 import { Standup, dayParam, sinceParam } from "./standup.ts";
 import { type FactoryRun, webhookTarget, auditCsv, auditRows, buildBoard, factoryConfigState, factoryLaunchBlocker, factoryNotices, inFlightTickets, intakeCandidates, manifestFile, normalizeManifest, overrideGateDecision, rateAssessment, readManifests, readPlan, recordGateDecision, relatedPrs, saveFactoryConfig, setPrStates } from "./factory.ts";
-import { Watcher } from "./watches.ts";
+import { Watcher, commandAllowed } from "./watches.ts";
 import { Usage } from "./usage.ts";
 import { UsageHistory } from "./usage-history.ts";
 import { AppLauncher, appsConfig } from "./apps.ts";
@@ -728,13 +729,14 @@ const meetingTickets = new MeetingTickets(LEDGER_DIR);
 let remoteLink: RemoteLinkClient | null = null;
 const runs = new RunManager(LEDGER_DIR, {
   onFinish: (meta) => {
-    usage.invalidate(); live.refresh("runs"); live.refresh("overview"); // a finished turn moves the meters and preset stats
+    usage.invalidate(); live.refresh("runs"); live.refresh("overview"); live.refresh("routines"); // a finished turn moves the meters and preset stats
     // A meeting's Ask run lists the tickets it created in its outputs: record them against the meeting.
     if (meta.trigger === "meetings" && meta.meetingId) recordRunTickets(meetingTickets, meta, attachments.output(meta.id, TICKETS_FILE));
   },
   onTurnStart: (meta) => { runChanges.snapshot({ ...meta }).catch(() => {}); },
   onChange: (meta) => {
     live.publish("run", meta); // one run, not the whole list: a live run saves every 1.5 s
+    if (meta.watch) live.refresh("routines"); // the Loops page lists every run with a watch on
     remoteLink?.noteChange(meta);
   },
   onEvent: (meta, ev, index) => remoteLink?.noteEvent(meta, ev, index),
@@ -1444,17 +1446,65 @@ function readRawBody(req: http.IncomingMessage, max: number, tooLarge = `Files c
   });
 }
 
-const scheduler = new Scheduler(deck, path.join(LEDGER_DIR, "scheduler-state.json"), (routine, preset) => {
-  try {
-    return { ok: true, run: launchRun({ presetId: preset.id, workspace: routine.workspace, args: routine.args }, `routine:${routine.id}`) };
-  } catch (e) {
-    return { ok: false, error: e.message };
+// Routines (routines.ts): team ones from deck.json, your own from the ledger, started on their schedule.
+const routines = new Routines(path.join(LEDGER_DIR, "routines.json"), () => {
+  const { routines: list, presets } = deck.config();
+  return { routines: list, presets };
+});
+
+/** A routine's prompt: its preset filled in, or its own prompt. */
+function routinePrompt(r: Routine): string {
+  if (!r.preset) return r.prompt || "";
+  const preset = deck.preset(r.preset);
+  if (!preset) throw httpError(400, `Unknown preset ${r.preset}`);
+  return deck.renderPrompt(preset, r.args || {});
+}
+
+/** Fire a routine: a new run, or with mode "continue" a reply to its last run when that can take one. */
+function fireRoutine(r: Routine, lastRunId: string | null): FireOutcome {
+  if (r.mode === "continue" && lastRunId) {
+    const last = runs.get(lastRunId);
+    if (last && REPLYABLE.has(last.status) && !last.remote && !last.handoffPendingAt) {
+      const text = `[Dashboard routine] ${r.label || r.id}: the next scheduled run (${describeSchedule(r)}).\n\n${routinePrompt(r)}`;
+      return { ok: true, runId: replyToRun(lastRunId, { text }).id };
+    }
   }
+  const run = launchRun({
+    presetId: r.preset, args: r.args, prompt: r.preset ? undefined : r.prompt, label: r.label,
+    workspace: r.workspace, model: r.model, effort: r.effort, permissionMode: r.permissionMode,
+  }, `routine:${r.id}`);
+  return { ok: true, runId: run.id };
+}
+
+const scheduler = new Scheduler(routines, path.join(LEDGER_DIR, "scheduler-state.json"), {
+  fire: fireRoutine,
+  busy: (runId) => {
+    const m = runs.get(runId);
+    if (!m) return null;
+    if (runs.live.has(runId) || m.status === "running") return "still working";
+    if (m.status === "waiting") return "waiting on your answer";
+    return null;
+  },
 });
 scheduler.start();
 
-// PR watches (<<WATCH>> blocks): a change on a watched PR is a reply to its run, under the same limits as yours.
+/**
+ * GET /api/routines, and what the routine routes return: the routines, and every run with a
+ * watch on however old it is (the runs topic carries only the newest 200).
+ */
+function routinesView(): RoutinesResponse {
+  return { routines: scheduler.view(), loops: runs.list().filter(watchActive) };
+}
+/** After a routine changed: every open page, now. */
+function routinesChanged(): RoutinesResponse {
+  const v = routinesView();
+  live.publish("routines", v);
+  return v;
+}
+
+// Watches (<<WATCH>> blocks: PRs, intervals, checks): a wake-up is a reply to the run, under the same limits as yours.
 const watcher = new Watcher(runs, {
+  allowCommand: (command) => commandAllowed(command, deck.config().loops?.allowCommands),
   wake: (id, text) => {
     const blocker = launchBlocker(runs.get(id)?.agent, runs.get(id)?.model);
     if (blocker) return blocker;
@@ -1475,6 +1525,7 @@ live.register("runs", () => ({ runs: runs.list().slice(0, 200), stats: runs.stat
 live.register("overview", getOverview, 5000);
 live.register("status", sharedStatus, 5000);
 live.register("deck", deckView, 30000);
+live.register("routines", routinesView, 30000);
 live.register("inbox", () => inbox.get(false), 60000);
 live.register("models", () => models.view(), 30000);
 live.register("factory", factoryBoard, 5000);
@@ -1869,7 +1920,7 @@ async function openTerminalForRun(run: RunMeta) {
   return { opened: r.opened, command: `cd "${run.cwd}"; ${command}` };
 }
 
-const RUN_ROUTE = /^\/api\/runs\/([a-z0-9-]+)(?:\/(stream|cancel|verdict|flag|terminal|continuation|reply|plan-mode|changes|diff|rename|watch-stop|queue|queue-edit|queue-remove|queue-send|queue-auto|send-to-hosted|send-cancel))?$/i;
+const RUN_ROUTE = /^\/api\/runs\/([a-z0-9-]+)(?:\/(stream|cancel|verdict|flag|terminal|continuation|reply|plan-mode|changes|diff|rename|watch-stop|watch-approve|queue|queue-edit|queue-remove|queue-send|queue-auto|send-to-hosted|send-cancel))?$/i;
 const RUN_FILE_ROUTE = /^\/api\/runs\/([a-z0-9-]+)\/files\/([^/]+)$/i;
 const RUN_OUTPUT_ROUTE = /^\/api\/runs\/([a-z0-9-]+)\/outputs\/(.+)$/i;
 
@@ -2277,6 +2328,7 @@ async function handleApi(req: http.IncomingMessage, res: http.ServerResponse, ur
       return d ? sendJson(res, d) : sendError(res, 404, "Not in the index");
     }
     if (p === "/api/deck") return sendJson(res, deckView());
+    if (p === "/api/routines") return sendJson(res, routinesView());
     if (p === "/api/sessions") {
       if (HOSTED) return sendJson(res, { sessions: [] } satisfies TerminalSessionsResponse);
       const now = Date.now();
@@ -2488,6 +2540,32 @@ async function handleApi(req: http.IncomingMessage, res: http.ServerResponse, ur
   }
   if (runMatch && runMatch[2] === "flag") return sendJson(res, { run: runs.setFlag(runMatch[1], !!body.flagged) });
   if (runMatch && runMatch[2] === "watch-stop") return sendJson(res, { run: runs.stopWatch(runMatch[1]) });
+  // A check watch runs a command Claude wrote: nothing runs until you approve it here.
+  if (runMatch && runMatch[2] === "watch-approve") return sendJson(res, { run: runs.approveWatch(runMatch[1], { startedAt: body.startedAt, command: body.command }) });
+  // Routines (the Loops page): your own are created, changed and deleted here; a team one can only be switched off for you.
+  if (p === "/api/routines") {
+    const routine = routines.save(body.routine && typeof body.routine === "object" ? body.routine : body);
+    return sendJson(res, { routine, ...routinesChanged() });
+  }
+  if (p === "/api/routines/from-run") {
+    // Create the routine Claude proposed in a run (its <<ROUTINE>> block), with any edits made on the run page.
+    const meta = runs.get(String(body.runId || ""));
+    const proposal = meta?.routineProposal;
+    if (!meta || !proposal) throw httpError(404, "This run hasn't proposed a routine.");
+    if (proposal.error) throw httpError(400, proposal.error);
+    if (proposal.routineId && routines.get(proposal.routineId)) throw httpError(409, "That routine was already created.");
+    const edits = body.routine && typeof body.routine === "object" ? body.routine : {};
+    const routine = routines.save({ ...proposal.routine, ...edits, id: undefined });
+    return sendJson(res, { routine, run: runs.markRoutineCreated(meta.id, routine.id), ...routinesChanged() });
+  }
+  const routineMatch = p.match(/^\/api\/routines\/([a-z0-9-]+)\/(delete|enabled|run)$/);
+  if (routineMatch) {
+    const [, id, action] = routineMatch;
+    if (action === "delete") routines.remove(id);
+    if (action === "enabled") routines.setEnabled(id, !!body.on);
+    const last = action === "run" ? scheduler.runNow(id) : undefined;
+    return sendJson(res, { ...(last ? { last } : {}), ...routinesChanged() });
+  }
   if (runMatch && runMatch[2] === "terminal") {
     handoffs.drop(runMatch[1]); // a send in flight can't be fetched or confirmed any more
     const meta = runs.handOff(runMatch[1]);

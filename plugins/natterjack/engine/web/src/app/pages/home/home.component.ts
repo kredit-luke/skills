@@ -52,11 +52,14 @@ export class HomeComponent {
     const presets = new Map((this.data.deck()?.presets || []).map((p) => [p.id, p]));
     let nextId: string | null = null, nextAt = Infinity;
     for (const r of rs) if (r.enabled && r.nextAt && Date.parse(r.nextAt) < nextAt) { nextAt = Date.parse(r.nextAt); nextId = r.id; }
-    return rs.slice().sort((a, b) => (a.at || '').localeCompare(b.at || '')).map((r) => {
+    // Soonest first; switched-off ones last.
+    const key = (r: (typeof rs)[number]) => (r.enabled && r.nextAt ? Date.parse(r.nextAt) : Infinity);
+    return rs.slice().sort((a, b) => key(a) - key(b)).map((r) => {
       const status = !r.enabled ? 'off' : r.id === nextId ? 'next' : 'queued';
-      const last = r.last ? (r.last.ok ? 'last fired ' + relTime(r.last.firedAt) : 'last attempt failed: ' + r.last.error) : 'never fired';
-      const days = Array.isArray(r.days) ? r.days.join(', ') : r.days || 'daily';
-      return { r, label: presets.get(r.preset)?.label || r.preset, status, detail: days + ' · ' + last, when: status === 'next' ? 'next · ' + relTime(r.nextAt) : status, runId: r.last?.runId || null };
+      const last = r.last?.firedAt ? (r.last.ok ? 'last fired ' + relTime(r.last.firedAt) : 'last attempt failed: ' + r.last.error) : 'never fired';
+      const label = r.label || (r.preset ? presets.get(r.preset)?.label || r.preset : r.id);
+      const time = r.at || (r.every ? 'every ' + r.every : '—');
+      return { r, label, time, status, detail: (r.schedule || '') + ' · ' + last, when: status === 'next' ? 'next · ' + relTime(r.nextAt) : status, runId: r.last?.runId || null };
     });
   });
 

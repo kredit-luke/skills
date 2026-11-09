@@ -155,13 +155,20 @@ class Inbox {
         items.push({ kind: "run-waiting", severity: "action", title: `Claude is asking: ${r.label}`, detail: q ? q.question.slice(0, 160) : "Needs your answer", runId: r.id, at });
         continue;
       }
-      // A PR watch is listed while it runs, however old the run is.
+      // A watch (PRs, a loop, a check) is listed while it runs, however old the run is.
       const w = r.watch;
       if (w && !w.endedAt) {
-        const prs = w.prs.map((p) => `${p.repo.split("/").pop()}#${p.number}`).join(", ");
-        items.push(w.error
-          ? { kind: "run-watch-error", severity: "action", title: `PR watch can't check: ${r.label}`, detail: w.error.slice(0, 160), runId: r.id, at: w.lastCheckAt || at }
-          : { kind: "run-watching", severity: "info", title: `Watching ${prs}`, detail: w.lastChange ? `Last change: ${w.lastChange.slice(0, 140)}` : `${r.label} · checks every ${w.everyMinutes} min`, runId: r.id, at: w.lastChangeAt || w.startedAt });
+        const what = w.kind === "every" ? "Loop" : w.kind === "check" ? "Check" : "PR watch";
+        const title = w.kind === "every" ? `Looping every ${w.everyMinutes} min`
+          : w.kind === "check" ? `Watching a command: ${r.label}`
+          : `Watching ${w.prs.map((p) => `${p.repo.split("/").pop()}#${p.number}`).join(", ")}`;
+        if (w.kind === "check" && w.approval === "pending") {
+          items.push({ kind: "run-watch-approve", severity: "action", title: `Approve a check: ${r.label}`, detail: String(w.command || "").slice(0, 160), runId: r.id, at: w.startedAt });
+        } else {
+          items.push(w.error
+            ? { kind: "run-watch-error", severity: "action", title: `${what} can't check: ${r.label}`, detail: w.error.slice(0, 160), runId: r.id, at: w.lastCheckAt || at }
+            : { kind: "run-watching", severity: "info", title, detail: w.lastChange ? `Last: ${w.lastChange.slice(0, 140)}` : `${r.label} · every ${w.everyMinutes} min`, runId: r.id, at: w.lastChangeAt || w.startedAt });
+        }
       }
       if (Date.parse(r.startedAt) < cutoff || r.verdict) continue;
       if (["failed", "interrupted"].includes(r.status)) {

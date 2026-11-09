@@ -116,6 +116,10 @@ describe('buildThread basics', () => {
     expect(sub.kind === 'text' && sub.text).toBe('sub says <<QUESTION>>');
     expect(stripQuestion('a <<QUESTION>> {"x":1}')).toBe('a');
     expect(stripQuestion('watching now <<WATCH>>{"prs":["a/b#1"]}<</WATCH>>')).toBe('watching now');
+    expect(stripQuestion('Set up.\n<<ROUTINE>>{"label":"x"}<</ROUTINE>>')).toBe('Set up.');
+    // A marker only mentioned (in code) is text: the answer after it stays.
+    const mention = 'The view strips the `<<WATCH>>` marker.\n\nThe rest of the plan.';
+    expect(stripQuestion(mention)).toBe(mention);
   });
 
   it('nests agents inside agents', () => {

@@ -25,11 +25,14 @@ import path from "node:path";
 import crypto from "node:crypto";
 import { execFile, type ChildProcess } from "node:child_process";
 import type { ServerResponse } from "node:http";
-import type { Attachment, Effort, PermissionMode, QueuedMessage, Question, RunEvent, RunMeta, RunWatch, WatchedPr } from "../../shared/api.ts";
+import type { Attachment, Effort, PermissionMode, QueuedMessage, Question, RoutineProposal, RunEvent, RunMeta, RunWatch, WatchedPr } from "../../shared/api.ts";
 import { BETWEEN_TURNS } from "../../shared/send-to-hosted.ts";
 import { lastActivity } from "../../shared/remote.ts";
 import { implementTicket } from "../../shared/run-ticket.ts";
-import { agentHeadlessRules, agentOf, keepRunningRule, outputsRule, type ParseState, type TurnInput } from "./agents/index.ts";
+import { codeRanges, findBlock, stripBlock } from "../../shared/blocks.ts";
+import { formatMinutes, parseDuration } from "../../shared/loops.ts";
+import { checkRoutine } from "./routines.ts";
+import { agentHeadlessRules, agentOf, keepRunningRule, loopRules, outputsRule, type ParseState, type TurnInput } from "./agents/index.ts";
 import { LOCAL_MODEL_RULE, isRoutedId } from "./models/routes.ts";
 import { expandSlash } from "./agents/skills.ts";
 import { promptWithAttachments, type Attachments } from "./attachments.ts";
@@ -59,70 +62,7 @@ export function runLabel(label: unknown, prompt: string): string {
 const QUEUE_RETRY_MS = 30000;
 /** Backstop for run files edited outside this server (a file added or removed is caught by name). */
 const LIST_TTL_MS = 10000;
-/**
- * Where a markdown text has code: fenced blocks (``` or ~~~, closed by a fence of the same
- * character at least as long; unclosed runs to the end) and inline spans (a run of N backticks
- * up to the next run of exactly N). Half-open [start, end) offsets.
- */
-export function codeRanges(text: string): [number, number][] {
-  const out: [number, number][] = [];
-  const inline = (from: number, to: number) => {
-    const s = text.slice(from, to);
-    const runs = /`+/g;
-    for (let m: RegExpExecArray | null; (m = runs.exec(s)); ) {
-      const n = m[0].length;
-      const next = /`+/g;
-      next.lastIndex = m.index + n;
-      let c: RegExpExecArray | null;
-      while ((c = next.exec(s)) && c[0].length !== n) {}
-      if (c) { out.push([from + m.index, from + c.index + n]); runs.lastIndex = c.index + n; }
-    }
-  };
-  const fenceRe = /^[ \t]{0,3}(`{3,}|~{3,})/;
-  let pos = 0, prose = 0;
-  let open: { ch: string; len: number; start: number } | null = null;
-  for (const line of text.split("\n")) {
-    const lineEnd = pos + line.length;
-    const f = fenceRe.exec(line);
-    if (open) {
-      if (f && f[1][0] === open.ch && f[1].length >= open.len && !line.slice(f[0].length).trim()) { out.push([open.start, lineEnd]); open = null; prose = lineEnd + 1; }
-    } else if (f && !(f[1][0] === "`" && line.slice(f[0].length).includes("`"))) {
-      inline(prose, pos);
-      open = { ch: f[1][0], len: f[1].length, start: pos };
-    }
-    pos = lineEnd + 1;
-  }
-  if (open) out.push([open.start, text.length]);
-  else inline(prose, text.length);
-  return out;
-}
-
-/**
- * A <<QUESTION>> or <<WATCH>> block: the first marker that isn't inside code (codeRanges). A
- * marker in code (Claude explaining how runs work) is just text: matching it would turn the
- * rest of the answer into a question and cut the answer off there.
- */
-export function findBlock(text: string, tag: "QUESTION" | "WATCH"): { start: number; end: number; body: string } | null {
-  text = text || "";
-  const open = new RegExp(`<<${tag}>>`, "g");
-  let code: [number, number][] | null = null;
-  for (let m: RegExpExecArray | null; (m = open.exec(text)); ) {
-    const start = m.index;
-    code ??= codeRanges(text);
-    if (code.some(([a, b]) => start >= a && start < b)) continue;
-    const from = m.index + m[0].length;
-    const close = text.indexOf(`<</${tag}>>`, from);
-    const end = close < 0 ? text.length : close + `<</${tag}>>`.length;
-    return { start, end, body: text.slice(from, close < 0 ? text.length : close) };
-  }
-  return null;
-}
-
-/** The text without its block (if any). */
-export function stripBlock(text: string, tag: "QUESTION" | "WATCH"): string {
-  const b = findBlock(text, tag);
-  return b ? `${text.slice(0, b.start).trimEnd()}\n${text.slice(b.end).trimStart()}`.trim() : text;
-}
+export { codeRanges, findBlock, stripBlock };
 const WATCH_DEFAULT_MINUTES = 5;
 const WATCH_MIN_MINUTES = 2;
 const WATCH_MAX_MINUTES = 60;
@@ -130,6 +70,13 @@ const WATCH_DEFAULT_DAYS = 7;
 const WATCH_MAX_DAYS = 14;
 const WATCH_MAX_PRS = 10;
 const WATCH_PROMPT_MAX = 8000;
+/** An 'every' loop wakes 10 minutes to a day apart, for a day unless the block says otherwise (up to a week). */
+const LOOP_MIN_MINUTES = 10;
+const LOOP_MAX_MINUTES = 1440;
+const LOOP_DEFAULT_DAYS = 1;
+const LOOP_MAX_DAYS = 7;
+const CHECK_COMMAND_MAX = 2000;
+const CHECK_DEFAULT_PROMPT = "The check you set up changed. Look at what it says, act on it, and report in a few lines.";
 const WATCH_DEFAULT_PROMPT = "Check each pull request: act on new review feedback, fix failing checks if the fix is yours to make, update a branch that is behind, and report each PR's status in a short table.";
 const SCHEDULE_TOOLS = new Set(["CronCreate", "ScheduleWakeup", "Monitor"]);
 /** A run in one of these can take a reply. */
@@ -152,12 +99,7 @@ So, overriding any skill or instruction that says otherwise (for example a code-
 - Run long commands in the foreground and wait for them, with a Bash timeout of up to 600000 ms. If one needs longer than 10 minutes, tell the user it has to continue in a terminal.
 - A process that must keep running after your turn (e.g. dev servers) cannot be started as a background task: it dies when this process exits. ${keepRunningRule(appsCli)}
 - Never tell the user a background task is still running at the end of your turn; it will not be. Only a process you started detached (above) is still running, and only if you checked it came up.
-- Don't schedule recurring checks (CronCreate, /loop, ScheduleWakeup, Monitor): the schedule stops when your turn ends.
-- To keep monitoring GitHub pull requests (a PR monitor, babysitting reviews or checks), do one check now, then end your turn with a watch block instead of a loop. The dashboard checks the PRs every few minutes and resumes this conversation only when something changes (a new review or comment, checks failing, the branch falling behind or conflicting, approval), sending you the changes followed by your prompt. It stops by itself once every PR is merged or closed.
-<<WATCH>>
-{"prs":["owner/repo#123"],"everyMinutes":5,"prompt":"<what to do on each wake-up: the monitoring cycle>"}
-<</WATCH>>
-  A watch stays on across turns. End a later turn with a new block to replace it, or with <<WATCH>>{"stop":true}<</WATCH>> to end it. For any other ongoing monitoring, do one check now and suggest a terminal.
+${loopRules("CronCreate, ScheduleWakeup, Monitor or /loop")}
 
 Don't end on a to-do list for the user. If you finish with follow-up steps you could do yourself (commit, open a PR, deploy, publish, update the ticket), end with the question block offering to do them, recommended option first, instead of listing them as "next steps". Otherwise the dashboard shows the run as Done while work is still waiting.
 
@@ -881,6 +823,37 @@ export class RunManager {
   }
 
   /**
+   * Approve a check watch's command: until then the server never runs it (a command Claude
+   * wrote, which a prompt injection could have planted). The first check runs right away.
+   */
+  approveWatch(id: string, seen: { startedAt?: unknown; command?: unknown }, now = new Date()): RunMeta {
+    const live = this.live.get(id);
+    const meta = live ? live.meta : this.get(id);
+    if (!meta) throw httpError(404, "Unknown run");
+    if (meta.remote) throw httpError(409, "Approve it on the computer that runs it.");
+    if (!watchActive(meta) || meta.watch!.kind !== "check") throw httpError(409, "This run has no check to approve.");
+    // Approve only the command you looked at: a turn may have replaced it since the page showed it.
+    if (seen.startedAt !== meta.watch!.startedAt || seen.command !== meta.watch!.command) {
+      throw httpError(409, "The check changed since you looked at it. Read the command again before approving.");
+    }
+    meta.watch!.approval = "approved";
+    meta.watch!.nextCheckAt = now.toISOString();
+    meta.watch!.error = null;
+    this._save(meta);
+    return meta;
+  }
+
+  /** The routine Claude proposed in this run was created as `routineId`. */
+  markRoutineCreated(id: string, routineId: string): RunMeta {
+    const live = this.live.get(id);
+    const meta = live ? live.meta : this.get(id);
+    if (!meta || !meta.routineProposal) throw httpError(404, "This run hasn't proposed a routine.");
+    meta.routineProposal.routineId = routineId;
+    this._save(meta);
+    return meta;
+  }
+
+  /**
    * The watcher's write: change an idle run's watch and save. Null (and nothing
    * saved) when the run is mid-turn or its watch isn't the one `startedAt` names
    * any more (replaced or ended while a check was in flight).
@@ -1108,7 +1081,7 @@ export class RunManager {
       this.live.delete(meta.id);
       // Re-read: a hand-off or plan-mode change may have been saved meanwhile.
       const current = this.get(meta.id);
-      if (current) { meta.handedOffAt = current.handedOffAt; meta.verdict = current.verdict; meta.watch = current.watch; }
+      if (current) { meta.handedOffAt = current.handedOffAt; meta.verdict = current.verdict; meta.watch = current.watch; meta.routineProposal = current.routineProposal; }
 
       meta.endedAt = new Date().toISOString();
       meta.durationMs = (meta.durationMs || 0) + (Date.parse(meta.endedAt) - Date.parse(meta.turnStartedAt!));
@@ -1134,7 +1107,7 @@ export class RunManager {
         }
       }
       if (meta.status === "handedOff") endWatch(meta, "Continued in a terminal.");
-      else applyWatchBlock(meta, rawFinalText);
+      else { applyWatchBlock(meta, rawFinalText); applyRoutineBlock(meta, rawFinalText); }
       this._save(meta);
       this.onFinish(meta);
       // An adopted run: read past this turn's own lines now (once, not on every poll), taking in
@@ -1254,6 +1227,8 @@ export function normaliseMeta(m: any): RunMeta {
   if (m.flagged === undefined) m.flagged = false;
   if (m.turnStartedAt === undefined) m.turnStartedAt = m.startedAt;
   if (m.watch === undefined) m.watch = null;
+  if (m.watch && !m.watch.kind) m.watch.kind = "github-pr";
+  if (m.routineProposal === undefined) m.routineProposal = null;
   if (!Array.isArray(m.queued)) m.queued = [];
   if (m.queueBlocked === undefined) m.queueBlocked = null;
   return m;
@@ -1294,7 +1269,10 @@ export function endWatch(meta: RunMeta, reason: string, now = new Date()) {
 
 export type WatchBlock =
   | { stop: true }
-  | { prs: { repo: string; number: number }[]; everyMinutes: number; days: number; prompt: string }
+  | { noop: true }
+  | { kind: "github-pr"; prs: { repo: string; number: number }[]; everyMinutes: number; days: number; prompt: string }
+  | { kind: "every"; everyMinutes: number; days: number; prompt: string }
+  | { kind: "check"; command: string; until: "change" | "success"; everyMinutes: number; days: number; prompt: string }
   | { error: string };
 
 /** "owner/name#12", "https://github.com/owner/name/pull/12", or { repo, number } / { url }. */
@@ -1310,17 +1288,53 @@ function parseWatchedPr(v: any): { repo: string; number: number } | null {
   return m ? { repo: m[1], number: Number(m[2]) } : null;
 }
 
-/** Parse a <<WATCH>> block. Null when there's no marker; { error } when it can't be used. */
+/** A block's JSON body (a code fence around it is fine), or { error }. */
+function blockJson(body: string, what: string): { data: any } | { error: string } {
+  const text = body.trim().replace(/^```(?:json)?\s*/i, "").replace(/\s*```$/, "").trim();
+  let data: any = null;
+  try { data = JSON.parse(text); } catch { return { error: `The ${what} block isn't valid JSON.` }; }
+  if (!data || typeof data !== "object" || Array.isArray(data)) return { error: `The ${what} block isn't a JSON object.` };
+  return { data };
+}
+
+const clampInt = (n: any, lo: number, hi: number, dflt: number) => (Number.isFinite(Number(n)) && Number(n) > 0 ? Math.min(hi, Math.max(lo, Math.round(Number(n)))) : dflt);
+
+/**
+ * Parse a <<WATCH>> block. Null when there's no marker; { error } when it can't be used.
+ * The kind is `kind`, else what the block names: `prs` (or `pr`), `command`, `every`.
+ */
 export function parseWatch(text: string): WatchBlock | null {
   const m = findBlock(text || "", "WATCH");
   if (!m) return null;
-  const body = m.body.trim().replace(/^```(?:json)?\s*/i, "").replace(/\s*```$/, "").trim();
-  let data: any = null;
-  try { data = JSON.parse(body); } catch { return { error: "The watch block isn't valid JSON." }; }
-  if (!data || typeof data !== "object") return { error: "The watch block isn't a JSON object." };
+  const json = blockJson(m.body, "watch");
+  if ("error" in json) return json;
+  const data = json.data;
   if (data.stop === true) return { stop: true };
-  const kind = data.kind || "github-pr";
-  if (kind !== "github-pr") return { error: `Unknown watch kind "${kind}" (github-pr is supported).` };
+  if (data.noop === true) return { noop: true };
+  const kind = data.kind || (data.prs || data.pr ? "github-pr" : data.command ? "check" : data.every != null ? "every" : "github-pr");
+  const prompt = String(data.prompt || "").trim().slice(0, WATCH_PROMPT_MAX);
+  if (kind === "every") {
+    const minutes = parseDuration(data.every ?? data.everyMinutes);
+    if (minutes === null) return { error: `Can't read the interval ${JSON.stringify(data.every ?? data.everyMinutes ?? null)} (use "every": "30m" or "2h").` };
+    if (minutes < LOOP_MIN_MINUTES || minutes > LOOP_MAX_MINUTES) return { error: `A loop wakes every ${LOOP_MIN_MINUTES} minutes to 24 hours (this one asked for every ${formatMinutes(minutes)}).` };
+    if (!prompt) return { error: "The loop has no prompt: say what to do on each wake-up." };
+    return { kind, everyMinutes: minutes, days: clampInt(data.days, 1, LOOP_MAX_DAYS, LOOP_DEFAULT_DAYS), prompt };
+  }
+  if (kind === "check") {
+    const command = String(data.command || "").trim();
+    if (!command) return { error: "The check has no command." };
+    if (command.length > CHECK_COMMAND_MAX) return { error: `The check's command is longer than ${CHECK_COMMAND_MAX} characters.` };
+    const until = data.until === "success" ? "success" : data.until == null || data.until === "change" ? "change" : null;
+    if (!until) return { error: `Unknown "until" ${JSON.stringify(data.until)} (use "change" or "success").` };
+    const every = data.every != null ? parseDuration(data.every) : null;
+    return {
+      kind, command, until,
+      everyMinutes: clampInt(every ?? data.everyMinutes, WATCH_MIN_MINUTES, WATCH_MAX_MINUTES, WATCH_DEFAULT_MINUTES),
+      days: clampInt(data.days, 1, LOOP_MAX_DAYS, LOOP_DEFAULT_DAYS),
+      prompt: prompt || CHECK_DEFAULT_PROMPT,
+    };
+  }
+  if (kind !== "github-pr") return { error: `Unknown watch kind "${kind}" (github-pr, every and check are supported).` };
   const raw = Array.isArray(data.prs) ? data.prs : data.pr ? [data.pr] : [];
   const prs: { repo: string; number: number }[] = [];
   for (const v of raw) {
@@ -1330,47 +1344,67 @@ export function parseWatch(text: string): WatchBlock | null {
   }
   if (!prs.length) return { error: "The watch block names no pull requests." };
   if (prs.length > WATCH_MAX_PRS) return { error: `Watch at most ${WATCH_MAX_PRS} pull requests at once.` };
-  const clamp = (n: any, lo: number, hi: number, dflt: number) => (Number.isFinite(Number(n)) && Number(n) > 0 ? Math.min(hi, Math.max(lo, Math.round(Number(n)))) : dflt);
-  const prompt = String(data.prompt || "").trim().slice(0, WATCH_PROMPT_MAX) || WATCH_DEFAULT_PROMPT;
   return {
+    kind: "github-pr",
     prs,
-    everyMinutes: clamp(data.everyMinutes, WATCH_MIN_MINUTES, WATCH_MAX_MINUTES, WATCH_DEFAULT_MINUTES),
-    days: clamp(data.days, 1, WATCH_MAX_DAYS, WATCH_DEFAULT_DAYS),
-    prompt,
+    everyMinutes: clampInt(data.everyMinutes, WATCH_MIN_MINUTES, WATCH_MAX_MINUTES, WATCH_DEFAULT_MINUTES),
+    days: clampInt(data.days, 1, WATCH_MAX_DAYS, WATCH_DEFAULT_DAYS),
+    prompt: prompt || WATCH_DEFAULT_PROMPT,
   };
 }
 
 /**
  * Apply the turn's watch block, if any. A new block replaces the watch; PRs it
- * already watched keep what the last check saw, so replacing doesn't re-baseline them.
- * No block leaves a running watch as it is.
+ * already watched keep what the last check saw, so replacing doesn't re-baseline them,
+ * and a check with the same command keeps its approval and last result.
+ * {"noop":true} leaves the watch as it is and counts a quiet wake-up; any other turn that
+ * ends while a watch is on resets the count. No block leaves a running watch as it is.
  */
 export function applyWatchBlock(meta: RunMeta, text: string, now = new Date()) {
   const block = parseWatch(text);
-  if (!block) return;
+  const active = watchActive(meta);
+  if (!block || "noop" in block) {
+    if (active) meta.watch!.quiet = block ? (meta.watch!.quiet || 0) + 1 : 0;
+    return;
+  }
   if ("error" in block) {
     // A running watch carries on as it was; otherwise record a watch that never started, so the run says why.
-    if (watchActive(meta)) { meta.watch!.error = `A new watch block was ignored: ${block.error}`; return; }
-    meta.watch = blankWatch(now, [], WATCH_DEFAULT_MINUTES, "", now);
+    if (active) { meta.watch!.error = `A new watch block was ignored: ${block.error}`; return; }
+    meta.watch = blankWatch("github-pr", now, WATCH_DEFAULT_MINUTES, "", now);
     meta.watch.endedAt = now.toISOString();
     meta.watch.endReason = `Couldn't start the watch: ${block.error}`;
     return;
   }
-  if (!("prs" in block)) { endWatch(meta, "Claude ended the watch.", now); return; }
-  const previous = watchActive(meta) ? meta.watch!.prs : [];
-  const prs: WatchedPr[] = block.prs.map((p) => {
-    const old = previous.find((o) => o.repo.toLowerCase() === p.repo.toLowerCase() && o.number === p.number);
-    return { repo: p.repo, number: p.number, seen: old ? old.seen : null };
-  });
-  const wakes = watchActive(meta) ? meta.watch!.wakes : 0;
-  meta.watch = blankWatch(now, prs, block.everyMinutes, block.prompt, new Date(now.getTime() + block.days * 86400000));
-  meta.watch.wakes = wakes;
+  if ("stop" in block) { endWatch(meta, "Claude ended the watch.", now); return; }
+  const old = active ? meta.watch! : null;
+  // An interval loop lives at least two intervals, so it always gets its first wake-up (a 24 h
+  // loop for "1 day" would otherwise expire the moment it's due).
+  const lifeMs = Math.max(block.days * 86400000, block.kind === "every" ? 2 * block.everyMinutes * 60000 : 0);
+  const w = blankWatch(block.kind, now, block.everyMinutes, block.prompt, new Date(now.getTime() + lifeMs));
+  w.wakes = old ? old.wakes : 0;
+  if (block.kind === "github-pr") {
+    const previous = old?.kind === "github-pr" ? old.prs : [];
+    w.prs = block.prs.map((p) => {
+      const was = previous.find((o) => o.repo.toLowerCase() === p.repo.toLowerCase() && o.number === p.number);
+      return { repo: p.repo, number: p.number, seen: was ? was.seen : null };
+    });
+  } else if (block.kind === "every") {
+    // The first wake-up is one interval from now: this turn was the first pass.
+    w.nextCheckAt = new Date(now.getTime() + block.everyMinutes * 60000).toISOString();
+  } else {
+    const same = old?.kind === "check" && old.command === block.command;
+    w.command = block.command;
+    w.until = block.until;
+    w.approval = same ? old!.approval : "pending";
+    w.lastResult = same ? old!.lastResult ?? null : null;
+  }
+  meta.watch = w;
 }
 
-function blankWatch(now: Date, prs: WatchedPr[], everyMinutes: number, prompt: string, expires: Date): RunWatch {
+function blankWatch(kind: RunWatch["kind"], now: Date, everyMinutes: number, prompt: string, expires: Date): RunWatch {
   return {
-    kind: "github-pr",
-    prs,
+    kind,
+    prs: [],
     everyMinutes,
     prompt,
     startedAt: now.toISOString(),
@@ -1380,10 +1414,43 @@ function blankWatch(now: Date, prs: WatchedPr[], everyMinutes: number, prompt: s
     lastChangeAt: null,
     lastChange: null,
     wakes: 0,
+    quiet: 0,
     error: null,
     endedAt: null,
     endReason: null,
   };
+}
+
+// ------------------------------------------------------------------ routine proposals
+
+/**
+ * Apply the turn's <<ROUTINE>> block, if any: Claude proposes a routine, which waits on the
+ * run page until you create it (Claude never schedules one by itself). The run's workspace,
+ * model and effort fill in what the block leaves out.
+ */
+export function applyRoutineBlock(meta: RunMeta, text: string, now = new Date()) {
+  const m = findBlock(text || "", "ROUTINE");
+  if (!m) return;
+  const json = blockJson(m.body, "routine");
+  const proposal: RoutineProposal = { routine: {}, proposedAt: now.toISOString(), error: null, routineId: null };
+  if ("error" in json) proposal.error = json.error;
+  else {
+    const d = json.data;
+    try {
+      const { id: _id, enabled: _on, ...routine } = checkRoutine({
+        ...d,
+        id: "proposal",
+        workspace: d.workspace || meta.workspace || undefined,
+        model: d.model || meta.model || undefined,
+        effort: d.effort || meta.effort || undefined,
+      });
+      proposal.routine = routine;
+    } catch (e) {
+      proposal.routine = { label: String(d.label || "").slice(0, 80), prompt: String(d.prompt || "").slice(0, 8000) };
+      proposal.error = (e as Error).message;
+    }
+  }
+  meta.routineProposal = proposal;
 }
 
 /** When a run last did something (shared/remote.ts, where the mirror and the web read it too). */

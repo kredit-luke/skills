@@ -78,17 +78,47 @@
         @if (r.watch; as w) {
           @if (!w.endedAt) {
             <div class="info-note watch-note">
-              <span><b>Watching {{ watchedPrs() }}.</b>
-                @if (r.status === 'succeeded') { Next check {{ countdown(w.nextCheckAt) }}, every {{ w.everyMinutes }} min; this run resumes when something changes. }
+              <span><b>{{ watchTitle() }}.</b>
+                @if (w.kind === 'check') { <code class="watch-cmd">{{ w.command }}</code> }
+                @if (w.approval === 'pending') { The dashboard runs this command every {{ w.everyMinutes }} min and resumes this run {{ w.until === 'success' ? 'once it succeeds' : 'when its output changes' }}. Nothing runs until you approve it: check it only reads. }
+                @else if (r.status === 'succeeded') {
+                  Next {{ w.kind === 'every' ? 'wake-up' : 'check' }} {{ countdown(w.nextCheckAt) }}, every {{ w.everyMinutes }} min;
+                  @if (w.kind === 'every') { this run resumes each time. }
+                  @else if (w.kind === 'check') { this run resumes {{ w.until === 'success' ? 'once the command succeeds' : 'when its output changes' }}. }
+                  @else { this run resumes when something changes. }
+                }
                 @else { Paused while the run is {{ st()!.label.toLowerCase() }}; it carries on once the last turn ends fine. }
-                @if (w.lastChange) { Last change {{ rel(w.lastChangeAt) }}: {{ w.lastChange }}. }
+                @if (w.lastChange) { Last {{ w.kind === 'every' ? 'wake-up' : 'change' }} {{ rel(w.lastChangeAt) }}: {{ w.lastChange }}. }
                 @if (w.wakes) { Woken {{ w.wakes }}×. }
+                @if (w.quiet) { Nothing to do the last {{ w.quiet }} {{ w.quiet === 1 ? 'time' : 'times' }}. }
+                Ends {{ rel(w.expiresAt) }}.
                 @if (w.error) { <span class="watch-err">{{ w.error }}</span> }
               </span>
-              @if (!r.remote) { <button class="btn sm" (click)="stopWatch()">Stop watching</button> }
+              @if (!r.remote) {
+                <span class="watch-acts">
+                  @if (w.approval === 'pending') { <button class="btn sm primary" (click)="approveWatch()">Approve and start</button> }
+                  <button class="btn sm" (click)="stopWatch()">{{ w.kind === 'github-pr' ? 'Stop watching' : 'Stop' }}</button>
+                </span>
+              }
             </div>
           } @else if (w.endReason) {
-            <div class="hint">PR watch ended {{ rel(w.endedAt) }}: {{ w.endReason }}</div>
+            <div class="hint">{{ w.kind === 'github-pr' ? 'PR watch' : w.kind === 'every' ? 'Loop' : 'Check' }} ended {{ rel(w.endedAt) }}: {{ w.endReason }}</div>
+          }
+        }
+        @if (r.routineProposal; as p) {
+          @if (p.routineId) {
+            <div class="hint">Routine created from Claude's proposal. <a routerLink="/loops">Open Loops</a></div>
+          } @else if (p.error) {
+            <div class="warn-note"><b>Claude proposed a routine, but it can't be used:</b> {{ p.error }} Reply to have it try again, or create one on the <a routerLink="/loops">Loops</a> page.</div>
+          } @else if (!r.remote) {
+            <div class="info-note watch-note">
+              <span><b>Claude proposes a routine: {{ p.routine.label || 'untitled' }}.</b> {{ proposalSchedule() }}{{ p.routine.mode === 'continue' ? ', continuing its last run' : ', a new run each time' }}.
+                <span class="proposal-prompt">{{ p.routine.prompt || ('skill card ' + p.routine.preset) }}</span>
+                Nothing is scheduled until you create it.</span>
+              <span class="watch-acts">
+                <button class="btn sm primary" [disabled]="creatingRoutine()" (click)="createProposedRoutine()">Create routine</button>
+              </span>
+            </div>
           }
         }
         @if (r.status === 'failed' && r.error) { <div class="err-note">{{ r.error }}</div> }
@@ -106,6 +136,9 @@
                 title="Move this conversation, and the worktree it worked in (unpushed commits and changes included), to your hosted dashboard and carry on there. This copy stops driving it.">{{ sending() ? 'Packing…' : 'Send to hosted' }}</button>
             }
             <button class="btn ghost" (click)="copyResume()" [title]="resumeCmd()">Copy resume cmd</button>
+          }
+          @if (!r.remote && r.status !== 'running') {
+            <a class="btn ghost" [routerLink]="['/loops']" [queryParams]="{ fromRun: r.id }" title="Run this prompt again on a schedule (a routine)">Make this a routine</a>
           }
           <span class="grow"></span>
           @if (!r.remote) {

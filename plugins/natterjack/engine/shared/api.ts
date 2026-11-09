@@ -217,8 +217,10 @@ export interface RunMeta {
   attachments?: Attachment[];
   /** When the run's files were deleted (keepAttachmentsDays after it was done). */
   attachmentsRemovedAt?: string | null;
-  /** Pull requests the dashboard watches for this run (a <<WATCH>> block); null when there never was one. */
+  /** What the dashboard watches for this run (a <<WATCH>> block: PRs, an interval, a command); null when there never was one. */
   watch?: RunWatch | null;
+  /** The last routine Claude proposed in this run (a <<ROUTINE>> block). */
+  routineProposal?: RoutineProposal | null;
   /**
    * Messages typed while Claude was working. When a turn ends as succeeded or failed they
    * go together as the next turn (also when it ends with a question, if queueAutoSend is
@@ -296,17 +298,40 @@ export interface PrSnapshot {
 }
 
 /**
- * A run's PR watch. Claude starts one by ending a turn with a <<WATCH>> block; the
- * server checks the PRs every `everyMinutes` while the run is idle and done
- * (status 'succeeded'), and replies to the run when something changed.
- * Active while `endedAt` is null.
+ * What wakes a watching run: 'github-pr' when something changes on its pull requests,
+ * 'every' on a fixed interval (the dashboard's /loop), 'check' when a command the server runs
+ * changes its output or succeeds (no tokens spent while nothing happens).
+ */
+export type WatchKind = 'github-pr' | 'every' | 'check';
+
+/** A 'check' watch's last result. Output is the tail of stdout and stderr together. */
+export interface CheckResult { exitCode: number; output: string; at: string }
+
+/**
+ * A run's watch (a loop). Claude starts one by ending a turn with a <<WATCH>> block; the
+ * server checks every `everyMinutes` while the run is idle and done (status 'succeeded'),
+ * and replies to the run when it's time (see WatchKind). Active while `endedAt` is null.
  */
 export interface RunWatch {
-  kind: 'github-pr';
+  kind: WatchKind;
+  /** github-pr: the pull requests; empty for the other kinds. */
   prs: WatchedPr[];
   everyMinutes: number;
-  /** Sent after the list of changes when the watch wakes the run. */
+  /** Sent after what changed when the watch wakes the run. */
   prompt: string;
+  /** check: the shell command (bash) the server runs in the run's folder. */
+  command?: string;
+  /** check: 'change' wakes on every change of output or exit code; 'success' wakes once when it exits 0, then ends. */
+  until?: 'change' | 'success';
+  /**
+   * check: 'pending' until you approve the command on the run page (or it matches deck.json
+   * loops.allowCommands); nothing runs before. Other kinds: undefined.
+   */
+  approval?: 'pending' | 'approved';
+  /** check: what the last run of the command saw; null before the first. */
+  lastResult?: CheckResult | null;
+  /** Wake-ups in a row Claude ended with {"noop":true} (nothing needed doing). */
+  quiet?: number;
   startedAt: string;
   expiresAt: string;
   nextCheckAt: string;
@@ -319,6 +344,18 @@ export interface RunWatch {
   error: string | null;
   endedAt: string | null;
   endReason: string | null;
+}
+
+/**
+ * A routine Claude proposed by ending a turn with a <<ROUTINE>> block. Nothing is scheduled
+ * until you click Create on the run page (POST /api/routines/from-run), which sets `routineId`.
+ */
+export interface RoutineProposal {
+  routine: RoutineInput;
+  proposedAt: string;
+  /** Why the block couldn't be used (the run page says so instead of offering Create). */
+  error?: string | null;
+  routineId?: string | null;
 }
 
 /**
@@ -573,8 +610,69 @@ export interface Preset {
   args?: PresetArg[]; options?: PresetOption[]; model?: string; effort?: Effort; permissionMode?: PermissionMode;
   budgetUsd?: number; workspace?: string;
 }
-export interface Routine { id: string; preset: string; at: string; days?: string[] | string; enabled: boolean; workspace?: string; args?: Record<string, string> }
-export interface RoutineView extends Routine { nextAt: string | null; last: { firedAt: string; ok: boolean; runId?: string; error?: string } | null }
+/**
+ * A routine: a run the dashboard starts on a schedule. Team routines live in deck.json
+ * `routines`; your own in .claude/ledger/routines.json (the Loops page).
+ *
+ * What it runs: a `preset` (with `args`) or a plain `prompt`, with its own model, effort and
+ * permission mode if set. When: `at` ("HH:MM") on `days`, or `every` ("15m", "2h"; slots
+ * line up with local midnight) on `days`, optionally only `between` "HH:MM-HH:MM".
+ * `mode` 'continue' replies to the routine's last run instead of starting a new one.
+ * A slot missed while the dashboard was off or asleep fires once when it's back, within
+ * `catchUpMinutes` (default 10) of the slot; an `every` slot always catches up once.
+ * A slot is skipped while the routine's previous run is still working or waiting on a question.
+ */
+export interface Routine {
+  id: string;
+  label?: string;
+  preset?: string;
+  prompt?: string;
+  args?: Record<string, string>;
+  at?: string;
+  every?: string;
+  between?: string;
+  days?: string[] | string;
+  mode?: 'fresh' | 'continue';
+  workspace?: string;
+  model?: string;
+  effort?: Effort;
+  permissionMode?: PermissionMode;
+  catchUpMinutes?: number;
+  enabled: boolean;
+}
+/** POST /api/routines body: a routine to create (no id) or replace (your own only). */
+export type RoutineInput = Omit<Routine, 'id' | 'enabled'> & { id?: string; enabled?: boolean };
+export interface RoutineLast {
+  firedAt: string;
+  ok: boolean;
+  runId?: string | null;
+  error?: string | null;
+  /** The slot was skipped (the previous run was still busy), and when. */
+  skipped?: string | null;
+  skippedAt?: string | null;
+  /** Fired by Run now rather than the schedule. */
+  manual?: boolean;
+}
+export interface RoutineView extends Routine {
+  /** deck.json (the team's, you can only switch it off for yourself) or your own. */
+  source: 'team' | 'personal';
+  /** A team routine you switched off (or on) for yourself. */
+  overridden?: boolean;
+  /** When it fires next, if enabled; null when it never will. */
+  nextAt: string | null;
+  /** In words: "Weekdays at 08:30", "Every 2 h, 08:00-18:00". */
+  schedule: string;
+  last: RoutineLast | null;
+  /** Why it can't fire (no schedule, unknown preset...). */
+  problem?: string | null;
+}
+/** GET /api/routines */
+export interface RoutinesResponse {
+  routines: RoutineView[];
+  /** Every run with a watch on (PRs, a loop, a check), however old: the Loops page lists them. */
+  loops?: RunMeta[];
+  error?: string;
+}
 /** A workspace skill, or (with `plugin`) one from an enabled Claude Code plugin, named `<plugin>:<skill>`. */
 export interface SkillInfo { name: string; description: string; argumentHint: string; plugin?: string }
 /**

@@ -159,6 +159,7 @@ export class AppComponent implements OnInit {
     { path: '/runs', label: 'Activity', icon: 'runs' },
     { path: '/factory', label: 'Factory', icon: 'factory' },
     { path: '/reviews', label: 'Reviews', icon: 'reviews' },
+    { path: '/loops', label: 'Loops', icon: 'loops' },
     { path: '/skills', label: 'Skills', icon: 'skills' },
     { path: '/models', label: 'Models', icon: 'models' },
     { path: '/connections', label: 'Connections', icon: 'connections' },

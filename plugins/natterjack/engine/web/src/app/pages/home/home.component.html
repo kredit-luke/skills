@@ -46,16 +46,16 @@
       </form>
     </div>
     <div class="panel">
-      <div class="panel-h"><h2>Routines</h2></div>
+      <div class="panel-h"><h2>Routines</h2><a class="btn sm ghost" routerLink="/loops">Loops</a></div>
       <div class="panel-b">
         @for (x of routines(); track x.r.id) {
           @if (x.runId) {
             <a class="routine" [class.off]="!x.r.enabled" [class.next]="x.status === 'next'" [routerLink]="['/runs', x.runId]">
-              <span class="time">{{ x.r.at }}</span><div><div class="t">{{ x.label }}</div><div class="d">{{ x.detail }}</div></div><span class="st">{{ x.when }}</span>
+              <span class="time">{{ x.time }}</span><div><div class="t">{{ x.label }}</div><div class="d">{{ x.detail }}</div></div><span class="st">{{ x.when }}</span>
             </a>
           } @else {
             <div class="routine" [class.off]="!x.r.enabled" [class.next]="x.status === 'next'">
-              <span class="time">{{ x.r.at }}</span><div><div class="t">{{ x.label }}</div><div class="d">{{ x.detail }}</div></div><span class="st">{{ x.when }}</span>
+              <span class="time">{{ x.time }}</span><div><div class="t">{{ x.label }}</div><div class="d">{{ x.detail }}</div></div><span class="st">{{ x.when }}</span>
             </div>
           }
         }
@@ -64,7 +64,7 @@
         }
         @if (!routines().length && !(ov()?.desktopTasks || []).length) { <div class="empty">No routines configured.</div> }
       </div>
-      <div class="hint">Edit schedules in <code>.claude/dashboard/deck.json</code>. They fire only while this dashboard is running.</div>
+      <div class="hint">Create and change them on the <a routerLink="/loops">Loops</a> page. They fire only while this dashboard is running.</div>
     </div>
   </div>
 

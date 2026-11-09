@@ -18,6 +18,7 @@ export const routes: Routes = [
   { path: 'runs/:id', loadComponent: () => import('./pages/runs/runs.component').then((m) => m.RunsComponent), title: 'Activity' },
   { path: 'factory', loadComponent: () => import('./pages/factory/factory.component').then((m) => m.FactoryComponent), title: 'Factory' },
   { path: 'factory/settings', loadComponent: () => import('./pages/factory/factory-settings.component').then((m) => m.FactorySettingsComponent), title: 'Factory policy' },
+  { path: 'loops', loadComponent: () => import('./pages/loops/loops.component').then((m) => m.LoopsComponent), title: 'Loops' },
   { path: 'reviews', loadComponent: () => import('./pages/reviews/reviews.component').then((m) => m.ReviewsComponent), title: 'Reviews' },
   { path: 'usage', loadComponent: () => import('./pages/usage/usage.component').then((m) => m.UsageComponent), title: 'Usage' },
   { path: 'issues', loadComponent: () => import('./pages/issues/issues.component').then((m) => m.IssuesComponent), title: 'Issues' },

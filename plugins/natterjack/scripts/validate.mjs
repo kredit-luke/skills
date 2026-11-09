@@ -427,7 +427,12 @@ export function validate(root) {
   const deck = load("deck.json");
   if (deck) {
     const presetIds = (deck.presets || []).map((p) => p.id);
-    for (const r of deck.routines || []) if (!presetIds.includes(r.preset)) err("deck.json", `routine "${r.id}" uses preset "${r.preset}", which doesn't exist`);
+    // A routine runs a preset or its own prompt (engine routines.ts checks the rest when it loads them).
+    for (const r of deck.routines || []) {
+      if (r.preset !== undefined && r.preset !== "") {
+        if (!presetIds.includes(r.preset)) err("deck.json", `routine "${r.id}" uses preset "${r.preset}", which doesn't exist`);
+      } else if (!String(r.prompt || "").trim()) err("deck.json", `routine "${r.id}" needs a "preset" or a "prompt"`);
+    }
     // GitHub teams are the configured repos, so a typo is checkable here. Same rules as the engine
     // (issues/github.ts repoList, repoForTeam): owner/name repos only; a team is one repo's owner/name,
     // or a short name only one repo has, trimmed, in any case.

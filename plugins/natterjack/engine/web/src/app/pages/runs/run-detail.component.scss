@@ -146,6 +146,9 @@
 
 .watch-note { display: flex; align-items: center; gap: 0.6rem; justify-content: space-between; }
 .watch-note .watch-err { display: block; color: var(--red); margin-top: 0.2rem; }
+.watch-note .watch-acts { display: inline-flex; gap: 0.4rem; flex: none; }
+.watch-note .watch-cmd { display: block; margin: 0.3rem 0; white-space: pre-wrap; word-break: break-all; font-family: var(--mono); font-size: 12px; }
+.watch-note .proposal-prompt { display: block; margin: 0.3rem 0; white-space: pre-wrap; font-style: italic; }
 
 /* The Details toggle exists for small screens only: wider, the whole meta line shows. */
 .kv-more { display: none; }

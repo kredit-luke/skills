@@ -35,7 +35,7 @@ import { runStatus, toReview } from './run-status';
           @if (r.flagged) { <span class="tag amber" title="You flagged this run as needing you">⚑ needs me</span> }
           @if (needsAnswer()) { <span class="tag amber">needs answer</span> }
           @if (review()) { <span class="tag review" title="Finished and not rated yet: open it and mark it Good or Needed fix (it leaves Focus after a day anyway)">to review</span> }
-          @if (r.watch && !r.watch.endedAt) { <span class="tag routine" [title]="'Watching ' + watchedPrs() + ': the dashboard resumes this run when they change'">watching</span> }
+          @if (r.watch && !r.watch.endedAt) { <span class="tag routine" [title]="watchTitle()">{{ r.watch.kind === 'every' ? 'looping' : r.watch.approval === 'pending' ? 'approve check' : 'watching' }}</span> }
           @if (r.warning) { <span class="tag amber" [title]="r.warning">bg stopped</span> }
           @if (r.trigger && r.trigger.startsWith('routine:')) { <span class="tag routine">routine</span> }
           @if (r.agent && r.agent !== 'claude') { <span class="tag agent" [title]="'Run by ' + agentName()">{{ agentName() }}</span> }
@@ -76,6 +76,13 @@ export class RunRowComponent {
     return (r.error || r.status || '').split('\n')[0];
   });
   readonly watchedPrs = computed(() => (this.run().watch?.prs || []).map((p) => p.repo.split('/').pop() + '#' + p.number).join(', '));
+  readonly watchTitle = computed(() => {
+    const w = this.run().watch;
+    if (!w) return '';
+    if (w.kind === 'every') return 'Looping: the dashboard resumes this run every ' + w.everyMinutes + ' min';
+    if (w.kind === 'check') return w.approval === 'pending' ? 'Claude wants to watch a command: approve it on the run page' : 'Watching a command: the dashboard resumes this run when it changes';
+    return 'Watching ' + this.watchedPrs() + ': the dashboard resumes this run when they change';
+  });
   readonly elapsed = computed(() => dur(Date.now() - Date.parse(this.run().turnStartedAt || this.run().startedAt)));
   readonly ago = computed(() => relTime(this.run().endedAt || this.run().startedAt));
   readonly duration = computed(() => dur(this.run().durationMs));

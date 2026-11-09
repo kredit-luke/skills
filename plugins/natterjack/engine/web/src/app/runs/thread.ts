@@ -27,6 +27,9 @@
  */
 
 import type { Attachment } from '../../../../shared/api';
+import { stripBlock, type BlockTag } from '../../../../shared/blocks';
+
+const BLOCK_TAGS: BlockTag[] = ['QUESTION', 'WATCH', 'ROUTINE'];
 
 export type AgentStatus ='starting' | 'running' | 'completed' | 'failed' | 'stopped';
 
@@ -72,8 +75,6 @@ export interface Thread {
 const SKIP_TYPES = new Set(['rate_limit_event', 'tool_progress', 'stream_event', 'keep_alive']);
 const SKIP_SYSTEM = new Set(['hook_started', 'hook_response', 'commands_changed', 'thinking_tokens', 'background_tasks_changed', 'status', 'compact_boundary', 'api_retry']);
 const FINISHED: AgentStatus[] = ['completed', 'failed', 'stopped'];
-const QUESTION_RE = /<<QUESTION>>[\s\S]*?(<<\/QUESTION>>|$)/g;
-const WATCH_RE = /<<WATCH>>[\s\S]*?(<<\/WATCH>>|$)/g;
 /** message.model on messages the CLI made up itself (an interrupt, an error), not a model's answer. */
 const SYNTHETIC_MODEL = '<synthetic>';
 
@@ -82,8 +83,15 @@ export function isOpenModel(model: string | null | undefined): boolean {
   return !!model && !/^claude-/i.test(model);
 }
 
+/**
+ * The answer without the blocks the dashboard acts on (a question, a watch, a routine). The same
+ * rules as the server's (shared/blocks.ts): a marker inside code is text, so an answer that only
+ * mentions one isn't cut off there.
+ */
 export function stripQuestion(text: string): string {
-  return String(text || '').replace(QUESTION_RE, '').replace(WATCH_RE, '').trim();
+  let out = String(text || '');
+  for (const tag of BLOCK_TAGS) out = stripBlock(out, tag);
+  return out.trim();
 }
 
 function base(p: string | null | undefined): string {
