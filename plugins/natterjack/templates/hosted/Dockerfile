@@ -33,6 +33,12 @@ RUN apt-get update \
  && git config --system --add safe.directory '*' \
  && mkdir -p /data && chown node:node /data
 
+# npm too: the base image bundles the npm its Node release shipped with, and scanners
+# report npm's own dependencies (undici, brace-expansion) long after npm has fixed them.
+# Runs use npm, so update it within its major version rather than drop it.
+RUN npm install -g npm@11 \
+ && npm cache clean --force
+
 # The Claude CLI, installed for the image's own user. Update it by rebuilding the image
 # (auto-update is off so every person runs the version you tested).
 USER node

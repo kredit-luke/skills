@@ -6,9 +6,15 @@
 FROM node:24-trixie-slim
 # The base image lags Debian security releases, so without this a rebuild keeps the
 # packages the base shipped with.
+#
+# The router is plain Node with no packages, so it also drops the npm (and corepack) the
+# base image bundles: scanners report npm's own dependencies (undici, brace-expansion),
+# and the base image lags their fixes too.
 RUN apt-get update \
  && apt-get dist-upgrade -y --no-install-recommends \
- && rm -rf /var/lib/apt/lists/*
+ && rm -rf /var/lib/apt/lists/* \
+ && rm -rf /usr/local/lib/node_modules/npm /usr/local/lib/node_modules/corepack \
+           /usr/local/bin/npm /usr/local/bin/npx /usr/local/bin/corepack
 WORKDIR /app
 COPY engine/server/src/hosted.ts engine/server/src/hosted.ts
 COPY engine/server/src/link-tokens.ts engine/server/src/link-tokens.ts
