@@ -1,4 +1,4 @@
-import { ChangeDetectionStrategy, Component, ElementRef, effect, inject, input, output, signal, viewChild } from '@angular/core';
+import { ChangeDetectionStrategy, Component, DestroyRef, ElementRef, effect, inject, input, output, signal, viewChild } from '@angular/core';
 import { RouterLink } from '@angular/router';
 import { ApiService } from '../core/api.service';
 import { MdPipe } from '../core/md.pipe';
@@ -15,7 +15,7 @@ export type MdFileSource = { kind: 'run'; runId: string; path: string } | { kind
   changeDetection: ChangeDetectionStrategy.OnPush,
   template: `
     <div class="modal" (mousedown)="onBackdrop($event)">
-      <div #card class="modal-card wide mfv" role="dialog" aria-modal="true" [attr.aria-label]="title()" tabindex="-1" (keydown.escape)="closed.emit()">
+      <div #card class="modal-card wide mfv" role="dialog" aria-modal="true" [attr.aria-label]="title()" tabindex="-1" (keydown.escape)="closed.emit()" (keydown.tab)="trap($event)">
         <div class="head">
           <h3>{{ title() }}</h3>
           <button type="button" class="btn sm ghost x" (click)="closed.emit()" aria-label="Close">✕</button>
@@ -71,10 +71,26 @@ export class MdFileViewerComponent {
   readonly raw = signal(false);
   readonly title = signal('');
   private readonly card = viewChild<ElementRef<HTMLElement>>('card');
+  /** What had focus when the viewer opened (the path or button that opened it): focus goes back there on close. */
+  private readonly opener = document.activeElement as HTMLElement | null;
 
   constructor() {
     effect(() => { void this.load(this.source()); });
     effect(() => this.card()?.nativeElement.focus());
+    inject(DestroyRef).onDestroy(() => { if (this.opener?.isConnected) this.opener.focus(); });
+  }
+
+  /** Tab and Shift+Tab stay inside the dialog: past the last control to the first, and back. */
+  trap(e: Event): void {
+    const card = this.card()?.nativeElement;
+    if (!card) return;
+    const items = [...card.querySelectorAll<HTMLElement>('a[href], button:not([disabled]), [tabindex]:not([tabindex="-1"])')]
+      .filter((el) => el.offsetParent !== null);
+    if (!items.length) { e.preventDefault(); return; }
+    const first = items[0], last = items[items.length - 1], back = (e as KeyboardEvent).shiftKey;
+    const at = document.activeElement;
+    if (back && (at === first || at === card)) { e.preventDefault(); last.focus(); }
+    else if (!back && at === last) { e.preventDefault(); first.focus(); }
   }
 
   private async load(s: MdFileSource): Promise<void> {

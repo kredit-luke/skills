@@ -2369,8 +2369,13 @@ async function handleApi(req: http.IncomingMessage, res: http.ServerResponse, ur
     if (runMatch && runMatch[2] === "md-file") {
       const meta = runs.get(runMatch[1]);
       if (!meta) return sendError(res, 404, "Unknown run");
+      // Relative paths: the worktree the run worked in first, then the folder it started in.
+      // The outputs folder counts only while it's a plain folder (a run could swap in a link).
+      const worktree = runWorktree(meta, runs.events(meta.id));
+      const outputs = attachments.outputsRoot(meta.id);
       return sendJson(res, readRunMarkdown(String(q("path") || ""), {
-        home: os.homedir(), base: meta.cwd, roots: [...listWorkspaces().map((w) => w.path), attachments.outputsDir(meta.id)],
+        home: os.homedir(), bases: [...(worktree ? [worktree.path] : []), meta.cwd],
+        roots: [...listWorkspaces().map((w) => w.path), ...(outputs ? [outputs] : [])],
       }));
     }
     if (runMatch && runMatch[2] === "diff") {
