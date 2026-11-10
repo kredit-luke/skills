@@ -1,3 +1,4 @@
+@if (mdFile(); as src) { <dash-md-file-viewer [source]="src" (closed)="mdFile.set(null)" /> }
 @if (loadError()) {
   <div class="panel"><div class="empty" style="padding:3rem">{{ loadError() }}</div></div>
 } @else if (current(); as r) {
@@ -186,6 +187,9 @@
             <span class="f">{{ d.state }}</span><span class="f">{{ d.assignee || 'Unassigned' }}</span>
           } @else if (iss.error) { <span class="f">{{ iss.error }}</span> }
           @else { <span class="f">Loading…</span> }
+          @if (factoryPlan(); as fp) {
+            <button type="button" class="btn sm ghost plan-btn" (click)="mdFile.set({ kind: 'factory', ticket: fp.ticket })" [title]="fp.waiting ? 'The plan is waiting for approval on the Factory page' : 'The plan the Factory recorded for ' + fp.ticket">{{ fp.waiting ? 'Read the plan (awaiting approval)' : 'Read the plan' }}</button>
+          }
         </div>
       }
   
@@ -254,7 +258,7 @@
 <ng-template #itemsTpl let-items>
   @for (it of items; track it.key) {
     @switch (it.kind) {
-      @case ('text') { <div class="ev text md tight" [innerHTML]="it.text | md | trustedHtml"></div> }
+      @case ('text') { <div class="ev text md tight" [innerHTML]="it.text | md:'paths' | trustedHtml"></div> }
       @case ('sys') { <div class="ev sys">{{ it.text }}</div> }
       @case ('turn') { <div class="ev turn-h">Turn {{ it.turn }}{{ it.planMode ? ' · plan mode' : '' }}</div> }
       @case ('divider') { <div class="ev turn-h cont">{{ it.text }}</div> }
@@ -269,7 +273,7 @@
         } @else {
         <div class="ev result" [class.bad]="!it.ok">
           <div class="h">{{ it.ok ? 'Result' : 'Failed · ' + (it.subtype || 'error') }}{{ it.durationMs != null ? ' · ' + d(it.durationMs) : '' }}{{ it.numTurns ? ' · ' + it.numTurns + ' turns' : '' }}</div>
-          <div class="md tight" [innerHTML]="it.text | md | trustedHtml"></div>
+          <div class="md tight" [innerHTML]="it.text | md:'paths' | trustedHtml"></div>
         </div>
         }
       }
@@ -304,7 +308,7 @@
           </div>
           @if ((c.status === 'running' || c.status === 'starting') && c.activity) { <div class="activity"><span class="spin"></span> {{ c.activity }}</div> }
           @if (c.summary && (c.status === 'completed' || c.status === 'failed')) {
-            <div class="report md tight" [class.clamp]="!isOpen(it.key)" [innerHTML]="c.summary | md | trustedHtml"></div>
+            <div class="report md tight" [class.clamp]="!isOpen(it.key)" [innerHTML]="c.summary | md:'paths' | trustedHtml"></div>
           }
           @if (isOpen(it.key)) {
             <div class="agent-b">

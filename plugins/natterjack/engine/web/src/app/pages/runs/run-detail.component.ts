@@ -10,6 +10,7 @@ import { MdPipe } from '../../core/md.pipe';
 import { SmallScreenService } from '../../core/small-screen';
 import { ToastService } from '../../core/toast.service';
 import { TrustedHtmlPipe } from '../../core/trusted-html.pipe';
+import { MdFileViewerComponent, type MdFileSource } from '../../shared/md-file-viewer.component';
 import { copyText, dur, lsGet, lsSet, relTime, tokens, usd } from '../../core/util';
 import { buildThread, countSteps, isOpenModel, openModelSummary, stripAgents, stripSummary, type AgentCard, type ThreadItem } from '../../runs/thread';
 import { RunEventCache, type RunEvents } from '../../runs/event-cache';
@@ -53,7 +54,8 @@ const eventCache = new RunEventCache();
 @Component({
   selector: 'dash-run-detail',
   imports: [NgTemplateOutlet, RunComposerComponent, RunChangesComponent, RunOutputsComponent, DiffViewComponent, AttachmentListComponent,
-    IssueSummaryComponent, WorkspaceAppsComponent, LongTextComponent, MdPipe, TrustedHtmlPipe, RouterLink],
+    IssueSummaryComponent, WorkspaceAppsComponent, LongTextComponent, MdPipe, TrustedHtmlPipe, RouterLink, MdFileViewerComponent],
+  host: { '(click)': 'openMdPath($event)', '(keydown.enter)': 'openMdPath($event)' },
   changeDetection: ChangeDetectionStrategy.OnPush,
   styleUrl: './run-detail.component.scss',
   templateUrl: './run-detail.component.html',
@@ -172,6 +174,15 @@ export class RunDetailComponent implements OnDestroy {
   /** The run's workspace, live from the status poll (apps, ports, ticket id). */
   readonly ws = computed(() => { const r = this.run(); return r ? this.data.status()?.workspaces.find((w) => w.slug === r.workspace) || null : null; });
   readonly ticket = computed(() => { const r = this.run(); return r ? runTicket(r, this.ws()?._ticketId) : null; });
+  /** The Factory ticket this run works on, when it has a plan file: the ticket strip offers to read it. */
+  readonly factoryPlan = computed(() => {
+    const r = this.run(), t = this.ticket()?.id;
+    if (!r || r.remote) return null;
+    const it = this.data.factory()?.items.find((i) => i.runIds.includes(r.id)) || (t ? this.data.factory()?.items.find((i) => i.ticket === t) : null);
+    return it?.plan ? { ticket: it.ticket, waiting: it.waitingGate?.id === 'plan' } : null;
+  });
+  /** The markdown file open in the viewer (a path the run named, or the Factory plan), or null. */
+  readonly mdFile = signal<MdFileSource | null>(null);
   /** Where the run actually worked: a run started in main that created a worktree belongs to that worktree. */
   readonly workWs = computed(() => runWorkspace(this.run(), this.data.status()?.workspaces || [],
     [...this.events(), ...(this.cont()?.events || [])], this.ticket()?.id));
@@ -294,6 +305,15 @@ export class RunDetailComponent implements OnDestroy {
     try { hit = { detail: await this.api.get<IssueDetail>('/api/issues/issue?id=' + encodeURIComponent(id)) }; }
     catch (e) { hit = { error: (e as Error).message }; }
     this.issues.set({ ...this.issues(), [id]: hit });
+  }
+
+  /** A click (or Enter) on a markdown path in the transcript (`| md:'paths'`) opens it in the viewer. */
+  openMdPath(e: Event): void {
+    const el = (e.target as HTMLElement | null)?.closest?.('[data-md-path]') as HTMLElement | null;
+    const r = this.run();
+    if (!el || !r || r.remote) return;
+    e.preventDefault();
+    this.mdFile.set({ kind: 'run', runId: r.id, path: el.dataset['mdPath'] || '' });
   }
 
   ngOnDestroy(): void {
