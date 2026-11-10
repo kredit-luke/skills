@@ -147,6 +147,24 @@ export function renderMd(md: string | null | undefined, urls?: MdUrls): string {
   return html;
 }
 
+/** An inline-code span that's a markdown file's path: ~/x.md, C:/x.md, docs/x.md, HANDOFF.md. No spaces, nothing that isn't a path. */
+const MD_PATH = /^(?:~[\\/]|[A-Za-z]:[\\/]|\.{0,2}[\\/])?[^\s"'`|*?<>:]+\.(?:md|markdown)$/i;
+const UNESC: Record<string, string> = { '&amp;': '&', '&lt;': '<', '&gt;': '>', '&quot;': '"', '&#39;': "'" };
+
+/**
+ * Mark inline `code` naming a markdown file in rendered HTML (from renderMd) as something to open:
+ * class md-path and the path in data-md-path. Fenced blocks are left alone. The run page opens
+ * them in its viewer; the text is already escaped, so it's safe in the attribute as it is.
+ */
+export function linkMdPaths(html: string): string {
+  return html.replace(/(?<!<pre>)<code>([^<]+)<\/code>/g, (whole, text: string) => {
+    const plain = text.replace(/&(?:amp|lt|gt|quot|#39);/g, (e) => UNESC[e]);
+    return MD_PATH.test(plain)
+      ? '<code class="md-path" role="button" tabindex="0" title="Open ' + text + '" data-md-path="' + text + '">' + text + '</code>'
+      : whole;
+  });
+}
+
 function termRe(terms: string[], flags: string): RegExp {
   return new RegExp('\\b(' + terms.map((t) => t.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('|') + ')[a-z0-9]*', flags);
 }

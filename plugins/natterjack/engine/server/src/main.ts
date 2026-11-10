@@ -58,6 +58,7 @@ import { MeetingTicketLinks, MeetingTickets, TICKETS_FILE, recordRunTickets } fr
 import { readLinks, saveLink, deleteLink, readRepoReadme } from "./links.ts";
 import { Machine, nativeArgSafe, openTerminal, resolvedSpecs, terminalArg } from "./machine.ts";
 import { cloneStep, cloneTargets, readRepos, reposStatus } from "./repos.ts";
+import { readRunMarkdown } from "./md-file.ts";
 import { buildSnapshot, carryOver, downloadStep, downloadTargets, dropManifestCache, fetchManifest, planSnapshot, publishSnapshot, snapshotStatus, writeManifest } from "./snapshot.ts";
 import type { PublishPlan } from "./snapshot.ts";
 import { installerRoles } from "./installer.ts";
@@ -1920,7 +1921,7 @@ async function openTerminalForRun(run: RunMeta) {
   return { opened: r.opened, command: `cd "${run.cwd}"; ${command}` };
 }
 
-const RUN_ROUTE = /^\/api\/runs\/([a-z0-9-]+)(?:\/(stream|cancel|verdict|flag|terminal|continuation|reply|plan-mode|changes|diff|rename|watch-stop|watch-approve|queue|queue-edit|queue-remove|queue-send|queue-auto|send-to-hosted|send-cancel))?$/i;
+const RUN_ROUTE = /^\/api\/runs\/([a-z0-9-]+)(?:\/(stream|cancel|verdict|flag|terminal|continuation|reply|plan-mode|changes|diff|rename|watch-stop|watch-approve|queue|queue-edit|queue-remove|queue-send|queue-auto|send-to-hosted|send-cancel|md-file))?$/i;
 const RUN_FILE_ROUTE = /^\/api\/runs\/([a-z0-9-]+)\/files\/([^/]+)$/i;
 const RUN_OUTPUT_ROUTE = /^\/api\/runs\/([a-z0-9-]+)\/outputs\/(.+)$/i;
 
@@ -2364,6 +2365,18 @@ async function handleApi(req: http.IncomingMessage, res: http.ServerResponse, ur
       if (!meta) return sendError(res, 404, "Unknown run");
       const events = runs.events(meta.id);
       return sendJson(res, await runChanges.changes(meta, events, force, runWorktree(meta, events)));
+    }
+    if (runMatch && runMatch[2] === "md-file") {
+      const meta = runs.get(runMatch[1]);
+      if (!meta) return sendError(res, 404, "Unknown run");
+      // Relative paths: the worktree the run worked in first, then the folder it started in.
+      // The outputs folder counts only while it's a plain folder (a run could swap in a link).
+      const worktree = runWorktree(meta, runs.events(meta.id));
+      const outputs = attachments.outputsRoot(meta.id);
+      return sendJson(res, readRunMarkdown(String(q("path") || ""), {
+        home: os.homedir(), bases: [...(worktree ? [worktree.path] : []), meta.cwd],
+        roots: [...listWorkspaces().map((w) => w.path), ...(outputs ? [outputs] : [])],
+      }));
     }
     if (runMatch && runMatch[2] === "diff") {
       const meta = runs.get(runMatch[1]);

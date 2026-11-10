@@ -74,6 +74,9 @@ a { color: var(--link); }
 .side-nav .pill.red { background: var(--risk); color: #fff; }
 .side-nav .sep { height: 1px; background: var(--brand-line); margin: 8px 6px; }
 .md .rl { color: var(--brand-700); border-bottom: 1px dotted currentColor; cursor: help; }
+.md code.md-path { color: var(--brand-700); cursor: pointer; text-decoration: underline dotted; text-underline-offset: 2px; }
+.md code.md-path:hover, .md code.md-path:focus-visible { text-decoration-style: solid; }
+.ticket-strip .plan-btn { margin-left: auto; white-space: nowrap; } /* run page: the Factory plan; here because run-detail's styles are at their budget */
 .side-nav .grp { font-family: var(--font-mono); font-size: 10px; letter-spacing: .14em; text-transform: uppercase; color: var(--on-brand-soft); opacity: .7; padding: 12px 10px 4px; }
 .side-nav .nav-more {
   display: flex; align-items: center; gap: 11px; padding: 4px 10px; border: 0; border-radius: var(--r-sm); background: none; cursor: pointer;

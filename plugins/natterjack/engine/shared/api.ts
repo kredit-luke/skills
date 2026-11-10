@@ -588,6 +588,8 @@ export interface ImportRunJob {
  * (so edits already there don't show); 'branch' = no snapshot (a worktree the run created,
  * or an older run), compared with where the branch left main.
  * GET /api/runs/:id/diff?repo=<scope.path>&file=<file> → { diff } (unified diff text)
+ * GET /api/runs/:id/md-file?path=<path> → { path, text }: a markdown file the run named (~/…, absolute,
+ *   or relative to the run's folder), from ~/.claude/plans, this workspace and its worktrees, or the run's outputs only.
  */
 export interface RunChangedFile { file: string; status: string; adds: number | null; dels: number | null }
 export interface RunChangeScope {
