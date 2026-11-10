@@ -277,7 +277,7 @@ export interface QueuedMessage {
 export interface WatchedPr {
   repo: string;                // owner/name
   number: number;
-  /** null until the first check (that check only records, it never wakes). */
+  /** null until the first check (that check records, and wakes only on feedback waiting since this login's last activity). */
   seen: PrSnapshot | null;
 }
 
@@ -295,6 +295,10 @@ export interface PrSnapshot {
   lastCommentId: number;
   /** Newest top-level comment by someone else: createdAt, or ''. */
   lastIssueCommentAt: string;
+  /** Newest inline review comment by someone else: created_at, or ''. (Missing in snapshots from before it was added.) */
+  lastInlineCommentAt?: string;
+  /** When the signed-in login last opened, reviewed or commented on the PR, or '' for never. The first look wakes on feedback newer than this. */
+  myLastActivityAt?: string;
 }
 
 /**

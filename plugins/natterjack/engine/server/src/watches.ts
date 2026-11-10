@@ -307,16 +307,36 @@ export class Watcher {
 /** What one check sees on a PR. */
 export async function prSnapshot(gh: Gh, repo: string, number: number, me: string): Promise<PrSnapshot> {
   const [view, inline] = await Promise.all([
-    gh(["pr", "view", String(number), "--repo", repo, "--json", "state,reviewDecision,mergeStateStatus,statusCheckRollup,reviews,comments"]),
-    // One max per page with --paginate; the highest wins.
-    gh(["api", `repos/${repo}/pulls/${number}/comments?per_page=100`, "--paginate", "--jq", `[.[] | select(.user.login != "${me}") | .id] | max // 0`]),
+    gh(["pr", "view", String(number), "--repo", repo, "--json", "author,createdAt,state,reviewDecision,mergeStateStatus,statusCheckRollup,reviews,comments"]),
+    // One line per page with --paginate: [others' highest id, others' newest, mine newest]; each max wins.
+    gh(["api", `repos/${repo}/pulls/${number}/comments?per_page=100`, "--paginate", "--jq",
+      `[([.[] | select(.user.login != "${me}") | .id] | max // 0), ([.[] | select(.user.login != "${me}") | .created_at] | max // ""), ([.[] | select(.user.login == "${me}") | .created_at] | max // "")]`]),
   ]);
   const d = JSON.parse(view || "{}");
-  const others = (list: any[]) => (Array.isArray(list) ? list : []).filter((x) => x && x.author && x.author.login !== me);
-  const reviews = others(d.reviews).filter((r) => r.state && r.state !== "PENDING" && r.submittedAt);
+  const list = (l: any[]) => (Array.isArray(l) ? l : []).filter((x) => x && x.author);
+  const others = (l: any[]) => list(l).filter((x) => x.author.login !== me);
+  const mine = (l: any[]) => list(l).filter((x) => x.author.login === me);
+  const newest = (a: string, t: unknown) => (typeof t === "string" && t > a ? t : a);
+  const submitted = (l: any[]) => l.filter((r) => r.state && r.state !== "PENDING" && r.submittedAt);
+  const reviews = submitted(others(d.reviews));
   const review = reviews.reduce((a: any, r: any) => (!a || r.submittedAt > a.submittedAt ? r : a), null);
-  const lastIssueCommentAt = others(d.comments).reduce((a: string, c: any) => (c.createdAt && c.createdAt > a ? c.createdAt : a), "");
-  const lastCommentId = inline.split(/\s+/).map(Number).filter(Number.isFinite).reduce((a, n) => Math.max(a, n), 0);
+  const lastIssueCommentAt = others(d.comments).reduce((a: string, c: any) => newest(a, c.createdAt), "");
+  let lastCommentId = 0, lastInlineCommentAt = "", myInlineAt = "";
+  for (const line of inline.split(/\r?\n/)) {
+    let row: unknown;
+    try { row = JSON.parse(line); } catch { continue; }
+    if (!Array.isArray(row)) continue;
+    if (Number.isFinite(Number(row[0]))) lastCommentId = Math.max(lastCommentId, Number(row[0]));
+    lastInlineCommentAt = newest(lastInlineCommentAt, row[1]);
+    myInlineAt = newest(myInlineAt, row[2]);
+  }
+  // When this login last did something on the PR: opened it, reviewed, or commented.
+  const myLastActivityAt = [
+    d.author && d.author.login === me ? d.createdAt : "",
+    ...submitted(mine(d.reviews)).map((r: any) => r.submittedAt),
+    ...mine(d.comments).map((c: any) => c.createdAt),
+    myInlineAt,
+  ].reduce(newest, "");
   return {
     state: String(d.state || "OPEN"),
     reviewDecision: String(d.reviewDecision || ""),
@@ -326,17 +346,22 @@ export async function prSnapshot(gh: Gh, repo: string, number: number, me: strin
     lastReviewBy: review ? review.author.login : "",
     lastReviewState: review ? review.state : "",
     lastCommentId,
+    lastInlineCommentAt,
     lastIssueCommentAt,
+    myLastActivityAt,
   };
 }
 
 /**
  * The changes worth a turn, as short phrases. The first look (no `prev`) only
- * records. Checks starting again (pending) never wake: Claude's own push does that.
+ * records, except for feedback still waiting on a PR this login has worked on: a review or
+ * comment by someone else newer than its own last activity (a reviewer bot often answers
+ * within minutes of a PR opening, before the watch starts). On someone else's PR the first
+ * look only records. Checks starting again (pending) never wake: Claude's own push does that.
  * Passing checks wake only an approved PR, since that's when it's ready to merge.
  */
 export function describeChanges(prev: PrSnapshot | null, next: PrSnapshot): string[] {
-  if (!prev) return [];
+  if (!prev) return waitingFeedback(next);
   const out: string[] = [];
   if (next.state !== prev.state) out.push(next.state === "MERGED" ? "was merged" : next.state === "CLOSED" ? "was closed" : "was reopened");
   if (next.state !== "OPEN") return out;
@@ -355,6 +380,17 @@ export function describeChanges(prev: PrSnapshot | null, next: PrSnapshot): stri
     if (next.mergeStateStatus === "BEHIND") out.push("branch is behind its base");
     else if (next.mergeStateStatus === "DIRTY") out.push("has a merge conflict");
   }
+  return out;
+}
+
+/** On the first look: reviews and comments by others newer than this login's own last activity on the PR. */
+function waitingFeedback(s: PrSnapshot): string[] {
+  const since = s.myLastActivityAt;
+  if (s.state !== "OPEN" || !since) return [];
+  const out: string[] = [];
+  if (s.lastReviewAt > since) out.push(`review from ${s.lastReviewBy} (${s.lastReviewState.toLowerCase().replace(/_/g, " ")}) not answered yet`);
+  if ((s.lastInlineCommentAt || "") > since) out.push("inline review comments not answered yet");
+  if (s.lastIssueCommentAt > since) out.push("comment not answered yet");
   return out;
 }
 
