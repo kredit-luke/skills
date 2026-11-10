@@ -60,6 +60,24 @@ test("applyWatchBlock: a replacement keeps what was already seen; stop ends it; 
 
 test("describeChanges: the first look only records", () => {
   assert.deepEqual(describeChanges(null, snap({ checks: "failing" })), []);
+  // Feedback on someone else's PR (this login never touched it) is the baseline too.
+  assert.deepEqual(describeChanges(null, snap({ lastReviewAt: "2026-10-02T10:01:00Z", lastReviewBy: "alice", lastReviewState: "COMMENTED", lastCommentId: 9, lastInlineCommentAt: "2026-10-02T10:01:00Z" })), []);
+});
+
+test("describeChanges: the first look wakes on feedback newer than this login's own last activity", () => {
+  const waiting = snap({
+    myLastActivityAt: "2026-10-02T10:00:00Z", // opened the PR
+    lastReviewAt: "2026-10-02T10:02:00Z", lastReviewBy: "copilot-pull-request-reviewer", lastReviewState: "COMMENTED",
+    lastCommentId: 9, lastInlineCommentAt: "2026-10-02T10:02:00Z", lastIssueCommentAt: "2026-10-02T10:03:00Z",
+  });
+  assert.deepEqual(describeChanges(null, waiting), [
+    "review from copilot-pull-request-reviewer (commented) not answered yet", "inline review comments not answered yet", "comment not answered yet",
+  ]);
+  // Answered in the turn that started the watch: nothing waits.
+  assert.deepEqual(describeChanges(null, { ...waiting, myLastActivityAt: "2026-10-02T10:05:00Z" }), []);
+  assert.deepEqual(describeChanges(null, { ...waiting, state: "MERGED" }), []);
+  // A snapshot saved before these fields existed.
+  assert.deepEqual(describeChanges(null, snap({ myLastActivityAt: "2026-10-02T10:00:00Z", lastCommentId: 9 })), []);
 });
 
 test("describeChanges: reviews, comments, failing checks, behind and conflicts wake", () => {
@@ -98,13 +116,24 @@ test("prSnapshot: activity by the signed-in user is left out", async () => {
       });
     }
     assert.match(args[args.length - 1], /select\(\.user\.login != "me"\)/);
-    return "17\n0\n42\n"; // one max per page
+    // One row per page: [others' highest id, others' newest, mine newest].
+    return '[17,"2026-10-02T09:30:00Z",""]\n[0,"",""]\n[42,"2026-10-02T09:10:00Z","2026-10-02T11:30:00Z"]\n';
   };
   const s = await prSnapshot(gh, "a/b", 1, "me");
   assert.equal(s.checks, "failing");
   assert.equal(s.lastReviewBy, "alice");
   assert.equal(s.lastIssueCommentAt, "2026-10-02T08:00:00Z");
   assert.equal(s.lastCommentId, 42);
+  assert.equal(s.lastInlineCommentAt, "2026-10-02T09:30:00Z");
+  assert.equal(s.myLastActivityAt, "2026-10-02T11:30:00Z"); // the inline reply beats the 11:00 review and comment
+});
+
+test("prSnapshot: opening the PR counts as this login's activity", async () => {
+  const gh: Gh = async (args) => args[0] === "pr"
+    ? JSON.stringify({ author: { login: "me" }, createdAt: "2026-10-02T10:00:00Z", state: "OPEN", reviews: [], comments: [] })
+    : '[0,"",""]\n';
+  assert.equal((await prSnapshot(gh, "a/b", 1, "me")).myLastActivityAt, "2026-10-02T10:00:00Z");
+  assert.equal((await prSnapshot(gh, "a/b", 1, "someone-else")).myLastActivityAt, "");
 });
 
 // ------------------------------------------------------------ the watcher
@@ -152,6 +181,20 @@ test("watcher: first check records, a quiet check doesn't wake, a new review doe
     const w = t.runs.get("r1")!.watch!;
     assert.equal(w.wakes, 1);
     assert.match(w.lastChange!, /alice/);
+  } finally { t.done(); }
+});
+
+test("watcher: a review that came in before the first check wakes it, once", async () => {
+  const t = setup();
+  try {
+    // The run opened the PR; a reviewer bot answered before the watch's first check.
+    Object.assign(t.pr, { author: { login: "me" }, createdAt: later(-40).toISOString() });
+    t.pr.reviews.push({ author: { login: "copilot-pull-request-reviewer" }, state: "COMMENTED", submittedAt: later(-38).toISOString() });
+    await t.watcher.tick(later(0));
+    assert.equal(t.wakes.length, 1);
+    assert.match(t.wakes[0], /a\/b#1: review from copilot-pull-request-reviewer \(commented\) not answered yet/);
+    await t.watcher.tick(later(5));
+    assert.equal(t.wakes.length, 1);
   } finally { t.done(); }
 });
 
