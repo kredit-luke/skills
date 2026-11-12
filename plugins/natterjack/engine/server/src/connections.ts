@@ -423,12 +423,19 @@ export class Connections {
    * inWorkspace: the run works in this workspace's folder (another folder, e.g. a worktree, has a
    * settings.local.json of its own, which allowing here doesn't change).
    */
-  denied(tools: string[], inWorkspace: boolean): DeniedConnection[] {
+  async denied(tools: string[], inWorkspace: boolean): Promise<DeniedConnection[]> {
+    // claude.ai connectors and plugins' servers are only known from `claude mcp list`: right after a
+    // restart, wait for it (or the check under way) rather than call them "not set up".
+    if (tools.length && !healthNow(this.root).last) await mcpHealth(this.root, false, this.run).catch(() => {});
     const cfg = readMcpConfig(this.root);
     const listed = this.build().connections;
+    // A server id can hold "__" or end in "_", so the first "__" isn't always where it ends: the
+    // longest known rule that prefixes the tool wins; parsing the name is the fallback.
+    const known = [...new Set([...listed.map((c) => c.rule), ...[...cfg.allowLocal, ...cfg.allowOther, ...cfg.blocked].filter((r) => /^mcp__[A-Za-z0-9_-]+$/.test(r))])]
+      .sort((a, b) => b.length - a.length);
     const byRule = new Map<string, DeniedConnection>();
     for (const tool of tools) {
-      const rule = mcpToolServerRule(tool);
+      const rule = known.find((r) => tool.startsWith(r + "__")) || mcpToolServerRule(tool);
       if (!rule) continue;
       const d = byRule.get(rule) || { name: listed.find((c) => c.rule === rule)?.name || rule.slice("mcp__".length), rule, tools: [], allowed: false, canAllow: false, hint: null };
       d.tools.push(tool);
@@ -436,12 +443,13 @@ export class Connections {
     }
     for (const d of byRule.values()) {
       const c = listed.find((x) => x.rule === d.rule);
+      // Another folder reads its own settings: what this workspace allows says nothing about it.
+      if (!inWorkspace) { d.hint = `This run works in another folder. To let runs there use it, add "${d.rule}" to permissions.allow in that folder's .claude/settings.local.json.`; continue; }
       // Only blocked when every refused tool is: allowing the server still opens the others.
       const blocked = cfg.blocked.has(d.rule) || d.tools.every((t) => cfg.blocked.has(t));
       d.allowed = !blocked && (cfg.allowLocal.has(d.rule) || cfg.allowOther.has(d.rule));
       if (d.allowed) continue;
       if (blocked) d.hint = "The workspace's settings block it on purpose (a deny or ask rule), so runs can't use it. Ask whoever looks after the workspace.";
-      else if (!inWorkspace) d.hint = `This run works in another folder. To let runs there use it, add "${d.rule}" to permissions.allow in that folder's .claude/settings.local.json.`;
       else if (!c || !c.actions.includes("allow")) d.hint = "It isn't set up for you. Open Connections to see why.";
       else d.canAllow = true;
     }

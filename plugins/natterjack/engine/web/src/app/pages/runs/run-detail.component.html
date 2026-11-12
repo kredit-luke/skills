@@ -77,7 +77,7 @@
           <div class="warn-note"><b>Background work stopped.</b> {{ r.warning }} Headless runs end when Claude's turn ends; for long or ongoing work, continue in a terminal.</div>
         }
         @if (denied().length) {
-          <div class="warn-note denied-note">
+          <div class="warn-note denied-note needs-you">
             @for (d of denied(); track d.rule) {
               <div class="denied-row">
                 @if (d.allowed) {
@@ -91,7 +91,7 @@
               </div>
             }
             <div class="denied-row">
-              @if (r.status !== 'running' && denied().some(d => d.allowed)) {
+              @if (r.status !== 'running' && r.status !== 'handedOff' && !r.handoffPendingAt && denied().some(d => d.allowed)) {
                 <button class="btn sm" [disabled]="denyWorking() !== null" (click)="retryDenied()">Try again</button>
               }
               <a routerLink="/connections">Connections</a>

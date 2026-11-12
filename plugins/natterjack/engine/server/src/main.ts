@@ -2322,7 +2322,7 @@ async function handleApi(req: http.IncomingMessage, res: http.ServerResponse, ur
     if (p === "/api/connections/denied") {
       const run = runs.get(q("run") || "");
       if (!run) return sendError(res, 404, "No such run");
-      return sendJson(res, { connections: connections.denied(run.deniedTools || [], samePath(run.cwd, MAIN_WORKSPACE_PATH)) });
+      return sendJson(res, { connections: await connections.denied(run.deniedTools || [], samePath(run.cwd, MAIN_WORKSPACE_PATH)) });
     }
     if (p === "/api/search") {
       const limit = Math.min(parseInt(q("limit") || "", 10) || 40, 100);
