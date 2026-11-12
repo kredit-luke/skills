@@ -76,7 +76,7 @@ import { KNOWLEDGE_TOOLS, addStoreSource, chosenTools, saveTools } from "./knowl
 import { DocsProviders } from "./docs-providers/index.ts";
 import { Memory } from "./memory.ts";
 import { People } from "./people/index.ts";
-import { Connections, listedName } from "./connections.ts";
+import { Connections, listedName, samePath } from "./connections.ts";
 import { McpLogin, PTY_SIGN_IN } from "./mcp-login.ts";
 import { Search } from "./search.ts";
 import { claudeAuth, claudeAuthCached, claudeEnv } from "./claude.ts";
@@ -2319,6 +2319,11 @@ async function handleApi(req: http.IncomingMessage, res: http.ServerResponse, ur
     if (p === "/api/models") return sendJson(res, await models.view(force));
     if (p === "/api/connections/agent") return sendJson(res, await agentConnections(otherAgent(q("agent"))));
     if (p === "/api/connections") return sendJson(res, await connections.list({ wait: q("wait") === "1", force }));
+    if (p === "/api/connections/denied") {
+      const run = runs.get(q("run") || "");
+      if (!run) return sendError(res, 404, "No such run");
+      return sendJson(res, { connections: connections.denied(run.deniedTools || [], samePath(run.cwd, MAIN_WORKSPACE_PATH)) });
+    }
     if (p === "/api/search") {
       const limit = Math.min(parseInt(q("limit") || "", 10) || 40, 100);
       return sendJson(res, search.query(String(q("q") || "").slice(0, 200), { source: q("source") || undefined, site: q("site") || undefined, limit }));

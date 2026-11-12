@@ -1,6 +1,6 @@
 import { ChangeDetectionStrategy, Component, ElementRef, Injector, OnDestroy, afterNextRender, computed, effect, inject, input, signal, untracked, viewChild } from '@angular/core';
 import { NgTemplateOutlet } from '@angular/common';
-import type { Continuation, IssueDetail, RoutinesResponse, RunDetail, RunEvent, RunMeta, RunOutput, SendToHostedResponse, TerminalResponse } from '../../../../../shared/api';
+import type { Continuation, DeniedConnection, IssueDetail, RoutinesResponse, RunDetail, RunEvent, RunMeta, RunOutput, SendToHostedResponse, TerminalResponse } from '../../../../../shared/api';
 import { daysLabel, formatMinutes, parseDuration } from '../../../../../shared/loops';
 import { RouterLink } from '@angular/router';
 import { ApiService } from '../../core/api.service';
@@ -15,6 +15,7 @@ import { copyText, dur, lsGet, lsSet, relTime, tokens, usd } from '../../core/ut
 import { buildThread, countSteps, isOpenModel, openModelSummary, stripAgents, stripSummary, type AgentCard, type ThreadItem } from '../../runs/thread';
 import { RunEventCache, type RunEvents } from '../../runs/event-cache';
 import { BacklogTracker } from '../../runs/backlog';
+import { deniedLabel } from '../../runs/denied';
 import { cancelBlockedReason, pendingLabel, pendingText, remoteAllows, remoteBanner, withListRemote } from '../../runs/remote';
 import { runTicket } from '../../../../../shared/run-ticket';
 import { runWorkspace } from '../../../../../shared/run-workspace';
@@ -74,6 +75,11 @@ export class RunDetailComponent implements OnDestroy {
   /** Files in the run's outputs folder (GET /api/runs/:id), re-read when a turn starts or ends. */
   readonly outputs = signal<RunOutput[]>([]);
   readonly loadError = signal<string | null>(null);
+  /** Servers whose tools the latest turn was refused (GET /api/connections/denied), with what the page can do. */
+  readonly denied = signal<DeniedConnection[]>([]);
+  /** A denied server being allowed, or 'retry' while Try again is sent. */
+  readonly denyWorking = signal<string | null>(null);
+  private deniedKey = '';
   readonly terminalCmd = signal<string | null>(null);
   /** Send to hosted is packing the run (git fetches each repo, so it can take a few seconds). */
   readonly sending = signal(false);
@@ -272,6 +278,19 @@ export class RunDetailComponent implements OnDestroy {
     effect(() => {
       const t = this.ticket();
       if (t) untracked(() => this.loadIssue(t.id));
+    });
+    // Tools the turn was refused (runs answer no permission prompts): look up their servers once the
+    // turn is over, so the page can offer to allow them instead of leaving a vague "no access".
+    effect(() => {
+      const r = this.run();
+      const tools = r && !r.remote && r.status !== 'running' ? r.deniedTools || [] : [];
+      const key = tools.length && r ? r.id + '|' + tools.join(',') : '';
+      untracked(() => {
+        if (key === this.deniedKey) return;
+        this.deniedKey = key;
+        if (!key || !r) { this.denied.set([]); return; }
+        this.loadDenied(r.id, key);
+      });
     });
     // The sticky top block and the composer change height (prompt, notes, questions, an open strip):
     // their heights go to CSS, so the transcript box fits between them and nothing hides under the top.
@@ -778,6 +797,39 @@ export class RunDetailComponent implements OnDestroy {
       this.setRun(res.run);
     } catch (e) { this.toast.error((e as Error).message); }
   }
+
+  private async loadDenied(id: string, key: string): Promise<void> {
+    try {
+      const res = await this.api.get<{ connections: DeniedConnection[] }>('/api/connections/denied?run=' + encodeURIComponent(id));
+      if (this.deniedKey === key) this.denied.set(res.connections);
+    } catch { if (this.deniedKey === key) this.denied.set([]); }
+  }
+
+  /** Let runs use a refused server (the Connections page's "Runs can use it"). */
+  async allowDenied(d: DeniedConnection): Promise<void> {
+    this.denyWorking.set(d.name);
+    try {
+      await this.api.post('/api/connections/allow', { name: d.name, on: true });
+      this.denied.update((list) => list.map((x) => (x.rule === d.rule ? { ...x, allowed: true, canAllow: false, hint: null } : x)));
+      this.toast.show('Runs can use ' + deniedLabel(d) + ' now');
+    } catch (e) { this.toast.error((e as Error).message); }
+    finally { this.denyWorking.set(null); }
+  }
+
+  /** Reply so Claude tries the refused step again. */
+  async retryDenied(): Promise<void> {
+    const r = this.run();
+    if (!r) return;
+    const names = this.denied().filter((d) => d.allowed).map(deniedLabel);
+    this.denyWorking.set('retry');
+    try {
+      const res = await this.api.post<{ run: RunMeta }>('/api/runs/' + r.id + '/reply', { text: `You can use ${names.join(' and ') || 'those tools'} now. Try that again.` });
+      this.onRunChanged(res.run);
+    } catch (e) { this.toast.error((e as Error).message); }
+    finally { this.denyWorking.set(null); }
+  }
+
+  readonly deniedLabel = deniedLabel;
 
   /** After a reply or plan-mode change: take the new meta, make sure the stream is live. */
   onRunChanged(run: RunMeta): void {

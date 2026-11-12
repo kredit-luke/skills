@@ -961,6 +961,7 @@ export class RunManager {
     meta.turnStartedAt = new Date().toISOString();
     meta.question = null;
     meta.warning = null;
+    meta.deniedTools = null;
     meta.error = null;
     meta.effectivePermissionMode = null; // this turn's init sets it again
     this._cont.delete(meta.id); // the terminal-continuation cutoff moves with each dashboard turn
@@ -1469,6 +1470,15 @@ function markImplementing(meta: RunMeta, prompt: string) {
 }
 
 /** Update counters from one event. For a result, returns whether it failed. */
+const MAX_DENIED_TOOLS = 20;
+
+/** The MCP tool names in a result's permission_denials ([{ tool_name, tool_use_id, tool_input }]). */
+export function deniedMcpTools(v: unknown): string[] {
+  if (!Array.isArray(v)) return [];
+  const out = v.map((d) => d?.tool_name).filter((n): n is string => typeof n === "string" && /^mcp__[A-Za-z0-9_-]+$/.test(n) && n.length <= 200);
+  return [...new Set(out)];
+}
+
 export function applyEvent(meta: RunMeta, ev: RunEvent, main: boolean, costBefore: number, roundTripsBefore: number): boolean | undefined {
   if (ev.type === "system" && ev.subtype === "init" && main) {
     // The CLI can downgrade the requested mode (e.g. auto isn't available on every model).
@@ -1496,6 +1506,10 @@ export function applyEvent(meta: RunMeta, ev: RunEvent, main: boolean, costBefor
     meta.numTurns = roundTripsBefore + (ev.num_turns || 0);
     const text = typeof ev.result === "string" ? ev.result : "";
     meta.resultText = text.slice(0, RESULT_TEXT_MAX);
+    // MCP tools refused for want of an allow rule: the run page offers to allow the server. Kept over
+    // the turn's results (each lists its own), so a later one doesn't hide an earlier refusal.
+    const denied = deniedMcpTools(ev.permission_denials);
+    if (denied.length) meta.deniedTools = [...new Set([...(meta.deniedTools || []), ...denied])].slice(0, MAX_DENIED_TOOLS);
     // Status is settled when the process exits (more output can follow a result).
     const failed = !!(ev.is_error || (ev.subtype && ev.subtype !== "success"));
     meta.error = failed ? (ev.subtype && ev.subtype !== "success" ? ev.subtype : text.slice(0, 300) || "error") : null;

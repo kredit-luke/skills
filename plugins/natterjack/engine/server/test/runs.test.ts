@@ -259,3 +259,17 @@ test("onEvent: a last line cut short (no newline) stays its own unreadable line,
     fs.rmSync(dir, { recursive: true, force: true });
   }
 });
+
+test("applyEvent: MCP tools in a result's permission_denials are kept for the turn; other refusals aren't", () => {
+  const m = { toolCalls: 0, costUsd: 0, numTurns: 0 } as any;
+  const result = (denials: unknown) => ({ type: "result", subtype: "success", result: "done", permission_denials: denials }) as any;
+  applyEvent(m, result([]), true, 0, 0);
+  assert.equal(m.deniedTools, undefined);
+  applyEvent(m, result([{ tool_name: "mcp__claude_ai_Slack__slack_read_channel", tool_use_id: "t1", tool_input: {} }, { tool_name: "Bash", tool_use_id: "t2", tool_input: { command: "rm -rf /" } }]), true, 0, 0);
+  assert.deepEqual(m.deniedTools, ["mcp__claude_ai_Slack__slack_read_channel"]);
+  // A later result in the same turn adds to the list instead of replacing it.
+  applyEvent(m, result([{ tool_name: "mcp__claude_ai_Atlassian__getJiraIssue" }, { tool_name: "mcp__claude_ai_Slack__slack_read_channel" }, { tool_name: "mcp__bad name" }, null]), true, 0, 0);
+  assert.deepEqual(m.deniedTools, ["mcp__claude_ai_Slack__slack_read_channel", "mcp__claude_ai_Atlassian__getJiraIssue"]);
+  applyEvent(m, result("nope"), true, 0, 0);
+  assert.equal(m.deniedTools.length, 2);
+});

@@ -181,6 +181,11 @@ export interface RunMeta {
   question: Question[] | null;
   /** Background work that was cut off when the turn ended (§8). Cleared on the next turn. */
   warning: string | null;
+  /**
+   * MCP tools the latest turn wasn't allowed to use (the result's permission_denials): runs answer no
+   * permission prompts, so a server without an allow rule is refused. Cleared on the next turn.
+   */
+  deniedTools?: string[] | null;
   effectivePermissionMode?: string | null;
   resolvedModel?: string | null;
   continuedAt?: string | null; // first activity seen in a terminal after the headless part
@@ -1545,6 +1550,21 @@ export interface ConnectionRequired {
   vars: string[];
   /** Other names that meet it (the same tool reached another way); the first connected one carries the requirement. */
   alternatives: string[];
+}
+/** A server whose tools a run was refused (GET /api/connections/denied?run=<id>). */
+export interface DeniedConnection {
+  /** The listed server name when known (e.g. "claude.ai Slack"), else the id from the tool name. */
+  name: string;
+  /** Its allow rule, e.g. "mcp__claude_ai_Slack". */
+  rule: string;
+  /** The refused tools. */
+  tools: string[];
+  /** Runs may use it now (allowed since the run was refused): trying again is enough. */
+  allowed: boolean;
+  /** The run page can allow it (POST /api/connections/allow). */
+  canAllow: boolean;
+  /** Why it can't, when it can't and isn't allowed already. */
+  hint: string | null;
 }
 export interface Connection {
   name: string;

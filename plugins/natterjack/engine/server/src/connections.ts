@@ -27,7 +27,7 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import type { Connection, ConnectionAddRequest, ConnectionRequired, ConnectionsResponse, McpScope, McpServerConfig } from "../../shared/api.ts";
+import type { Connection, ConnectionAddRequest, DeniedConnection, ConnectionRequired, ConnectionsResponse, McpScope, McpServerConfig } from "../../shared/api.ts";
 import { claudeEnv, claudeIsShim, parseMcpList, spawnClaude, type McpListEntry } from "./claude.ts";
 import { readConfigFile } from "./config.ts";
 import { editSettings } from "./profile.ts";
@@ -102,7 +102,7 @@ function readJson(file: string): any {
   try { return JSON.parse(fs.readFileSync(file, "utf-8").replace(/^﻿/, "")); } catch { return null; }
 }
 
-const samePath = (a: string, b: string) => {
+export const samePath = (a: string, b: string) => {
   const norm = (p: string) => path.resolve(p).replace(/\\/g, "/").replace(/\/+$/, "");
   return process.platform === "win32" ? norm(a).toLowerCase() === norm(b).toLowerCase() : norm(a) === norm(b);
 };
@@ -113,6 +113,12 @@ const names = (v: any): string[] => (Array.isArray(v) ? v.filter((x) => typeof x
 /** The allow rule that covers every tool of a server: names become tool prefixes with anything but [A-Za-z0-9_-] as "_". */
 export function mcpRule(name: string): string {
   return `mcp__${name.replace(/[^A-Za-z0-9_-]/g, "_")}`;
+}
+
+/** The server rule of one of its tools: mcp__claude_ai_Slack__slack_send_message → mcp__claude_ai_Slack. */
+export function mcpToolServerRule(tool: string): string | null {
+  const m = /^mcp__([A-Za-z0-9_-]+?)(?:__|$)/.exec(tool);
+  return m ? `mcp__${m[1]}` : null;
 }
 
 const SECRET_ARG = /^(--?[\w-]*(key|token|secret|password|auth)[\w-]*=).+$/i;
@@ -159,7 +165,9 @@ export function readMcpConfig(root: string) {
   const disabled = new Set([...names(local.disabledMcpjsonServers), ...names(shared.disabledMcpjsonServers), ...names(proj.disabledMcpjsonServers)]);
   const allowLocal = new Set(names(obj(local.permissions).allow));
   const allowOther = new Set([...names(obj(shared.permissions).allow), ...names(obj(userSettings.permissions).allow)]);
-  return { servers, enabledAll, enabled, disabled, allowLocal, allowOther };
+  // deny and ask beat allow, and runs refuse anything that asks: an allow rule can't open these.
+  const blocked = new Set([local, shared, userSettings].flatMap((s) => [...names(obj(s.permissions).deny), ...names(obj(s.permissions).ask)]));
+  return { servers, enabledAll, enabled, disabled, allowLocal, allowOther, blocked };
 }
 
 // ------------------------------------------------------------------ connections.json
@@ -408,6 +416,36 @@ export class Connections {
       return { changed: true, result: null };
     }, "approving a server");
     return this.refresh();
+  }
+
+  /**
+   * The servers behind tools a run was refused, and whether the run page can allow them.
+   * inWorkspace: the run works in this workspace's folder (another folder, e.g. a worktree, has a
+   * settings.local.json of its own, which allowing here doesn't change).
+   */
+  denied(tools: string[], inWorkspace: boolean): DeniedConnection[] {
+    const cfg = readMcpConfig(this.root);
+    const listed = this.build().connections;
+    const byRule = new Map<string, DeniedConnection>();
+    for (const tool of tools) {
+      const rule = mcpToolServerRule(tool);
+      if (!rule) continue;
+      const d = byRule.get(rule) || { name: listed.find((c) => c.rule === rule)?.name || rule.slice("mcp__".length), rule, tools: [], allowed: false, canAllow: false, hint: null };
+      d.tools.push(tool);
+      byRule.set(rule, d);
+    }
+    for (const d of byRule.values()) {
+      const c = listed.find((x) => x.rule === d.rule);
+      // Only blocked when every refused tool is: allowing the server still opens the others.
+      const blocked = cfg.blocked.has(d.rule) || d.tools.every((t) => cfg.blocked.has(t));
+      d.allowed = !blocked && (cfg.allowLocal.has(d.rule) || cfg.allowOther.has(d.rule));
+      if (d.allowed) continue;
+      if (blocked) d.hint = "The workspace's settings block it on purpose (a deny or ask rule), so runs can't use it. Ask whoever looks after the workspace.";
+      else if (!inWorkspace) d.hint = `This run works in another folder. To let runs there use it, add "${d.rule}" to permissions.allow in that folder's .claude/settings.local.json.`;
+      else if (!c || !c.actions.includes("allow")) d.hint = "It isn't set up for you. Open Connections to see why.";
+      else d.canAllow = true;
+    }
+    return [...byRule.values()];
   }
 
   /** Let dashboard runs use a server's tools without asking (or stop). */

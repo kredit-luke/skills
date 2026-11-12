@@ -76,6 +76,28 @@
         @if (r.warning) {
           <div class="warn-note"><b>Background work stopped.</b> {{ r.warning }} Headless runs end when Claude's turn ends; for long or ongoing work, continue in a terminal.</div>
         }
+        @if (denied().length) {
+          <div class="warn-note denied-note">
+            @for (d of denied(); track d.rule) {
+              <div class="denied-row">
+                @if (d.allowed) {
+                  <span><b>Runs can use {{ deniedLabel(d) }} now.</b></span>
+                } @else {
+                  <span><b>This run tried to use {{ deniedLabel(d) }} but isn't allowed to.</b> @if (d.hint) { {{ d.hint }} }</span>
+                  @if (d.canAllow) {
+                    <button class="btn sm primary" [disabled]="denyWorking() !== null" [title]="'Adds ' + d.rule + ' to permissions.allow in your .claude/settings.local.json, like Runs can use it on the Connections page.'" (click)="allowDenied(d)">Let runs use {{ deniedLabel(d) }}</button>
+                  }
+                }
+              </div>
+            }
+            <div class="denied-row">
+              @if (r.status !== 'running' && denied().some(d => d.allowed)) {
+                <button class="btn sm" [disabled]="denyWorking() !== null" (click)="retryDenied()">Try again</button>
+              }
+              <a routerLink="/connections">Connections</a>
+            </div>
+          </div>
+        }
         @if (r.watch; as w) {
           @if (!w.endedAt) {
             <div class="info-note watch-note" [class.needs-you]="w.approval === 'pending' && !r.remote">
