@@ -2368,6 +2368,9 @@ async function handleApi(req: http.IncomingMessage, res: http.ServerResponse, ur
     if (runMatch && runMatch[2] === "changes") {
       const meta = runs.get(runMatch[1]);
       if (!meta) return sendError(res, 404, "Unknown run");
+      // Still fresh: answered without reading the run's events (megabytes on a long run).
+      const cached = force ? null : runChanges.cached(meta);
+      if (cached) return sendJson(res, cached);
       const events = runs.events(meta.id);
       return sendJson(res, await runChanges.changes(meta, events, force, runWorktree(meta, events)));
     }

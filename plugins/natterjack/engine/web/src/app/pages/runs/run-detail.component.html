@@ -266,9 +266,9 @@
         }
       </div>
     </div>
-    <!-- Always mounted (hidden when not selected) so the tab label can show the file count. Not for a mirrored run: its /changes is a 409. -->
+    <!-- Always mounted (hidden when not selected) so the tab label can show the file count; it loads after the transcript, unless it's the tab being read. Not for a mirrored run: its /changes is a 409. -->
     @if (!r.remote) {
-      <dash-run-changes [hidden]="view() !== 'changes'" [runId]="r.id" [running]="r.status === 'running'" [shown]="view() === 'changes'" (count)="changedFiles.set($event)" />
+      <dash-run-changes [hidden]="view() !== 'changes'" [runId]="r.id" [running]="r.status === 'running'" [shown]="view() === 'changes'" [ready]="!backlogLoading() || view() === 'changes'" (count)="changedFiles.set($event)" />
     }
 
     <dash-run-composer [run]="r" (changed)="onRunChanged($event)" />

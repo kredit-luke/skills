@@ -26,7 +26,11 @@ import { within } from "../../shared/run-workspace.ts";
 
 const SKIP_DIRS = new Set(["node_modules", "worktrees", ".git", ".claude", "dist", "bin", "obj"]);
 const MAX_UNTRACKED = 5000;
-const CACHE_MS = 3000;
+/** How long a result is served again: a working run's repos keep changing, a finished run's rarely do (Refresh asks anew). */
+const CACHE_RUNNING_MS = 4000;
+const CACHE_IDLE_MS = 30_000;
+/** Git processes at a time, across every run. See git(). */
+const GIT_CONCURRENCY = 3;
 const EDIT_TOOLS = new Set(["Edit", "Write", "MultiEdit", "NotebookEdit"]);
 
 interface RepoBaseline { head: string; snap: string; untracked: string[] }
@@ -45,17 +49,63 @@ export interface ChangeScope {
   files: ChangedFile[];
 }
 
+type Changes = { scopes: ChangeScope[]; hasBaseline: boolean; computedAt: string };
+
+/**
+ * Starting a process blocks the event loop until it has started (tens of milliseconds
+ * each on Windows), and a workspace of many repos needs dozens of them: started all at
+ * once, the server answers nothing else for seconds. So a few run at a time, and each
+ * starts on a turn of its own, with other requests answered in between.
+ */
+const gitQueue: (() => void)[] = [];
+let gitRunning = 0;
+function nextGit(): void {
+  if (gitRunning >= GIT_CONCURRENCY) return;
+  const start = gitQueue.shift();
+  if (!start) return;
+  gitRunning++;
+  setImmediate(start);
+}
+
 function git(args: string[], cwd: string, timeout = 20000): Promise<string> {
   return new Promise((resolve) => {
-    execFile("git", args, { cwd, timeout, windowsHide: true, maxBuffer: 32 * 1024 * 1024 }, (err, stdout) => {
-      resolve(err && !stdout ? "" : String(stdout || ""));
+    gitQueue.push(() => {
+      const done = (out: string) => { gitRunning--; resolve(out); nextGit(); };
+      try {
+        execFile("git", args, { cwd, timeout, windowsHide: true, maxBuffer: 32 * 1024 * 1024 }, (err, stdout) => done(err && !stdout ? "" : String(stdout || "")));
+      } catch { done(""); }
     });
+    nextGit();
   });
+}
+
+/**
+ * The checked-out branch ("HEAD" when detached), as `git rev-parse --abbrev-ref HEAD` says it,
+ * read from the checkout's HEAD file (a worktree's .git is a file naming its git dir): no process.
+ */
+async function branchOf(repo: string): Promise<string> {
+  try {
+    let dir = path.join(repo, ".git");
+    if (fs.statSync(dir).isFile()) {
+      const m = /^gitdir:\s*(.+)$/m.exec(fs.readFileSync(dir, "utf-8"));
+      if (!m) throw new Error("no gitdir");
+      dir = path.resolve(repo, m[1].trim());
+    }
+    const head = fs.readFileSync(path.join(dir, "HEAD"), "utf-8").trim();
+    const ref = /^ref:\s*refs\/heads\/(.+)$/.exec(head);
+    if (ref) return ref[1];
+    if (/^[0-9a-f]{40,64}$/.test(head)) return "HEAD";
+  } catch { /* ask git */ }
+  return (await git(["rev-parse", "--abbrev-ref", "HEAD"], repo)).trim();
 }
 
 export class RunChanges {
   private runsDir: string;
   private cache = new Map<string, { at: number; scopes: ChangeScope[] }>();
+  /** Each run's last cache key (which worktree it was computed for), so cached() needs no events. */
+  private lastKey = new Map<string, string>();
+  /** Computations under way, by cache key: requests that arrive meanwhile share the one. */
+  private inFlight = new Map<string, Promise<Changes>>();
   private roots = new Map<string, string | null>();
 
   constructor(runsDir: string) {
@@ -85,17 +135,37 @@ export class RunChanges {
     for (const k of this.cache.keys()) if (k.startsWith(meta.id + "|")) this.cache.delete(k);
   }
 
+  private fresh(meta: RunMeta, key: string): { at: number; scopes: ChangeScope[] } | null {
+    const hit = this.cache.get(key);
+    return hit && Date.now() - hit.at < (meta.status === "running" ? CACHE_RUNNING_MS : CACHE_IDLE_MS) ? hit : null;
+  }
+
+  /** The run's last result while it's still fresh, else null. Needs no events: reading a big run's is the slow part of asking. */
+  cached(meta: RunMeta): Changes | null {
+    const hit = this.fresh(meta, this.lastKey.get(meta.id) || "");
+    return hit ? { scopes: hit.scopes, hasBaseline: this.read(meta.id).length > 0, computedAt: new Date(hit.at).toISOString() } : null;
+  }
+
   /**
    * Repos the run changed, with files and commits, since its first turn.
    * `worktree`: the worktree the run worked in, if any, and its repos (absolute paths).
    * Only repos inside it are listed, and all of its repos are checked, since a
    * subagent's or git's changes don't show up as the run's own edits.
    */
-  async changes(meta: RunMeta, events: RunEvent[], force = false, worktree: RunWorktree | null = null): Promise<{ scopes: ChangeScope[]; hasBaseline: boolean; computedAt: string }> {
+  async changes(meta: RunMeta, events: RunEvent[], force = false, worktree: RunWorktree | null = null): Promise<Changes> {
     const key = meta.id + "|" + (worktree?.path || "");
-    const hit = this.cache.get(key);
+    this.lastKey.set(meta.id, key);
+    const hit = force ? null : this.fresh(meta, key);
+    if (hit) return { scopes: hit.scopes, hasBaseline: this.read(meta.id).length > 0, computedAt: new Date(hit.at).toISOString() };
+    const going = this.inFlight.get(key);
+    if (going) return going;
+    const p = this.compute(meta, events, key, worktree).finally(() => this.inFlight.delete(key));
+    this.inFlight.set(key, p);
+    return p;
+  }
+
+  private async compute(meta: RunMeta, events: RunEvent[], key: string, worktree: RunWorktree | null): Promise<Changes> {
     const first = this.read(meta.id).sort((a, b) => a.turn - b.turn)[0] || null;
-    if (hit && !force && Date.now() - hit.at < CACHE_MS) return { scopes: hit.scopes, hasBaseline: !!first, computedAt: new Date(hit.at).toISOString() };
 
     const touched = new Set<string>();
     for (const p of editedPaths(events)) {
@@ -138,30 +208,33 @@ export class RunChanges {
       mb = (await git(["merge-base", "HEAD", ref], repo)).trim();
       if (mb) break;
     }
-    const head = (await git(["rev-parse", "HEAD"], repo)).trim();
-    return { ref: mb || head, head: mb || head, kind: "branch", untracked: new Set() };
+    const at = mb || (await git(["rev-parse", "HEAD"], repo)).trim();
+    return { ref: at, head: at, kind: "branch", untracked: new Set() };
   }
 
   /** `home`: the folder repo names are shown relative to (the run's worktree, else where it started). */
   private async scope(meta: RunMeta, repo: string, home: string): Promise<ChangeScope | null> {
     const base = await this.baseOf(meta, repo);
     if (!base.ref) return null;
-    const [branch, numstat, names, log, untrackedNow] = await Promise.all([
-      git(["rev-parse", "--abbrev-ref", "HEAD"], repo),
-      git(["diff", "--numstat", base.ref], repo),
-      git(["diff", "--name-status", base.ref], repo),
+    // One diff for both the statuses (--raw) and the line counts (--numstat): a process each is what costs.
+    const [branch, diff, log, untrackedNow] = await Promise.all([
+      branchOf(repo),
+      git(["diff", "--raw", "--numstat", base.ref], repo),
       base.head ? git(["log", "--oneline", "--no-decorate", "-20", `${base.head}..HEAD`], repo) : Promise.resolve(""),
       git(["ls-files", "--others", "--exclude-standard"], repo),
     ]);
     const stats = new Map<string, { adds: number | null; dels: number | null }>();
-    for (const line of numstat.split(/\r?\n/)) {
+    const lines = diff.split(/\r?\n/);
+    for (const line of lines) {
       const m = /^(\d+|-)\t(\d+|-)\t(.+)$/.exec(line);
       if (m) stats.set(renamed(m[3]), { adds: m[1] === "-" ? null : +m[1], dels: m[2] === "-" ? null : +m[2] });
     }
     const files: ChangedFile[] = [];
-    for (const line of names.split(/\r?\n/)) {
-      if (!line.trim()) continue;
-      const parts = line.split("\t");
+    for (const line of lines) {
+      // --raw: ":<mode> <mode> <sha> <sha> <status>\t<file>" (a rename: "\t<old>\t<new>").
+      const raw = /^:\S+ \S+ \S+ \S+ (\S+)\t(.+)$/.exec(line);
+      if (!raw) continue;
+      const parts = [raw[1], ...raw[2].split("\t")];
       const file = parts[parts.length - 1];
       const st = stats.get(file) || { adds: null, dels: null };
       files.push({ file, status: parts[0].charAt(0), adds: st.adds, dels: st.dels });

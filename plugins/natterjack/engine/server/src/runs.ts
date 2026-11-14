@@ -171,6 +171,8 @@ export class RunManager {
   runsDir: string;
   live = new Map<string, LiveTurn>();
   subscribers = new Map<string, Set<ServerResponse>>();
+  /** Subscribers whose replay of the saved events is still going: what was broadcast meanwhile, sent once it ends. */
+  private _held = new Map<ServerResponse, string[]>();
   onFinish: (meta: RunMeta) => void;
   onTurnStart: (meta: RunMeta) => void;
   /** A run's meta was written (any change the run list shows). */
@@ -892,21 +894,57 @@ export class RunManager {
    * the client disconnects. The stream stays open across turns. An event's SSE id
    * is its index in the run's events; `after` (a reconnect's Last-Event-ID) skips
    * the ones the client already has.
+   *
+   * The replay sends the file's lines as they are, REPLAY_SLICE_BYTES at a time: a
+   * small run is replayed before this returns, a big one (tens of megabytes) over
+   * several turns of the event loop, waiting for the client when it falls behind,
+   * so other requests are answered meanwhile. Events appended during a replay are
+   * held and sent after it, in order. The `meta` that follows the replay tells the
+   * page the saved events are in.
    */
   subscribe(id: string, res: ServerResponse, after = -1): boolean {
-    const meta = this.get(id);
-    if (!meta) return false;
+    if (!this.get(id)) return false;
     // Synchronous read + add: no event can be appended in between.
-    const events = this.events(id);
-    for (let i = Math.max(0, after + 1); i < events.length; i++) res.write(`id: ${i}\nevent: event\ndata: ${JSON.stringify(events[i])}\n\n`);
-    res.write(`event: meta\ndata: ${JSON.stringify(meta)}\n\n`);
+    let text = "";
+    try { text = fs.readFileSync(this._eventsPath(id), "utf-8"); } catch {}
     let set = this.subscribers.get(id);
     if (!set) this.subscribers.set(id, (set = new Set()));
     set.add(res);
+    const held: string[] = [];
+    this._held.set(res, held);
+    let closed = false;
     res.on("close", () => {
+      closed = true;
+      this._held.delete(res);
       set.delete(res);
       if (!set.size) this.subscribers.delete(id);
     });
+    let pos = 0, index = 0;
+    const finish = () => {
+      this._held.delete(res);
+      const meta = this.get(id);
+      if (meta) res.write(`event: meta\ndata: ${JSON.stringify(meta)}\n\n`);
+      for (const payload of held) res.write(payload);
+    };
+    const slice = (): void => {
+      if (closed) return;
+      const stop = pos + REPLAY_SLICE_BYTES;
+      let flowing = true;
+      while (pos < text.length && pos < stop) {
+        let end = text.indexOf("\n", pos);
+        if (end < 0) end = text.length;
+        const line = text.slice(pos, end).trim();
+        pos = end + 1;
+        // Blank and unreadable lines aren't events (events() skips them too), so they take no id.
+        if (!line || !isJson(line)) continue;
+        if (index > after) flowing = res.write(`id: ${index}\nevent: event\ndata: ${line}\n\n`);
+        index++;
+      }
+      if (pos >= text.length) return finish();
+      if (flowing) setImmediate(slice);
+      else res.once("drain", slice);
+    };
+    slice();
     return true;
   }
 
@@ -914,7 +952,11 @@ export class RunManager {
     const set = this.subscribers.get(id);
     if (!set) return;
     const payload = `${eventId === null ? "" : `id: ${eventId}\n`}event: ${event}\ndata: ${JSON.stringify(data)}\n\n`;
-    for (const res of set) res.write(payload);
+    for (const res of set) {
+      const held = this._held.get(res);
+      if (held) held.push(payload); // still replaying: after the saved events
+      else res.write(payload);
+    }
   }
 
   // ------------------------------------------------------------ one turn
@@ -1626,6 +1668,13 @@ export function httpError(status: number, message: string) {
 }
 
 export const SENDING_MESSAGE = "This run is being sent to the hosted dashboard. Finish in the tab that opened, or cancel the send.";
+
+/** How much of a run's events file subscribe() replays per turn of the event loop. */
+const REPLAY_SLICE_BYTES = 512 * 1024;
+
+function isJson(line: string): boolean {
+  try { return !!JSON.parse(line); } catch { return false; }
+}
 
 /** How many tools the assistant called in these events. */
 function toolUses(events: RunEvent[]): number {

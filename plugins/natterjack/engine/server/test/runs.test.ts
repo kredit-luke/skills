@@ -273,3 +273,64 @@ test("applyEvent: MCP tools in a result's permission_denials are kept for the tu
   applyEvent(m, result("nope"), true, 0, 0);
   assert.equal(m.deniedTools.length, 2);
 });
+
+test("subscribe() replays a big run over several turns: saved events first and in order, then meta, then what was appended meanwhile", async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "dash-runs-"));
+  try {
+    fs.mkdirSync(path.join(dir, "runs"), { recursive: true });
+    fs.writeFileSync(path.join(dir, "runs", "r1.json"), JSON.stringify({ id: "r1", status: "running", permissionMode: "auto", startedAt: "2026-01-01T00:00:00Z" }));
+    // ~2 MB: more than one slice. A blank line and an unreadable one take no id.
+    const pad = "x".repeat(20_000);
+    const lines: string[] = [];
+    for (let i = 0; i < 100; i++) lines.push(JSON.stringify({ type: "human", uuid: "e" + i, pad }));
+    lines.splice(50, 0, "", "{not json");
+    fs.writeFileSync(path.join(dir, "runs", "r1.events.jsonl"), lines.join("\n") + "\n");
+    const runs = new RunManager(dir);
+    const open = (after?: number) => {
+      const res = Object.assign(new EventEmitter(), { chunks: [] as string[], write(s: string) { this.chunks.push(s); return true; } });
+      runs.subscribe("r1", res as any, after);
+      return res;
+    };
+    const frames = (res: { chunks: string[] }) => res.chunks.join("").split("\n\n").filter(Boolean).map((f) => {
+      if (f.startsWith("event: meta")) return "meta";
+      return f.match(/^id: (\d+)/)![1] + ":" + JSON.parse(f.split("\ndata: ")[1]).uuid;
+    });
+    const all = open(), tail = open(97);
+    assert.ok(!frames(all).includes("meta"), "the replay isn't over when subscribe() returns");
+    // Appended while both replays are going: it follows the saved events and the meta.
+    (runs as any)._append(runs.get("r1"), { type: "human", uuid: "live" });
+    const gone = open();
+    gone.emit("close"); // a reader that left mid-replay gets nothing more
+    const sentToGone = gone.chunks.length;
+    for (let i = 0; i < 200 && !(frames(all).includes("meta") && frames(tail).includes("meta")); i++) await new Promise((r) => setImmediate(r));
+    assert.deepEqual(frames(all), [...Array.from({ length: 100 }, (_, i) => `${i}:e${i}`), "meta", "100:live"]);
+    assert.deepEqual(frames(tail), ["98:e98", "99:e99", "meta", "100:live"]);
+    assert.equal(gone.chunks.length, sentToGone);
+    // Live from here on: straight through.
+    (runs as any)._append(runs.get("r1"), { type: "human", uuid: "later" });
+    assert.equal(frames(all).at(-1), "101:later");
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("subscribe() waits for a reader that has fallen behind", async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "dash-runs-"));
+  try {
+    fs.mkdirSync(path.join(dir, "runs"), { recursive: true });
+    fs.writeFileSync(path.join(dir, "runs", "r1.json"), JSON.stringify({ id: "r1", status: "succeeded", permissionMode: "auto", startedAt: "2026-01-01T00:00:00Z" }));
+    const pad = "x".repeat(20_000);
+    fs.writeFileSync(path.join(dir, "runs", "r1.events.jsonl"), Array.from({ length: 100 }, (_, i) => JSON.stringify({ type: "human", uuid: "e" + i, pad })).join("\n") + "\n");
+    const runs = new RunManager(dir);
+    const res = Object.assign(new EventEmitter(), { chunks: [] as string[], write(s: string) { this.chunks.push(s); return false; } });
+    runs.subscribe("r1", res as any);
+    const first = res.chunks.length;
+    assert.ok(first > 0 && first < 100, "one slice");
+    for (let i = 0; i < 20; i++) await new Promise((r) => setImmediate(r));
+    assert.equal(res.chunks.length, first, "then nothing until the reader drains");
+    while (!res.chunks.join("").includes("event: meta")) { res.emit("drain"); await new Promise((r) => setImmediate(r)); }
+    assert.equal(res.chunks.join("").split("event: event\n").length - 1, 100);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});

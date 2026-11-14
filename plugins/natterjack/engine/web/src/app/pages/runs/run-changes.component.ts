@@ -65,6 +65,11 @@ export class RunChangesComponent implements OnDestroy {
   readonly running = input(false);
   /** The Changes tab is the one showing. Hidden, it still refreshes (the tab label's count), just slower. */
   readonly shown = input(true);
+  /**
+   * False holds the first load back: the run page sets it once the transcript is in, since
+   * working out the changes (git, in every repo) is slow and the transcript shouldn't wait on it.
+   */
+  readonly ready = input(true);
   /** Number of changed files, for the tab label. */
   readonly count = output<number>();
 
@@ -77,18 +82,19 @@ export class RunChangesComponent implements OnDestroy {
   private timer: ReturnType<typeof setInterval> | null = null;
 
   constructor() {
-    // New run: reset and load. While it's running, refresh every 5 s while shown and
-    // every 30 s while hidden (each refresh re-reads the run's events and runs git per repo).
+    // New run: reset and, once ready, load. While it's running, refresh every 5 s while shown and
+    // every 30 s while hidden (each refresh runs git per repo), but not in a browser tab nobody is looking at.
     effect(() => {
       const id = this.runId();
       const running = this.running();
       const shown = this.shown();
+      const ready = this.ready();
       untracked(() => {
         if (this.loadedFor !== id) { this.data.set(null); this.open.set(new Set()); this.diffs.set({}); this.loadedFor = id; }
-        this.load();
+        if (ready) this.load();
       });
       if (this.timer) clearInterval(this.timer);
-      this.timer = running ? setInterval(() => this.load(), shown ? 5000 : 30000) : null;
+      this.timer = running && ready ? setInterval(() => { if (!document.hidden) this.load(); }, shown ? 5000 : 30000) : null;
     });
     effect(() => this.count.emit(this.fileCount()));
   }
