@@ -202,9 +202,10 @@ export class RunChanges {
     const first = this.read(meta.id).sort((a, b) => a.turn - b.turn)[0];
     const b = first?.repos[repo];
     if (b) return { ref: b.snap, head: b.head, kind: "run-start", untracked: new Set(b.untracked) };
-    // No snapshot: the branch's divergence from main is the run's work.
+    // No snapshot: the branch's divergence from the default branch is the run's work. origin/HEAD
+    // first, so a repo based on develop isn't measured against a main that lags it.
     let mb = "";
-    for (const ref of ["origin/main", "origin/master", "main", "master"]) {
+    for (const ref of ["origin/HEAD", "origin/main", "origin/master", "main", "master"]) {
       mb = (await git(["merge-base", "HEAD", ref], repo)).trim();
       if (mb) break;
     }
@@ -251,7 +252,7 @@ export class RunChanges {
       path: repo,
       branch: branch.trim() || "unknown",
       baseKind: base.kind,
-      baseLabel: base.kind === "run-start" ? "since the run started" : "vs main (whole branch)",
+      baseLabel: base.kind === "run-start" ? "since the run started" : "vs the default branch (whole branch)",
       commits,
       files,
     };

@@ -185,7 +185,8 @@ function readTicketId(workspacePath: string): string | null {
 }
 
 async function resolveMainRef(repoPath: string) {
-  for (const ref of ["origin/main", "origin/master", "main", "master"]) {
+  // origin/HEAD first: a repo whose base branch isn't main (develop, say) would otherwise be compared against a stale main.
+  for (const ref of ["origin/HEAD", "origin/main", "origin/master", "main", "master"]) {
     try {
       const out = await execGitCached(["rev-parse", "--verify", "--quiet", ref], repoPath);
       if (out.trim()) return ref;
