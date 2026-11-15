@@ -110,6 +110,8 @@ export class RunDetailComponent implements OnDestroy {
   /** The open run's events: its entry in the cache, filled in place. */
   private cur: RunEvents = { events: [], seen: new Set(), next: 0, bytes: 0 };
   private contTimer: ReturnType<typeof setInterval> | null = null;
+  /** The run whose /continuation request is still out, if any. */
+  private contPolling: string | null = null;
   private tick: ReturnType<typeof setInterval> | null = null;
   private stick = true;
   private loadSeq = 0;
@@ -503,12 +505,16 @@ export class RunDetailComponent implements OnDestroy {
   private async pollContinuation(id: string): Promise<void> {
     const r = this.run();
     if (!r || r.remote || r.status === 'running' || this.runId() !== id || document.hidden) return;
+    // One at a time per run: a slow server would otherwise collect a new request every tick.
+    if (this.contPolling === id) return;
+    this.contPolling = id;
     try {
       const c = await this.api.get<Continuation>('/api/runs/' + encodeURIComponent(id) + '/continuation');
       if (this.runId() !== id) return;
       const prev = this.cont();
       if (!prev || prev.events.length !== c.events.length || prev.lastActivityAt !== c.lastActivityAt) this.cont.set(c);
     } catch { /* 409 while running */ }
+    finally { if (this.contPolling === id) this.contPolling = null; }
   }
 
   onScroll(): void {

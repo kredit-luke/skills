@@ -94,13 +94,21 @@ export class RunChangesComponent implements OnDestroy {
         if (ready) this.load();
       });
       if (this.timer) clearInterval(this.timer);
-      this.timer = running && ready ? setInterval(() => { if (!document.hidden) this.load(); }, shown ? 5000 : 30000) : null;
+      this.timer = running && ready ? setInterval(() => this.poll(), shown ? 5000 : 30000) : null;
     });
     effect(() => this.count.emit(this.fileCount()));
   }
   private loadedFor = '';
 
   ngOnDestroy(): void { if (this.timer) clearInterval(this.timer); }
+
+  /** A timed refresh: skipped while the last one is still out, so a slow server doesn't collect them. */
+  private polling = false;
+  private async poll(): Promise<void> {
+    if (document.hidden || this.polling) return;
+    this.polling = true;
+    try { await this.load(); } finally { this.polling = false; }
+  }
 
   async load(force = false): Promise<void> {
     const id = this.runId();
