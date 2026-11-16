@@ -1,0 +1,466 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Change map</title>
+<style>
+:root {
+  --bg: #f6f5f1; --surface: #ffffff; --surface-2: #f0efea; --ink: #1d1d1b; --ink-soft: #64635d; --line: #e2e0d8; --focus: #2f6fdb;
+  --happy: #1f8a5b; --happy-bg: #e3f3eb;
+  --alt: #2f6fdb; --alt-bg: #e5eefc;
+  --edge: #b26b00; --edge-bg: #fbf0dc;
+  --error: #c43d3d; --error-bg: #fbe6e4;
+  --test: #7a4fc9; --test-bg: #efe8fb;
+  --glue: #8b8a84; --glue-bg: #efeee9;
+  --docs: #4d6b7a; --docs-bg: #e5edf0;
+  --generated: #a3a29b; --generated-bg: #f2f1ed;
+  --unexplained: #c02c8c; --unexplained-bg: #fbe3f2;
+  --del-bg: #fbeaea; --add-bg: #eaf6ee;
+  --mono: ui-monospace, "Cascadia Code", "SF Mono", Menlo, Consolas, monospace;
+  --sans: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #141413; --surface: #1d1d1b; --surface-2: #262624; --ink: #ecebe6; --ink-soft: #a09f98; --line: #34332f; --focus: #7aa7ff;
+    --happy: #4cc08a; --happy-bg: #173326; --alt: #7aa7ff; --alt-bg: #1a2640; --edge: #e3a33b; --edge-bg: #362a14;
+    --error: #f07a72; --error-bg: #3a1d1b; --test: #b393f0; --test-bg: #2a2140; --glue: #8f8e88; --glue-bg: #2a2a27;
+    --docs: #8fb3c4; --docs-bg: #1e2a30; --generated: #6f6e69; --generated-bg: #232321; --unexplained: #f07ac4; --unexplained-bg: #3a1a2e; --del-bg: #3a1f1f; --add-bg: #1a3324;
+  }
+}
+:root[data-theme="dark"] {
+  --bg: #141413; --surface: #1d1d1b; --surface-2: #262624; --ink: #ecebe6; --ink-soft: #a09f98; --line: #34332f; --focus: #7aa7ff;
+  --happy: #4cc08a; --happy-bg: #173326; --alt: #7aa7ff; --alt-bg: #1a2640; --edge: #e3a33b; --edge-bg: #362a14;
+  --error: #f07a72; --error-bg: #3a1d1b; --test: #b393f0; --test-bg: #2a2140; --glue: #8f8e88; --glue-bg: #2a2a27;
+  --docs: #8fb3c4; --docs-bg: #1e2a30; --generated: #6f6e69; --generated-bg: #232321; --unexplained: #f07ac4; --unexplained-bg: #3a1a2e; --del-bg: #3a1f1f; --add-bg: #1a3324;
+}
+* { box-sizing: border-box; }
+html { -webkit-text-size-adjust: 100%; }
+body { margin: 0; background: var(--bg); color: var(--ink); font: 15px/1.5 var(--sans); }
+.wrap { max-width: 1080px; margin: 0 auto; padding: 28px 16px 80px; }
+button { font: inherit; color: inherit; }
+:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
+code, .mono { font-family: var(--mono); font-size: 0.86em; }
+
+/* header */
+.eyebrow { font: 600 11px/1 var(--mono); letter-spacing: .12em; text-transform: uppercase; color: var(--ink-soft); display: flex; gap: 10px; flex-wrap: wrap; align-items: center; }
+.eyebrow .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--happy); }
+h1 { font-size: clamp(22px, 3.4vw, 30px); line-height: 1.2; margin: 10px 0 6px; letter-spacing: -0.01em; text-wrap: balance; }
+.meta { color: var(--ink-soft); font-size: 13px; display: flex; gap: 14px; flex-wrap: wrap; }
+.summary { max-width: 72ch; margin: 14px 0 0; }
+.theme-btn { margin-left: auto; background: none; border: 1px solid var(--line); border-radius: 999px; padding: 3px 10px; font-size: 11px; cursor: pointer; letter-spacing: .04em; }
+
+/* weight */
+.weight { margin-top: 24px; background: var(--surface); border: 1px solid var(--line); border-radius: 12px; padding: 16px; }
+.weight-head { display: flex; justify-content: space-between; gap: 12px; flex-wrap: wrap; align-items: baseline; }
+.weight-head h2 { font-size: 13px; margin: 0; text-transform: uppercase; letter-spacing: .08em; color: var(--ink-soft); }
+.weight-head p { margin: 0; font-size: 14px; }
+.bar { display: flex; height: 14px; border-radius: 7px; overflow: hidden; margin: 12px 0 10px; background: var(--surface-2); }
+.bar span { display: block; height: 100%; min-width: 3px; }
+.bar span + span { border-left: 2px solid var(--surface); }
+.legend { display: flex; flex-wrap: wrap; gap: 6px 14px; font-size: 13px; }
+.legend button { background: none; border: 0; padding: 2px 0; cursor: pointer; display: inline-flex; align-items: center; gap: 6px; color: var(--ink-soft); }
+.legend button b { color: var(--ink); font-variant-numeric: tabular-nums; }
+.legend button[aria-pressed="false"] { opacity: .4; }
+.sw { width: 10px; height: 10px; border-radius: 3px; display: inline-block; flex: none; }
+.cov { margin-top: 12px; font-size: 13px; color: var(--ink-soft); display: flex; gap: 16px; flex-wrap: wrap; }
+.cov b { color: var(--ink); }
+
+/* tabs */
+.tabs { display: flex; gap: 4px; margin: 28px 0 16px; border-bottom: 1px solid var(--line); overflow-x: auto; }
+.tabs button { background: none; border: 0; border-bottom: 2px solid transparent; padding: 10px 14px; cursor: pointer; color: var(--ink-soft); font-weight: 600; white-space: nowrap; }
+.tabs button[aria-selected="true"] { color: var(--ink); border-color: var(--ink); }
+.tabs .count { font: 500 11px var(--mono); background: var(--surface-2); border-radius: 999px; padding: 1px 7px; margin-left: 6px; }
+[role="tabpanel"][hidden] { display: none; }
+
+/* flows */
+.trigger { background: var(--surface); border: 1px solid var(--line); border-left: 4px solid var(--happy); border-radius: 10px; padding: 12px 14px; margin-bottom: 14px; }
+.trigger .k { font: 600 11px var(--mono); text-transform: uppercase; letter-spacing: .1em; color: var(--happy); }
+.trigger h2 { font-size: 18px; margin: 4px 0; }
+.trigger p { margin: 0; color: var(--ink-soft); font-size: 14px; }
+.filters { display: flex; flex-wrap: wrap; gap: 8px; margin: 0 0 18px; align-items: center; }
+.filters .lbl { font-size: 12px; color: var(--ink-soft); margin-right: 2px; }
+.chip { border: 1px solid var(--line); background: var(--surface); border-radius: 999px; padding: 4px 11px; font-size: 13px; cursor: pointer; display: inline-flex; align-items: center; gap: 6px; }
+.chip[aria-pressed="false"] { opacity: .5; }
+.chip[aria-pressed="true"].solo { background: var(--ink); color: var(--bg); border-color: var(--ink); }
+
+.steps { list-style: none; margin: 0; padding: 0; }
+.step { display: grid; grid-template-columns: 36px 1fr; gap: 0 12px; position: relative; }
+.step::before { content: ""; position: absolute; left: 17px; top: 36px; bottom: -6px; width: 2px; background: var(--happy); opacity: .35; }
+.step:last-child::before { display: none; }
+.bubble { width: 36px; height: 36px; border-radius: 50%; background: var(--happy); color: #fff; display: grid; place-items: center; font-weight: 700; font-variant-numeric: tabular-nums; position: relative; z-index: 1; }
+.card { background: var(--surface); border: 1px solid var(--line); border-radius: 12px; padding: 12px 14px; margin-bottom: 14px; min-width: 0; }
+.card h3 { font-size: 16px; margin: 0 0 6px; }
+.node-chip { display: inline-flex; align-items: center; gap: 6px; font: 12px var(--mono); background: var(--surface-2); border-radius: 6px; padding: 2px 8px; color: var(--ink-soft); max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; cursor: pointer; border: 0; }
+.node-chip b { color: var(--ink); font-weight: 600; }
+.layer-dot { width: 7px; height: 7px; border-radius: 50%; flex: none; }
+.card p { margin: 8px 0 0; }
+.code-toggle { margin-top: 10px; background: none; border: 1px solid var(--line); border-radius: 7px; padding: 4px 10px; font-size: 12px; cursor: pointer; color: var(--ink-soft); }
+.code-toggle[aria-expanded="true"] { color: var(--ink); background: var(--surface-2); }
+
+.branches { margin-top: 12px; display: grid; gap: 8px; }
+.branch { border: 1px solid var(--line); border-left: 3px solid var(--k); border-radius: 8px; background: var(--surface); }
+.branch[data-kind="edge"] { --k: var(--edge); --kb: var(--edge-bg); }
+.branch[data-kind="error"] { --k: var(--error); --kb: var(--error-bg); }
+.branch[data-kind="alt"] { --k: var(--alt); --kb: var(--alt-bg); }
+.branch > button { width: 100%; text-align: left; background: none; border: 0; padding: 8px 10px; cursor: pointer; display: grid; grid-template-columns: auto 1fr auto; gap: 4px 10px; align-items: center; }
+.kind { font: 600 10.5px var(--mono); text-transform: uppercase; letter-spacing: .08em; color: var(--k); background: var(--kb); border-radius: 5px; padding: 2px 6px; white-space: nowrap; }
+.btitle { font-weight: 600; font-size: 14px; min-width: 0; }
+.tested { font-size: 12px; white-space: nowrap; display: inline-flex; align-items: center; gap: 4px; }
+.tested.yes { color: var(--happy); }
+.tested.no { color: var(--ink-soft); }
+.tested.no::before { content: ""; width: 8px; height: 8px; border-radius: 50%; border: 1.5px dashed currentColor; }
+.tested.yes::before { content: "✓"; font-weight: 700; }
+.bbody { padding: 0 10px 10px; font-size: 14px; }
+.bbody[hidden] { display: none; }
+.bbody p { margin: 0 0 6px; }
+.bnote { color: var(--edge); font-size: 13px; }
+.tests-list { margin: 6px 0 0; padding: 0; list-style: none; font-size: 12.5px; color: var(--ink-soft); }
+.tests-list li::before { content: "▸ "; color: var(--test); }
+.chev { transition: transform .15s; color: var(--ink-soft); font-size: 12px; }
+[aria-expanded="true"] .chev { transform: rotate(90deg); }
+
+/* code */
+.code { margin-top: 10px; display: grid; gap: 8px; }
+.code[hidden] { display: none; }
+.slice { border: 1px solid var(--line); border-radius: 8px; overflow: hidden; background: var(--surface); }
+.slice-head { font: 11.5px var(--mono); color: var(--ink-soft); background: var(--surface-2); padding: 5px 10px; display: flex; gap: 8px; justify-content: space-between; flex-wrap: wrap; }
+.slice-head b { color: var(--ink); font-weight: 600; }
+.slice pre { margin: 0; overflow-x: auto; font: 12px/1.55 var(--mono); }
+.ln { display: grid; grid-template-columns: 4px 3.4em 1.4em max-content; min-width: 100%; }
+.ln .g { background: transparent; }
+.ln .no { color: var(--ink-soft); opacity: .6; text-align: right; padding-right: 6px; user-select: none; }
+.ln .sg { color: var(--ink-soft); user-select: none; text-align: center; }
+.ln .tx { white-space: pre; padding-right: 14px; }
+.ln.add { background: var(--add-bg); }
+.ln.del { background: var(--del-bg); }
+.ln.del .tx { text-decoration: line-through; text-decoration-color: color-mix(in srgb, var(--error) 50%, transparent); }
+.ln[data-c="happy"] .g { background: var(--happy); }
+.ln[data-c="alt"] .g { background: var(--alt); }
+.ln[data-c="edge"] .g { background: var(--edge); }
+.ln[data-c="error"] .g { background: var(--error); }
+.ln[data-c="test"] .g { background: var(--test); }
+.ln[data-c="glue"] .g { background: var(--glue); }
+.ln[data-c="docs"] .g { background: var(--docs); }
+.ln[data-c="generated"] .g { background: var(--generated); }
+.ln[data-c="unexplained"] .g { background: repeating-linear-gradient(45deg, var(--unexplained) 0 3px, transparent 3px 6px); }
+.ln[data-c="unexplained"] { background: var(--unexplained-bg); }
+.ln.dim { opacity: .28; }
+
+/* map */
+.map-tools { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; margin-bottom: 12px; font-size: 14px; }
+.map-tools .walk { display: inline-flex; align-items: center; gap: 6px; }
+.icon-btn { border: 1px solid var(--line); background: var(--surface); border-radius: 7px; width: 30px; height: 30px; cursor: pointer; }
+.walk-label { min-width: 0; color: var(--ink-soft); }
+.walk-label b { color: var(--ink); }
+.map-scroll { overflow-x: auto; border: 1px solid var(--line); border-radius: 12px; background: var(--surface); }
+.map { position: relative; display: grid; grid-template-columns: repeat(var(--cols), minmax(190px, 1fr)); gap: 0 56px; padding: 16px 44px 20px 20px; min-width: 900px; }
+.map svg { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; overflow: visible; }
+.col h4 { font: 600 11px var(--mono); text-transform: uppercase; letter-spacing: .1em; color: var(--ink-soft); margin: 0 0 12px; display: flex; gap: 6px; align-items: center; }
+.col { display: flex; flex-direction: column; gap: 12px; position: relative; z-index: 1; }
+.mnode { text-align: left; border: 1px solid var(--line); background: var(--surface); border-radius: 9px; padding: 8px 10px; cursor: pointer; transition: opacity .15s, border-color .15s, box-shadow .15s; }
+.mnode .sym { font: 600 12.5px var(--mono); display: block; overflow-wrap: anywhere; }
+.mnode .fl { font-size: 11.5px; color: var(--ink-soft); display: block; overflow-wrap: anywhere; }
+.badge { font: 600 9.5px var(--mono); text-transform: uppercase; letter-spacing: .06em; border-radius: 4px; padding: 1px 5px; margin-top: 5px; display: inline-block; }
+.badge.added { background: var(--happy-bg); color: var(--happy); }
+.badge.modified { background: var(--alt-bg); color: var(--alt); }
+.badge.existing { background: var(--surface-2); color: var(--ink-soft); }
+.mnode.existing { border-style: dashed; }
+.mnode.on { border-color: var(--happy); box-shadow: 0 0 0 2px var(--happy-bg); }
+.mnode.sel { border-color: var(--ink); box-shadow: 0 0 0 2px var(--line); }
+.map.focus .mnode:not(.on):not(.sel):not(.near) { opacity: .3; }
+.edge-path { fill: none; stroke: var(--line); stroke-width: 1.5; }
+.edge-path.on { stroke: var(--happy); stroke-width: 2.2; }
+.edge-path.near { stroke: var(--ink-soft); stroke-width: 1.8; }
+.edge-lbl { font: 10px var(--mono); fill: var(--ink-soft); }
+.node-detail { margin-top: 12px; background: var(--surface); border: 1px solid var(--line); border-radius: 12px; padding: 12px 14px; font-size: 14px; }
+.node-detail h3 { margin: 0 0 4px; font: 600 14px var(--mono); overflow-wrap: anywhere; }
+.node-detail ul { margin: 8px 0 0; padding-left: 18px; }
+.muted { color: var(--ink-soft); }
+.linkish { background: none; border: 0; padding: 0; color: var(--focus); cursor: pointer; text-decoration: underline; text-underline-offset: 2px; font: inherit; }
+
+/* lines */
+.callout { background: var(--unexplained-bg); border: 1px solid color-mix(in srgb, var(--unexplained) 30%, transparent); border-radius: 10px; padding: 12px 14px; margin-bottom: 14px; font-size: 14px; }
+.callout h3 { margin: 0 0 4px; font-size: 15px; color: var(--unexplained); }
+.callout ul { margin: 6px 0 0; padding-left: 18px; }
+.callout.ok { background: var(--happy-bg); border-color: transparent; }
+.callout.ok h3 { color: var(--happy); }
+.file { margin-bottom: 16px; }
+.file-head { font: 600 13px var(--mono); margin: 0 0 6px; overflow-wrap: anywhere; display: flex; gap: 8px; align-items: baseline; flex-wrap: wrap; }
+.file-head .st { font: 500 11px var(--mono); color: var(--ink-soft); }
+.hunk-id { font: 600 10.5px var(--mono); background: var(--ink); color: var(--bg); border-radius: 4px; padding: 0 5px; }
+.flash { animation: flash 1.2s ease-out; }
+@keyframes flash { 0% { box-shadow: 0 0 0 3px var(--unexplained); } 100% { box-shadow: 0 0 0 0 transparent; } }
+
+footer { margin-top: 40px; font-size: 12px; color: var(--ink-soft); }
+@media (max-width: 560px) {
+  .step { grid-template-columns: 26px 1fr; gap: 0 8px; }
+  .bubble { width: 26px; height: 26px; font-size: 13px; }
+  .step::before { left: 12px; top: 26px; }
+  .branch > button { grid-template-columns: auto 1fr; }
+  .branch > button .tested { grid-column: 2; }
+}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <div class="eyebrow"><span class="dot"></span><span>Change map</span><span id="prRef"></span><button class="theme-btn" id="themeBtn" type="button">Theme</button></div>
+    <h1 id="title"></h1>
+    <div class="meta" id="meta"></div>
+    <p class="summary" id="summary"></p>
+  </header>
+
+  <section class="weight" aria-labelledby="wh">
+    <div class="weight-head"><h2 id="wh">Where the added lines go</h2><p id="weightLine"></p></div>
+    <div class="bar" id="bar" role="img"></div>
+    <div class="legend" id="legend"></div>
+    <div class="cov" id="cov"></div>
+  </section>
+
+  <div class="tabs" role="tablist">
+    <button role="tab" id="t-flows" aria-controls="p-flows" aria-selected="true">Flows</button>
+    <button role="tab" id="t-map" aria-controls="p-map" aria-selected="false">Map</button>
+    <button role="tab" id="t-lines" aria-controls="p-lines" aria-selected="false">Every line<span class="count" id="unexCount"></span></button>
+  </div>
+
+  <section role="tabpanel" id="p-flows" aria-labelledby="t-flows"></section>
+  <section role="tabpanel" id="p-map" aria-labelledby="t-map" hidden></section>
+  <section role="tabpanel" id="p-lines" aria-labelledby="t-lines" hidden></section>
+
+  <footer id="foot"></footer>
+</div>
+
+<script id="data" type="application/json">/*__DATA__*/null</script>
+<script>
+(() => {
+const D = JSON.parse(document.getElementById("data").textContent);
+const M = D.map, H = D.hunks;
+const $ = (s, el = document) => el.querySelector(s);
+const esc = (s) => String(s).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+const md = (s) => esc(s).replace(/`([^`]+)`/g, "<code>$1</code>");
+const base = (p) => p.split("/").pop();
+const store = { get(k) { try { return localStorage.getItem(k); } catch { return null; } }, set(k, v) { try { localStorage.setItem(k, v); } catch {} } };
+
+const CATS = [
+  ["happy", "Happy path"], ["alt", "Alternate outcomes"], ["edge", "Edge cases"], ["error", "Error handling"],
+  ["test", "Tests"], ["glue", "Glue"], ["docs", "Docs"], ["generated", "Generated"], ["unexplained", "Not on any flow"],
+].filter(([k]) => k !== "generated" || D.stats.generated);
+const fileLabel = (h) => (h.repo ? h.repo + ": " : "") + h.file;
+const KIND = { edge: "Edge case", error: "Error", alt: "Alternate" };
+const LAYER_COLORS = ["var(--alt)", "var(--test)", "var(--happy)", "var(--edge)", "var(--docs)"];
+const layerColor = Object.fromEntries(M.layers.map((l, i) => [l.id, LAYER_COLORS[i % LAYER_COLORS.length]]));
+const nodes = Object.fromEntries(M.nodes.map((n) => [n.id, n]));
+
+// ------------------------------------------------------------ theme
+const themeBtn = $("#themeBtn");
+const applyTheme = (t) => { if (t) document.documentElement.dataset.theme = t; else delete document.documentElement.dataset.theme; themeBtn.textContent = t ? t[0].toUpperCase() + t.slice(1) : "Auto"; };
+applyTheme(store.get("cm-theme"));
+themeBtn.onclick = () => { const order = [null, "light", "dark"]; const cur = document.documentElement.dataset.theme || null; const next = order[(order.indexOf(cur) + 1) % 3]; store.set("cm-theme", next || ""); applyTheme(next); };
+
+// ------------------------------------------------------------ header + weight
+const S = D.source, R = S.repos;
+$("#title").textContent = M.title;
+document.title = M.title + " · change map";
+$("#prRef").textContent = S.kind === "pr" ? R.map((r) => `${r.name}#${r.number}`).join(" · ") : `${R.length > 1 ? R.length + " repos" : R[0]?.name || ""} · not pushed for review yet`;
+const where = S.kind === "pr"
+  ? R.map((r) => r.url ? `<a href="${esc(r.url)}">${esc(r.name)}#${r.number}</a>` : esc(r.name + "#" + r.number))
+  : R.map((r) => `${R.length > 1 ? esc(r.name) + ": " : ""}<code>${esc(r.branch || "HEAD")}</code> vs <code>${esc(r.base || "")}</code>`);
+$("#meta").innerHTML = [`${S.files} files`, `<span style="color:var(--happy)">+${S.added}</span> <span style="color:var(--error)">−${S.removed}</span>`, ...where].map((x) => `<span>${x}</span>`).join("");
+$("#summary").innerHTML = md(M.summary);
+
+const counted = CATS.reduce((n, [k]) => n + (D.stats[k] || 0), 0);
+const behaviour = ["happy", "alt", "edge", "error"].reduce((n, k) => n + D.stats[k], 0);
+$("#weightLine").innerHTML = `Of <b>${counted}</b> added lines, <b>${D.stats.happy}</b> are the happy path and <b>${behaviour - D.stats.happy}</b> handle the cases around it.`;
+$("#bar").innerHTML = CATS.filter(([k]) => D.stats[k]).map(([k, l]) => `<span style="flex:${D.stats[k]};background:var(--${k})" title="${l}: ${D.stats[k]} lines"></span>`).join("");
+$("#bar").setAttribute("aria-label", CATS.map(([k, l]) => `${l} ${D.stats[k]}`).join(", "));
+
+const shownCats = new Set(CATS.map(([k]) => k));
+$("#legend").innerHTML = CATS.map(([k, l]) => `<button type="button" data-cat="${k}" aria-pressed="true"><span class="sw" style="background:var(--${k})"></span>${l} <b>${D.stats[k] || 0}</b></button>`).join("");
+$("#legend").addEventListener("click", (e) => {
+  const b = e.target.closest("button[data-cat]"); if (!b) return;
+  const k = b.dataset.cat; shownCats.has(k) ? shownCats.delete(k) : shownCats.add(k);
+  b.setAttribute("aria-pressed", shownCats.has(k));
+  showTab("lines"); renderLines();
+});
+
+const allBranches = M.flows.flatMap((f) => f.steps.flatMap((s) => s.branches));
+const testedN = allBranches.filter((b) => b.tests.length).length;
+$("#cov").innerHTML = `<span><b>${M.flows.reduce((n, f) => n + f.steps.length, 0)}</b> steps on ${M.flows.length} flow${M.flows.length > 1 ? "s" : ""}</span><span><b>${allBranches.length}</b> branches off them</span><span><b>${testedN}</b> of ${allBranches.length} branches have a test</span>`;
+$("#unexCount").textContent = D.unexplained.length ? D.unexplained.length + " unexplained" : "all explained";
+$("#foot").innerHTML = `Generated ${esc(new Date(D.generatedAt).toLocaleString())}. Every slice was checked against the diff, and the lines on no flow were found by the script, not the model.`;
+
+// ------------------------------------------------------------ code slices
+function sliceHtml(r, opts = {}) {
+  const h = H[r.hunk];
+  const rows = h.lines.slice(r.a, r.b + 1).map((l, j) => lineHtml(l, h.cat[r.a + j])).join("");
+  const nums = h.lines.slice(r.a, r.b + 1).map((l) => l.n).filter((n) => n != null);
+  const at = nums.length ? `:${nums[0]}${nums.length > 1 ? "–" + nums[nums.length - 1] : ""}` : "";
+  return `<div class="slice"><div class="slice-head"><span><b>${esc((h.repo ? h.repo + ": " : "") + base(h.file))}</b>${at}</span><span>${esc(r.hunk)}</span></div><pre>${rows}</pre></div>`;
+}
+function lineHtml(l, cat, dim) {
+  const cls = l.t === "+" ? "add" : l.t === "-" ? "del" : "";
+  const c = l.t === "+" && cat && cat !== "trivial" ? cat : "";
+  return `<div class="ln ${cls}${dim ? " dim" : ""}"${c ? ` data-c="${c}"` : ""}><span class="g"></span><span class="no">${l.n ?? ""}</span><span class="sg">${l.t === " " ? "" : l.t === "-" ? "−" : "+"}</span><span class="tx">${esc(l.s) || " "}</span></div>`;
+}
+const lineCount = (rs) => rs.reduce((n, r) => n + (r.b - r.a + 1), 0);
+
+// ------------------------------------------------------------ flows
+const branchShow = { alt: true, edge: true, error: true };
+let untestedOnly = false;
+let flowIdx = 0;
+
+function renderFlows() {
+  const f = M.flows[flowIdx];
+  const counts = { alt: 0, edge: 0, error: 0 };
+  f.steps.forEach((s) => s.branches.forEach((b) => counts[b.kind]++));
+  const picker = M.flows.length > 1 ? `<div class="filters">${M.flows.map((x, i) => `<button class="chip solo" type="button" data-flow="${i}" aria-pressed="${i === flowIdx}">${esc(x.title)}</button>`).join("")}</div>` : "";
+  $("#p-flows").innerHTML = picker + `
+    <div class="trigger"><div class="k">${f.kind === "user" ? "User flow · happy path" : "Happy path"}</div><h2>${esc(f.title)}</h2><p>${md(f.trigger)}</p></div>
+    <div class="filters" role="group" aria-label="Branches to show"><span class="lbl">Show branches:</span>
+      ${["alt", "edge", "error"].map((k) => `<button class="chip" type="button" data-k="${k}" aria-pressed="${branchShow[k]}"><span class="sw" style="background:var(--${k})"></span>${KIND[k]}s <b>${counts[k]}</b></button>`).join("")}
+      <button class="chip solo" type="button" data-untested aria-pressed="${untestedOnly}">Untested only</button>
+      <button class="chip" type="button" data-expand>Open all code</button>
+    </div>
+    <ol class="steps">${f.steps.map((s, i) => stepHtml(s, i)).join("")}</ol>`;
+}
+function stepHtml(s, i) {
+  const n = nodes[s.node];
+  const br = s.branches.filter((b) => branchShow[b.kind] && (!untestedOnly || !b.tests.length));
+  return `<li class="step" id="step-${i + 1}"><div class="bubble">${i + 1}</div><div class="card">
+    <h3>${esc(s.title)}</h3>
+    <button class="node-chip" type="button" data-node="${n.id}" title="${esc(n.file)}"><span class="layer-dot" style="background:${layerColor[n.layer]}"></span>${esc(base(n.file))} › <b>${esc(n.symbol)}</b></button>
+    <p>${md(s.text)}</p>
+    ${s.code.length ? `<button class="code-toggle" type="button" aria-expanded="false" data-code>Code · ${s.code.length} slice${s.code.length > 1 ? "s" : ""} · ${lineCount(s.code)} lines</button><div class="code" hidden>${s.code.map((r) => sliceHtml(r)).join("")}</div>` : ""}
+    ${br.length ? `<div class="branches">${br.map(branchHtml).join("")}</div>` : s.branches.length ? `<p class="muted" style="font-size:13px">${s.branches.length} branch${s.branches.length > 1 ? "es" : ""} hidden by the filters.</p>` : ""}
+  </div></li>`;
+}
+function branchHtml(b) {
+  const t = b.tests.length ? `<span class="tested yes">tested</span>` : `<span class="tested no">no test</span>`;
+  return `<div class="branch" data-kind="${b.kind}"><button type="button" aria-expanded="false"><span class="kind">${KIND[b.kind]}</span><span class="btitle">${esc(b.title)}</span>${t}</button>
+    <div class="bbody" hidden><p>${md(b.text)}</p>${b.note ? `<p class="bnote">${md(b.note)}</p>` : ""}
+      ${b.tests.length ? `<ul class="tests-list">${b.tests.map((x) => `<li>${esc(x.name)} <span class="mono">${esc(fileLabel(H[x.hunk]))}</span></li>`).join("")}</ul>` : ""}
+      ${b.code.length ? `<div class="code">${b.code.map((r) => sliceHtml(r)).join("")}</div>` : ""}</div></div>`;
+}
+$("#p-flows").addEventListener("click", (e) => {
+  const t = e.target.closest("button"); if (!t) return;
+  if (t.dataset.flow) { flowIdx = +t.dataset.flow; flowSteps = M.flows[flowIdx].steps; walk = -1; renderFlows(); updateMap(); }
+  else if (t.dataset.k) { branchShow[t.dataset.k] = !branchShow[t.dataset.k]; renderFlows(); }
+  else if ("untested" in t.dataset) { untestedOnly = !untestedOnly; renderFlows(); }
+  else if ("expand" in t.dataset) { const open = t.textContent.startsWith("Open"); $("#p-flows").querySelectorAll("[data-code],.branch > button").forEach((b) => toggle(b, open)); t.textContent = open ? "Close all code" : "Open all code"; }
+  else if ("code" in t.dataset || t.parentElement.classList.contains("branch")) toggle(t);
+  else if (t.dataset.node) { showTab("map"); selectNode(t.dataset.node); }
+});
+function toggle(btn, force) {
+  const open = force ?? btn.getAttribute("aria-expanded") !== "true";
+  btn.setAttribute("aria-expanded", open);
+  btn.nextElementSibling.hidden = !open;
+}
+
+// ------------------------------------------------------------ map
+let flowSteps = M.flows[0].steps;
+let walk = -1, selected = null;
+function nodesOfStep(s) {
+  // A slice lights the node that owns its hunk, unless several nodes share that hunk (then only the step's own node).
+  const owners = (h) => M.nodes.filter((n) => n.hunks.includes(h));
+  const lit = s.code.map((r) => owners(r.hunk)).filter((o) => o.length === 1).map((o) => o[0].id);
+  return new Set([s.node, ...lit]);
+}
+function renderMap() {
+  $("#p-map").innerHTML = `
+    <div class="map-tools"><span class="walk"><button class="icon-btn" type="button" data-walk="-1" aria-label="Previous step">‹</button><button class="icon-btn" type="button" data-walk="1" aria-label="Next step">›</button></span>
+      <span class="walk-label" id="walkLabel"></span></div>
+    <div class="map-scroll"><div class="map" id="map" style="--cols:${M.layers.length}">
+      <svg id="edges" aria-hidden="true"></svg>
+      ${M.layers.map((l) => `<div class="col"><h4><span class="layer-dot" style="background:${layerColor[l.id]}"></span>${esc(l.title)}</h4>
+        ${M.nodes.filter((n) => n.layer === l.id).map((n) => `<button type="button" class="mnode ${n.change}" data-id="${n.id}"><span class="sym">${esc(n.symbol)}</span><span class="fl">${esc(base(n.file))}</span><span class="badge ${n.change}">${n.change === "added" ? "new" : n.change}</span></button>`).join("")}</div>`).join("")}
+    </div></div>
+    <div class="node-detail" id="nodeDetail"><span class="muted">Step through the happy path with ‹ ›, or pick a node to see where it sits on the flows.</span></div>`;
+  updateMap();
+}
+function updateMap() {
+  const map = $("#map"); if (!map) return;
+  const on = new Set(), near = new Set();
+  if (walk >= 0) for (let i = 0; i <= walk; i++) nodesOfStep(flowSteps[i]).forEach((x) => on.add(x));
+  if (selected) M.edges.forEach((e) => { if (e.from === selected) near.add(e.to); if (e.to === selected) near.add(e.from); });
+  map.classList.toggle("focus", walk >= 0 || !!selected);
+  map.querySelectorAll(".mnode").forEach((el) => { const id = el.dataset.id; el.classList.toggle("on", on.has(id)); el.classList.toggle("sel", id === selected); el.classList.toggle("near", near.has(id)); });
+  $("#walkLabel").innerHTML = walk >= 0 ? `Step <b>${walk + 1}</b> of ${flowSteps.length}: ${esc(flowSteps[walk].title)}` : `${esc(M.flows[flowIdx].title)}: <b>${flowSteps.length}</b> steps`;
+  drawEdges(on);
+}
+function drawEdges(on) {
+  const map = $("#map"), svg = $("#edges"); if (!map || map.offsetParent === null) return;
+  const box = map.getBoundingClientRect();
+  const pos = (id) => { const r = map.querySelector(`.mnode[data-id="${id}"]`).getBoundingClientRect(); return { l: r.left - box.left, r: r.right - box.left, y: r.top - box.top + r.height / 2, t: r.top - box.top, b: r.bottom - box.top, cx: r.left - box.left + r.width / 2 }; };
+  svg.innerHTML = `<defs>${["line", "happy", "ink-soft"].map((c) => `<marker id="ar-${c}" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M0,0L10,5L0,10z" fill="var(--${c})"/></marker>`).join("")}</defs>` +
+    M.edges.map((e) => {
+      const a = pos(e.from), b = pos(e.to);
+      let d;
+      if (Math.abs(a.cx - b.cx) < 20) { const x = a.r + 4, y1 = a.y, y2 = b.y, bend = 26; d = `M${a.r},${y1} C${x + bend},${y1} ${x + bend},${y2} ${b.r + 2},${y2}`; }
+      else if (a.cx < b.cx) d = `M${a.r},${a.y} C${(a.r + b.l) / 2},${a.y} ${(a.r + b.l) / 2},${b.y} ${b.l - 2},${b.y}`;
+      else d = `M${a.l},${a.y} C${(a.l + b.r) / 2},${a.y} ${(a.l + b.r) / 2},${b.y} ${b.r + 2},${b.y}`;
+      const isOn = on.has(e.from) && on.has(e.to), isNear = selected && (e.from === selected || e.to === selected);
+      const cls = isOn ? "on" : isNear ? "near" : "";
+      const mk = isOn ? "happy" : isNear ? "ink-soft" : "line";
+      return `<path class="edge-path ${cls}" d="${d}" marker-end="url(#ar-${mk})"><title>${esc(nodes[e.from].symbol)} ${esc(e.kind)} ${esc(nodes[e.to].symbol)}</title></path>`;
+    }).join("");
+}
+function selectNode(id) {
+  selected = selected === id ? null : id;
+  updateMap();
+  const n = nodes[id];
+  if (!selected) { $("#nodeDetail").innerHTML = `<span class="muted">Pick a node to see where it sits on the flows.</span>`; return; }
+  const where = [];
+  M.flows.forEach((f) => f.steps.forEach((s, i) => {
+    const touch = s.node === id || s.code.some((r) => n.hunks.includes(r.hunk));
+    if (touch) where.push(`<li>Step ${i + 1}: ${esc(s.title)}</li>`);
+    s.branches.forEach((b) => { if (b.code.some((r) => n.hunks.includes(r.hunk))) where.push(`<li><span class="kind" style="--k:var(--${b.kind});--kb:var(--${b.kind}-bg)">${KIND[b.kind]}</span> ${esc(b.title)} <span class="muted">(step ${i + 1})</span></li>`); });
+  }));
+  const ins = M.edges.filter((e) => e.to === id).map((e) => `${esc(nodes[e.from].symbol)} <span class="muted">${esc(e.kind)}</span>`);
+  const outs = M.edges.filter((e) => e.from === id).map((e) => `<span class="muted">${esc(e.kind)}</span> ${esc(nodes[e.to].symbol)}`);
+  $("#nodeDetail").innerHTML = `<h3>${esc(n.symbol)}</h3><div class="muted mono" style="overflow-wrap:anywhere">${esc(n.file)}</div>
+    ${ins.length ? `<div style="margin-top:8px">← ${ins.join(", ")}</div>` : ""}${outs.length ? `<div>→ ${outs.join(", ")}</div>` : ""}
+    ${where.length ? `<ul>${where.join("")}</ul>` : `<p class="muted">Unchanged: shown because changed code calls it.</p>`}
+    ${n.hunks.length ? `<p style="margin:8px 0 0">${n.hunks.map((h) => `<button class="linkish" type="button" data-goto="${h}">${h}</button>`).join(" ")} in Every line</p>` : ""}`;
+}
+$("#p-map").addEventListener("click", (e) => {
+  const t = e.target.closest("button"); if (!t) return;
+  if (t.dataset.walk) { walk = Math.max(-1, Math.min(flowSteps.length - 1, walk + +t.dataset.walk)); updateMap(); }
+  else if (t.dataset.id) selectNode(t.dataset.id);
+  else if (t.dataset.goto) gotoHunk(t.dataset.goto);
+});
+addEventListener("resize", () => updateMap());
+
+// ------------------------------------------------------------ every line
+function renderLines() {
+  const byFile = {};
+  Object.values(H).forEach((h) => (byFile[fileLabel(h)] ||= []).push(h));
+  const un = D.unexplained;
+  const callout = un.length
+    ? `<div class="callout"><h3>${un.length} piece${un.length > 1 ? "s" : ""} of changed code no flow explains</h3><div>Worth a look: either a flow is missing, or the code isn't needed.</div><ul>${un.map((r) => { const h = H[r.hunk]; return `<li><button class="linkish" type="button" data-goto="${r.hunk}">${esc((h.repo ? h.repo + ": " : "") + base(h.file))}:${h.lines[r.a].n}</button> <code>${esc(h.lines[r.a].s.trim().slice(0, 70))}</code>${r.b > r.a ? ` <span class="muted">+${r.b - r.a} lines</span>` : ""}</li>`; }).join("")}</ul></div>`
+    : `<div class="callout ok"><h3>Every changed line is on a flow, a test, glue or docs</h3></div>`;
+  $("#p-lines").innerHTML = callout + Object.entries(byFile).map(([file, hs]) => `<div class="file"><div class="file-head">${esc(file)} <span class="st">${hs[0].status}</span></div>
+    ${hs.map((h) => `<div class="slice" id="hunk-${h.id}" style="margin-bottom:8px"><div class="slice-head"><span><span class="hunk-id">${h.id}</span> ${esc(h.header)}</span></div><pre>${h.lines.map((l, i) => lineHtml(l, h.cat[i], l.t === "+" && h.cat[i] && h.cat[i] !== "trivial" && !shownCats.has(h.cat[i]))).join("")}</pre></div>`).join("")}</div>`).join("");
+}
+$("#p-lines").addEventListener("click", (e) => { const t = e.target.closest("[data-goto]"); if (t) gotoHunk(t.dataset.goto); });
+function gotoHunk(id) {
+  showTab("lines");
+  const el = document.getElementById("hunk-" + id);
+  if (el) { el.scrollIntoView({ behavior: "smooth", block: "center" }); el.classList.remove("flash"); void el.offsetWidth; el.classList.add("flash"); }
+}
+
+// ------------------------------------------------------------ tabs
+function showTab(name) {
+  document.querySelectorAll('[role="tab"]').forEach((t) => t.setAttribute("aria-selected", t.id === "t-" + name));
+  document.querySelectorAll('[role="tabpanel"]').forEach((p) => (p.hidden = p.id !== "p-" + name));
+  store.set("cm-tab", name);
+  if (name === "map") requestAnimationFrame(updateMap);
+}
+document.querySelector(".tabs").addEventListener("click", (e) => { const t = e.target.closest('[role="tab"]'); if (t) showTab(t.id.slice(2)); });
+
+renderFlows(); renderMap(); renderLines();
+showTab(["flows", "map", "lines"].includes(store.get("cm-tab")) ? store.get("cm-tab") : "flows");
+})();
+</script>
+</body>
+</html>

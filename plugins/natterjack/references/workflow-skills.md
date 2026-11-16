@@ -4,7 +4,7 @@ The dashboard runs whatever skills the workspace has; these five are what teams 
 
 ## The `multirepo` plugin (ready-made)
 
-The same marketplace ships them as a plugin: `multirepo@lhoezee-skills` (`plugins/multirepo/` in lhoezee/skills). Skills: `implement`, `align`, `fetch-ticket`, `worktree`, `pull`, `commit`, `pr`, `copilot-review`, `submit-plan`, and `tdd` for subagents, invoked as `/multirepo:<skill>`. They work with Linear, Jira and GitHub Issues, and read this dashboard's config:
+The same marketplace ships them as a plugin: `multirepo@lhoezee-skills` (`plugins/multirepo/` in lhoezee/skills). Skills: `implement`, `align`, `fetch-ticket`, `worktree`, `pull`, `commit`, `pr`, `copilot-review`, `change-map`, `submit-plan`, and `tdd` for subagents, invoked as `/multirepo:<skill>`. They work with Linear, Jira and GitHub Issues, and read this dashboard's config:
 
 | Config | Used for |
 |---|---|
