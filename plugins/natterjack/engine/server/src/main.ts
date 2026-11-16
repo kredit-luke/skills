@@ -45,7 +45,7 @@ import { Routines, Scheduler, describeSchedule, type FireOutcome } from "./routi
 import { Inbox, gh as ghJson } from "./inbox.ts";
 import { Reviews, askChangePrompt, numberParam, repoParam } from "./reviews.ts";
 import { Standup, dayParam, sinceParam } from "./standup.ts";
-import { type FactoryRun, type FoundPr, type PrLookup, addDiscoveredPrs, prLookups, runPrLookups, webhookTarget, auditCsv, auditRows, buildBoard, factoryConfigState, factoryLaunchBlocker, factoryNotices, inFlightTickets, intakeCandidates, manifestFile, normalizeManifest, overrideGateDecision, rateAssessment, readManifests, readPlan, recordGateDecision, relatedPrs, saveFactoryConfig, setPrStates } from "./factory.ts";
+import { type FactoryRun, type FoundPr, type PrLookup, type PrLookupHistory, addDiscoveredPrs, prLookups, runPrLookups, webhookTarget, auditCsv, auditRows, buildBoard, factoryConfigState, factoryLaunchBlocker, factoryNotices, inFlightTickets, intakeCandidates, manifestFile, normalizeManifest, overrideGateDecision, rateAssessment, readManifests, readPlan, recordGateDecision, relatedPrs, saveFactoryConfig, setPrStates } from "./factory.ts";
 import { Watcher, commandAllowed } from "./watches.ts";
 import { Usage } from "./usage.ts";
 import { UsageHistory } from "./usage-history.ts";
@@ -415,11 +415,13 @@ async function githubSlugOf(repo: string, defs: RepoDef[]): Promise<string | nul
  * manifest doesn't have (the pipeline records a PR when it opens it, but a missed or skipped
  * `factory.mjs pr` would leave the card waiting at the merge gate for good, or in Done while a PR
  * is still open): prLookups picks at most MAX_PR_LOOKUPS repos, those that should have PRs first,
- * resolving owner/names only for those (repos.json read once, each repo once per cycle), and
+ * resolving owner/names only for those (repos.json read once, each repo once per cycle) and
+ * starting with the ones the last cycles didn't reach (prLookupHistory), and
  * runPrLookups runs them a few at a time, giving up on the rest when gh is signed out or offline.
  * Then the states of the open rows: nothing else would notice a PR merging (or closing).
  */
 let reconciling = false;
+const prLookupHistory: PrLookupHistory = new Map();
 async function reconcileFactoryPrs(): Promise<void> {
   if (reconciling || HOSTED || workspaceConfig().codeHost.kind !== "github") return;
   reconciling = true;
@@ -432,7 +434,7 @@ async function reconcileFactoryPrs(): Promise<void> {
       if (!slugs.has(r)) slugs.set(r, githubSlugOf(r, defs).catch(() => null));
       return slugs.get(r)!;
     };
-    const lookups = await prLookups(manifests, slugOf);
+    const lookups = await prLookups(manifests, slugOf, { history: prLookupHistory });
     const results = await runPrLookups(lookups, (l: PrLookup) =>
       ghJson(["pr", "list", "--repo", l.slug, "--head", l.branch, "--state", "all", "--limit", "10", "--json", "url,number,state,createdAt,headRefName"]));
     const found = new Map<string, FoundPr[]>();

@@ -755,14 +755,31 @@ test("prLookups: in-flight tickets with a branch and repos, recent, newest first
   assert.equal((await prLookups(ms, slugOf, { now, max: 1 })).length, 1);
 });
 
-test("prLookups: a ticket whose recorded PRs all merged is still looked up for its other repos for MERGED_LOOKUP_DAYS", async () => {
+test("prLookups: a ticket whose recorded PRs all merged is still looked up, every repo (a new PR on the same branch included), for MERGED_LOOKUP_DAYS", async () => {
   const now = Date.parse("2026-11-16T00:00:00Z");
   const mk = (ticket: string, finishedAt: string) => normalizeManifest({ ticket, startedAt: at, updatedAt: finishedAt, finishedAt, branch: `feature/${ticket}`, repos: ["api", "web"],
     stages: [{ id: "pr", repo: "api", status: "done" }], prs: [{ repo: "api", url: `https://github.com/a/api/pull/${ticket.length}`, state: "merged" }] })!;
   const within = new Date(now - (MERGED_LOOKUP_DAYS - 0.5) * 86_400_000).toISOString();
   const after = new Date(now - (MERGED_LOOKUP_DAYS + 0.5) * 86_400_000).toISOString();
   const ls = await prLookups([mk("M-1", within), mk("M-22", after)], (r) => `a/${r}`, { now });
-  assert.deepEqual(ls.map((l) => [l.ticket, l.repo]), [["M-1", "web"]]);
+  assert.deepEqual(ls.map((l) => [l.ticket, l.repo]), [["M-1", "api"], ["M-1", "web"]]);
+});
+
+test("prLookups with a history: capped batches that find nothing rotate through every candidate, and dropped tickets leave it", async () => {
+  const now = Date.parse("2026-11-16T00:00:00Z");
+  const mk = (ticket: string, updatedAt: string, repos = ["api"]) => normalizeManifest({ ticket, startedAt: at, updatedAt, branch: `b/${ticket}`, repos, stages: [{ id: "pr", status: "done" }] })!;
+  const ms = [mk("R-1", "2026-11-15T03:00:00Z", ["api", "web"]), mk("R-2", "2026-11-15T02:00:00Z"), mk("R-3", "2026-11-15T01:00:00Z")];
+  const history = new Map<string, number>();
+  const batch = async (t: number) => (await prLookups(ms, (r) => `a/${r}`, { now: now + t, max: 2, history })).map((l) => `${l.ticket}/${l.repo}`);
+  assert.deepEqual(await batch(0), ["R-1/api", "R-1/web"]);
+  assert.deepEqual(await batch(1), ["R-2/api", "R-3/api"]);
+  assert.deepEqual(await batch(2), ["R-1/api", "R-1/web"]);
+  // A ticket cut off part way through its repos goes first next time, with the repo it missed.
+  const cut = new Map<string, number>();
+  assert.deepEqual((await prLookups(ms, (r) => `a/${r}`, { now, max: 1, history: cut })).map((l) => l.repo), ["api"]);
+  assert.deepEqual((await prLookups(ms, (r) => `a/${r}`, { now: now + 1, max: 1, history: cut })).map((l) => `${l.ticket}/${l.repo}`), ["R-1/web"]);
+  await prLookups([ms[1]], (r) => `a/${r}`, { now: now + 3, history });
+  assert.deepEqual([...history.keys()], ["R-2\napi"]);
 });
 
 test("prLookups: tickets that should have PRs (pr or guide stage, merge or approved pre-PR gate) come before newer ones still building", async () => {

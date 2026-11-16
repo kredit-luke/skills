@@ -609,42 +609,74 @@ export const PR_LOOKUP_CONCURRENCY = 4;
 /** Failed lookups in a row after which the rest of a reconcile's lookups are dropped. */
 export const PR_LOOKUP_MAX_FAILURES = 3;
 
+/** Every recorded PR merged, not marked done, within MERGED_LOOKUP_DAYS of finishing. */
+const recentlyMerged = (m: FactoryManifest, now: number) =>
+  !m.done && everyPrMerged(m) && Date.parse(m.finishedAt || m.updatedAt) >= now - MERGED_LOOKUP_DAYS * DAY_MS;
+
+/**
+ * When each ticket's repo (lookupKey) was last reached by prLookups, epoch ms. Lookups that find
+ * nothing change no manifest, so without it every reconcile would pick the same capped batch and
+ * the tickets after it would never be looked up.
+ */
+export type PrLookupHistory = Map<string, number>;
+const lookupKey = (ticket: string, repo: string) => `${ticket}\n${repo}`;
+
+/**
+ * A repo of a candidate to look up: one without a PR recorded under its name. While every recorded
+ * PR has merged (recentlyMerged), every repo: a new PR can be opened on the same branch after the
+ * first merged, and the card would sit in Done meanwhile. (While a recorded PR is open GitHub
+ * allows no second open one on that branch and base, so it isn't looked up again.)
+ */
+const lookupRepos = (m: FactoryManifest, now: number) =>
+  recentlyMerged(m, now) ? m.repos : m.repos.filter((repo) => !m.prs.some((p) => p.repo === repo));
+
 /**
  * The manifests whose branch to look up, in order: each in flight (isInFlight) updated within
  * `days`, and each whose recorded PRs all merged (not marked done) within MERGED_LOOKUP_DAYS; only
  * with a branch and repos. Those that should have PRs by now come first (a pr or guide stage
  * recorded, a merge gate or an approved pre-PR gate, or every recorded PR merged), so tickets
- * still building can't crowd out ones waiting at the merge gate; newest first within each group.
+ * still building can't crowd out ones waiting at the merge gate. Within each group, the one whose
+ * repos were looked up longest ago (by `history`; never counts as longest) first, then newest.
  */
-export function prLookupCandidates(manifests: FactoryManifest[], { now = Date.now(), days = PR_LOOKUP_DAYS }: { now?: number; days?: number } = {}): FactoryManifest[] {
-  const recentlyMerged = (m: FactoryManifest) => !m.done && everyPrMerged(m) && Date.parse(m.finishedAt || m.updatedAt) >= now - MERGED_LOOKUP_DAYS * DAY_MS;
+export function prLookupCandidates(manifests: FactoryManifest[],
+  { now = Date.now(), days = PR_LOOKUP_DAYS, history }: { now?: number; days?: number; history?: PrLookupHistory } = {}): FactoryManifest[] {
   const due = (m: FactoryManifest) => !!m.branch && m.repos.length > 0 && m.prs.length < MAX_PRS
-    && ((isInFlight(m) && Date.parse(m.updatedAt) >= now - days * DAY_MS) || recentlyMerged(m));
-  const shouldHavePrs = (m: FactoryManifest) => recentlyMerged(m)
+    && ((isInFlight(m) && Date.parse(m.updatedAt) >= now - days * DAY_MS) || recentlyMerged(m, now));
+  const shouldHavePrs = (m: FactoryManifest) => recentlyMerged(m, now)
     || m.stages.some((s) => s.id === "pr" || s.id === "guide")
     || m.gates.some((g) => g.id === "merge" || (g.id === "prePr" && g.decision === "approved"));
-  return manifests.filter(due).map((m) => ({ m, first: shouldHavePrs(m) }))
-    .sort((a, b) => Number(b.first) - Number(a.first) || b.m.updatedAt.localeCompare(a.m.updatedAt))
+  const lastLooked = (m: FactoryManifest) => Math.min(...lookupRepos(m, now).map((r) => history?.get(lookupKey(m.ticket, r)) ?? 0));
+  return manifests.filter(due).map((m) => ({ m, first: shouldHavePrs(m), last: lastLooked(m) }))
+    .sort((a, b) => Number(b.first) - Number(a.first) || a.last - b.last || b.m.updatedAt.localeCompare(a.m.updatedAt))
     .map((x) => x.m);
 }
 
 /**
  * Where to look for a ticket's PRs by its branch, so a PR the pipeline didn't record still reaches
- * the board: one lookup per repo of each prLookupCandidates manifest, in its order. A repo that
- * already has a PR on the manifest (by its repo name, or a URL under its GitHub owner/name), or
- * whose owner/name `slugOf` can't tell, is skipped. At most `max`; `slugOf` is only asked about
- * repos reached before that.
+ * the board: one lookup per repo (lookupRepos) of each prLookupCandidates manifest, in its order,
+ * the repos looked up longest ago first. A repo with a PR already recorded under its GitHub
+ * owner/name (outside the all-merged window), or whose owner/name `slugOf` can't tell, is skipped.
+ * At most `max`; `slugOf` is only asked about repos reached before that. Each repo reached is
+ * written to `history` at `now`, so the next call starts with the ones this one didn't reach;
+ * tickets no longer candidates are dropped from it.
  */
 export async function prLookups(manifests: FactoryManifest[], slugOf: (repo: string) => string | null | Promise<string | null>,
-  { now = Date.now(), days = PR_LOOKUP_DAYS, max = MAX_PR_LOOKUPS }: { now?: number; days?: number; max?: number } = {}): Promise<PrLookup[]> {
+  { now = Date.now(), days = PR_LOOKUP_DAYS, max = MAX_PR_LOOKUPS, history }: { now?: number; days?: number; max?: number; history?: PrLookupHistory } = {}): Promise<PrLookup[]> {
   const out: PrLookup[] = [];
-  for (const m of prLookupCandidates(manifests, { now, days })) {
+  const candidates = prLookupCandidates(manifests, { now, days, history });
+  if (history) {
+    const tickets = new Set(candidates.map((m) => m.ticket));
+    for (const k of history.keys()) if (!tickets.has(k.slice(0, k.indexOf("\n")))) history.delete(k);
+  }
+  for (const m of candidates) {
+    const merged = recentlyMerged(m, now);
     const have = m.prs.map((p) => prKey(p.url));
-    for (const repo of m.repos) {
+    const looked = (r: string) => history?.get(lookupKey(m.ticket, r)) ?? 0;
+    for (const repo of [...lookupRepos(m, now)].sort((a, b) => looked(a) - looked(b))) {
       if (out.length >= max) return out;
-      if (m.prs.some((p) => p.repo === repo)) continue;
+      history?.set(lookupKey(m.ticket, repo), now);
       const slug = await slugOf(repo);
-      if (!slug || have.some((u) => u.startsWith(`https://github.com/${slug.toLowerCase()}/pull/`))) continue;
+      if (!slug || (!merged && have.some((u) => u.startsWith(`https://github.com/${slug.toLowerCase()}/pull/`)))) continue;
       out.push({ ticket: m.ticket, branch: m.branch!, repo, slug });
     }
   }
