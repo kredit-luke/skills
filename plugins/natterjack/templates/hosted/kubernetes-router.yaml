@@ -55,6 +55,9 @@ spec:
       containers:
         - name: router
           image: REGISTRY/natterjack-router:1   # built from router/Dockerfile
+          # The base image ships setuid-root binaries (su, passwd, mount, ...); no_new_privs keeps
+          # every process at uid 1000.
+          securityContext: { allowPrivilegeEscalation: false, capabilities: { drop: [ALL] } }
           env:
             - { name: ROUTER_PUBLIC_URL, value: "https://dashboard.example.com" }
             - { name: ROUTER_BACKEND, value: kubernetes }
@@ -69,6 +72,7 @@ spec:
           livenessProbe: { exec: { command: [node, -e, "fetch('http://127.0.0.1:8080/healthz').then(r=>process.exit(r.ok?0:1),()=>process.exit(1))"] }, periodSeconds: 30 }
         - name: oauth2-proxy
           image: quay.io/oauth2-proxy/oauth2-proxy:VERSION   # pin a release
+          securityContext: { allowPrivilegeEscalation: false, capabilities: { drop: [ALL] } }
           args:
             - --alpha-config=/etc/oauth2-proxy/alpha.yaml
             # Anyone in your domain may sign in; the router turns away people without a dashboard.

@@ -34,6 +34,10 @@ spec:
       containers:
         - name: dashboard
           image: REGISTRY/natterjack-dashboard:1   # built from templates/hosted/Dockerfile
+          # runAsUser alone doesn't keep a process at uid 1000: the base image ships setuid-root
+          # binaries (su, passwd, mount, ...) and Claude runs shell commands here. Without
+          # no_new_privs, those can still gain root.
+          securityContext: { allowPrivilegeEscalation: false, capabilities: { drop: [ALL] } }
           env:
             - { name: DASHBOARD_PUBLIC_URL, value: "https://dashboard.example.com" }   # the router's address
             - { name: DASHBOARD_OWNER, value: "${EMAIL}" }
