@@ -4,7 +4,7 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { intakeCheck, manifestPath, sourceWorkspace, ticketFile, update } from "../factory.mjs";
 
@@ -57,6 +57,74 @@ test("a workspace without a dashboard is skipped, nothing written", () => {
   assert.equal(fs.existsSync(path.join(ws, ".claude", "ledger")), false);
 });
 
+test("a workspace without a dashboard skips quietly: no warning", () => {
+  const { wt } = workspace({ dashboard: false });
+  const warned = [];
+  update("pr", { ticket: "ENG-1", url: "https://github.com/a/b/pull/1" }, { start: wt, warn: (l) => warned.push(l) });
+  assert.deepEqual(warned, []);
+});
+
+test("a folder outside any workspace: skipped, saying to pass --root, with a warning on stderr; exit code 0", () => {
+  const away = tmp();
+  const warned = [];
+  const r = update("pr", { ticket: "ENG-1", url: "https://github.com/a/b/pull/1" }, { start: away, warn: (l) => warned.push(l) });
+  assert.match(r.skipped, /isn't inside a workspace.*--root/);
+  assert.equal(warned.length, 1);
+  assert.match(warned[0], /isn't inside a workspace.*--root <workspace>/);
+
+  // From the CLI, with stdout thrown away the warning still shows.
+  const out = spawnSync(process.execPath, [SCRIPT, "pr", "--ticket", "ENG-1", "--url", "https://github.com/a/b/pull/1"], { cwd: away, encoding: "utf-8" });
+  assert.equal(out.status, 0);
+  assert.match(JSON.parse(out.stdout).skipped, /isn't inside a workspace/);
+  assert.equal(out.stderr.trim().split("\n").length, 1);
+  assert.match(out.stderr, /--root <workspace>/);
+});
+
+test("this plugin's own checkout (no workspace files) counts as outside a workspace", () => {
+  const repo = tmp();
+  execFileSync("git", ["-C", repo, "init", "-q"], { stdio: "pipe" });
+  const scripts = path.join(repo, "plugins", "multirepo", "scripts");
+  fs.mkdirSync(scripts, { recursive: true });
+  const warned = [];
+  const r = update("start", { ticket: "ENG-1" }, { start: scripts, warn: (l) => warned.push(l), pluginDir: path.join(repo, "plugins", "multirepo") });
+  assert.match(r.skipped, /isn't inside a workspace/);
+  assert.equal(warned.length, 1);
+  // Any other git checkout without a dashboard is a workspace without a board: quiet.
+  const other = update("start", { ticket: "ENG-1" }, { start: scripts, warn: (l) => warned.push(l), pluginDir: tmp() });
+  assert.match(other.skipped, /no Natterjack dashboard/);
+  assert.equal(warned.length, 1);
+});
+
+test("a git checkout that merely contains the plugin (a dotfiles home) is a workspace without a board: no warning", () => {
+  const home = tmp();
+  execFileSync("git", ["-C", home, "init", "-q"], { stdio: "pipe" });
+  const plugin = path.join(home, ".claude", "plugins", "multirepo");
+  const project = path.join(home, "projects", "app");
+  fs.mkdirSync(path.join(plugin, "scripts"), { recursive: true });
+  fs.mkdirSync(project, { recursive: true });
+  const warned = [];
+  for (const start of [home, project]) {
+    const r = update("start", { ticket: "ENG-1" }, { start, warn: (l) => warned.push(l), pluginDir: plugin });
+    assert.match(r.skipped, /no Natterjack dashboard/);
+  }
+  assert.deepEqual(warned, []);
+  // From inside the plugin's own folder it does warn.
+  update("start", { ticket: "ENG-1" }, { start: path.join(plugin, "scripts"), warn: (l) => warned.push(l), pluginDir: plugin });
+  assert.equal(warned.length, 1);
+});
+
+test("--root reaches the workspace from any folder", () => {
+  const { ws, wt } = workspace();
+  const away = tmp();
+  for (const root of [ws, wt]) {
+    const out = spawnSync(process.execPath, [SCRIPT, "pr", "--ticket", "ENG-1", "--url", "https://github.com/a/b/pull/1", "--root", root], { cwd: away, encoding: "utf-8" });
+    assert.equal(out.status, 0);
+    assert.equal(out.stderr, "");
+    assert.deepEqual(JSON.parse(out.stdout).prs.map((p) => p.url), ["https://github.com/a/b/pull/1"]);
+  }
+  assert.ok(fs.existsSync(path.join(ws, ".claude", "ledger", "factory", "ENG-1.json")));
+});
+
 test("start, stages, gates, PRs and done build up one manifest", () => {
   const { ws, wt } = workspace({ policy: { preset: "risk-tiered", gates: { merge: "approver" } } });
   const t = (n) => `2026-10-27T10:0${n}:00.000Z`;
@@ -83,6 +151,14 @@ test("start, stages, gates, PRs and done build up one manifest", () => {
   assert.deepEqual(m.gates.map((g) => [g.decision, g.mode, g.by, g.risk]), [["pending", "approver", null, null], ["approved", "approver", "kim", "low"]]);
   assert.deepEqual(m.prs, [{ repo: "api", url: "https://github.com/acme/api/pull/42", number: 42, state: "merged" }]);
   assert.equal(m.done, true);
+});
+
+test("pr matches a recorded row as the dashboard does (case, trailing slash): that row is updated, not duplicated", () => {
+  const { wt } = workspace();
+  update("pr", { ticket: "ENG-1", url: "https://github.com/Acme/API/pull/42", repo: "api" }, { start: wt });
+  update("pr", { ticket: "ENG-1", url: "https://github.com/acme/api/pull/42/", state: "merged", repo: "api-svc" }, { start: wt });
+  const { manifest: m } = update("pr", { ticket: "ENG-1", url: "https://GITHUB.com/acme/api/pull/42", number: "43" }, { start: wt });
+  assert.deepEqual(m.prs, [{ repo: "api-svc", url: "https://github.com/Acme/API/pull/42", number: 43, state: "open" }]);
 });
 
 test("bad arguments are usage errors (exit 2) and change nothing", () => {

@@ -12,11 +12,14 @@ A thin layer over `/multirepo:implement`, which stays the per-ticket engine. Thi
 
 ```bash
 F="${CLAUDE_PLUGIN_ROOT}/scripts/factory.mjs"
+W="<WORKSPACE>"   # the workspace root, the folder with .claude/dashboard
 ```
+
+Every `factory.mjs` call passes `--root "$W"`, and its output is read, never discarded: a `{ skipped }` reply in a workspace that has a dashboard means the call missed the workspace.
 
 ## 1. Read the policy
 
-`node "$F" policy`. Stop and say why when:
+`node "$F" policy --root "$W"`. Stop and say why when:
 - there's none (`exists: false`), or it isn't `enabled`: the team hasn't turned the factory on;
 - `intake` has no `states` and no `labels`: tickets only come in by hand (`/multirepo:implement <ticket>`).
 
@@ -29,15 +32,15 @@ When the dashboard is running (`node <workspace>/dashboard/bin/dashboard.mjs sta
 From the workspace's tracker (`.claude/dashboard/workspace.json` `issues.kind`, else what's connected): a Linear MCP (`list_issues` by state and label), an Atlassian/Jira MCP (JQL `status in (...) AND labels in (...)`), or `gh issue list --label <l> --state open`. Take a ticket when:
 - it's in one of the intake `states` (when any are set), **and** it has one of the intake `labels` (when any are set);
 - it's **assigned to you** on the tracker (the signed-in account: Linear `assignee: me`, JQL `assignee = currentUser()`, `gh issue list --assignee @me`). With `intake.unassigned`, unassigned ones too: assign one to yourself first and read it back; if someone else has it by then, leave it. Assignment is how several people's factories avoid taking the same ticket;
-- intake may take it: `node "$F" intake --ticket <ID>` says `ok` (it isn't in the factory, done or not, and was never pulled in before, by this skill or the dashboard). A ticket the factory stopped isn't retried on its own; a person decides that.
+- intake may take it: `node "$F" intake --root "$W" --ticket <ID>` says `ok` (it isn't in the factory, done or not, and was never pulled in before, by this skill or the dashboard). A ticket the factory stopped isn't retried on its own; a person decides that.
 
 Keep the tracker's order (it's usually the team's priority). `--dry-run`: list them with why each qualifies, and stop.
 
 ## 3. Run them, under the limits
 
 For each ticket, up to `--max` (default: as many as the WIP limit allows):
-1. `node "$F" wip --ticket <ID>`: not `ok` means the WIP limit is full. Stop here and say how many are left.
-2. `node "$F" intake --ticket <ID> --record` (again `ok`: nobody took it meanwhile), then run `/multirepo:implement <ID> --auto` (autonomous: the policy's gates decide; a gate that needs a person stops that ticket with a comment on it, and you move on). Each gets its own worktree.
+1. `node "$F" wip --root "$W" --ticket <ID>`: not `ok` means the WIP limit is full. Stop here and say how many are left.
+2. `node "$F" intake --root "$W" --ticket <ID> --record` (again `ok`: nobody took it meanwhile), then run `/multirepo:implement <ID> --auto` (autonomous: the policy's gates decide; a gate that needs a person stops that ticket with a comment on it, and you move on). Each gets its own worktree.
 3. One line per ticket as it finishes: where it ended (PR open, waiting at a gate, stopped and why).
 
 Run them one at a time: a session is one agent. For several at once, use the dashboard (each Pull work in is its own run).

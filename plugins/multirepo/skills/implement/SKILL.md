@@ -34,18 +34,25 @@ node "$I" --branches --branch <b> --repos a,b [--ticket <ID>] [--root <dir>] [--
 
 When the workspace has a Natterjack dashboard, its **Factory** page shows this ticket as a card moving through the pipeline. Report each step with `factory.mjs`, never by editing JSON. It's a no-op (`{ skipped }`) without a dashboard, so call it unconditionally. A failed call never stops the work.
 
+Every call passes `--root <WORKSPACE>`: the main workspace's root, the folder with `.claude/dashboard` (from inside a worktree, its `.worktree.json` `sourceWorkspace`). The ticket's progress file lives in that workspace's ledger. `--root <WORKROOT>` reaches the same file, but WORKROOT isn't set until step 5. Without `--root` the script goes by the current folder, and from anywhere else (a temp folder, the plugin's folder) it records nothing.
+
 ```bash
 F="${CLAUDE_PLUGIN_ROOT}/scripts/factory.mjs"
-node "$F" policy                      # the team's factory.json: { exists: false } when there's none
-node "$F" wip    --ticket <ID>        # other tickets in flight vs the policy's WIP limit: { inFlight, limit, ok }
-node "$F" decide --ticket <ID> --gate spec|plan|prePr|merge --run interactive|autonomous --can-ask yes|no
-node "$F" stage-on --stage security   # { policy, on }: whether the team's policy runs a stage
-node "$F" start --ticket <ID> --title "<title>" --url <ticket url> --mode interactive|autonomous --branch <b> --repos a,b --plan <plan file> --workroot <WORKROOT>
-node "$F" stage --ticket <ID> --stage <stage> --status running|done|failed|skipped [--repo <r>] [--agent <type>] [--note "<as-built, one line>"]
-node "$F" gate  --ticket <ID> --gate spec|plan|prePr|merge --decision pending|approved|rejected --by user|auto [--rationale "<why>"]
-node "$F" pr    --ticket <ID> --url <pr url> --repo <r>
-node "$F" done  --ticket <ID> [--error "<why it stopped>"]
+W="<WORKSPACE>"
+node "$F" policy   --root "$W"                  # the team's factory.json: { exists: false } when there's none
+node "$F" wip      --root "$W" --ticket <ID>    # other tickets in flight vs the policy's WIP limit: { inFlight, limit, ok }
+node "$F" decide   --root "$W" --ticket <ID> --gate spec|plan|prePr|merge --run interactive|autonomous --can-ask yes|no
+node "$F" stage-on --root "$W" --stage security # { policy, on }: whether the team's policy runs a stage
+node "$F" start --root "$W" --ticket <ID> --title "<title>" --url <ticket url> --mode interactive|autonomous --branch <b> --repos a,b --plan <plan file> --workroot <WORKROOT>
+node "$F" stage --root "$W" --ticket <ID> --stage <stage> --status running|done|failed|skipped [--repo <r>] [--agent <type>] [--note "<as-built, one line>"]
+node "$F" gate  --root "$W" --ticket <ID> --gate spec|plan|prePr|merge --decision pending|approved|rejected --by user|auto [--rationale "<why>"]
+node "$F" pr    --root "$W" --ticket <ID> --url <pr url> --repo <r>
+node "$F" done  --root "$W" --ticket <ID> [--error "<why it stopped>"]
 ```
+
+**Never discard its output** (no `> /dev/null`) and read it. A `{ skipped }` reply in a workspace that has a dashboard means the call missed the workspace: re-run it with `--root <WORKSPACE>`. The script also warns on stderr when the folder isn't inside a workspace.
+
+The board finds the ticket's PRs by its branch too (every few minutes, in the repos `start` recorded with `--branch` and `--repos`), so a missed `pr` call no longer leaves the card waiting at the merge gate, or in Done while that PR is still open. Still record each PR with `pr`: that shows on the board at once.
 
 | When | Report |
 |---|---|
@@ -135,7 +142,7 @@ Prefer `/multirepo:fetch-ticket <TICKET>`: it normalizes the ticket to JSON, inc
 Then **score the spec**: how ready the ticket is to start on, by what any good spec has (problem, outcome, testable acceptance criteria, scope, constraints, affected areas, no open questions, how to verify), under whatever headings the team uses. The team's levels and weights come from `factory.json` `spec`.
 
 ```bash
-node "${CLAUDE_PLUGIN_ROOT}/scripts/spec-check.mjs" <ticket.json> --ticket <ID> [--overrides '<json>']
+node "${CLAUDE_PLUGIN_ROOT}/scripts/spec-check.mjs" <ticket.json> --root <WORKSPACE> --ticket <ID> [--overrides '<json>']
 ```
 
 `<ticket.json>` is fetch-ticket's output (saved to a file; `-` reads stdin). `--ticket` records the score for the Factory board. Read each check's finding against the ticket: where the text fooled it (criteria that look testable but contradict each other, a "?" that was answered in a comment), re-run with `--overrides '{"criteria":{"score":0.5,"reason":"AC 2 and 3 contradict"}}'`. A score of 0, 0.5 or 1, and always a reason. Then the **spec gate**: `decide --gate spec` (above). When it says `ask`, or `own-rules` and the spec isn't Ready:

@@ -7,7 +7,9 @@
  *   <workspace>/.claude/ledger/factory/<ticket>.json
  * (never committed; the same file whether the work is in a worktree or the workspace itself).
  * A workspace without a Natterjack dashboard (.claude/dashboard/) has no board: every command
- * is then a no-op that prints { skipped }, so pipelines call it unconditionally.
+ * is then a no-op that prints { skipped }, so pipelines call it unconditionally. Run from a folder
+ * that isn't inside a workspace at all (a temp folder, this plugin's own), it skips too, but says
+ * so on stderr as well: pass --root <workspace>.
  *
  * Usage (every command takes --ticket, and --root <dir> to start from somewhere other than cwd):
  *   node factory.mjs start --ticket <id> [--title t] [--url u] [--mode interactive|autonomous]
@@ -37,7 +39,8 @@
  */
 import fs from "node:fs";
 import path from "node:path";
-import { findRoot, git, isMain, parseArgs, readJson, readWorktreeMeta } from "./lib.mjs";
+import { fileURLToPath } from "node:url";
+import { findRoot, git, isMain, parseArgs, pathKey, readJson, readWorktreeMeta } from "./lib.mjs";
 import { withFileLock } from "./worktree.mjs";
 
 export const STAGES = ["align", "plan", "build", "review", "security", "qa", "guide", "pr", "approve", "merge"];
@@ -72,6 +75,34 @@ function gitMainCheckout(root) {
   const same = path.join(main, path.relative(real(top), real(root)));
   return fs.existsSync(same) ? path.resolve(same) : null;
 }
+
+/** This plugin's folder: a checkout of it is where the scripts live, not a workspace. */
+const PLUGIN_DIR = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
+
+/**
+ * Whether a folder is inside no workspace at all: no .worktree.json, repos.json or .claude/dashboard
+ * at its root (findRoot), and either inside this plugin's folder (an agent that cd'd into the
+ * installed plugin's scripts/) or not in a git checkout. Run from there (a temp folder, the plugin's
+ * scripts folder), factory.mjs has the wrong folder, not a workspace without a board. A git checkout
+ * that merely contains the plugin somewhere under it (a dotfiles home) is a workspace without a board.
+ */
+export function outsideWorkspace(start, pluginDir = PLUGIN_DIR) {
+  const root = findRoot(start);
+  if ([".worktree.json", "repos.json", path.join(".claude", "dashboard")].some((f) => fs.existsSync(path.join(root, f)))) return false;
+  const rel = path.relative(pathKey(pluginDir), pathKey(start));
+  if (rel === "" || (!rel.startsWith("..") && !path.isAbsolute(rel))) return true;
+  return !git(start, ["rev-parse", "--show-toplevel"]);
+}
+
+/** The one-line stderr warning for a folder outside any workspace (stderr survives `> /dev/null`). */
+export const outsideWarning = (start) => `factory.mjs: ${start} isn't inside a workspace, so there's no Factory board or policy to use. Pass --root <workspace>.\n`;
+
+/** Writes a warning to stderr once per process (approver.mjs and security-scan.mjs call update() more than once). */
+const warned = new Set();
+const warnOnce = (line) => { if (!warned.has(line)) { warned.add(line); process.stderr.write(line); } };
+
+/** A PR's URL as compared: no trailing slash, lower case (the dashboard's prKey in factory.ts). */
+export const prKey = (url) => String(url).replace(/\/+$/, "").toLowerCase();
 
 /** A ticket id as a file name: owner/repo#7 → owner_repo_7. */
 export function ticketFile(ticket) {
@@ -113,12 +144,19 @@ function fresh(ticket, now, policy) {
   };
 }
 
-/** Applies one command to the ticket's manifest and saves it. Returns { manifest, file } or { skipped }. */
-export function update(command, args, { start = process.cwd(), now = new Date().toISOString() } = {}) {
+/**
+ * Applies one command to the ticket's manifest and saves it. Returns { manifest, file } or { skipped }.
+ * A start folder outside any workspace is skipped too, with a warning (`warn`, stderr by default).
+ */
+export function update(command, args, { start = process.cwd(), now = new Date().toISOString(), warn = warnOnce, pluginDir = PLUGIN_DIR } = {}) {
   const ticket = str(args.ticket);
   if (!ticket) throw usage("--ticket is required");
   const ws = sourceWorkspace(start);
   const file = manifestPath(ws, ticket);
+  if (!file && outsideWorkspace(start, pluginDir)) {
+    warn(outsideWarning(start));
+    return { skipped: `${start} isn't inside a workspace, so nothing was recorded on the Factory board. Pass --root <workspace> (the folder with .claude/dashboard, or the ticket's worktree).` };
+  }
   if (!file) return { skipped: "This workspace has no Natterjack dashboard (.claude/dashboard), so there's no Factory board to report to." };
   const policy = readPolicy(ws);
   if (command === "show") return { manifest: readJson(file) || fresh(ticket, now, policy), file };
@@ -180,9 +218,13 @@ function apply(command, args, m, policy, now) {
     if (!url || !/^https?:\/\//.test(url)) throw usage("--url must be the PR's web address");
     const n = Number(args.number ?? (/\/pull\/(\d+)/.exec(url) || [])[1]);
     const state = ["open", "merged", "closed"].includes(args.state) ? args.state : "open";
-    const have = m.prs.find((p) => p.url === url);
-    if (have) { have.state = state; if (str(args.repo)) have.repo = str(args.repo); }
-    else m.prs.push({ repo: str(args.repo), url, number: Number.isInteger(n) ? n : null, state });
+    // The same PR as a recorded row (compared as the dashboard does, prKey): that row is updated, its URL kept.
+    const have = m.prs.find((p) => typeof p?.url === "string" && prKey(p.url) === prKey(url));
+    if (have) {
+      have.state = state;
+      if (str(args.repo)) have.repo = str(args.repo);
+      if (Number.isInteger(n)) have.number = n;
+    } else m.prs.push({ repo: str(args.repo), url, number: Number.isInteger(n) ? n : null, state });
   } else if (command === "spec") {
     // spec-check.mjs's result: kept as is (the board shows the score, level and each check).
     const r = args.result;
@@ -438,6 +480,8 @@ async function main(argv) {
   const args = parseArgs(argv);
   const [command] = args._;
   const start = typeof args.root === "string" ? path.resolve(args.root) : process.cwd();
+  // The commands that only read say it too: a policy of { exists: false } from the wrong folder misleads.
+  if (["policy", "stage-on", "intake", "decide", "wip"].includes(command) && outsideWorkspace(start)) warnOnce(outsideWarning(start));
   if (command === "policy") {
     const ws = sourceWorkspace(start);
     const p = readPolicy(ws);

@@ -45,7 +45,7 @@ import { Routines, Scheduler, describeSchedule, type FireOutcome } from "./routi
 import { Inbox, gh as ghJson } from "./inbox.ts";
 import { Reviews, askChangePrompt, numberParam, repoParam } from "./reviews.ts";
 import { Standup, dayParam, sinceParam } from "./standup.ts";
-import { type FactoryRun, webhookTarget, auditCsv, auditRows, buildBoard, factoryConfigState, factoryLaunchBlocker, factoryNotices, inFlightTickets, intakeCandidates, manifestFile, normalizeManifest, overrideGateDecision, rateAssessment, readManifests, readPlan, recordGateDecision, relatedPrs, saveFactoryConfig, setPrStates } from "./factory.ts";
+import { type FactoryRun, type FoundPr, type PrLookup, addDiscoveredPrs, prLookups, runPrLookups, webhookTarget, auditCsv, auditRows, buildBoard, factoryConfigState, factoryLaunchBlocker, factoryNotices, inFlightTickets, intakeCandidates, manifestFile, normalizeManifest, overrideGateDecision, rateAssessment, readManifests, readPlan, recordGateDecision, relatedPrs, saveFactoryConfig, setPrStates } from "./factory.ts";
 import { Watcher, commandAllowed } from "./watches.ts";
 import { Usage } from "./usage.ts";
 import { UsageHistory } from "./usage-history.ts";
@@ -57,7 +57,7 @@ import { launchWithFile, meetingAskLaunch } from "./meetings/prompt.ts";
 import { MeetingTicketLinks, MeetingTickets, TICKETS_FILE, recordRunTickets } from "./meetings/tickets.ts";
 import { readLinks, saveLink, deleteLink, readRepoReadme } from "./links.ts";
 import { Machine, nativeArgSafe, openTerminal, resolvedSpecs, terminalArg } from "./machine.ts";
-import { cloneStep, cloneTargets, readRepos, reposStatus } from "./repos.ts";
+import { type RepoDef, cloneStep, cloneTargets, readRepos, reposStatus } from "./repos.ts";
 import { readRunMarkdown } from "./md-file.ts";
 import { buildSnapshot, carryOver, downloadStep, downloadTargets, dropManifestCache, fetchManifest, planSnapshot, publishSnapshot, snapshotStatus, writeManifest } from "./snapshot.ts";
 import type { PublishPlan } from "./snapshot.ts";
@@ -84,7 +84,7 @@ import { infrastructure } from "./infrastructure.ts";
 import { RunChanges } from "./run-changes.ts";
 import type { RunWorktree } from "./run-changes.ts";
 import { Attachments, MAX_ATTACHMENT_BYTES, contentTypeOf, outputHeaders } from "./attachments.ts";
-import { HandoffTokens, MAX_BUNDLE_BYTES, buildBundle, importBundle } from "./handoff.ts";
+import { HandoffTokens, MAX_BUNDLE_BYTES, buildBundle, importBundle, remoteKey } from "./handoff.ts";
 import { LinkTokens, REMOTE_PREFIX, linkTokenOf } from "./link-tokens.ts";
 import { HostedLink } from "./hosted-link.ts";
 import { RemoteMirror } from "./remote-mirror.ts";
@@ -392,15 +392,61 @@ function factoryBoard() {
 }
 
 /**
- * Factory PRs' states from GitHub, every few minutes: the pipeline records a PR when it opens it,
- * and nothing else would notice it merging (or closing). Only open rows are checked.
+ * A repo's GitHub owner/name, for a repo name a manifest lists: repos.json's entry (by name or
+ * path, from `defs`) gives its remote; when there's none, or it isn't a github.com address (a
+ * shorthand or an alias), its clone's origin in the main workspace. A single-repo workspace is the
+ * root itself. Null when neither is on github.com.
+ */
+async function githubSlugOf(repo: string, defs: RepoDef[]): Promise<string | null> {
+  const slug = (remote: string | null) => {
+    const key = remoteKey(remote || null);
+    return key && key.startsWith("github.com/") && key.split("/").length === 3 ? key.slice("github.com/".length) : null;
+  };
+  const def = defs.find((r) => r.name === repo || r.relativePath === repo);
+  const configured = slug(def?.remote ?? null);
+  if (configured) return configured;
+  const dir = def ? path.join(MAIN_WORKSPACE_PATH, def.relativePath)
+    : repo === path.basename(MAIN_WORKSPACE_PATH) || repo === "." ? MAIN_WORKSPACE_PATH : path.join(MAIN_WORKSPACE_PATH, repo);
+  return fs.existsSync(dir) ? slug((await execGit(["config", "--get", "remote.origin.url"], dir).catch(() => "")).trim()) : null;
+}
+
+/**
+ * Factory PRs from GitHub, every few minutes. First the PRs on each ticket's branch that its
+ * manifest doesn't have (the pipeline records a PR when it opens it, but a missed or skipped
+ * `factory.mjs pr` would leave the card waiting at the merge gate for good, or in Done while a PR
+ * is still open): prLookups picks at most MAX_PR_LOOKUPS repos, those that should have PRs first,
+ * resolving owner/names only for those (repos.json read once, each repo once per cycle), and
+ * runPrLookups runs them a few at a time, giving up on the rest when gh is signed out or offline.
+ * Then the states of the open rows: nothing else would notice a PR merging (or closing).
  */
 let reconciling = false;
 async function reconcileFactoryPrs(): Promise<void> {
   if (reconciling || HOSTED || workspaceConfig().codeHost.kind !== "github") return;
   reconciling = true;
   try {
-    for (const m of readManifests(undefined, Infinity).manifests) {
+    const manifests = readManifests(undefined, Infinity).manifests;
+    let defs: RepoDef[] = [];
+    try { defs = readRepos(MAIN_WORKSPACE_PATH).repos; } catch {}
+    const slugs = new Map<string, Promise<string | null>>();
+    const slugOf = (r: string) => {
+      if (!slugs.has(r)) slugs.set(r, githubSlugOf(r, defs).catch(() => null));
+      return slugs.get(r)!;
+    };
+    const lookups = await prLookups(manifests, slugOf);
+    const results = await runPrLookups(lookups, (l: PrLookup) =>
+      ghJson(["pr", "list", "--repo", l.slug, "--head", l.branch, "--state", "all", "--limit", "10", "--json", "url,number,state,createdAt,headRefName"]));
+    const found = new Map<string, FoundPr[]>();
+    for (const { item: l, result: rows } of results) {
+      for (const p of Array.isArray(rows) ? rows : []) {
+        const state = String(p?.state || "").toLowerCase();
+        if (p?.headRefName !== l.branch || typeof p.url !== "string" || !["open", "merged", "closed"].includes(state)) continue;
+        const list = found.get(l.ticket) || [];
+        list.push({ repo: l.repo, url: p.url, number: Number.isInteger(p.number) ? p.number : null, state: state as FoundPr["state"], createdAt: typeof p.createdAt === "string" ? p.createdAt : null });
+        found.set(l.ticket, list);
+      }
+    }
+    for (const [ticket, prs] of found) await addDiscoveredPrs(ticket, prs).catch(() => {});
+    for (const m of found.size ? readManifests(undefined, Infinity).manifests : manifests) {
       const open = m.prs.filter((p) => p.state !== "merged" && p.state !== "closed" && /^https:\/\/github\.com\//.test(p.url));
       if (!open.length) continue;
       const states: Record<string, "open" | "merged" | "closed"> = {};
