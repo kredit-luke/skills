@@ -64,6 +64,7 @@ A pipeline that reports its progress gets a card on the **Factory** page. Each w
 - **`roundStartedAt`**: when the current round began; `start` on a finished ticket begins a new one, and gate decisions from earlier rounds stop counting (they stay in the trail).
 - **Writers lock the file**: `<file>.lock`, created exclusively, treated as stale after 10s (`factory.mjs` and the dashboard both take it).
 - **`gates[]`**: appended per decision (`pending`, then `approved` or `rejected`); the last one counts, and the history is the audit trail.
+- **`prs[]`**: the pipeline records each PR as it opens it. With a GitHub code host the dashboard also adds, every few minutes, the PRs it finds on the manifest's `branch` in its `repos` (open or merged, opened since `startedAt`, for 30 days after the last update, and for 2 days after every recorded PR merged, in every repo including ones with a merged PR; an open one found then clears `finishedAt`), and keeps every PR's state current. It never changes or removes a recorded row. `factory.mjs pr` and the dashboard treat URLs that differ only in case or a trailing slash as the same PR.
 - **Where the card sits**: the first stage or gate (in the policy's order) it hasn't finished. A stage it never reported counts as skipped once a later one has activity. `done: true`, or every PR merged, puts it in Done.
 - The card adds what the dashboard knows: runs whose ticket matches (cost, agent, a question waiting), and the policy's budget.
 

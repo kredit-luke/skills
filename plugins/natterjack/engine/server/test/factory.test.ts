@@ -7,7 +7,7 @@ import path from "node:path";
 import { pathToFileURL } from "node:url";
 import {
   applyPreset, boardColumns, buildBoard, defaultFactoryConfig, factoryConfigProblems, factoryConfigState, normalizeFactoryConfig,
-  GATE_IDS, SPEC_CHECKS, STAGE_IDS, approverStats, auditCsv, auditRows, factoryMetrics, factoryNotices, intakeCandidates, relatedPrs, setPrStates, webhookTarget, NOTICE_EVENTS, factoryLaunchBlocker, manifestFile, normalizeManifest, overridableGate, overrideGateDecision, rateAssessment, readPlan, recordGateDecision, ticketFile, pipeline, placeItem, readManifests, saveFactoryConfig,
+  GATE_IDS, SPEC_CHECKS, STAGE_IDS, approverStats, auditCsv, auditRows, factoryMetrics, factoryNotices, intakeCandidates, relatedPrs, setPrStates, addDiscoveredPrs, prLookups, runPrLookups, everyPrMerged, isInFlight, MERGED_LOOKUP_DAYS, PR_LOOKUP_CONCURRENCY, webhookTarget, NOTICE_EVENTS, factoryLaunchBlocker, manifestFile, normalizeManifest, overridableGate, overrideGateDecision, rateAssessment, readPlan, recordGateDecision, ticketFile, pipeline, placeItem, readManifests, saveFactoryConfig,
 } from "../src/factory.ts";
 
 const tmp = () => fs.mkdtempSync(path.join(os.tmpdir(), "factory-"));
@@ -689,6 +689,150 @@ test("setPrStates writes the code host's PR states and when everything merged", 
   assert.equal(m.finishedAt, null);
   m = await setPrStates("P-1", { "https://github.com/a/c/pull/2": "merged" }, { dir, now: "2026-10-27T12:00:00.000Z" });
   assert.equal(m.finishedAt, "2026-10-27T12:00:00.000Z");
+});
+
+test("addDiscoveredPrs adds the branch's PRs the manifest doesn't have, and never changes the recorded ones", async () => {
+  const dir = tmp();
+  fs.writeFileSync(path.join(dir, "D-1.json"), JSON.stringify({ ticket: "D-1", startedAt: at, updatedAt: at, branch: "feature/D-1", repos: ["api", "web"],
+    stages: [{ id: "build", status: "done" }], prs: [{ repo: "api", url: "https://github.com/a/api/pull/1", number: 1, state: "open" }] }));
+  const m = await addDiscoveredPrs("D-1", [
+    { repo: "api", url: "https://GitHub.com/a/api/pull/1/", number: 1, state: "merged" }, // the same PR: the recorded row stays as it is
+    { repo: "web", url: "https://github.com/a/web/pull/2", number: 2, state: "open", createdAt: "2026-10-27T12:00:00Z" },
+    { repo: "web", url: "https://github.com/a/web/pull/2", number: 2, state: "open" }, // twice in one lookup
+    { repo: "web", url: "https://github.com/a/web/pull/3", number: 3, state: "closed" }, // abandoned
+    { repo: "web", url: "https://github.com/a/web/pull/4", number: 4, state: "merged", createdAt: "2026-10-01T00:00:00Z" }, // before the ticket started
+  ], { dir, now: "2026-10-27T13:00:00.000Z" });
+  assert.deepEqual(m.prs, [
+    { repo: "api", url: "https://github.com/a/api/pull/1", number: 1, state: "open" },
+    { repo: "web", url: "https://github.com/a/web/pull/2", number: 2, state: "open" },
+  ]);
+  assert.equal(m.updatedAt, "2026-10-27T13:00:00.000Z");
+  assert.equal(m.finishedAt, null);
+});
+
+test("addDiscoveredPrs: every PR merged finishes it; nothing new or a done manifest leaves the file alone", async () => {
+  const dir = tmp();
+  fs.writeFileSync(path.join(dir, "D-2.json"), JSON.stringify({ ticket: "D-2", startedAt: at, updatedAt: at, branch: "b", repos: ["api"], gates: [{ id: "merge", decision: "pending", at }] }));
+  let m = await addDiscoveredPrs("D-2", [{ repo: "api", url: "https://github.com/a/api/pull/9", number: 9, state: "merged" }], { dir, now: "2026-10-28T09:00:00.000Z" });
+  assert.equal(m.finishedAt, "2026-10-28T09:00:00.000Z");
+  assert.deepEqual(m.prs.map((p) => p.state), ["merged"]);
+  const before = fs.readFileSync(path.join(dir, "D-2.json"), "utf-8");
+  m = await addDiscoveredPrs("D-2", [{ repo: "api", url: "https://github.com/a/api/pull/9", number: 9, state: "merged" }], { dir, now: "2026-10-29T09:00:00.000Z" });
+  assert.equal(fs.readFileSync(path.join(dir, "D-2.json"), "utf-8"), before);
+
+  const done = JSON.stringify({ ticket: "D-3", startedAt: at, updatedAt: at, branch: "b", repos: ["api"], done: true, finishedAt: at, stages: [{ id: "build", status: "done" }] });
+  fs.writeFileSync(path.join(dir, "D-3.json"), done);
+  m = await addDiscoveredPrs("D-3", [{ repo: "api", url: "https://github.com/a/api/pull/5", number: 5, state: "open" }], { dir });
+  assert.deepEqual(m.prs, []);
+  assert.equal(fs.readFileSync(path.join(dir, "D-3.json"), "utf-8"), done);
+});
+
+test("addDiscoveredPrs: an open PR found for a ticket whose recorded PRs had all merged clears finishedAt and takes it out of Done", async () => {
+  const dir = tmp();
+  fs.writeFileSync(path.join(dir, "D-4.json"), JSON.stringify({ ticket: "D-4", startedAt: at, updatedAt: at, branch: "b", repos: ["api", "web"], finishedAt: "2026-10-28T09:00:00.000Z",
+    stages: [{ id: "pr", repo: "api", status: "done" }], prs: [{ repo: "api", url: "https://github.com/a/api/pull/1", number: 1, state: "merged" }] }));
+  const m = await addDiscoveredPrs("D-4", [{ repo: "web", url: "https://github.com/a/web/pull/2", number: 2, state: "open" }], { dir, now: "2026-10-28T10:00:00.000Z" });
+  assert.equal(m.finishedAt, null);
+  assert.deepEqual(m.prs.map((p) => p.state), ["merged", "open"]);
+  assert.notEqual(placeItem(m, pipeline(defaultFactoryConfig())).state, "done");
+});
+
+test("prLookups: in-flight tickets with a branch and repos, recent, newest first, repos without a PR or slug skipped, capped", async () => {
+  const now = Date.parse("2026-11-16T00:00:00Z");
+  const mk = (raw: any) => normalizeManifest({ startedAt: at, stages: [{ id: "build", status: "done" }], ...raw })!;
+  const ms = [
+    mk({ ticket: "L-1", updatedAt: "2026-11-10T00:00:00Z", branch: "feature/L-1", repos: ["api", "web", "docs"], prs: [{ repo: "api", url: "https://github.com/a/api/pull/1", state: "open" }] }),
+    mk({ ticket: "L-2", updatedAt: "2026-11-15T00:00:00Z", branch: "feature/L-2", repos: ["api"] }),
+    mk({ ticket: "L-3", updatedAt: "2026-11-15T00:00:00Z", repos: ["api"] }), // no branch
+    mk({ ticket: "L-4", updatedAt: "2026-11-15T00:00:00Z", branch: "b", repos: ["api"], done: true }),
+    mk({ ticket: "L-5", updatedAt: "2026-11-15T00:00:00Z", finishedAt: "2026-11-10T00:00:00Z", branch: "b", repos: ["api"], prs: [{ url: "https://github.com/a/x/pull/2", state: "merged" }] }), // every PR merged, long ago
+    mk({ ticket: "L-6", updatedAt: "2026-09-01T00:00:00Z", branch: "b", repos: ["api"] }), // too old
+    mk({ ticket: "L-7", updatedAt: "2026-11-15T00:00:00Z", branch: "b", repos: ["api"], stages: [] }), // never started
+  ];
+  const slugOf = (r: string) => (r === "docs" ? null : `a/${r}`);
+  assert.deepEqual((await prLookups(ms, slugOf, { now })).map((l) => [l.ticket, l.branch, l.repo, l.slug]),
+    [["L-2", "feature/L-2", "api", "a/api"], ["L-1", "feature/L-1", "web", "a/web"]]);
+  assert.equal((await prLookups(ms, slugOf, { now, max: 1 })).length, 1);
+});
+
+test("prLookups: a ticket whose recorded PRs all merged is still looked up, every repo (a new PR on the same branch included), for MERGED_LOOKUP_DAYS", async () => {
+  const now = Date.parse("2026-11-16T00:00:00Z");
+  const mk = (ticket: string, finishedAt: string) => normalizeManifest({ ticket, startedAt: at, updatedAt: finishedAt, finishedAt, branch: `feature/${ticket}`, repos: ["api", "web"],
+    stages: [{ id: "pr", repo: "api", status: "done" }], prs: [{ repo: "api", url: `https://github.com/a/api/pull/${ticket.length}`, state: "merged" }] })!;
+  const within = new Date(now - (MERGED_LOOKUP_DAYS - 0.5) * 86_400_000).toISOString();
+  const after = new Date(now - (MERGED_LOOKUP_DAYS + 0.5) * 86_400_000).toISOString();
+  const ls = await prLookups([mk("M-1", within), mk("M-22", after)], (r) => `a/${r}`, { now });
+  assert.deepEqual(ls.map((l) => [l.ticket, l.repo]), [["M-1", "api"], ["M-1", "web"]]);
+});
+
+test("prLookups with a history: capped batches that find nothing rotate through every candidate, and dropped tickets leave it", async () => {
+  const now = Date.parse("2026-11-16T00:00:00Z");
+  const mk = (ticket: string, updatedAt: string, repos = ["api"]) => normalizeManifest({ ticket, startedAt: at, updatedAt, branch: `b/${ticket}`, repos, stages: [{ id: "pr", status: "done" }] })!;
+  const ms = [mk("R-1", "2026-11-15T03:00:00Z", ["api", "web"]), mk("R-2", "2026-11-15T02:00:00Z"), mk("R-3", "2026-11-15T01:00:00Z")];
+  const history = new Map<string, number>();
+  const batch = async (t: number) => (await prLookups(ms, (r) => `a/${r}`, { now: now + t, max: 2, history })).map((l) => `${l.ticket}/${l.repo}`);
+  assert.deepEqual(await batch(0), ["R-1/api", "R-1/web"]);
+  assert.deepEqual(await batch(1), ["R-2/api", "R-3/api"]);
+  assert.deepEqual(await batch(2), ["R-1/api", "R-1/web"]);
+  // A ticket cut off part way through its repos goes first next time, with the repo it missed.
+  const cut = new Map<string, number>();
+  assert.deepEqual((await prLookups(ms, (r) => `a/${r}`, { now, max: 1, history: cut })).map((l) => l.repo), ["api"]);
+  assert.deepEqual((await prLookups(ms, (r) => `a/${r}`, { now: now + 1, max: 1, history: cut })).map((l) => `${l.ticket}/${l.repo}`), ["R-1/web"]);
+  await prLookups([ms[1]], (r) => `a/${r}`, { now: now + 3, history });
+  assert.deepEqual([...history.keys()], ["R-2\napi"]);
+});
+
+test("prLookups: tickets that should have PRs (pr or guide stage, merge or approved pre-PR gate) come before newer ones still building", async () => {
+  const now = Date.parse("2026-11-16T00:00:00Z");
+  const mk = (ticket: string, updatedAt: string, raw: any = {}) => normalizeManifest({ ticket, startedAt: at, updatedAt, branch: `b/${ticket}`, repos: ["api"], stages: [{ id: "build", status: "running" }], ...raw })!;
+  const ms = [
+    mk("B-1", "2026-11-15T12:00:00Z"),
+    mk("B-2", "2026-11-15T11:00:00Z"),
+    mk("G-1", "2026-11-01T00:00:00Z", { gates: [{ id: "merge", decision: "pending", at }] }),
+    mk("G-2", "2026-11-02T00:00:00Z", { stages: [{ id: "guide", status: "done" }] }),
+    mk("G-3", "2026-11-03T00:00:00Z", { gates: [{ id: "prePr", decision: "approved", at }] }),
+    mk("B-3", "2026-11-04T00:00:00Z", { gates: [{ id: "prePr", decision: "pending", at }] }), // not approved yet
+  ];
+  assert.deepEqual((await prLookups(ms, (r) => `a/${r}`, { now })).map((l) => l.ticket), ["G-3", "G-2", "G-1", "B-1", "B-2", "B-3"]);
+  assert.deepEqual((await prLookups(ms, (r) => `a/${r}`, { now, max: 2 })).map((l) => l.ticket), ["G-3", "G-2"]);
+});
+
+test("prLookups asks slugOf only about repos it reaches, and not about repos with a recorded PR", async () => {
+  const now = Date.parse("2026-11-16T00:00:00Z");
+  const ms = [normalizeManifest({ ticket: "S-1", startedAt: at, updatedAt: "2026-11-15T00:00:00Z", branch: "b", repos: ["api", "web", "docs"], stages: [{ id: "build", status: "done" }],
+    prs: [{ repo: "api", url: "https://github.com/a/api/pull/1", state: "open" }] })!];
+  const asked: string[] = [];
+  const ls = await prLookups(ms, async (r) => { asked.push(r); return `a/${r}`; }, { now, max: 1 });
+  assert.deepEqual(ls.map((l) => l.repo), ["web"]);
+  assert.deepEqual(asked, ["web"]);
+});
+
+test("runPrLookups: a few at a time, failures swallowed, the rest dropped after gh is signed out or 3 failures in a row", async () => {
+  let running = 0, peak = 0;
+  const tick = () => new Promise((r) => setTimeout(r, 5));
+  const ok = await runPrLookups([1, 2, 3, 4, 5, 6, 7, 8, 9], async (n) => { running++; peak = Math.max(peak, running); await tick(); running--; return n * 10; });
+  assert.equal(peak, PR_LOOKUP_CONCURRENCY);
+  assert.deepEqual(ok.map((r) => r.result).sort((a, b) => a - b), [10, 20, 30, 40, 50, 60, 70, 80, 90]);
+
+  let calls = 0;
+  const signedOut = await runPrLookups([1, 2, 3, 4, 5, 6], async () => { calls++; throw new Error("To get started with GitHub CLI, please run:  gh auth login"); }, { concurrency: 1 });
+  assert.deepEqual([signedOut, calls], [[], 1]);
+
+  calls = 0;
+  const flaky = await runPrLookups([1, 2, 3, 4, 5, 6, 7, 8], async (n) => { calls++; if (n === 2 || n >= 4) throw new Error("GraphQL: something odd"); return n; }, { concurrency: 1 });
+  assert.deepEqual(flaky.map((r) => r.item), [1, 3]); // one failure, a success resets the count, then three in a row
+  assert.equal(calls, 6);
+});
+
+test("everyPrMerged and isInFlight", () => {
+  const mk = (raw: any) => normalizeManifest({ ticket: "F-1", startedAt: at, ...raw })!;
+  assert.equal(everyPrMerged(mk({ prs: [] })), false);
+  assert.equal(everyPrMerged(mk({ prs: [{ url: "https://github.com/a/b/pull/1", state: "merged" }, { url: "https://github.com/a/b/pull/2", state: "open" }] })), false);
+  assert.equal(everyPrMerged(mk({ prs: [{ url: "https://github.com/a/b/pull/1", state: "merged" }] })), true);
+  assert.equal(isInFlight(mk({})), false, "never started");
+  assert.equal(isInFlight(mk({ stages: [{ id: "build", status: "running" }] })), true);
+  assert.equal(isInFlight(mk({ stages: [{ id: "build", status: "done" }], done: true })), false);
+  assert.equal(isInFlight(mk({ gates: [{ id: "merge", decision: "pending", at }], prs: [{ url: "https://github.com/a/b/pull/1", state: "merged" }] })), false);
 });
 
 test("notices: a gate waiting on a person, a stage failed twice, a budget reached, a ticket stopped, PRs merged; one key per occurrence", () => {

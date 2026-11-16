@@ -477,14 +477,15 @@ const httpErr = (status: number, message: string) => Object.assign(new Error(mes
  * Changes a ticket's manifest under its lock: `change` gets the file's JSON (and it read as a
  * manifest), changes the JSON or throws to refuse; the file is written back with updatedAt.
  */
-async function updateManifest(ticket: string, dir: string, now: string, change: (raw: any, m: FactoryManifest) => void): Promise<FactoryManifest> {
+async function updateManifest(ticket: string, dir: string, now: string, change: (raw: any, m: FactoryManifest) => void | false): Promise<FactoryManifest> {
   const file = manifestFile(ticket, dir);
   if (!file) throw httpErr(404, `${ticket} isn't in the factory.`);
   return withLock(file, () => {
     const raw = JSON.parse(fs.readFileSync(file, "utf-8"));
     const m = normalizeManifest(raw);
     if (!m) throw httpErr(404, `${ticket} isn't in the factory.`);
-    change(raw, m);
+    // false: nothing to change, so the file (and its updatedAt) is left as it is.
+    if (change(raw, m) === false) return m;
     raw.updatedAt = now;
     writeConfigFile(path.basename(file), raw, path.dirname(file));
     parsed.delete(file); // the next read sees this write, even within the same mtime and size
@@ -575,6 +576,169 @@ export async function setPrStates(ticket: string, states: Record<string, "open" 
   });
 }
 
+/** A PR's URL as compared: no trailing slash, lower case. */
+const prKey = (url: string) => url.replace(/\/+$/, "").toLowerCase();
+
+/** Every PR on the manifest merged: finished, as placeItem has it, even without a done mark. */
+export const everyPrMerged = (m: FactoryManifest) => m.prs.length > 0 && m.prs.every((p) => p.state === "merged");
+
+/** In flight: started (a stage or gate recorded) and not finished (done, or every PR merged). */
+export const isInFlight = (m: FactoryManifest) => !m.done && !everyPrMerged(m) && (m.stages.length > 0 || m.gates.length > 0);
+
+/** A ticket's PR the code host found by its branch (see prLookups). */
+export interface FoundPr { repo: string | null; url: string; number: number | null; state: "open" | "merged" | "closed"; createdAt?: string | null }
+
+/** One branch lookup: a ticket's repo whose PRs to look for on its branch. */
+export interface PrLookup { ticket: string; branch: string; repo: string; slug: string }
+
+const DAY_MS = 86_400_000;
+/** A manifest's PR rows at most (normalizeManifest keeps this many). */
+const MAX_PRS = 50;
+/** How long after its last update a ticket's PRs are still looked for by branch. */
+export const PR_LOOKUP_DAYS = 30;
+/**
+ * How long after every recorded PR merged a ticket's other repos are still looked up: a PR the
+ * pipeline didn't record may still be open, and the card sits in Done meanwhile. Short: by then a
+ * forgotten PR has had hundreds of reconciles to be found, and finished tickets only pile up.
+ */
+export const MERGED_LOOKUP_DAYS = 2;
+/** Branch lookups (one gh call each) per reconcile, at most. */
+export const MAX_PR_LOOKUPS = 30;
+/** Branch lookups running at once. */
+export const PR_LOOKUP_CONCURRENCY = 4;
+/** Failed lookups in a row after which the rest of a reconcile's lookups are dropped. */
+export const PR_LOOKUP_MAX_FAILURES = 3;
+
+/** Every recorded PR merged, not marked done, within MERGED_LOOKUP_DAYS of finishing. */
+const recentlyMerged = (m: FactoryManifest, now: number) =>
+  !m.done && everyPrMerged(m) && Date.parse(m.finishedAt || m.updatedAt) >= now - MERGED_LOOKUP_DAYS * DAY_MS;
+
+/**
+ * When each ticket's repo (lookupKey) was last reached by prLookups, epoch ms. Lookups that find
+ * nothing change no manifest, so without it every reconcile would pick the same capped batch and
+ * the tickets after it would never be looked up.
+ */
+export type PrLookupHistory = Map<string, number>;
+const lookupKey = (ticket: string, repo: string) => `${ticket}\n${repo}`;
+
+/**
+ * A repo of a candidate to look up: one without a PR recorded under its name. While every recorded
+ * PR has merged (recentlyMerged), every repo: a new PR can be opened on the same branch after the
+ * first merged, and the card would sit in Done meanwhile. (While a recorded PR is open GitHub
+ * allows no second open one on that branch and base, so it isn't looked up again.)
+ */
+const lookupRepos = (m: FactoryManifest, now: number) =>
+  recentlyMerged(m, now) ? m.repos : m.repos.filter((repo) => !m.prs.some((p) => p.repo === repo));
+
+/**
+ * The manifests whose branch to look up, in order: each in flight (isInFlight) updated within
+ * `days`, and each whose recorded PRs all merged (not marked done) within MERGED_LOOKUP_DAYS; only
+ * with a branch and repos. Those that should have PRs by now come first (a pr or guide stage
+ * recorded, a merge gate or an approved pre-PR gate, or every recorded PR merged), so tickets
+ * still building can't crowd out ones waiting at the merge gate. Within each group, the one whose
+ * repos were looked up longest ago (by `history`; never counts as longest) first, then newest.
+ */
+export function prLookupCandidates(manifests: FactoryManifest[],
+  { now = Date.now(), days = PR_LOOKUP_DAYS, history }: { now?: number; days?: number; history?: PrLookupHistory } = {}): FactoryManifest[] {
+  const due = (m: FactoryManifest) => !!m.branch && m.repos.length > 0 && m.prs.length < MAX_PRS
+    && ((isInFlight(m) && Date.parse(m.updatedAt) >= now - days * DAY_MS) || recentlyMerged(m, now));
+  const shouldHavePrs = (m: FactoryManifest) => recentlyMerged(m, now)
+    || m.stages.some((s) => s.id === "pr" || s.id === "guide")
+    || m.gates.some((g) => g.id === "merge" || (g.id === "prePr" && g.decision === "approved"));
+  const lastLooked = (m: FactoryManifest) => Math.min(...lookupRepos(m, now).map((r) => history?.get(lookupKey(m.ticket, r)) ?? 0));
+  return manifests.filter(due).map((m) => ({ m, first: shouldHavePrs(m), last: lastLooked(m) }))
+    .sort((a, b) => Number(b.first) - Number(a.first) || a.last - b.last || b.m.updatedAt.localeCompare(a.m.updatedAt))
+    .map((x) => x.m);
+}
+
+/**
+ * Where to look for a ticket's PRs by its branch, so a PR the pipeline didn't record still reaches
+ * the board: one lookup per repo (lookupRepos) of each prLookupCandidates manifest, in its order,
+ * the repos looked up longest ago first. A repo with a PR already recorded under its GitHub
+ * owner/name (outside the all-merged window), or whose owner/name `slugOf` can't tell, is skipped.
+ * At most `max`; `slugOf` is only asked about repos reached before that. Each repo reached is
+ * written to `history` at `now`, so the next call starts with the ones this one didn't reach;
+ * tickets no longer candidates are dropped from it.
+ */
+export async function prLookups(manifests: FactoryManifest[], slugOf: (repo: string) => string | null | Promise<string | null>,
+  { now = Date.now(), days = PR_LOOKUP_DAYS, max = MAX_PR_LOOKUPS, history }: { now?: number; days?: number; max?: number; history?: PrLookupHistory } = {}): Promise<PrLookup[]> {
+  const out: PrLookup[] = [];
+  const candidates = prLookupCandidates(manifests, { now, days, history });
+  if (history) {
+    const tickets = new Set(candidates.map((m) => m.ticket));
+    for (const k of history.keys()) if (!tickets.has(k.slice(0, k.indexOf("\n")))) history.delete(k);
+  }
+  for (const m of candidates) {
+    const merged = recentlyMerged(m, now);
+    const have = m.prs.map((p) => prKey(p.url));
+    const looked = (r: string) => history?.get(lookupKey(m.ticket, r)) ?? 0;
+    for (const repo of [...lookupRepos(m, now)].sort((a, b) => looked(a) - looked(b))) {
+      if (out.length >= max) return out;
+      history?.set(lookupKey(m.ticket, repo), now);
+      const slug = await slugOf(repo);
+      if (!slug || (!merged && have.some((u) => u.startsWith(`https://github.com/${slug.toLowerCase()}/pull/`)))) continue;
+      out.push({ ticket: m.ticket, branch: m.branch!, repo, slug });
+    }
+  }
+  return out;
+}
+
+/** A gh failure every other lookup would hit too: signed out, gh missing, or no network. */
+const GH_UNAVAILABLE = /auth|log(ged)? ?in|credential|HTTP 401|ENOENT|ENOTFOUND|EAI_AGAIN|ECONNREFUSED|ECONNRESET|ETIMEDOUT|no such host|error connecting|dial tcp|network|timed? ?out/i;
+
+/**
+ * Runs `lookup` for each item, `concurrency` at a time, and returns what each that succeeded found.
+ * Failures are swallowed, but the remaining lookups are dropped after one that looks like gh is
+ * signed out, missing or offline (GH_UNAVAILABLE), or after `maxFailures` in a row: each would fail
+ * the same way, up to gh's timeout, while the PR state reconcile waits behind them.
+ */
+export async function runPrLookups<T, R>(items: T[], lookup: (item: T) => Promise<R>,
+  { concurrency = PR_LOOKUP_CONCURRENCY, maxFailures = PR_LOOKUP_MAX_FAILURES }: { concurrency?: number; maxFailures?: number } = {}): Promise<{ item: T; result: R }[]> {
+  const out: { item: T; result: R }[] = [];
+  let next = 0, streak = 0, stop = false;
+  const worker = async () => {
+    while (!stop && next < items.length) {
+      const item = items[next++];
+      try { out.push({ item, result: await lookup(item) }); streak = 0; }
+      catch (e) { if (GH_UNAVAILABLE.test(String((e as Error)?.message ?? e)) || ++streak >= maxFailures) stop = true; }
+    }
+  };
+  await Promise.all(Array.from({ length: Math.max(1, Math.min(concurrency, items.length)) }, worker));
+  return out;
+}
+
+/**
+ * PRs the code host found on a ticket's branch, added to its manifest: only ones it doesn't have
+ * (by URL), opened since the ticket started, and not closed unmerged (an abandoned PR would keep
+ * the card from ever finishing). Rows the pipeline recorded are never changed or removed, and a
+ * finished (done) manifest isn't touched. When every PR is then merged, finishedAt is set, as
+ * setPrStates does; an open one added to a manifest whose recorded PRs had all merged clears it
+ * (the card goes back to waiting on that PR). Nothing to add leaves the file as it is.
+ */
+export async function addDiscoveredPrs(ticket: string, found: FoundPr[],
+  { dir = manifestDir(), now = new Date().toISOString() }: { dir?: string; now?: string } = {}): Promise<FactoryManifest> {
+  return updateManifest(ticket, dir, now, (raw, m) => {
+    if (m.done) return false;
+    const prs: any[] = Array.isArray(raw.prs) ? raw.prs : [];
+    const have = new Set(prs.filter((p) => p && typeof p.url === "string").map((p) => prKey(p.url)));
+    let added = 0;
+    for (const f of found) {
+      if (prs.length >= MAX_PRS) break;
+      if (!f || typeof f.url !== "string" || !/^https?:\/\//.test(f.url) || have.has(prKey(f.url))) continue;
+      if (f.state !== "open" && f.state !== "merged") continue;
+      if (f.createdAt && Date.parse(f.createdAt) < Date.parse(m.startedAt)) continue;
+      prs.push({ repo: f.repo, url: f.url, number: Number.isInteger(f.number) ? f.number : null, state: f.state });
+      have.add(prKey(f.url));
+      added++;
+    }
+    if (!added) return false;
+    raw.prs = prs;
+    const allMerged = prs.every((p: any) => p?.state === "merged");
+    if (!raw.finishedAt && allMerged) raw.finishedAt = now;
+    else if (raw.finishedAt && !allMerged) raw.finishedAt = null;
+  });
+}
+
 /** The newest rating of an assessment (each person's newest counts; the newest of those wins). */
 export function ratingOf(m: FactoryManifest, a: FactoryAssessment | null): FactoryRating | null {
   return a ? m.ratings.filter((r) => r.assessmentAt === a.at).at(-1) || null : null;
@@ -645,7 +809,7 @@ export function placeItem(full: FactoryManifest, steps: PipelineStep[]): { colum
     const at = placeItem({ ...m, done: false, error: null }, steps);
     return { column: at.column, state: "failing", reason: `Stopped: ${m.error}` };
   }
-  if (m.done || (m.prs.length && m.prs.every((p) => p.state === "merged"))) return { column: "done", state: "done", reason: null };
+  if (m.done || everyPrMerged(m)) return { column: "done", state: "done", reason: null };
   const hasActivity = (i: number) => steps.slice(i).some((s) => (s.kind === "stage" ? m.stages.some((x) => x.id === s.id) : m.gates.some((g) => g.id === s.id)));
   const nothing = !m.stages.length && !m.gates.length;
   if (nothing) return { column: "queued", state: "idle", reason: null };
@@ -691,8 +855,7 @@ const money = (n: number) => `$${n.toFixed(2)}`;
  */
 export function inFlightTickets(manifests: FactoryManifest[], runs: FactoryRun[]): Map<string, string> {
   const inFlight = new Map<string, string>();
-  const merged = (m: FactoryManifest) => m.prs.length > 0 && m.prs.every((p) => p.state === "merged");
-  for (const m of manifests) if (!m.done && !merged(m) && (m.stages.length > 0 || m.gates.length > 0)) inFlight.set(m.ticket.toLowerCase(), m.ticket);
+  for (const m of manifests) if (isInFlight(m)) inFlight.set(m.ticket.toLowerCase(), m.ticket);
   for (const r of runs) if (r.implement && r.ticket && (r.status === "running" || r.status === "waiting")) inFlight.set(r.ticket.toLowerCase(), r.ticket);
   return inFlight;
 }
@@ -741,7 +904,7 @@ export function itemSteps(m: FactoryManifest, steps: PipelineStep[], column: str
   const laterActivity = (i: number) => steps.slice(i + 1).some((s) => (s.kind === "stage" ? m.stages.some((x) => x.id === s.id) : m.gates.some((g) => g.id === s.id)));
   const minIso = (xs: (string | null)[]) => xs.filter((x): x is string => !!x).sort()[0] ?? null;
   const maxIso = (xs: (string | null)[]) => xs.filter((x): x is string => !!x).sort().at(-1) ?? null;
-  const merged = m.prs.length > 0 && m.prs.every((p) => p.state === "merged");
+  const merged = everyPrMerged(m);
   return steps.map((s, i): FactoryItemStep => {
     const id = colId(s);
     const base = { id, kind: s.kind as FactoryItemStep["kind"], label: s.kind === "stage" ? STAGE_LABELS[s.id] : GATE_LABELS[s.id], current: id === column, repos: [] as FactoryItemStep["repos"], decisions: [] as FactoryItemStep["decisions"] };
@@ -812,7 +975,7 @@ export function buildBoard(cfg: FactoryConfig, configured: boolean, manifests: F
       steps: itemStepList,
       waitingGate: waitingGate(m, itemStepList),
       mode: m.mode, spec: m.spec, plan: m.plan, error: m.error,
-      merged: m.prs.length > 0 && m.prs.every((p) => p.state === "merged"),
+      merged: everyPrMerged(m),
       retro: m.retro,
     };
   });
@@ -905,10 +1068,9 @@ export function auditCsv(rows: FactoryAuditRow[]): string {
 
 /** The factory ticket a PR belongs to and its PRs (this one marked), or null. */
 export function relatedPrs(manifests: FactoryManifest[], url: string): ReviewRelated | null {
-  const same = (u: string) => u.replace(/\/+$/, "").toLowerCase();
-  const m = manifests.find((x) => x.prs.some((p) => same(p.url) === same(url)));
+  const m = manifests.find((x) => x.prs.some((p) => prKey(p.url) === prKey(url)));
   if (!m) return null;
-  return { ticket: m.ticket, title: m.title, prs: m.prs.map((p) => ({ repo: p.repo, number: p.number, url: p.url, state: p.state, current: same(p.url) === same(url) })) };
+  return { ticket: m.ticket, title: m.title, prs: m.prs.map((p) => ({ repo: p.repo, number: p.number, url: p.url, state: p.state, current: prKey(p.url) === prKey(url) })) };
 }
 
 const median = (xs: number[]) => { if (!xs.length) return null; const s = [...xs].sort((a, b) => a - b); const m = Math.floor(s.length / 2); return s.length % 2 ? s[m] : (s[m - 1] + s[m]) / 2; };
@@ -920,7 +1082,7 @@ const share = (hits: number, n: number) => (n ? { rate: Math.round((hits / n) * 
  */
 export function factoryMetrics(manifests: FactoryManifest[], runs: FactoryRun[], now = Date.now()): FactoryMetrics {
   const since = now - 30 * 86_400_000;
-  const merged = (m: FactoryManifest) => m.prs.length > 0 && m.prs.every((p) => p.state === "merged");
+  const merged = everyPrMerged;
   // Each figure by its own stable time (a later retro or rating rewrites updatedAt): when it finished
   // (done, a rejection or an override), when a review ended, when an assessment was made. Older
   // manifests without them: their last write.
