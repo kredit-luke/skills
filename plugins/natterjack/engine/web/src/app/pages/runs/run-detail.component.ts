@@ -24,6 +24,8 @@ import { runStatus, toReview } from '../../shared/run-status';
 import { RunComposerComponent } from './run-composer.component';
 import { RunChangesComponent } from './run-changes.component';
 import { RunOutputsComponent } from './run-outputs.component';
+import { RunMapComponent } from './run-map.component';
+import { changeMaps } from '../../runs/change-map';
 import { DiffViewComponent } from '../workspaces/diff-view.component';
 import { editDiff, editStat } from '../../runs/edit-diff';
 import { AttachmentListComponent } from '../../shared/attachment-list.component';
@@ -31,7 +33,7 @@ import { IssueSummaryComponent } from '../../shared/issue-summary.component';
 import { WorkspaceAppsComponent } from '../../shared/workspace-apps.component';
 import { LongTextComponent } from '../../shared/long-text.component';
 
-type Tab = 'issue' | 'transcript' | 'changes' | 'apps' | 'files';
+type Tab = 'issue' | 'transcript' | 'changes' | 'map' | 'apps' | 'files';
 /** A tracker lookup: the issue, or why it couldn't be loaded. */
 type IssueLookup = { detail: IssueDetail } | { error: string };
 
@@ -54,7 +56,7 @@ const eventCache = new RunEventCache();
  */
 @Component({
   selector: 'dash-run-detail',
-  imports: [NgTemplateOutlet, RunComposerComponent, RunChangesComponent, RunOutputsComponent, DiffViewComponent, AttachmentListComponent,
+  imports: [NgTemplateOutlet, RunComposerComponent, RunChangesComponent, RunMapComponent, RunOutputsComponent, DiffViewComponent, AttachmentListComponent,
     IssueSummaryComponent, WorkspaceAppsComponent, LongTextComponent, MdPipe, TrustedHtmlPipe, RouterLink, MdFileViewerComponent],
   host: { '(click)': 'openMdPath($event)', '(keydown.enter)': 'openMdPath($event)' },
   changeDetection: ChangeDetectionStrategy.OnPush,
@@ -74,6 +76,8 @@ export class RunDetailComponent implements OnDestroy {
   readonly cont = signal<Continuation | null>(null);
   /** Files in the run's outputs folder (GET /api/runs/:id), re-read when a turn starts or ends. */
   readonly outputs = signal<RunOutput[]>([]);
+  /** Change maps among the outputs (the change-map skill's pages), newest first: the Map tab. */
+  readonly maps = computed(() => changeMaps(this.outputs()));
   readonly loadError = signal<string | null>(null);
   /** Servers whose tools the latest turn was refused (GET /api/connections/denied), with what the page can do. */
   readonly denied = signal<DeniedConnection[]>([]);
@@ -213,6 +217,7 @@ export class RunDetailComponent implements OnDestroy {
     if (t === 'apps' && (!this.workWs() || this.api.hosted())) return 'transcript';
     if (t === 'changes' && this.mirrored()) return 'transcript';
     if (t === 'files' && (this.mirrored() || !this.outputs().length)) return 'transcript';
+    if (t === 'map' && (this.mirrored() || !this.maps().length)) return 'transcript';
     return t;
   });
   readonly ranAs = computed(() => {

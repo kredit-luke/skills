@@ -223,6 +223,9 @@
         @if (!r.remote) {
           <button type="button" role="tab" [class.on]="view() === 'changes'" [attr.aria-selected]="view() === 'changes'" (click)="tab.set('changes')">Changes @if (changedFiles()) { <span class="n">{{ changedFiles() }}</span> }</button>
         }
+        @if (!r.remote && maps().length) {
+          <button type="button" role="tab" [class.on]="view() === 'map'" [attr.aria-selected]="view() === 'map'" (click)="tab.set('map')" title="A map of what this run changed: the happy path, its edge cases and errors, and which have tests">Map</button>
+        }
         @if (workWs() && !api.hosted() && !r.remote) {
           <button type="button" role="tab" [class.on]="view() === 'apps'" [attr.aria-selected]="view() === 'apps'" (click)="tab.set('apps')">Apps @if (appsBadge(); as b) { <span class="n" [class.up]="b.up">{{ b.text }}</span> }</button>
         }
@@ -242,6 +245,9 @@
     }
     @if (view() === 'apps' && workWs(); as w) {
       <dash-workspace-apps class="tab-body apps-tab" [workspace]="w" [toolbar]="true" />
+    }
+    @if (view() === 'map') {
+      <dash-run-map [runId]="r.id" [maps]="maps()" />
     }
     @if (view() === 'files') {
       <dash-run-outputs class="tab-body" [runId]="r.id" [files]="outputs()" />

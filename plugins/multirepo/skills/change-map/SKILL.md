@@ -84,7 +84,7 @@ C="${CLAUDE_PLUGIN_ROOT}/scripts/change-map.mjs"
    - `--format md` (or `both`) writes `<name>.md`: the weight line, each flow as a Mermaid diagram (GitHub renders these in PR comments, VS Code in its preview) and a list, and what no flow explains.
 
 5. **Report**, briefly:
-   - The page's path (`out.html`), so they can open it, and `out.md` when written.
+   - The page's path (`out.html`), so they can open it, and `out.md` when written. In a Natterjack dashboard run, `out.dashboard` is the copy render wrote to the run's outputs folder (`DASHBOARD_OUTPUTS`): say it's in the run page's **Map** tab.
    - The weight line from `stats`: e.g. *"Of 212 added lines, 106 are the happy path and 31 handle the cases around it; 61 are tests."*
    - `unexplained`: each item with your one-line read: a flow you left out (add it and render again), or code that looks unneeded.
    - `untested`: the branches with no test, the ones that matter most first.

@@ -95,6 +95,24 @@ export function outputHeaders(name: string, size: number): Record<string, string
   };
 }
 
+export { CHANGE_MAP_RE } from "../../shared/change-map.ts";
+
+/**
+ * Headers for a change map shown in the run page's Map tab. Unlike any other output it runs its own
+ * inline script, so it's sandboxed (an opaque origin: no cookies, no storage, no same-origin API calls),
+ * may load nothing from anywhere, and only this dashboard may frame it. Links it opens (the PR on
+ * GitHub) leave the sandbox, in a tab of their own.
+ */
+export function changeMapHeaders(size: number): Record<string, string | number> {
+  return {
+    "Content-Type": "text/html; charset=utf-8",
+    "Content-Length": size,
+    "Cache-Control": "no-cache",
+    "X-Content-Type-Options": "nosniff",
+    "Content-Security-Policy": "sandbox allow-scripts allow-popups allow-popups-to-escape-sandbox; default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src data:; form-action 'none'; base-uri 'none'; frame-ancestors 'self'",
+  };
+}
+
 export class Attachments {
   root: string;
   staged: string;

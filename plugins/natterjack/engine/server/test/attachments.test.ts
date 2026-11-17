@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { Attachments, promptWithAttachments, safeName } from "../src/attachments.ts";
+import { Attachments, CHANGE_MAP_RE, changeMapHeaders, outputHeaders, promptWithAttachments, safeName } from "../src/attachments.ts";
 import { Deck } from "../src/deck.ts";
 
 const tmp = () => fs.mkdtempSync(path.join(os.tmpdir(), "dash-att-"));
@@ -104,4 +104,21 @@ test("DASHBOARD_MAX_CONCURRENT_RUNS (a hosted profile's cap) beats the team and 
     if (was === undefined) delete process.env.DASHBOARD_MAX_CONCURRENT_RUNS;
     else process.env.DASHBOARD_MAX_CONCURRENT_RUNS = was;
   }
+});
+
+test("a change map is the one output that runs its script: sandboxed, nothing loaded, framed only here", () => {
+  assert.ok(CHANGE_MAP_RE.test("ENG-12.change-map.html"));
+  assert.ok(CHANGE_MAP_RE.test("maps/pr-4.change-map.html"));
+  for (const not of ["report.html", "change-map.html.txt", "x.change-map.htm", "maps/"]) assert.equal(CHANGE_MAP_RE.test(not), false, not);
+
+  const h = changeMapHeaders(10);
+  const csp = String(h["Content-Security-Policy"]);
+  assert.equal(h["Content-Type"], "text/html; charset=utf-8");
+  assert.match(csp, /^sandbox allow-scripts allow-popups allow-popups-to-escape-sandbox;/);
+  assert.doesNotMatch(csp, /allow-same-origin/, "an opaque origin: it can't call the API as the person");
+  assert.match(csp, /default-src 'none'/);
+  assert.match(csp, /frame-ancestors 'self'/);
+  assert.equal(h["Content-Disposition"], undefined, "shown, not downloaded");
+  // The ordinary outputs route still serves the same file as a download, with no script.
+  assert.match(String(outputHeaders("ENG-12.change-map.html", 10)["Content-Disposition"]), /^attachment/);
 });

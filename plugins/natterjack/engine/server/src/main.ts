@@ -83,7 +83,7 @@ import { claudeAuth, claudeAuthCached, claudeEnv } from "./claude.ts";
 import { infrastructure } from "./infrastructure.ts";
 import { RunChanges } from "./run-changes.ts";
 import type { RunWorktree } from "./run-changes.ts";
-import { Attachments, MAX_ATTACHMENT_BYTES, contentTypeOf, outputHeaders } from "./attachments.ts";
+import { Attachments, CHANGE_MAP_RE, MAX_ATTACHMENT_BYTES, changeMapHeaders, contentTypeOf, outputHeaders } from "./attachments.ts";
 import { HandoffTokens, MAX_BUNDLE_BYTES, buildBundle, importBundle, remoteKey } from "./handoff.ts";
 import { LinkTokens, REMOTE_PREFIX, linkTokenOf } from "./link-tokens.ts";
 import { HostedLink } from "./hosted-link.ts";
@@ -1973,6 +1973,7 @@ async function openTerminalForRun(run: RunMeta) {
 const RUN_ROUTE = /^\/api\/runs\/([a-z0-9-]+)(?:\/(stream|cancel|verdict|flag|terminal|continuation|reply|plan-mode|changes|diff|rename|watch-stop|watch-approve|queue|queue-edit|queue-remove|queue-send|queue-auto|send-to-hosted|send-cancel|md-file))?$/i;
 const RUN_FILE_ROUTE = /^\/api\/runs\/([a-z0-9-]+)\/files\/([^/]+)$/i;
 const RUN_OUTPUT_ROUTE = /^\/api\/runs\/([a-z0-9-]+)\/outputs\/(.+)$/i;
+const RUN_CHANGE_MAP_ROUTE = /^\/api\/runs\/([a-z0-9-]+)\/change-map\/(.+)$/i;
 
 /** One of a run's attached files: images and PDFs inline, anything else as a download. */
 function serveRunFile(res: http.ServerResponse, runId: string, file: string) {
@@ -1998,6 +1999,18 @@ function serveRunOutput(res: http.ServerResponse, runId: string, rel: string) {
   const full = attachments.output(runId, rel);
   if (!full) return sendError(res, 404, "That file is gone (a run's files are deleted a while after it's done).");
   res.writeHead(200, outputHeaders(full, fs.statSync(full).size));
+  fs.createReadStream(full).pipe(res);
+}
+
+/** A change map from the run's outputs folder, as a sandboxed page for the run page's Map tab (changeMapHeaders). */
+function serveRunChangeMap(res: http.ServerResponse, runId: string, rel: string) {
+  if (!CHANGE_MAP_RE.test(rel)) return sendError(res, 404, "Not a change map");
+  const full = attachments.output(runId, rel);
+  const gone = () => sendError(res, 404, "That change map is gone (a run's files are deleted a while after it's done).");
+  if (!full) return gone();
+  let size: number;
+  try { size = fs.statSync(full).size; } catch { return gone(); } // deleted or rewritten since output() looked
+  res.writeHead(200, changeMapHeaders(size));
   fs.createReadStream(full).pipe(res);
 }
 
@@ -2151,6 +2164,12 @@ async function handleApi(req: http.IncomingMessage, res: http.ServerResponse, ur
       let rel: string;
       try { rel = decodeURIComponent(outputMatch[2]); } catch { return sendError(res, 400, "Bad path"); }
       return serveRunOutput(res, outputMatch[1], rel);
+    }
+    const mapMatch = p.match(RUN_CHANGE_MAP_ROUTE);
+    if (mapMatch) {
+      let rel: string;
+      try { rel = decodeURIComponent(mapMatch[2]); } catch { return sendError(res, 400, "Bad path"); }
+      return serveRunChangeMap(res, mapMatch[1], rel);
     }
     if (p === "/api/settings") return sendJson(res, settingsView());
     if (p === "/api/hosted-link") return HOSTED ? sendError(res, 400, NOT_HOSTED) : sendJson(res, hostedLink.status());

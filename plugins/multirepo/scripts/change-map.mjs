@@ -29,7 +29,7 @@ import { execFileSync, spawn } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { defaultBranch, findRoot, findTicket, git, gitRun, isMain, listRepos, parseArgs, readWorkspaceConfig, readWorktreeMeta, slash } from "./lib.mjs";
+import { defaultBranch, findRoot, findTicket, git, gitRun, isMain, listRepos, parseArgs, readWorkspaceConfig, readWorktreeMeta, samePath, slash } from "./lib.mjs";
 import { numberedDiff, parseDiff } from "./review-guide.mjs";
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
@@ -166,8 +166,12 @@ export function bundleName(bundle, config = {}, meta = null) {
   // A worktree's own ticket names local work only: PRs may be another ticket's.
   const ticket = (bundle.source !== "pr" && meta?.ticketId) || findTicket(branches, config);
   const pr = bundle.source === "pr" && bundle.repos[0]?.number ? `pr-${bundle.repos[0].number}` : null;
-  const raw = ticket || pr || branches[0] || "change";
-  return String(raw).replace(/[^A-Za-z0-9._-]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 80) || "change";
+  return safeName(ticket || pr || branches[0]);
+}
+
+/** A file-safe name: letters, digits, . _ -; never a dotfile (outputs listings skip those); at most 80 characters. */
+export function safeName(raw) {
+  return String(raw ?? "").replace(/[^A-Za-z0-9._-]+/g, "-").replace(/^[-.]+|[-.]+$/g, "").slice(0, 80) || "change";
 }
 
 /** The output folder, created, with a .gitignore of its own so nothing in it is ever committed. */
@@ -423,6 +427,24 @@ export function renderMarkdown(data) {
   return out.join("\n");
 }
 
+/**
+ * In a Natterjack dashboard run (DASHBOARD_OUTPUTS names the run's outputs folder), writes the page
+ * there as <name>.change-map.html, which the run page shows in its Map tab. Returns its path, or
+ * null outside a dashboard run or when the folder can't be written; never throws. `written` is the
+ * page render already wrote: when that's in the outputs folder under a change-map name, it's the one.
+ */
+export function copyToOutputs(html, name, dir = process.env.DASHBOARD_OUTPUTS, written = null) {
+  if (!dir) return null;
+  try {
+    if (written && samePath(path.dirname(written), dir) && /\.change-map\.html$/i.test(written)) return written;
+    const file = path.join(dir, `${safeName(String(name).replace(/\.change-map$/i, ""))}.change-map.html`);
+    fs.writeFileSync(file, html);
+    return file;
+  } catch {
+    return null;
+  }
+}
+
 /** Opens a file in the default browser; never throws. */
 export function openFile(file) {
   try {
@@ -463,7 +485,7 @@ function main(argv) {
     if (refs.some((r) => !r)) throw usage(`not a PR: ${args._[refs.indexOf(null)]} (use owner/name#n or its URL)`);
     const root = findRoot(args.root && args.root !== true ? args.root : process.cwd());
     const bundle = refs.length ? prBundle(refs) : localBundle(root, { base: typeof args.base === "string" ? args.base : null, committed: !!args.committed });
-    const name = typeof args.name === "string" ? args.name.replace(/[^A-Za-z0-9._-]+/g, "-") : bundleName(bundle, readWorkspaceConfig(root), readWorktreeMeta(root));
+    const name = typeof args.name === "string" ? safeName(args.name) : bundleName(bundle, readWorkspaceConfig(root), readWorktreeMeta(root));
     const dir = outputDir(path.resolve(typeof args.dir === "string" ? args.dir : path.join(root, ".claude", "change-maps")));
     const file = path.join(dir, `${name}.diff.json`);
     const numbered = path.join(dir, `${name}.diff.txt`);
@@ -488,6 +510,8 @@ function main(argv) {
     const out = {};
     if (r.html) fs.writeFileSync((out.html = path.resolve(stem + ".html")), r.html);
     if (r.md) fs.writeFileSync((out.md = path.resolve(stem + ".md")), r.md);
+    // In a Natterjack dashboard run, a copy in the run's outputs folder is what its run page's Map tab shows.
+    if (r.html) out.dashboard = copyToOutputs(r.html, path.basename(stem), process.env.DASHBOARD_OUTPUTS, out.html);
     const opened = args.open && out.html ? openFile(out.html) : false;
     const { stats, unexplained, hunks, map } = r.data;
     console.log(JSON.stringify({

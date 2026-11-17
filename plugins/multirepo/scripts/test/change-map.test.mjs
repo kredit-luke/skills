@@ -5,7 +5,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { execFileSync } from "node:child_process";
-import { build, bundleFiles, bundleName, classify, hunkIndex, localBundle, normalizeMap, numberedText, outputDir, parsePrRef, renderHtml, renderMarkdown, resolveRef, untestedBranches, untrackedDiff } from "../change-map.mjs";
+import { build, bundleFiles, bundleName, classify, copyToOutputs, hunkIndex, localBundle, normalizeMap, numberedText, outputDir, parsePrRef, renderHtml, renderMarkdown, resolveRef, untestedBranches, untrackedDiff } from "../change-map.mjs";
 import { parseDiff } from "../review-guide.mjs";
 
 const git = (cwd, ...args) => execFileSync("git", ["-C", cwd, ...args], { encoding: "utf-8", stdio: "pipe" }).trim();
@@ -229,4 +229,29 @@ test("review fixes: one unexplained block across blank lines, prototype keys, PR
 test("an edge kind is escaped on the page", () => {
   const html = fs.readFileSync(new URL("../change-map.html", import.meta.url), "utf-8");
   assert.doesNotMatch(html, /\$\{e\.kind\}/);
+});
+
+test("in a dashboard run the page is also written to the run's outputs, for its Map tab", () => {
+  const dir = tmp("change-map-out-");
+  try {
+    assert.equal(copyToOutputs("<p>", "ENG-7", ""), null, "not a dashboard run");
+    const file = copyToOutputs("<p>", "feat/odd name", dir);
+    assert.equal(path.basename(file), "feat-odd-name.change-map.html");
+    assert.equal(fs.readFileSync(file, "utf-8"), "<p>");
+    assert.equal(path.basename(copyToOutputs("<p>", ".review", dir)), "review.change-map.html", "never a dotfile, which the outputs listing skips");
+    assert.equal(path.basename(copyToOutputs("<p>", "ENG-1.change-map", dir)), "ENG-1.change-map.html", "no double suffix");
+    const already = path.join(dir, "ENG-2.change-map.html");
+    fs.writeFileSync(already, "<b>");
+    const before = fs.readdirSync(dir).length;
+    assert.equal(copyToOutputs("<b>", "ENG-2.change-map", dir, already), already, "render already wrote it there: no second copy");
+    assert.equal(fs.readdirSync(dir).length, before);
+    assert.equal(copyToOutputs("<p>", "x", path.join(dir, "missing", "deeper")), null, "an unwritable folder is skipped, not thrown");
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("an embedding page can ask for a theme", () => {
+  const html = fs.readFileSync(new URL("../change-map.html", import.meta.url), "utf-8");
+  assert.match(html, /theme=\(light\|dark\)/);
 });
