@@ -29,13 +29,15 @@ test("the prompt has the agent fetch the PR read-only with gh, or read the files
   const f = agentReviewPrompt({ repo: "acme/api", number: 7, title: "Orders" }, "files");
   assert.match(f, /pr\.diff/);
   assert.doesNotMatch(f, /gh pr diff/);
-  assert.deepEqual([sourceFor("claude"), sourceFor("copilot"), sourceFor("codex")], ["gh", "gh", "files"]);
+  assert.match(f, /in parts/);
+  assert.match(f, /hunk header/, "line numbers come from the hunks, not pr.diff's own lines");
+  assert.deepEqual([sourceFor("claude"), sourceFor("copilot"), sourceFor("codex")], ["files", "gh", "files"]);
 });
 
 test("each agent's command line only allows reading this PR, with none of the person's settings or MCP servers", () => {
   const c = agentReviewArgs("claude", "acme/api", 7, "x");
-  assert.deepEqual(c.slice(c.indexOf("--tools"), c.indexOf("--tools") + 2), ["--tools", "Bash"]);
-  assert.ok(c.includes("Bash(gh pr diff 7 --repo acme/api:*)"));
+  assert.deepEqual(c.slice(c.indexOf("--tools"), c.indexOf("--tools") + 2), ["--tools", "Read"]);
+  assert.ok(!c.includes("--allowedTools"), "no Bash, so no gh");
   assert.equal(c[c.indexOf("--permission-mode") + 1], "dontAsk");
   assert.ok(c.includes("--restricted") && c.includes("--strict-mcp-config"), "no inherited allow rules or MCP servers");
   const cp = agentReviewArgs("copilot", "acme/api", 7, "x", { mcpServers: ["linear", "github-mcp-server"] });
@@ -50,6 +52,11 @@ test("each agent's command line only allows reading this PR, with none of the pe
   assert.equal(cw[cw.indexOf("-c") + 1], 'windows.sandbox="elevated"');
   assert.equal(cx[cx.indexOf("-s") + 1], "read-only");
   assert.equal(cx[cx.indexOf("-o") + 1], "out.txt");
+});
+
+test("parseAgentReview says what the agent said when it didn't answer with JSON", () => {
+  assert.throws(() => parseAgentReview("I couldn't read pr.diff, so I can't review this.", files), /It said: "I couldn't read pr\.diff/);
+  assert.throws(() => parseAgentReview("", files), /no JSON/);
 });
 
 test("lineOnDiff knows which new-file lines GitHub takes a comment on", () => {
@@ -106,12 +113,12 @@ test("Reviews.agentReview runs each agent once per commit and keeps each agent's
   assert.equal(await r.savedAgentReview("acme/api", 7), null);
   const a = await r.agentReview("acme/api", 7, "claude", "Claude Code");
   assert.equal(runs.length, 1);
-  assert.equal(runs[0].files, undefined, "Claude fetches the PR itself");
-  assert.match(runs[0].prompt, /gh pr view 7 --repo acme\/api/);
+  assert.equal(runs[0].files["pr.diff"], DIFF, "Claude gets the PR as files");
+  assert.doesNotMatch(runs[0].prompt, /gh pr/);
   assert.deepEqual([a.agent, a.agentLabel, a.sha, a.findings[0].onDiff], ["claude", "Claude Code", SHA, true]);
   assert.equal((await r.agentReview("acme/api", 7, "claude", "Claude Code")).at, a.at);
   assert.equal(runs.length, 1);
-  // Another agent makes its own (Codex gets the PR as files), and Claude's is still there.
+  // Another agent makes its own, and Claude's is still there.
   await new Promise((done) => setTimeout(done, 5));
   const c = await r.agentReview("acme/api", 7, "codex", "Codex");
   assert.equal(runs.length, 2);

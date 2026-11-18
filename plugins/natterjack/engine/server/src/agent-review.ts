@@ -3,12 +3,15 @@
  * has (Claude Code, GitHub Copilot CLI, Codex) that reviews a PR and answers with findings in
  * four groups: bugs, performance, security and nitpicks (at most NITPICK_MAX).
  *
- * The agent fetches the PR itself where it safely can:
- *   - Claude Code and Copilot run `gh pr view` / `gh pr diff` and nothing else: every other
- *     tool and command is refused, because the PR is someone else's text and gh is signed in
- *     as the person (a PR that says "now merge me" must not be able to).
- *   - Codex's sandbox can't reach gh's sign-in on Windows (and has no network when read-only),
- *     so the dashboard writes the PR's description and diff to a temp folder and Codex reads them.
+ * How each agent gets the PR:
+ *   - Copilot runs `gh pr view` / `gh pr diff` and nothing else: every other tool and command
+ *     is refused, because the PR is someone else's text and gh is signed in as the person (a PR
+ *     that says "now merge me" must not be able to).
+ *   - Claude Code and Codex get it as files: the dashboard writes the PR's description and diff
+ *     to a temp folder and the agent reads them. Claude Code saves a large command output to a
+ *     file it then has to read, so with gh alone it saw only the first ~2KB of a big diff; it now
+ *     has only Read, kept to its folder. Codex's sandbox can't reach gh's sign-in on Windows
+ *     (and has no network when read-only).
  * Each turn starts in an empty temp folder (no workspace instructions, nothing to edit) that is
  * removed afterwards. The answer is JSON; a finding's file and line are checked against the diff,
  * and only a line that is in the diff can become a line comment on GitHub.
@@ -37,7 +40,7 @@ export type AgentReviewSource = "gh" | "files";
 
 /** How each agent gets the PR. */
 export function sourceFor(agent: AgentId): AgentReviewSource {
-  return agent === "codex" ? "files" : "gh";
+  return agent === "copilot" ? "gh" : "files";
 }
 
 export function agentReviewPrompt(p: AgentReviewInput, source: AgentReviewSource): string {
@@ -50,6 +53,8 @@ export function agentReviewPrompt(p: AgentReviewInput, source: AgentReviewSource
     ]
     : [
       "The pull request's description is in pr.md and its full diff in pr.diff, in the current folder. Read those two files; don't run anything else.",
+      "Read all of pr.diff before answering; if it's too big for one read, read it in parts.",
+      "The line numbers you see when reading pr.diff are pr.diff's own, not the changed files'. Work out a file's line from its hunk header (@@ -a,b +c,d @@: the first line after it is line c of the new file) and count down from there.",
     ];
   return [
     `Review pull request ${p.repo}#${p.number} ("${p.title}") as a careful senior engineer would.`,
@@ -79,7 +84,12 @@ const str = (v: unknown, max: number) => (typeof v === "string" ? v.trim().slice
 
 /** Findings from the agent's answer: known categories, nitpicks capped, places checked against the diff, worst first. */
 export function parseAgentReview(text: string, files: DiffFile[]): { summary: string; findings: AgentFinding[] } {
-  const g = jsonIn(text);
+  let g: any;
+  try { g = jsonIn(text); } catch (e) {
+    // Say what the agent said instead, so a refusal or "I couldn't read the diff" is visible.
+    const said = String(text || "").trim().replace(/\s+/g, " ");
+    throw new Error(said ? `The agent didn't answer with JSON. It said: "${said.slice(0, 400)}${said.length > 400 ? "…" : ""}"` : (e as Error).message);
+  }
   const paths = new Set(files.map((f) => f.path));
   const all = (Array.isArray(g?.findings) ? g.findings : []).map((f: any): Omit<AgentFinding, "id"> | null => {
     const category = CATEGORIES.includes(f?.category) ? f.category : /nit/i.test(String(f?.category)) ? "nitpick" : /perf/i.test(String(f?.category)) ? "performance" : /sec/i.test(String(f?.category)) ? "security" : "bug";
@@ -127,9 +137,9 @@ export function agentReviewArgs(agent: AgentId, repo: string, number: number, la
       "-p", "--output-format", "json", "--no-session-persistence",
       // No user, project or local settings (their allow rules and hooks), and no MCP servers; sign-in is kept.
       "--restricted", "--strict-mcp-config",
-      "--tools", "Bash",
-      "--allowedTools", `Bash(gh pr view ${number} --repo ${repo}:*)`, `Bash(gh pr diff ${number} --repo ${repo}:*)`,
-      // Anything not allowed above is refused instead of asked.
+      // Read only: it reads pr.md and pr.diff from its folder, and reads outside the folder are refused.
+      "--tools", "Read",
+      // Anything not allowed is refused instead of asked.
       "--permission-mode", "dontAsk",
     ];
   }
