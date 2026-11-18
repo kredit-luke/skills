@@ -31,6 +31,7 @@ test("the prompt has the agent fetch the PR read-only with gh, or read the files
   assert.doesNotMatch(f, /gh pr diff/);
   assert.match(f, /in parts/);
   assert.match(f, /hunk header/, "line numbers come from the hunks, not pr.diff's own lines");
+  assert.match(f, /skip removed \(-\) lines/, "deleted lines aren't in the new file");
   assert.deepEqual([sourceFor("claude"), sourceFor("copilot"), sourceFor("codex")], ["files", "gh", "files"]);
 });
 

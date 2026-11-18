@@ -54,7 +54,7 @@ export function agentReviewPrompt(p: AgentReviewInput, source: AgentReviewSource
     : [
       "The pull request's description is in pr.md and its full diff in pr.diff, in the current folder. Read those two files; don't run anything else.",
       "Read all of pr.diff before answering; if it's too big for one read, read it in parts.",
-      "The line numbers you see when reading pr.diff are pr.diff's own, not the changed files'. Work out a file's line from its hunk header (@@ -a,b +c,d @@: the first line after it is line c of the new file) and count down from there.",
+      "The line numbers you see when reading pr.diff are pr.diff's own, not the changed files'. Work out a file's line from its hunk header: after @@ -a,b +c,d @@ the first added (+) or context (space) line is line c of the new file. Count from c again at every hunk header, and count only added and context lines; skip removed (-) lines and \"\\ No newline at end of file\" markers, which aren't in the new file.",
     ];
   return [
     `Review pull request ${p.repo}#${p.number} ("${p.title}") as a careful senior engineer would.`,
